@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createCaptureStore, readCaptureDatabaseState, replaceCaptureDatabaseState, type CaptureStore } from './store';
+import { createHash } from 'node:crypto';
+import { createCaptureStore, emptyCaptureState, readCaptureDatabaseState, replaceCaptureDatabaseState, validateCaptureState, type CaptureStore } from './store';
 import { CaptureConfigSchema, LoopbackEndpointSchema } from '../shared/capture';
 import { openDatabase } from '../storage/database';
 
@@ -16,6 +17,21 @@ function close(store: CaptureStore) { store.close(); stores.splice(stores.indexO
 afterEach(() => { for (const store of stores.splice(0)) store.close(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe('capture store', () => {
+  it.each(['', 'AA==', 'AAA=', 'AAAA', '+/8='])('accepts canonical attachment encoding %j', encoded => {
+    const state = emptyCaptureState(), bytes = Buffer.from(encoded, 'base64');
+    state.blobs.push({ hash: createHash('sha256').update(bytes).digest('hex'), bytes: encoded });
+    expect(validateCaptureState(state).blobs[0]?.bytes).toBe(encoded);
+  });
+  it.each(['AA', 'AAA', 'A', 'AA===', 'AA==AAAA', 'AA==\n', 'A A==', 'AA$=', '-_8=', 'AB==', 'AAB='])('rejects malformed or noncanonical attachment encoding %j even with a matching decoded hash', encoded => {
+    const state = emptyCaptureState();
+    state.blobs.push({ hash: createHash('sha256').update(Buffer.from(encoded, 'base64')).digest('hex'), bytes: encoded });
+    expect(() => validateCaptureState(state)).toThrow('附件内容编码无效');
+  });
+  it('rejects decoded attachments exceeding 25 MiB even with valid encoding and a matching hash', () => {
+    const state = emptyCaptureState(), bytes = Buffer.alloc(25 * 1024 * 1024 + 1, 0x61);
+    state.blobs.push({ hash: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.toString('base64') });
+    expect(() => validateCaptureState(state)).toThrow('附件内容校验失败');
+  });
   it('defaults to no collection and validates loopback endpoints without hidden credentials', () => {
     const store = make(); expect(store.config()).toMatchObject({ enabled: false, analysisEnabled: true, groupIds: [], flavor: 'napcat', historyDays: 7, intervalSeconds: 120 });
     expect(store.ingest([incoming('m1')])).toMatchObject({ inserted: 0, ignored: 1 });

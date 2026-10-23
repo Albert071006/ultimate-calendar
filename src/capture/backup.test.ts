@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { createRepository, type Repository } from '../storage/repository';
 import { createBackup, inspectBackupBundle } from '../storage/backups';
 import { createRestoreManager } from '../electron/restore';
@@ -31,6 +32,23 @@ afterEach(() => {
 });
 
 describe('planner and QQ backup restoration', () => {
+  it('validates a SQLite backup containing a maximum-size synthetic attachment without overflowing the stack', () => {
+    const dir = directory(), { repository, capture } = setup(join(dir, 'large.sqlite'));
+    const sourceId = ingest(capture, 'large-synthetic-message', true);
+    const attachment = capture.attachments(sourceId)[0]!;
+    const bytes = Buffer.alloc(25 * 1024 * 1024, 0x61);
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    capture.putAttachment(attachment.id, bytes);
+    const chosen = join(dir, 'large-backup.sqlite'); createBackup(repository, chosen);
+    const inspected = inspectBackupBundle(chosen);
+    const blob = inspected.capture?.blobs.find(item => item.hash === hash);
+    expect(inspected.capture?.attachments.find(item => item.id === attachment.id)?.hash).toBe(hash);
+    expect(blob).toBeDefined();
+    const decoded = Buffer.from(blob!.bytes, 'base64');
+    expect(decoded.length).toBe(bytes.length);
+    expect(createHash('sha256').update(decoded).digest('hex')).toBe(hash);
+  });
+
   it('backs up actual attachment BLOBs and atomically restores data with interrupted requests paused', async () => {
     const dir = directory(), { repository, capture } = setup(join(dir, 'live.sqlite'));
     task(repository, '备份内任务'); const sourceId = ingest(capture, 'backup-message', true);

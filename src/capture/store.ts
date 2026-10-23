@@ -103,8 +103,9 @@ export function validateCaptureState(value: unknown): CaptureExportState {
     if (!messages.has(attachment.messageId) || (attachment.hash && !blobs.has(attachment.hash))) throw Error('附件来源或内容不存在');
   }
   for (const blob of state.blobs) {
-    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(blob.bytes)) throw Error('附件内容编码无效');
     const bytes = Buffer.from(blob.bytes, 'base64');
+    // Buffer decoding is permissive; a canonical round trip checks every byte without a large-input regex stack.
+    if (bytes.toString('base64') !== blob.bytes) throw Error('附件内容编码无效');
     if (bytes.length > MAX_ATTACHMENT_BYTES || digest(bytes) !== blob.hash) throw Error('附件内容校验失败');
   }
   for (const chunk of state.chunks) if (!attachments.has(chunk.attachmentId)) throw Error('附件分片来源不存在');
