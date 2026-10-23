@@ -1,0 +1,37 @@
+/* A2「纸本 · 套色」design tokens. Components read colors only through these variables. */
+@font-face {
+  font-family: "Planner Serif";
+  src: url("./fonts/NotoSerifSC-SemiBold-subset.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --bg: #f5f0e6;
+  --surface: #fbf8f1;
+  --surface-2: #efe8da;
+  --nav-active: #ebe1cc;
+  --ink: #1f1c18;
+  --ink-2: #4e483e;
+  --ink-3: #7f7666;
+  --line: #ddd0b6;
+  --line-2: #c4b38f;
+  --accent: #b83a26;
+  --accent-soft: #f3dfd6;
+  --warn: #b35a12;
+  --warn-fill: #c0651a;
+  --warn-ink: #7a3d0b;
+  --work-fill: #2b3a55;
+  --on-dark: #f5f0e6;
+  --today-bg: #efe7d5;
+  --income: #2f7a4f;
+  --hatch: #f1eadb;
+  --overlay-shadow: 5px 5px 0 rgba(31, 28, 24, 0.1), 0 10px 30px rgba(31, 28, 24, 0.12);
+  --radius: 3px;
+
+  --font-ui: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  --font-display: "Planner Serif", "Songti SC", "SimSun", var(--font-ui);
+  --font-num: Georgia, "Times New Roman", serif;
+  --font-time: "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+}

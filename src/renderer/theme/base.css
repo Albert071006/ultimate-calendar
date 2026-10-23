@@ -1,0 +1,84 @@
+/* Shared A2 controls. The `ui-` prefix keeps them apart from legacy page styles until those are retired. */
+.ui-btn {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.ui-btn:hover { background: var(--surface-2); border-color: var(--ink-3); }
+.ui-btn:disabled { opacity: 0.45; cursor: default; }
+.ui-btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.ui-btn svg { width: 15px; height: 15px; stroke-width: 1.8; flex-shrink: 0; }
+.ui-btn.icon { width: 32px; padding: 0; }
+.ui-btn.sm { height: 28px; font-size: 12.5px; padding: 0 10px; }
+.ui-btn.sm.icon { width: 28px; padding: 0; }
+.ui-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.ui-btn.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #000); }
+.ui-btn.dark { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+.ui-btn.dark:hover { background: color-mix(in srgb, var(--ink) 85%, #fff); }
+.ui-btn.ghost { background: transparent; border-color: transparent; color: var(--ink-2); }
+.ui-btn.ghost:hover { background: var(--surface-2); color: var(--ink); }
+.ui-btn.on { background: var(--accent-soft); border-color: transparent; font-weight: 600; }
+.ui-btn kbd { font-family: var(--font-time); font-size: 10.5px; color: inherit; opacity: 0.7; border: 1px solid currentColor; border-radius: 3px; padding: 0 4px; line-height: 15px; }
+
+.ui-seg { display: inline-flex; padding: 2px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--surface); }
+.ui-seg button { height: 26px; min-width: 34px; padding: 0 9px; font: inherit; font-size: 13px; color: var(--ink-2); background: transparent; border: 0; border-radius: 2px; cursor: pointer; }
+.ui-seg button[aria-pressed="true"], .ui-seg button[aria-selected="true"] { background: var(--ink); color: var(--surface); }
+.ui-seg button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+
+.ui-tabs { display: flex; gap: 22px; border-bottom: 1px solid var(--line); padding: 0 22px; }
+.ui-tabs button { padding: 12px 0 10px; margin-bottom: -1px; font: inherit; font-size: 14px; color: var(--ink-3); background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; cursor: pointer; }
+.ui-tabs button b { font-family: var(--font-num); font-weight: 400; margin-left: 4px; }
+.ui-tabs button[aria-selected="true"] { color: var(--ink); font-weight: 600; border-bottom-color: var(--accent); }
+
+.ui-chip { font-size: 12px; line-height: 1; padding: 5px 7px; border-radius: 2px; display: inline-flex; gap: 5px; align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.ui-chip b { font-family: var(--font-time); font-weight: 600; }
+.ui-chip.ddl { background: var(--surface); border: 1.5px solid var(--ink); color: var(--ink); }
+.ui-chip.overdue { background: var(--warn-fill); color: #fff; }
+.ui-chip.today { background: var(--surface); border: 1.5px solid var(--accent); color: var(--accent); }
+.ui-chip.pending { border: 1.5px dashed var(--accent); color: var(--accent); }
+.ui-chip.event { background: repeating-linear-gradient(135deg, var(--surface) 0 5px, var(--hatch) 5px 7px); border: 1px solid var(--ink); color: var(--ink); }
+.ui-chip.unknown { border: 1px dashed var(--line-2); color: var(--ink-3); }
+
+.ui-legend { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+.ui-legend i { width: 14px; height: 10px; border-radius: 2px; display: inline-block; margin-left: 6px; }
+.ui-legend .course { background: linear-gradient(90deg, #3b5b9a 0 3px, #dde2ec 3px); }
+.ui-legend .work { background: var(--work-fill); }
+.ui-legend .event { background: repeating-linear-gradient(135deg, var(--surface) 0 2px, #cfc3a8 2px 3px); border: 1px solid var(--ink); }
+.ui-legend .pending { border: 1.5px dashed var(--accent); }
+
+.ui-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--c, var(--work-fill)); vertical-align: 1px; flex-shrink: 0; }
+.ui-kbd { font-family: var(--font-time); font-size: 11px; color: var(--ink-3); border: 1px solid var(--line-2); border-radius: 3px; padding: 2px 6px; }
+.ui-hint { color: var(--ink-3); font-size: 12.5px; }
+
+.ui-toast { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--ink); color: var(--surface); border-radius: var(--radius); font-size: 13px; }
+.ui-toast button { margin-left: auto; font: inherit; font-weight: 600; color: #f3b8a8; background: none; border: 0; cursor: pointer; padding: 0; }
+
+.ui-overlay { background: var(--surface); border: 1px solid var(--ink); border-radius: var(--radius); box-shadow: var(--overlay-shadow); }
+
+.ui-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 26px 4px; }
+.ui-empty.center { align-items: center; text-align: center; padding: 80px 20px; }
+.ui-empty::before { content: ""; width: 46px; border-top: 2px solid var(--ink); }
+.ui-empty h4 { margin: 0; font-family: var(--font-display); font-size: 17px; font-weight: 600; }
+.ui-empty p { margin: 0; color: var(--ink-2); font-size: 13.5px; line-height: 1.7; }
+.ui-empty .actions { display: flex; gap: 8px; margin-top: 4px; }
+
+.ui-more { width: 28px; height: 28px; display: grid; place-items: center; color: var(--ink-3); background: transparent; border: 0; border-radius: var(--radius); cursor: pointer; padding: 0; }
+.ui-more:hover { background: var(--surface-2); color: var(--ink); }
+.ui-more svg { width: 16px; height: 16px; }
+
+.ui-menu { position: absolute; z-index: 30; min-width: 150px; padding: 4px; display: flex; flex-direction: column; }
+.ui-menu button { text-align: left; padding: 7px 10px; font: inherit; font-size: 13px; color: var(--ink); background: transparent; border: 0; border-radius: 2px; cursor: pointer; }
+.ui-menu button:hover, .ui-menu button:focus-visible { background: var(--surface-2); outline: none; }
+.ui-menu button.danger { color: var(--accent); }

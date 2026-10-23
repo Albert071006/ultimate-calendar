@@ -102,4 +102,4 @@ node scripts/document-smoke.mjs --no-legacy
 
 欢迎通过 Issue 描述问题，或提交 Pull Request。提交前请运行类型检查、测试和构建；复现材料请使用虚构数据并移除密钥、QQ 账号和私人账目。
 
-项目采用 [MIT](LICENSE) 许可证。第三方依赖遵循各自许可证；Tabler 图标的声明保留在 [public/third-party](public/third-party)。
+项目采用 [MIT](LICENSE) 许可证。第三方依赖遵循各自许可证；Tabler 图标与界面宋体（Noto Serif SC 子集，SIL OFL 1.1）的声明保留在 [public/third-party](public/third-party)。宋体子集由 `npm run font:subset -- <Noto Serif SC 字体文件>` 生成。

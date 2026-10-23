@@ -29,7 +29,8 @@
     "smoke": "node scripts/smoke.mjs",
     "release:check-tag": "node scripts/release.mjs check-tag",
     "release:verify": "node scripts/release-artifacts.mjs",
-    "release:publish": "node scripts/release.mjs publish"
+    "release:publish": "node scripts/release.mjs publish",
+    "font:subset": "node scripts/font-subset.mjs"
   },
   "dependencies": {
     "@xmldom/xmldom": "0.9.12",
@@ -55,6 +56,7 @@
     "esbuild": "0.28.2",
     "happy-dom": "^21.0.4",
     "js-yaml": "4.3.2",
+    "subset-font": "2.9.0",
     "typescript": "7.0.2",
     "vite": "8.3.5",
     "vitest": "5.0.5"
