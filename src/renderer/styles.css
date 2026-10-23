@@ -652,23 +652,23 @@ small {
   text-overflow: ellipsis;
   flex-shrink: 0;
 }
-.candidate {
+:where(.month-item, .timeline-row).candidate {
   background: #f1efe2;
   color: #8f8866;
 }
-.deadline {
+:where(.month-item, .timeline-row).deadline {
   background: #fbf0dc;
   color: #a77a3b;
 }
-.event {
+:where(.month-item, .timeline-row).event {
   background: #f2e9f0;
   color: #96688f;
 }
-.work {
+:where(.month-item, .timeline-row).work {
   background: #e1f0e8;
   color: #397c69;
 }
-.course {
+:where(.month-item, .timeline-row).course {
   background: #e9edf8;
   color: #6176ab;
 }
