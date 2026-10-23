@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { CaptureDesktopAPI as importCaptureAPI } from './capture-api';
 import { LedgerCommandProposalSchema } from './ledger-command';
+import { PALETTE_COLORS } from './palette';
 
 /** Shared transport boundary. Unknown properties are rejected, never silently stripped. */
 export const SCHEMA_VERSION = 1;
@@ -107,7 +108,8 @@ export const CandidateSchema = candidateValue.extend(metadata).refine(candidateI
 export type Candidate = z.infer<typeof CandidateSchema>;
 export type CandidateInput = z.input<typeof CandidateInputSchema>;
 const taskValue = z.strictObject({ title: TitleSchema, description: text.default(''), status: z.enum(['open', 'done']).default('open'),
-  deadline: DeadlineSchema.nullable().default(null), goalId: IdSchema.nullable().default(null), candidateId: IdSchema.nullable().default(null), reminders: reminder });
+  deadline: DeadlineSchema.nullable().default(null), goalId: IdSchema.nullable().default(null), candidateId: IdSchema.nullable().default(null), reminders: reminder,
+  courseId: IdSchema.nullable().default(null) });
 export const TaskInputSchema = taskValue;
 export const TaskSchema = taskValue.extend(metadata);
 export type Task = z.infer<typeof TaskSchema>;
@@ -139,8 +141,11 @@ export const BlockSchema = blockValue.extend({ ...metadata, recurrence: EventRec
   .refine(blockInterval, '时段无效').refine(value => (!value.recurrence && !value.cancelled) || value.kind === 'event', '重复与取消标记仅适用于固定活动');
 export type Block = z.infer<typeof BlockSchema>;
 export type BlockInput = z.input<typeof BlockInputSchema>;
+/** Belonging color for courses and goals; empty values are filled from the shared palette. */
+export const ColorSchema = z.enum(PALETTE_COLORS);
 const goalValue = z.strictObject({ title: TitleSchema, description: text.default(''), priority: z.enum(['low', 'medium', 'high']).default('medium'),
-  targetDate: DateOnlySchema.nullable().default(null), status: z.enum(['active', 'completed', 'paused']).default('active') });
+  targetDate: DateOnlySchema.nullable().default(null), status: z.enum(['active', 'completed', 'paused']).default('active'),
+  color: ColorSchema.nullable().default(null) });
 export const GoalInputSchema = goalValue;
 export const GoalSchema = goalValue.extend(metadata);
 export type Goal = z.infer<typeof GoalSchema>;
@@ -148,7 +153,8 @@ export type GoalInput = z.input<typeof GoalInputSchema>;
 const courseValue = z.strictObject({ title: TitleSchema, location: shortText.default(''), weekday: z.number().int().min(1).max(7),
   startTime: TimeSchema, endTime: TimeSchema, firstWeek: z.number().int().min(1).max(100), lastWeek: z.number().int().min(1).max(100),
   parity: z.enum(['all', 'odd', 'even']).default('all'), termStart: monday,
-  weeks: z.array(z.number().int().min(1).max(100)).min(1).max(100).nullable().default(null), reminders: reminder });
+  weeks: z.array(z.number().int().min(1).max(100)).min(1).max(100).nullable().default(null), reminders: reminder,
+  color: ColorSchema.nullable().default(null) });
 const courseInterval = (value: { firstWeek: number; lastWeek: number; startTime: string; endTime: string; weeks: number[] | null }) =>
   value.firstWeek <= value.lastWeek && value.startTime < value.endTime &&
   (value.weeks === null || value.weeks.every(week => week >= value.firstWeek && week <= value.lastWeek));

@@ -1,14 +1,10 @@
 import type { Snapshot, Task } from '../shared/contracts';
 import { taskArrangements, taskNoticeTiming, noticeTimePassed } from './task-schedule';
+import { fixedActivitySettled, taskDeadlineEnd } from '../domain/unscheduled';
 
 type RailSnapshot = Pick<Snapshot, 'tasks' | 'blocks' | 'candidates' | 'sources'>;
 
-export function taskDeadlineEnd(task: Task): number | null {
-  if (!task.deadline) return null;
-  const end = Date.parse(`${task.deadline.date}T${task.deadline.time ?? '00:00'}:00+08:00`)
-    + (task.deadline.time === null ? 86_400_000 : 0);
-  return Number.isFinite(end) ? end : null;
-}
+export { taskDeadlineEnd };
 
 export interface TaskAttention {
   kind: 'overdue' | 'ended';
@@ -36,8 +32,7 @@ export function taskAttention(snapshot: RailSnapshot, task: Task, now: number): 
 
 /** Only explicit completion/cancellation removes a fixed-activity task from the rail. */
 function confirmedActivityResolved(snapshot: RailSnapshot, task: Task): boolean {
-  const blocks = taskArrangements(snapshot, task.id);
-  return blocks.length > 0 && blocks.every(block => block.kind === 'event' && (block.completed || block.cancelled));
+  return fixedActivitySettled(taskArrangements(snapshot, task.id));
 }
 
 /** Keep unfinished work visible, ordered by deadline; selection never mutates stored records. */

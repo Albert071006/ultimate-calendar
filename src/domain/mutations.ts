@@ -138,9 +138,13 @@ export function expandMutations(state: StoredState, mutations: Mutation[]): { de
           for (const e of [...records(state, 'courseException')]) if (e.courseId === course.id && e.originalDate >= date) {
             if (courseOccurs(next as Course, e.originalDate)) updateEntity(state, 'courseException', e.id, { courseId: next.id }); else deleteEntity(state, 'courseException', e.id);
           }
+          if (cutWeek <= course.firstWeek) for (const t of [...records(state, 'task')]) if (t.courseId === course.id) updateEntity(state, 'task', t.id, { courseId: next.id });
         } else for (const e of [...records(state, 'courseException')]) if (e.courseId === course.id && e.originalDate >= date) deleteEntity(state, 'courseException', e.id);
         const remaining = course.weeks?.filter(w => w < cutWeek) ?? null;
-        if (cutWeek <= course.firstWeek || remaining?.length === 0) deleteEntity(state, 'course', course.id);
+        if (cutWeek <= course.firstWeek || remaining?.length === 0) {
+          for (const t of [...records(state, 'task')]) if (t.courseId === course.id) updateEntity(state, 'task', t.id, { courseId: null });
+          deleteEntity(state, 'course', course.id);
+        }
         else updateEntity(state, 'course', course.id, { lastWeek: cutWeek - 1, weeks: remaining }); continue;
       }
       if (m.type === 'update') {
@@ -156,7 +160,10 @@ export function expandMutations(state: StoredState, mutations: Mutation[]): { de
         continue;
       }
       if (m.entity === 'goal') for (const t of [...records(state, 'task')]) if (t.goalId === m.id) { deliberate = true; updateEntity(state, 'task', t.id, { goalId: null }); }
-      if (m.entity === 'course') for (const e of [...records(state, 'courseException')]) if (e.courseId === m.id) deleteEntity(state, 'courseException', e.id);
+      if (m.entity === 'course') {
+        for (const e of [...records(state, 'courseException')]) if (e.courseId === m.id) deleteEntity(state, 'courseException', e.id);
+        for (const t of [...records(state, 'task')]) if (t.courseId === m.id) { deliberate = true; updateEntity(state, 'task', t.id, { courseId: null }); }
+      }
       if (m.entity === 'candidate') {
         for (const b of [...records(state, 'block')]) if (b.candidateId === m.id) updateEntity(state, 'block', b.id, { candidateId: null });
         for (const t of [...records(state, 'task')]) if (t.candidateId === m.id) updateEntity(state, 'task', t.id, { candidateId: null });

@@ -9,6 +9,7 @@ import { validateRelationships } from '../domain/validation';
 import { automaticBackup } from './backups';
 import { normalizeLegacyRecurringSeries } from './legacy-recurring-series';
 import { describeJournal } from '../domain/journal-description';
+import { assignMissingColors } from '../domain/palette';
 
 const CancellationUndoBaselineSchema = z.array(z.strictObject({
   key: z.string().regex(/^[a-f0-9]{64}$/),
@@ -118,7 +119,7 @@ export function createRepository(path: string): Repository {
     path, read, snapshot: () => stateSnapshot(read()),
     transact(work) {
       db.exec('BEGIN IMMEDIATE'); let result;
-      try { const state = read(); const before = structuredClone(state); result = work(state); parseState(state); persistDiff(db, before, state); db.exec('COMMIT'); }
+      try { const state = read(); const before = structuredClone(state); result = work(state); assignMissingColors(state, nowInstant().slice(0, 10)); parseState(state); persistDiff(db, before, state); db.exec('COMMIT'); }
       catch (error) { db.exec('ROLLBACK'); throw error; }
       return result;
     },
@@ -151,7 +152,8 @@ export function createRepository(path: string): Repository {
     replaceState(value, inTransaction) { const state = parseState(value); repository.transact(live => { Object.assign(live, state); inTransaction?.(db); }); },
   };
   // Fail on corrupt/future/incompatible persisted records before returning a usable repository.
-  try { read(); return repository; } catch (error) { db.close(); throw error; }
+  // Records saved before belonging colors existed receive theirs once, durably, at open.
+  try { read(); repository.transact(() => undefined); return repository; } catch (error) { db.close(); throw error; }
 }
 
 /** Recover old interrupted bootstrap only when no user/history data or custom settings exist. */

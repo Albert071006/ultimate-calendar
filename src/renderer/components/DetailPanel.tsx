@@ -443,6 +443,7 @@ export function EntityEditor({
           goalId: s("goalId") || null,
           candidateId: task?.candidateId ?? null,
           reminders: reminders(data),
+          courseId: task?.courseId ?? null,
         });
       if (entity === "block")
         values = BlockInputSchema.parse({
@@ -462,6 +463,7 @@ export function EntityEditor({
           priority: s("priority"),
           status: s("status"),
           targetDate: s("targetDate") || null,
+          color: goal?.color ?? null,
         });
       if (entity === "course") {
         values = CourseInputSchema.parse({
@@ -481,6 +483,7 @@ export function EntityEditor({
             : null,
           termStart: s("termStart"),
           reminders: reminders(data),
+          color: course?.color ?? null,
         });
         if (saved) {
           // Recurrence scopes act on a patch: unchanged series fields must not

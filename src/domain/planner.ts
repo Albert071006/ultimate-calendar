@@ -48,7 +48,7 @@ function participantFingerprint(state: StoredState, entity: 'block' | 'course', 
 }
 function timeConflictFacts(state: StoredState, details: PreviewDetail[]): TimeConflictFact[] {
   const changed = new Set(details.filter(d => d.after).map(d => d.id));
-  for (const d of details) if (d.entity === 'courseException') for (const value of [d.before, d.after]) if (value && 'courseId' in value) changed.add(value.courseId);
+  for (const d of details) if (d.entity === 'courseException') for (const value of [d.before, d.after]) if (value && 'originalDate' in value) changed.add(value.courseId);
   if (!details.some(d => ['block', 'course', 'courseException'].includes(d.entity))) return [];
   const dates: string[] = [];
   for (const b of state.entities.block) if ('start' in b) { dates.push(b.start.slice(0, 10)); if (b.end) dates.push(b.end.slice(0, 10)); }

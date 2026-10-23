@@ -57,6 +57,8 @@ describe('command calendar context and semantic references', () => {
     const context = buildCommandContext(snapshot(), { operationId: 'new-refs', text: '新建周期活动' }, at);
     const mutation = MutationSchema.parse({ type: 'createRecurringTask', values: { title: '值班', goalId: 'invented-goal' }, rule });
     expect(() => validateCommandReferences([mutation], context)).toThrow('未知关联');
+    const course = MutationSchema.parse({ type: 'create', entity: 'task', values: { title: '实验报告', courseId: 'invented-course' } });
+    expect(() => validateCommandReferences([course], context)).toThrow('未知关联');
   });
 
   it.each([

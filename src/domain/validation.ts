@@ -4,7 +4,7 @@ import { courseOccurs } from './courses';
 /** Existing provenance IDs may outlive explicit source deletion; all new source links must resolve. */
 export function validateRelationships(state: StoredState, strictSources: boolean, before?: StoredState): void {
   const has = (kind: Parameters<typeof findEntity>[1], id: string | null) => !id || !!findEntity(state, kind, id);
-  for (const t of records(state, 'task')) if (!has('goal', t.goalId) || !has('candidate', t.candidateId)) throw Error('任务关联的目标或候选已不存在');
+  for (const t of records(state, 'task')) if (!has('goal', t.goalId) || !has('candidate', t.candidateId) || !has('course', t.courseId)) throw Error('任务关联的目标、课程或候选已不存在');
   for (const b of records(state, 'block')) if (!has('task', b.taskId) || !has('candidate', b.candidateId)) throw Error('执行时段关联任务或候选已不存在；请先解除关联');
   const occurrenceKeys = new Set<string>();
   for (const b of records(state, 'block')) if (b.recurrence) {
