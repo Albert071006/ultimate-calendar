@@ -1,51 +1,33 @@
 import { useEffect, useState } from "react";
-import { Undo2 } from "lucide-react";
+import { Plus } from "lucide-react";
 import type { CourseImportResult, DesktopAPI, Source } from "../shared/contracts";
 import type { HostCapabilities, PlannerClient } from "../shared/client";
 import { resolveConnection } from "./client-context";
-import { buildCalendar } from "../domain/calendar";
 import { todayDate } from "./calendar-layout";
 import { usePlanner } from "./hooks/usePlanner";
 import { isPendingCandidate } from '../domain/candidate-eligibility';
 import { useCurrentTime } from './hooks/useCurrentTime';
 import { useAppUpdates } from './hooks/useAppUpdates';
 import { SoftwareUpdate, UpdateShortcut } from './components/SoftwareUpdate';
-import { Sidebar, type Page } from "./components/Sidebar";
-import {
-  Calendar,
-  type Selection,
-  type ScheduleDraft,
-} from "./components/Calendar";
-import { Tasks } from "./components/Tasks";
-import { Goals } from "./components/Goals";
+import { Nav, type Page } from "./components/shell/Nav";
+import { PageToolbar } from "./components/shell/PageToolbar";
+import { Assistant } from "./components/shell/Assistant";
+import { Calendar, type Selection, type ScheduleDraft } from "./components/Calendar";
 import { Inbox } from "./components/Inbox";
-import { Settings } from "./components/Settings";
-import { CapturePage } from "./components/CapturePage";
 import { LedgerPage } from "./components/LedgerPage";
-import { CommandBar } from "./components/CommandBar";
-import { CourseEditor } from "./components/CourseEditor";
-import {
-  DetailPanel,
-  EntityEditor,
-  type EditorTarget,
-  entityNames,
-} from "./components/DetailPanel";
+import { DetailPanel, EntityEditor, type EditorTarget, entityNames } from "./components/DetailPanel";
 import { ImportDialog, SourceViewer } from "./components/ImportDialog";
 import { Modal } from "./components/Modal";
 import { Preview } from "./components/Preview";
+import { Today } from "./pages/today/Today";
+import { MePage, type MeSection } from "./pages/me/MePage";
 import { taskEvents, taskArrangements, taskNoticeTiming, noticeTimePassed, nextTaskArrangement } from './task-schedule';
 import { effectiveActivityEnd } from '../domain/activity-duration';
+import './theme/tokens.css';
+import './theme/base.css';
 import './task-attention.css';
-const titles: Record<Page, string> = {
-  today: "今天",
-  calendar: "我的日历",
-  inbox: "待判断",
-  tasks: "任务",
-  goals: "目标",
-  settings: "设置",
-  capture: "QQ 采集",
-  ledger: "我的账单",
-};
+import './components/shell/shell.css';
+
 export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: HostCapabilities }) {
   const { client: api, host } = resolveConnection(props);
   const now = useCurrentTime();
@@ -56,15 +38,14 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
   const [captureReference, setCaptureReference] = useState<NonNullable<Source['captureRef']>>();
   const [ledgerCreateRequest, setLedgerCreateRequest] = useState(0);
   const [page, setPage] = useState<Page>("calendar"),
+    [meSection, setMeSection] = useState<MeSection>("goals"),
     [date, setDate] = useState(todayDate()),
     [selected, setSelected] = useState<Selection | null>(null),
     [editor, setEditor] = useState<EditorTarget | null>(null),
     [importing, setImporting] = useState(false),
-    [courseOpen, setCourseOpen] = useState(false),
-    [coursePreview, setCoursePreview] = useState<
-      CourseImportResult | undefined
-    >(),
+    [coursePreview, setCoursePreview] = useState<CourseImportResult | undefined>(),
     [sourceId, setSourceId] = useState<string | null>(null);
+  const openMe = (section: MeSection) => { setMeSection(section); setPage("me"); };
   useEffect(
     () =>
       host?.onNavigate((event) => {
@@ -73,22 +54,13 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
           return;
         }
         setSelected(event);
-        setPage(
-          event.entity === "candidate"
-            ? "inbox"
-            : event.entity === "task"
-              ? "tasks"
-              : event.entity === "goal"
-                ? "goals"
-                : event.entity === "preference" || event.entity === "feedback"
-                  ? "settings"
-                  : "calendar",
-        );
+        if (event.entity === "goal") openMe("goals");
+        else if (event.entity === "preference" || event.entity === "feedback") openMe("ai");
+        else setPage(event.entity === "candidate" ? "inbox" : event.entity === "task" ? "today" : "calendar");
       }),
     [host],
   );
-  const pending =
-    snapshot?.candidates.filter((c) => isPendingCandidate(c, now)).length ?? 0;
+  const pending = snapshot?.candidates.filter((c) => isPendingCandidate(c, now)).length ?? 0;
   const select = (s: Selection) => {
     if (s.entity === "source") {
       setSourceId(s.id);
@@ -113,7 +85,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
         end: effectiveActivityEnd(timing.start, timing.end).slice(0, 16), kind: 'event', location: timing.location,
         noticeTaskVersion: snapshot.tasks.find(task => task.id === taskId)?.version,
         timingNote: `${timing.end ? '已按原消息带入活动时间。' : '已按原消息带入开始时间；未提供结束时间，默认30分钟，可调整。'}${noticeTimePassed(timing, Date.now()) ? '原通知时间已过，请核对后保存。' : ''}`,
-      } : { date: page === 'tasks' ? todayDate() : date, time: '09:00', taskId });
+      } : { date: page === 'today' ? todayDate() : date, time: '09:00', taskId });
     }
   };
   const scheduleRecurringTask = (taskId: string) => {
@@ -130,310 +102,88 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
     if (task) void ui.mutate([{ type: 'removeTask', id: task.id, expectedVersion: task.version, includeLinkedBlocks: true }]);
   };
   const editSelected = () => {
-    if (
-      selected &&
-      ["task", "block", "goal", "course", "candidate"].includes(selected.entity)
-    )
-      setEditor({
-        ...selected,
-        entity: selected.entity as EditorTarget["entity"],
-      });
+    if (selected && ["task", "block", "goal", "course", "candidate"].includes(selected.entity))
+      setEditor({ ...selected, entity: selected.entity as EditorTarget["entity"] });
   };
-  const settings = () => {
+  const keySettings = () => {
     setImporting(false);
     setSourceId(null);
-    setCourseOpen(false);
-    setPage("settings");
+    openMe("ai");
   };
+  const taskActions = { select, editTask: (id: string) => setEditor({ entity: 'task', id }), schedule: scheduleTask, scheduleRecurring: scheduleRecurringTask, removeTask };
+  const detail = snapshot && (
+    <DetailPanel snapshot={snapshot} selection={selected} edit={editSelected} editTask={taskActions.editTask}
+      close={() => setSelected(null)} schedule={scheduleTask} scheduleRecurring={scheduleRecurringTask} removeTask={removeTask} ui={ui} />
+  );
   const source = snapshot?.sources.find((s) => s.id === sourceId);
   return (
-    <div className={`app-shell${host ? ' desktop-chrome' : ''}`}>
+    <div className={`app-shell a2${host ? ' desktop-chrome' : ''}`}>
       {host && <div className="window-drag-region" aria-hidden="true" />}
-      <Sidebar
-        page={page}
-        navigate={setPage}
-        pending={pending}
-        hostPages={!!host}
-        onImport={() => setImporting(true)}
-      />
-      <main className="workspace">
-        <header className="workspace-header">
-          <div className="workspace-heading">
-            <p className="eyebrow">
-              {new Intl.DateTimeFormat("zh-CN", {
-                timeZone: "Asia/Shanghai",
-                month: "long",
-                day: "numeric",
-                weekday: "long",
-              }).format(new Date())}
-            </p>
-            <div className="workspace-title-row">
-              <h1>{titles[page]}</h1>
-              {snapshot && (ui.busy || (!ui.error && ui.notice)) && (
-                <span
-                  className="workspace-notice"
-                  role="status"
-                  aria-live="polite"
-                  aria-atomic="true"
-                  title={ui.busy ? "正在处理…" : ui.notice}
-                >
-                  {ui.busy ? "正在处理…" : ui.notice}
-                </span>
-              )}
-            </div>
-          </div>
-          <div className="toolbar">
-            <UpdateShortcut updates={updates} open={() => setUpdateOpen(true)} />
-            <span className="local-status">
-              <span className="live-dot" />
-              {api ? "本地工作空间" : "桌面服务未连接"}
-            </span>
-            {snapshot && page !== "ledger" && (
-              <button
-                className="workspace-undo"
-                aria-label="撤销上次操作"
-                title="撤销上次操作"
-                disabled={ui.busy || !snapshot.journal.some((entry) => entry.undoable && !entry.undoneAt)}
-                onClick={() => void ui.undo()}
-              >
-                <Undo2 size={16} aria-hidden="true" />
-                撤销
-              </button>
-            )}
-            {snapshot && (
-              <button
-                className="primary"
-                onClick={() => page === "ledger" ? setLedgerCreateRequest(value => value + 1) : setEditor({ entity: "task" })}
-              >
-                {page === "ledger" ? "＋ 记一笔" : "＋ 新建任务"}
-              </button>
-            )}
-          </div>
-        </header>
+      <Nav page={page} navigate={setPage} pending={pending} />
+      {host && <div className="a2-nav-update"><UpdateShortcut updates={updates} open={() => setUpdateOpen(true)} /></div>}
+      <main className="a2-main">
         {!api ? (
-          <div className="service-state">
-            <h2>请从桌面应用打开终极日历</h2>
-            <p>此页面未连接本地数据服务。桌面应用会安全载入你的本机日历。</p>
-          </div>
+          <div className="a2-service"><h2>请从桌面应用打开终极日历</h2><p>此页面未连接本地数据服务。</p></div>
         ) : !snapshot ? (
-          <div className="service-state">
+          <div className="a2-service">
             <h2>正在载入本机数据…</h2>
             {ui.error && <p className="error">{ui.error}</p>}
-            <button onClick={() => void ui.refresh()}>重新载入</button>
+            <button className="ui-btn" onClick={() => void ui.refresh()}>重新载入</button>
           </div>
         ) : (
           <>
             {ui.error && (
-              <div className="workspace-status">
-                <span role="alert" className="error">
-                  {ui.error}
-                  <button onClick={() => ui.setError("")}>关闭提示</button>
-                  {(ui.errorCode === "NO_API_KEY" || ui.errorCode === "AUTH") && (
-                    <button onClick={settings}>配置密钥</button>
-                  )}
-                </span>
+              <div className="a2-error" role="alert">
+                <span className="error">{ui.error}</span>
+                {(ui.errorCode === "NO_API_KEY" || ui.errorCode === "AUTH") && ui.host && <button className="ui-btn sm" onClick={keySettings}>配置密钥</button>}
+                <button className="ui-btn sm ghost" onClick={() => ui.setError("")}>关闭提示</button>
               </div>
             )}
-            <div
-              className={`workspace-body ${page === "settings" || page === "capture" || page === "ledger" ? "no-detail" : ""}`}
-            >
-              <div className="main-content">
-                {page === "ledger" && <LedgerPage api={api} host={host} createRequest={ledgerCreateRequest} />}
-                {page === "capture" && <CapturePage ui={ui} initialReference={captureReference} />}
-                {page === "calendar" && (
-                  <Calendar
-                    snapshot={snapshot}
-                    date={date}
-                    setDate={setDate}
-                    select={select}
-                    schedule={schedule}
-                    courses={() => {
-                      setCoursePreview(undefined);
-                      setCourseOpen(true);
-                    }}
-                  />
-                )}
-                {page === "inbox" && (
-                  <Inbox
-                    snapshot={snapshot}
-                    ui={ui}
-                    select={select}
-                    edit={(id) => setEditor({ entity: "candidate", id })}
-                    importMessage={() => setImporting(true)}
-                    openSource={setSourceId}
-                  />
-                )}
-                {page === "tasks" && (
-                  <Tasks
-                    snapshot={snapshot}
-                    ui={ui}
-                    select={select}
-                    create={() => setEditor({ entity: "task" })}
-                    editTask={(id) => setEditor({ entity: 'task', id })}
-                    schedule={scheduleTask}
-                    scheduleRecurring={scheduleRecurringTask}
-                    removeTask={removeTask}
-                  />
-                )}
-                {page === "goals" && (
-                  <Goals
-                    snapshot={snapshot}
-                    select={select}
-                    create={() => setEditor({ entity: "goal" })}
-                  />
-                )}
-                {page === "settings" && (
-                  <Settings
-                    snapshot={snapshot}
-                    ui={ui}
-                    courses={() => setCourseOpen(true)}
-                    updates={updates}
-                  />
-                )}
-                {page === "today" && (
-                  <div className="page-scroll today-page">
-                    <div className="today-intro">
-                      <span className="eyebrow">把注意力交给重要的事</span>
-                      <h2>今天，从一件事开始。</h2>
-                      <p>
-                        {
-                          snapshot.tasks.filter(
-                            (t) =>
-                              t.status === "open" &&
-                              t.deadline &&
-                              t.deadline.date <= todayDate(),
-                          ).length
-                        }{" "}
-                        项临近或已到截止 · {pending} 项等待判断
-                      </p>
+            <div className="a2-page-slot">
+              {page === "today" && (
+                <Today snapshot={snapshot} ui={ui} pendingCount={pending} create={() => setEditor({ entity: "task" })} openInbox={() => setPage("inbox")}
+                  openCandidate={(id) => { setSelected({ entity: "candidate", id }); setPage("inbox"); }}
+                  openRecord={(target) => setEditor(target)} goCalendar={() => setPage("calendar")} {...taskActions}
+                  detail={selected ? detail : undefined} />
+              )}
+              {page === "calendar" && (
+                <div className="a2-page">
+                  <PageToolbar title="日历" ui={ui} />
+                  <div className="a2-legacy-body">
+                    <div className="main-content">
+                      <Calendar snapshot={snapshot} date={date} setDate={setDate} select={select} schedule={schedule}
+                        courses={() => { setCoursePreview(undefined); openMe("courses"); }} />
                     </div>
-                    <div className="today-stats">
-                      <button onClick={() => setPage("tasks")}>
-                        <strong>
-                          {
-                            snapshot.tasks.filter((t) => t.status === "open")
-                              .length
-                          }
-                        </strong>
-                        待完成任务
-                      </button>
-                      <button onClick={() => setPage("inbox")}>
-                        <strong>{pending}</strong>等待判断
-                      </button>
-                      <button onClick={() => setPage("goals")}>
-                        <strong>
-                          {
-                            snapshot.goals.filter((g) => g.status === "active")
-                              .length
-                          }
-                        </strong>
-                        进行中目标
-                      </button>
-                    </div>
-                    <section>
-                      <h3>今天的时间线</h3>
-                      {buildCalendar(snapshot, todayDate(), todayDate(), false)
-                        .length ? (
-                        buildCalendar(
-                          snapshot,
-                          todayDate(),
-                          todayDate(),
-                          false,
-                        ).map((item) => (
-                          <button
-                            className={`timeline-row ${item.category}`}
-                            onClick={() =>
-                              select({
-                                entity: item.refKind,
-                                id: item.refId,
-                                occurrenceDate: todayDate(),
-                              })
-                            }
-                            key={item.id}
-                          >
-                            <time>{item.start?.slice(11, 16) ?? "仅日期"}</time>
-                            <strong>{item.title}</strong>
-                            <small>
-                              {item.category === "deadline"
-                                ? "截止标记"
-                                : item.location}
-                            </small>
-                          </button>
-                        ))
-                      ) : (
-                        <div className="empty-state">
-                          <h3>今天尚未安排时段</h3>
-                          <button
-                            onClick={() =>
-                              schedule({ date: todayDate(), time: "09:00" })
-                            }
-                          >
-                            安排一段专注时间
-                          </button>
-                        </div>
-                      )}
-                    </section>
-                    <section>
-                      <h3>需要行动的截止</h3>
-                      {snapshot.tasks
-                        .filter((t) => t.status === "open" && t.deadline)
-                        .sort((a, b) =>
-                          a.deadline!.date.localeCompare(b.deadline!.date),
-                        )
-                        .slice(0, 12)
-                        .map((t) => (
-                          <button
-                            className="timeline-row"
-                            key={t.id}
-                            onClick={() => select({ entity: "task", id: t.id })}
-                          >
-                            <time>{t.deadline!.date}</time>
-                            <strong>{t.title}</strong>
-                            <small>
-                              {t.deadline!.time ?? "具体时刻未提供"}
-                            </small>
-                          </button>
-                        ))}
-                    </section>
-                    {!snapshot.sources.length &&
-                      !snapshot.tasks.length &&
-                      !snapshot.courses.length && (
-                        <section className="onboarding">
-                          <h3>让你的第一周清晰起来</h3>
-                          <div className="toolbar wrap">
-                            <button onClick={() => setImporting(true)}>
-                              1 导入消息原文
-                            </button>
-                            <button onClick={() => setCourseOpen(true)}>
-                              2 添加课表
-                            </button>
-                            <button onClick={settings}>3 配置 DeepSeek</button>
-                          </div>
-                        </section>
-                      )}
+                    {detail}
                   </div>
-                )}
-              </div>
-              {page !== "settings" && page !== "capture" && page !== "ledger" && (
-                <DetailPanel
-                  snapshot={snapshot}
-                  selection={selected}
-                  edit={editSelected}
-                  editTask={(id) => setEditor({ entity: 'task', id })}
-                  close={() => setSelected(null)}
-                  schedule={scheduleTask}
-                  scheduleRecurring={scheduleRecurringTask}
-                  removeTask={removeTask}
-                  ui={ui}
-                />
+                </div>
+              )}
+              {page === "inbox" && (
+                <div className="a2-page">
+                  <PageToolbar title="待判断" ui={ui} />
+                  <div className="a2-legacy-body">
+                    <div className="main-content">
+                      <Inbox snapshot={snapshot} ui={ui} select={select} edit={(id) => setEditor({ entity: "candidate", id })}
+                        importMessage={() => setImporting(true)} openSource={setSourceId} />
+                    </div>
+                    {detail}
+                  </div>
+                </div>
+              )}
+              {page === "ledger" && (
+                <div className="a2-page">
+                  <PageToolbar title="账单" ui={ui} undo={false}>
+                    <button className="ui-btn" onClick={() => setLedgerCreateRequest(value => value + 1)}><Plus aria-hidden="true" />记一笔</button>
+                  </PageToolbar>
+                  <div className="a2-legacy-scroll"><LedgerPage api={api} host={host} createRequest={ledgerCreateRequest} /></div>
+                </div>
+              )}
+              {page === "me" && (
+                <MePage snapshot={snapshot} ui={ui} section={meSection} setSection={setMeSection} updates={updates} select={select}
+                  edit={setEditor} openSource={setSourceId} coursePreview={coursePreview} captureReference={captureReference} />
               )}
             </div>
-            <CommandBar
-              ui={ui}
-              selected={selected}
-              date={date}
-              domain={page === "ledger" ? "ledger" : undefined}
-            />
+            <Assistant ui={ui} selected={selected} date={date} domain={page === "ledger" ? "ledger" : undefined} />
           </>
         )}
       </main>
@@ -442,27 +192,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
         <>
           {importing && (
             <Modal title="导入消息" onClose={() => setImporting(false)}>
-              <ImportDialog
-                ui={ui}
-                onClose={() => setImporting(false)}
-                settings={settings}
-              />
-            </Modal>
-          )}
-          {courseOpen && (
-            <Modal
-              wide
-              title="课程与导入校对"
-              onClose={() => setCourseOpen(false)}
-            >
-              <CourseEditor
-                key={coursePreview?.sourceId ?? "courses"}
-                snapshot={snapshot}
-                ui={ui}
-                edit={setEditor}
-                initial={coursePreview}
-                openSource={setSourceId}
-              />
+              <ImportDialog ui={ui} onClose={() => setImporting(false)} settings={keySettings} />
             </Modal>
           )}
           {editor && (
@@ -470,39 +200,24 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
               title={editor.recurring ? '重复安排' : `${editor.id ? "编辑" : "新建"}${entityNames[editor.entity]}`}
               onClose={() => setEditor(null)}
             >
-              <EntityEditor
-                key={`${editor.entity}:${editor.id ?? "new"}`}
-                target={editor}
-                snapshot={snapshot}
-                ui={ui}
-                onClose={() => setEditor(null)}
-              />
+              <EntityEditor key={`${editor.entity}:${editor.id ?? "new"}`} target={editor} snapshot={snapshot} ui={ui} onClose={() => setEditor(null)} />
             </Modal>
           )}
           {source && (
             <Modal wide title="原始来源" onClose={() => setSourceId(null)}>
               <SourceViewer
                 source={source}
-                onCapture={reference => { setCaptureReference(reference); setSourceId(null); setPage('capture'); }}
+                onCapture={reference => { setCaptureReference(reference); setSourceId(null); openMe('capture'); }}
                 ui={ui}
                 onClose={() => setSourceId(null)}
-                settings={settings}
-                courses={(result) => {
-                  setSourceId(null);
-                  setCoursePreview(result);
-                  setCourseOpen(true);
-                }}
+                settings={keySettings}
+                courses={(result) => { setSourceId(null); setCoursePreview(result); openMe("courses"); }}
               />
             </Modal>
           )}
           {ui.preview && (
             <Modal wide title="更改预览" onClose={ui.cancelPreview}>
-              <Preview
-                value={ui.preview}
-                confirm={() => void ui.confirm()}
-                cancel={ui.cancelPreview}
-                busy={ui.busy}
-              />
+              <Preview value={ui.preview} confirm={() => void ui.confirm()} cancel={ui.cancelPreview} busy={ui.busy} />
             </Modal>
           )}
         </>

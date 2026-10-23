@@ -201,8 +201,8 @@ async function start() {
   };
   Menu.setApplicationMenu(null);
   const icon = join(__dirname, '../assets/app-icon.png');
-  window = new BrowserWindow({ width: 1440, height: 940, minWidth: 980, minHeight: 680, show: false, title: '终极日历', backgroundColor: '#fafaf6', icon,
-    titleBarStyle: 'hidden', titleBarOverlay: { color: '#fafaf6', symbolColor: '#243247', height: 32 },
+  window = new BrowserWindow({ width: 1440, height: 940, minWidth: 980, minHeight: 680, show: false, title: '终极日历', backgroundColor: '#f5f0e6', icon,
+    titleBarStyle: 'hidden', titleBarOverlay: { color: '#f5f0e6', symbolColor: '#1f1c18', height: 32 },
     webPreferences: { preload: join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, spellcheck: false, devTools: !app.isPackaged } });
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);

@@ -84,7 +84,8 @@ describe('software updates', () => {
 
   it('keeps an in-progress edit and exposes an update entry without automatically opening another dialog', async () => {
     const f = fixture(); render(<App api={f.api} />);
-    fireEvent.click(await screen.findByRole('button', { name: '＋ 新建任务' }));
+    fireEvent.click(within(await screen.findByRole('navigation', { name: '主导航' })).getByRole('button', { name: '今天' }));
+    fireEvent.click(within(document.querySelector<HTMLElement>('.a2-toolbar')!).getByRole('button', { name: '新任务' }));
     const editor = screen.getByRole('dialog', { name: '新建任务' });
     const field = within(editor).getByLabelText('名称') as HTMLInputElement;
     fireEvent.change(field, { target: { value: '未保存的安排草稿' } });

@@ -54,10 +54,18 @@ function field(dialog: HTMLElement, label: string) {
   return within(dialog).getByLabelText(label) as HTMLInputElement | HTMLSelectElement;
 }
 
+/** Rows show one primary action; other actions sit in the row's "⋯" menu. */
+function rowAction(row: HTMLElement, name: string | RegExp) {
+  const visible = within(row).queryByRole('button', { name });
+  if (visible) return fireEvent.click(visible);
+  fireEvent.click(within(row).getByRole('button', { name: /的更多操作$/ }));
+  fireEvent.click(within(row).getByRole('menuitem', { name }));
+}
+
 async function taskRow() {
-  fireEvent.click(await screen.findByRole('button', { name: '任务' }));
+  fireEvent.click(within(await screen.findByRole('navigation', { name: '主导航' })).getByRole('button', { name: '今天' }));
   fireEvent.click(screen.getByRole('button', { name: '全部' }));
-  const task = await screen.findByRole('button', { name: new RegExp(`${title}.*未设截止`) });
+  const task = await screen.findByRole('button', { name: title });
   return task.closest('article')!;
 }
 
@@ -72,7 +80,7 @@ describe('scheduling an accepted notice whose extracted activity time was lost',
     const { api, mutate, snapshot } = fixture();
     render(<App api={api} />);
     const row = await taskRow();
-    fireEvent.click(within(row).getByRole('button', { name: '安排时间' }));
+    rowAction(row, '安排');
     const dialog = await screen.findByRole('dialog', { name: '新建时段' });
     expect(field(dialog, '开始').value).toBe('2026-10-22T21:30');
     expect(field(dialog, '结束（活动留空默认30分钟）').value).toBe('2026-10-22T22:00');
@@ -116,7 +124,7 @@ describe('scheduling an accepted notice whose extracted activity time was lost',
     snapshot.candidates[0]!.eventStart = '2026-11-05T20:35:00+08:00';
     snapshot.candidates[0]!.eventEnd = '2026-11-05T21:25:00+08:00';
     render(<App api={api} />);
-    fireEvent.click(within(await taskRow()).getByRole('button', { name: '安排时间' }));
+    rowAction(await taskRow(), '安排');
     const dialog = await screen.findByRole('dialog', { name: '新建时段' });
     expect(field(dialog, '开始').value).toBe('2026-11-05T20:35');
     expect(field(dialog, '结束（活动留空默认30分钟）').value).toBe('2026-11-05T21:25');
@@ -129,7 +137,7 @@ describe('scheduling an accepted notice whose extracted activity time was lost',
     if (reason === 'unknown evidence') snapshot.candidates[0]!.temporalEvidence[0]!.basis = 'unknown';
     else snapshot.sources[0]!.sentAt = null;
     render(<App api={api} />);
-    fireEvent.click(within(await taskRow()).getByRole('button', { name: '安排时间' }));
+    rowAction(await taskRow(), '安排');
     const dialog = await screen.findByRole('dialog', { name: '新建时段' });
     expect(field(dialog, '类型').value).toBe('work');
     expect(field(dialog, '开始').value).not.toBe('2026-10-22T21:30');
@@ -148,11 +156,11 @@ describe('removing an unwanted task from each visible entry point', () => {
       const row = await taskRow();
       if (entry === 'row') container = row;
       else {
-        fireEvent.click(within(row).getByRole('button', { name: new RegExp(`${title}.*未设截止`) }));
+        fireEvent.click(within(row).getByRole('button', { name: title }));
         container = screen.getByRole('heading', { name: '任务', level: 3 }).closest('aside')!;
       }
     }
-    fireEvent.click(within(container).getByRole('button', { name: `移除 ${title}` }));
+    rowAction(container, `移除 ${title}`);
     await screen.findByRole('button', { name: '确认执行' });
     expect(mutate).toHaveBeenCalledTimes(1);
     const request = mutate.mock.calls[0]![0];

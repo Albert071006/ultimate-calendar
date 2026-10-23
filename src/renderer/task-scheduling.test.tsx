@@ -51,10 +51,19 @@ function field(dialog: HTMLElement, label: string | RegExp) {
   return within(dialog).getByLabelText(label) as HTMLInputElement | HTMLSelectElement;
 }
 
+/** Today's to-do list replaced the task page; each row shows one primary action and keeps the rest in its "⋯" menu. */
 async function taskRow() {
-  fireEvent.click(await screen.findByRole('button', { name: '任务' }));
-  const title = await screen.findByRole('button', { name: /参加学院讲座.*未设截止/ });
-  return title.closest('article')!;
+  fireEvent.click(within(await screen.findByRole('navigation', { name: '主导航' })).getByRole('button', { name: '今天' }));
+  return rowNow();
+}
+async function rowNow() {
+  return (await screen.findByRole('button', { name: '参加学院讲座' })).closest('article')!;
+}
+function rowAction(row: HTMLElement, name: string | RegExp) {
+  const visible = within(row).queryByRole('button', { name });
+  if (visible) return fireEvent.click(visible);
+  fireEvent.click(within(row).getByRole('button', { name: /的更多操作$/ }));
+  fireEvent.click(within(row).getByRole('menuitem', { name }));
 }
 
 describe('scheduling accepted tasks with existing activity times', () => {
@@ -63,7 +72,7 @@ describe('scheduling accepted tasks with existing activity times', () => {
     render(<App api={api} />);
     const row = await taskRow();
     expect(within(row).getByText(/已加入日历/)).toBeTruthy();
-    fireEvent.click(within(row).getByRole('button', { name: '查看安排' }));
+    rowAction(row, '查看安排');
     const dialog = await screen.findByRole('dialog', { name: '编辑时段' });
     expect(field(dialog, '开始').value).toBe('2026-11-06T15:35');
     expect(field(dialog, '结束（活动留空默认30分钟）').value).toBe('2026-11-06T17:10');
@@ -110,7 +119,7 @@ describe('scheduling accepted tasks with existing activity times', () => {
     const { api, mutate, snapshot } = fixture();
     render(<App api={api} />);
     const row = await taskRow();
-    fireEvent.click(within(row).getByRole('button', { name: /参加学院讲座.*未设截止/ }));
+    fireEvent.click(within(row).getByRole('button', { name: '参加学院讲座' }));
     const details = screen.getByRole('heading', { name: '任务', level: 3 }).closest('aside')!;
     fireEvent.click(within(details).getByRole('button', { name: '调整时间' }));
     const dialog = await screen.findByRole('dialog', { name: '编辑时段' });
@@ -126,10 +135,9 @@ describe('scheduling accepted tasks with existing activity times', () => {
     const { api, mutate, snapshot } = fixture({ scheduled: false });
     snapshot.tasks[0]!.deadline = { date: '2026-11-12', time: '23:59' };
     render(<App api={api} />);
-    fireEvent.click(await screen.findByRole('button', { name: '任务' }));
-    const row = (await screen.findByRole('button', { name: /参加学院讲座.*截止/ })).closest('article')!;
+    const row = await taskRow();
     expect(within(row).queryByText(/已加入日历/)).toBeNull();
-    fireEvent.click(within(row).getByRole('button', { name: '安排时间' }));
+    rowAction(row, '安排');
     const dialog = await screen.findByRole('dialog', { name: '新建时段' });
     expect(field(dialog, '类型').value).toBe('work');
     expect(field(dialog, '关联任务').value).toBe('task-notice');
@@ -147,11 +155,11 @@ describe('scheduling accepted tasks with existing activity times', () => {
     }));
     render(<App api={api} />);
     const row = await taskRow();
-    fireEvent.click(within(row).getByRole('button', { name: '查看安排' }));
+    rowAction(row, '查看安排');
     let dialog = await screen.findByRole('dialog', { name: '编辑时段' });
     expect(field(dialog, '开始').value).toBe('2026-11-06T15:35');
     fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
-    fireEvent.click(within(row).getByRole('button', { name: /参加学院讲座.*未设截止/ }));
+    fireEvent.click(within(row).getByRole('button', { name: '参加学院讲座' }));
     const details = screen.getByRole('heading', { name: '任务', level: 3 }).closest('aside')!;
     const choices = within(details).getAllByRole('button', { name: '调整时间' });
     expect(choices).toHaveLength(2);
@@ -173,7 +181,7 @@ describe('scheduling accepted tasks with existing activity times', () => {
     render(<App api={api} />);
     const container = entry === 'row' ? await taskRow() : (await screen.findByRole('heading', { name: '待办任务', level: 3 })).closest('aside')!;
     expect(within(container).queryByRole('button', { name: /^安排(时间)?$/ })).toBeNull();
-    fireEvent.click(within(container).getByRole('button', { name: '查看安排' }));
+    rowAction(container, '查看安排');
     const dialog = await screen.findByRole('dialog', { name: '编辑时段' });
     expect(field(dialog, '类型').value).toBe('work');
     expect(field(dialog, '开始').value).toBe('2026-11-06T15:35');
@@ -192,8 +200,7 @@ describe('scheduling accepted tasks with existing activity times', () => {
     snapshot.blocks[0]!.end = '2026-10-22T20:00:00+08:00';
     const originalBlock = structuredClone(snapshot.blocks[0]);
     render(<App api={api} />);
-    fireEvent.click(await screen.findByRole('button', { name: '任务' }));
-    let row = (await screen.findByRole('button', { name: /参加学院讲座.*截止/ })).closest('article')!;
+    let row = await taskRow();
     expect(row.dataset.attention).toBe('overdue');
     fireEvent.click(within(row).getByRole('button', { name: '修改 DDL' }));
     let dialog = await screen.findByRole('dialog', { name: '编辑任务' });
@@ -204,7 +211,7 @@ describe('scheduling accepted tasks with existing activity times', () => {
     expect(mutate.mock.calls[0]![0].mutations).toEqual([expect.objectContaining({ type: 'update', entity: 'task', id: 'task-notice', values: expect.objectContaining({ deadline: { date: '2026-10-30', time: '23:59' } }) })]);
     expect(snapshot.blocks[0]).toEqual(originalBlock);
 
-    row = (await screen.findByRole('button', { name: /参加学院讲座.*截止/ })).closest('article')!;
+    row = await rowNow();
     expect(row.dataset.attention).toBe('ended');
     fireEvent.click(within(row).getByRole('button', { name: /重新安排|调整时间/ }));
     dialog = await screen.findByRole('dialog', { name: '编辑时段' });
@@ -218,7 +225,7 @@ describe('scheduling accepted tasks with existing activity times', () => {
     expect(snapshot.blocks).toHaveLength(1);
     expect(snapshot.blocks[0]!.start).toBe('2026-10-25T19:00:00+08:00');
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect((await screen.findByRole('button', { name: /参加学院讲座.*截止/ })).closest('article')!.dataset.attention).toBeUndefined();
+    expect((await rowNow()).dataset.attention).toBeUndefined();
   });
 
   it('opens the specific ended arrangement from its warning while ordinary viewing opens the next one', async () => {
@@ -226,7 +233,7 @@ describe('scheduling accepted tasks with existing activity times', () => {
     snapshot.blocks.push(BlockSchema.parse({ ...metadata, id: 'past-work', title: '讲座准备', taskId: 'task-notice', kind: 'work', start: '2026-10-23T19:00:00+08:00', end: '2026-10-23T20:00:00+08:00' }));
     render(<App api={api} />);
     const row = await taskRow();
-    fireEvent.click(within(row).getByRole('button', { name: '查看安排' }));
+    rowAction(row, '查看安排');
     let dialog = await screen.findByRole('dialog', { name: '编辑时段' });
     expect(field(dialog, '开始').value).toBe('2026-11-06T15:35');
     fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));

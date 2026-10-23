@@ -32,7 +32,7 @@ function setup(weekday = 4) {
 }
 async function editor(scope: string, occurrence: string) {
   fireEvent.click(await screen.findByRole('button', { name: '课表' }));
-  const manager = within(screen.getByRole('dialog', { name: '课程与导入校对' }));
+  const manager = within(screen.getByRole('region', { name: '课程表' }));
   fireEvent.click(manager.getByRole('button', { name: /合成验收样例：单周课程/ }));
   const form = within(screen.getByRole('dialog', { name: '编辑课程' }));
   fireEvent.change(form.getByLabelText('范围'), { target: { value: scope } });
@@ -79,7 +79,7 @@ it('reschedules Monday to Tuesday, selects and edits the moved occurrence, and u
   const first = planner.snapshot().courseExceptions[0]!;
   expect(first).toMatchObject({ originalDate: '2026-10-19', replacement: { title: '合成调课', location: '合成B202', start: '2026-10-20T10:00:00+08:00' } });
   expect(buildCalendar(planner.snapshot(), '2026-11-02', '2026-11-02', false)[0]?.start).toBe('2026-11-02T08:00:00+08:00');
-  fireEvent.click(within(screen.getByRole('dialog', { name: '课程与导入校对' })).getByRole('button', { name: '关闭' }));
+  fireEvent.click(within(screen.getByRole('navigation', { name: '主导航' })).getByRole('button', { name: '日历' }));
   fireEvent.click(screen.getByRole('button', { name: /合成调课.*10:00/ }));
   fireEvent.click(screen.getByRole('button', { name: '编辑课程' }));
   const moved = within(screen.getByRole('dialog', { name: '编辑课程' }));

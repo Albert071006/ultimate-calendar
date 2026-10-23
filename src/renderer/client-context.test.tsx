@@ -2,7 +2,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { SnapshotSchema, type DesktopAPI } from '../shared/contracts';
 import { PLANNER_CLIENT_METHODS, type PlannerClient } from '../shared/client';
 import { App } from './App';
@@ -28,16 +28,19 @@ it('renders the planner from a data client alone and hides host-only pages', asy
   const api = desktop();
   render(<App client={clientOnly(api)} />);
   expect(await screen.findByRole('button', { name: '待判断' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '我的' }));
+  expect(screen.getByRole('button', { name: '课程表' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'QQ 采集' })).toBeNull();
-  expect(screen.queryByRole('button', { name: '设置' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'AI 与费用' })).toBeNull();
   expect(api.onNavigate).not.toHaveBeenCalled();
 });
 
 it('shows host pages and listens for tray navigation when the host is present', async () => {
   const api = desktop();
   render(<App api={api} />);
-  expect(await screen.findByRole('button', { name: 'QQ 采集' })).toBeTruthy();
-  expect(screen.getByRole('button', { name: '设置' })).toBeTruthy();
+  fireEvent.click(await screen.findByRole('button', { name: '我的' }));
+  expect(screen.getByRole('button', { name: 'QQ 采集' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'AI 与费用' })).toBeTruthy();
   expect(api.onNavigate).toHaveBeenCalled();
 });
 

@@ -36,15 +36,17 @@ function fixture(journal: JournalSummary[] = []) {
 it('puts saved feedback beside the page title without adding a separate status row', async () => {
   const { api } = fixture();
   const { container } = render(<App api={api} />);
-  fireEvent.click(await screen.findByRole('button', { name: '＋ 新建任务' }));
+  fireEvent.click(within(await screen.findByRole('navigation', { name: '主导航' })).getByRole('button', { name: '今天' }));
+  fireEvent.click(within(await waitFor(() => container.querySelector<HTMLElement>('.a2-toolbar')!)).getByRole('button', { name: '新任务' }));
   const form = within(screen.getByRole('dialog', { name: '新建任务' }));
   fireEvent.change(form.getByLabelText('名称'), { target: { value: '合成反馈测试' } });
   fireEvent.click(form.getByRole('button', { name: '保存' }));
   const notice = await screen.findByRole('status');
   await waitFor(() => expect(notice.textContent).toBe('已保存，可撤销'));
-  const title = screen.getByRole('heading', { level: 1, name: '我的日历' });
+  const header = container.querySelector<HTMLElement>('.a2-toolbar')!;
+  const title = within(header).getByRole('heading', { level: 1 });
   expect(notice.parentElement).toBe(title.parentElement);
-  expect(within(screen.getByRole('banner')).getByRole('status')).toBe(notice);
+  expect(within(header).getByRole('status')).toBe(notice);
   expect(notice.getAttribute('title')).toBe('已保存，可撤销');
   expect(container.querySelector('.workspace-status')).toBeNull();
   expect((screen.getByRole('button', { name: '撤销上次操作' }) as HTMLButtonElement).disabled).toBe(false);
@@ -59,10 +61,10 @@ it.each([
   const { api } = fixture([...journal]);
   const { container } = render(<App api={api} />);
   const button = await screen.findByRole('button', { name: '撤销上次操作' });
-  expect(button.textContent).toBe('撤销');
+  expect(button.getAttribute('title')).toBe('撤销上次操作');
   expect(screen.getAllByRole('button', { name: /撤销/ })).toHaveLength(1);
-  expect(within(screen.getByRole('banner')).getByRole('button', { name: '撤销上次操作' })).toBe(button);
-  expect(within(screen.getByRole('region', { name: '智能助手' })).queryByRole('button', { name: /撤销/ })).toBeNull();
+  expect(within(container.querySelector<HTMLElement>('.a2-toolbar')!).getByRole('button', { name: '撤销上次操作' })).toBe(button);
+  expect(within(screen.getByRole('region', { name: '生活助手' })).queryByRole('button', { name: /撤销/ })).toBeNull();
   expect((button as HTMLButtonElement).disabled).toBe(disabled);
   expect(container.querySelector('.workspace-status')).toBeNull();
   if (disabled) {
@@ -81,7 +83,7 @@ it('invokes undo from the header, disables repeat clicks while busy, and refresh
   expect(api.undo).toHaveBeenCalledTimes(1);
   expect(api.undo).toHaveBeenCalledWith(undefined);
   expect((button as HTMLButtonElement).disabled).toBe(true);
-  expect(within(screen.getByRole('banner')).getByRole('status').textContent).toBe('正在处理…');
+  expect(within(container.querySelector<HTMLElement>('.a2-toolbar')!).getByRole('status').textContent).toBe('正在处理…');
   expect(container.querySelector('.workspace-status')).toBeNull();
   fireEvent.click(button);
   expect(api.undo).toHaveBeenCalledTimes(1);

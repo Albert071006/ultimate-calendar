@@ -79,7 +79,7 @@ describe("desktop workspace interaction", () => {
       await screen.findByRole('button', { name: '课表' });
       expect((ui.container.querySelector('.time-scroll') as HTMLDivElement).scrollTop).toBe(minutePosition(920) - 200);
       (ui.container.querySelector('.time-scroll') as HTMLDivElement).scrollTop = 140;
-      fireEvent.click(screen.getByRole('button', { name: /^目标$/ }));
+      fireEvent.click(screen.getByRole('button', { name: /^我的$/ }));
       expect(ui.container.querySelector('.time-scroll')).toBeNull();
       clock.mockReturnValue(Date.parse(`${date}T16:35:00+08:00`));
       fireEvent.click(screen.getByRole('button', { name: /^日历$/ }));
@@ -120,7 +120,7 @@ describe("desktop workspace interaction", () => {
     );
     render(<App api={api} />);
     fireEvent.click(await screen.findByRole("button", { name: "课表" }));
-    const manager = screen.getByRole("dialog", { name: "课程与导入校对" });
+    const manager = screen.getByRole("region", { name: "课程表" });
     const create = within(manager).getByRole("button", { name: "＋ 新建课程" });
     create.focus();
     fireEvent.click(create);
@@ -129,7 +129,7 @@ describe("desktop workspace interaction", () => {
     expect(child.contains(document.activeElement)).toBe(true);
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "新建课程" })).toBeNull();
-    expect(screen.getByRole("dialog", { name: "课程与导入校对" })).toBe(
+    expect(screen.getByRole("region", { name: "课程表" })).toBe(
       manager,
     );
     expect(document.activeElement).toBe(create);
@@ -139,7 +139,7 @@ describe("desktop workspace interaction", () => {
     );
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "编辑课程" })).toBeNull();
-    expect(screen.getByRole("dialog", { name: "课程与导入校对" })).toBe(
+    expect(screen.getByRole("region", { name: "课程表" })).toBe(
       manager,
     );
   });
@@ -176,7 +176,7 @@ describe("desktop workspace interaction", () => {
     fireEvent.click(screen.getByRole("button", { name: "配置 DeepSeek 密钥" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(
-      screen.getByRole("heading", { name: "设置", level: 1 }),
+      screen.getByRole("heading", { name: "我的", level: 1 }),
     ).toBeTruthy();
     expect(screen.getByLabelText("API Key")).toBeTruthy();
   });
@@ -405,7 +405,7 @@ describe("desktop workspace interaction", () => {
 
     fireEvent.click(screen.getByRole('button', { name: '收起对话' }));
     fireEvent.click(screen.getByRole('button', { name: '账单' }));
-    await screen.findByRole('heading', { level: 1, name: '我的账单' });
+    await screen.findByRole('heading', { level: 1, name: '账单' });
     fireEvent.change(screen.getByLabelText('自然语言指令'), { target: { value: '记账' } });
     fireEvent.click(screen.getByRole('button', { name: '发送指令' }));
     await screen.findByText('已收到这笔 VPN 消费');
@@ -456,7 +456,8 @@ describe("desktop workspace interaction", () => {
   it("submits a date-only task with independently editable reminder settings", async () => {
     const { api, mutate } = fixture();
     render(<App api={api} />);
-    fireEvent.click(await screen.findByRole("button", { name: "＋ 新建任务" }));
+    fireEvent.click(within(await screen.findByRole("navigation", { name: "主导航" })).getByRole("button", { name: "今天" }));
+    fireEvent.click(within(document.querySelector<HTMLElement>(".a2-toolbar")!).getByRole("button", { name: "新任务" }));
     const dialog = within(screen.getByRole("dialog", { name: "新建任务" }));
     fireEvent.change(dialog.getByLabelText("名称"), {
       target: { value: "只给日期的报告" },

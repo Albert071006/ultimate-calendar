@@ -1,0 +1,16 @@
+.a2-task-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 10px 6px 10px 4px; border-bottom: 1px solid var(--line); }
+.a2-task-row:last-child { border-bottom: 0; }
+.a2-task-row input[type="checkbox"] { appearance: none; width: 18px; height: 18px; margin: 0; border: 1.5px solid var(--ink-2); border-radius: 2px; background: transparent; cursor: pointer; display: grid; place-items: center; }
+.a2-task-row input[type="checkbox"]:checked { background: var(--ink); border-color: var(--ink); }
+.a2-task-row input[type="checkbox"]:checked::after { content: ""; width: 8px; height: 4px; border-left: 1.8px solid var(--surface); border-bottom: 1.8px solid var(--surface); transform: rotate(-45deg) translate(1px, -1px); }
+.a2-task-row input[type="checkbox"]:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.a2-task-row.warn input[type="checkbox"] { border-color: var(--warn-fill); background: color-mix(in srgb, var(--warn-fill) 15%, transparent); }
+.a2-task-main { min-width: 0; }
+.a2-task-title { display: block; max-width: 100%; padding: 0; font-family: var(--font-display); font-weight: 600; font-size: 14.5px; color: var(--ink); background: none; border: 0; cursor: pointer; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.a2-task-title:hover { text-decoration: underline; text-underline-offset: 3px; }
+.a2-task-row.done .a2-task-title { color: var(--ink-3); text-decoration: line-through; }
+.a2-task-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 2px; font-size: 12px; color: var(--ink-3); }
+.a2-task-meta .warn { color: var(--warn); }
+.a2-task-belonging { display: inline-flex; align-items: center; gap: 5px; }
+.a2-more { position: relative; }
+.a2-more .ui-menu { right: 0; top: calc(100% + 4px); }

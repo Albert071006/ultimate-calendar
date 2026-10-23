@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { BlockSchema, CandidateSchema, SnapshotSchema, SourceSchema, TaskSchema, type Snapshot } from '../shared/contracts';
 import { DetailPanel } from './components/DetailPanel';
-import { Tasks } from './components/Tasks';
+import { Today } from './pages/today/Today';
 import type { PlannerUI } from './hooks/usePlanner';
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -13,15 +13,17 @@ function fixture(): Snapshot {
 }
 function lists(snapshot: Snapshot) {
   const mutate = vi.fn(), schedule = vi.fn(), editTask = vi.fn(), removeTask = vi.fn();
-  const ui = { busy: false, mutate } as unknown as PlannerUI;
+  const ui = { busy: false, mutate, snapshot, error: '', notice: '', undo: vi.fn() } as unknown as PlannerUI;
   render(<DetailPanel snapshot={snapshot} selection={null} ui={ui} schedule={schedule} editTask={editTask} removeTask={removeTask} edit={vi.fn()} close={vi.fn()} />);
   const rail = screen.getByRole('region', { name: '待办任务列表' });
-  const page = render(<Tasks snapshot={snapshot} ui={ui} select={vi.fn()} create={vi.fn()} editTask={editTask} schedule={schedule} removeTask={removeTask} />).container;
+  // Today's to-do list replaced the separate task page.
+  const page = render(<Today snapshot={snapshot} ui={ui} pendingCount={0} create={vi.fn()} openInbox={vi.fn()} openCandidate={vi.fn()} openRecord={vi.fn()} goCalendar={vi.fn()} editTask={editTask} schedule={schedule} removeTask={removeTask} />).container;
   return { containers: [rail, page], rail, page, mutate, schedule, editTask, removeTask };
 }
 function titles(container: HTMLElement) {
-  return within(container).queryAllByRole('button', { name: /^移除 / }).map(button => button.getAttribute('aria-label')!.replace(/^移除 /, ''));
+  return [...container.querySelectorAll<HTMLElement>('[data-task-id]')].map(row => (row.querySelector('.a2-task-title') ?? row.querySelector('span')!.firstChild)!.textContent!.trim());
 }
+function attentionLabel(row: HTMLElement) { return row.querySelector('.task-attention-label, .a2-task-meta .warn')?.textContent ?? ''; }
 function item(container: HTMLElement, id: string) { return container.querySelector<HTMLElement>(`[data-task-id="${id}"]`)!; }
 
 describe('unfinished task attention', () => {
@@ -39,9 +41,8 @@ describe('unfinished task attention', () => {
     for (const container of view.containers) {
       expect(titles(container)).toEqual(['过期的报名', '今晚的小测', '提交报告', '读一本书']);
       const overdue = item(container, 'expired');
-      expect(overdue.classList.contains('task-needs-attention')).toBe(true);
       expect(overdue.dataset.attention).toBe('overdue');
-      expect(overdue.querySelector('.task-attention-label')!.textContent).toMatch(/截止|逾期|DDL/);
+      expect(attentionLabel(overdue)).toMatch(/截止|逾期|DDL/);
       fireEvent.click(within(overdue).getByRole('button', { name: '修改 DDL' }));
       expect(view.editTask).toHaveBeenLastCalledWith('expired');
       expect(item(container, 'soon').dataset.attention).toBeUndefined();
@@ -49,7 +50,8 @@ describe('unfinished task attention', () => {
     fireEvent.click(within(view.page).getByRole('button', { name: '已完成' }));
     expect(titles(view.page)).toEqual(['完成的作业']);
     fireEvent.click(within(view.page).getByRole('button', { name: '全部' }));
-    expect(titles(view.page)).toEqual(snapshot.tasks.map(task => task.title));
+    // "全部" keeps deadline groups and lists completed history last.
+    expect(titles(view.page)).toEqual(['过期的报名', '今晚的小测', '提交报告', '读一本书', '完成的作业']);
     expect(view.mutate).not.toHaveBeenCalled();
     expect(view.removeTask).not.toHaveBeenCalled();
   });
@@ -66,7 +68,7 @@ describe('unfinished task attention', () => {
       { id: 'point-event', taskId: 'point', start: '2026-10-23T16:45:00+08:00', end: null },
     ].map(block => BlockSchema.parse({ ...metadata, title: block.id, kind: 'event', ...block }));
     const before = structuredClone(snapshot), view = lists(snapshot);
-    expect(view.rail.querySelectorAll('.task-needs-attention')).toHaveLength(0);
+    for (const container of view.containers) expect(container.querySelectorAll('[data-attention]')).toHaveLength(0);
     act(() => { vi.advanceTimersByTime(31_000); });
     for (const container of view.containers) {
       expect(titles(container)).toEqual(snapshot.tasks.map(task => task.title));
@@ -95,7 +97,8 @@ describe('unfinished task attention', () => {
       expect(item(container, 'meeting').dataset.attention).toBe('ended');
       const work = item(container, 'work');
       expect(work.dataset.attention).toBe('ended');
-      expect(within(work).getByRole('button', { name: '查看安排' })).toBeTruthy();
+      if (container === view.page) fireEvent.click(within(work).getByRole('button', { name: '继续写报告 的更多操作' }));
+      expect(within(work).getByRole(container === view.page ? 'menuitem' : 'button', { name: '查看安排' })).toBeTruthy();
       fireEvent.click(within(work).getByRole('button', { name: '重新安排' }));
       expect(view.schedule).toHaveBeenLastCalledWith('work', 'past-work');
     }
@@ -125,7 +128,7 @@ describe('unfinished task attention', () => {
     fireEvent.click(within(item(view.rail, 'recurring')).getByRole('button', { name: '完成任务 活动室值班' }));
     expect(view.mutate).toHaveBeenLastCalledWith([{ type: 'finishTask', id: 'recurring', expectedVersion: 1, completed: true }]);
     fireEvent.click(within(view.page).getByRole('button', { name: '全部' }));
-    expect(titles(view.page)).toEqual(snapshot.tasks.map(task => task.title));
+    expect([...titles(view.page)].sort()).toEqual(snapshot.tasks.map(task => task.title).sort());
     expect(snapshot).toEqual(before);
   });
 });

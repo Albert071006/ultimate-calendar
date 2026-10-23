@@ -35,6 +35,14 @@ function fakeUI() {
 function input(label: string) { return screen.getByLabelText(label) as HTMLInputElement; }
 
 describe('task selection and recurring schedule editor', () => {
+/** Rows show one primary action; other actions sit in the row's "⋯" menu. */
+function rowAction(row: HTMLElement, name: string | RegExp) {
+  const visible = within(row).queryByRole('button', { name });
+  if (visible) return fireEvent.click(visible);
+  fireEvent.click(within(row).getByRole('button', { name: /的更多操作$/ }));
+  fireEvent.click(within(row).getByRole('menuitem', { name }));
+}
+
   it('keeps ended and overdue unfinished tasks available for rescheduling while excluding completed tasks', () => {
     const snapshot = fixture();
     const { ui } = fakeUI();
@@ -113,9 +121,9 @@ describe('task selection and recurring schedule editor', () => {
     let dialog = await screen.findByRole('dialog', { name: '重复安排' });
     expect((within(dialog).getByLabelText('关联任务') as HTMLSelectElement).value).toBe('duty');
     fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
-    fireEvent.click(screen.getByRole('button', { name: '任务' }));
-    const row = screen.getByRole('button', { name: /双周周二晚活动室值班检查.*未设截止/ }).closest('article')!;
-    fireEvent.click(within(row).getByRole('button', { name: '重复安排' }));
+    fireEvent.click(within(await screen.findByRole('navigation', { name: '主导航' })).getByRole('button', { name: '今天' }));
+    const row = screen.getByRole('button', { name: '双周周二晚活动室值班检查' }).closest('article')!;
+    rowAction(row, '重复安排');
     dialog = await screen.findByRole('dialog', { name: '重复安排' });
     expect((within(dialog).getByLabelText('关联任务') as HTMLSelectElement).value).toBe('duty');
   });

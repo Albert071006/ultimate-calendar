@@ -108,6 +108,14 @@ describe('recurring activity scope editor', () => {
 });
 
 describe('cancelled activity presentation', () => {
+/** Rows show one primary action; other actions sit in the row's "⋯" menu. */
+function rowAction(row: HTMLElement, name: string | RegExp) {
+  const visible = within(row).queryByRole('button', { name });
+  if (visible) return fireEvent.click(visible);
+  fireEvent.click(within(row).getByRole('button', { name: /的更多操作$/ }));
+  fireEvent.click(within(row).getByRole('menuitem', { name }));
+}
+
   it('skips a cancelled date for next arrangement and hides a fully cancelled task from rail and associations', () => {
     const snapshot = fixture(); snapshot.blocks[0]!.cancelled = true;
     expect(nextTaskEvent(taskEvents(snapshot, 'duty'), Date.now())!.id).toBe('duty-1');
@@ -125,11 +133,12 @@ describe('cancelled activity presentation', () => {
     const api = { snapshot: vi.fn(async () => ({ ok: true, data: snapshot })), onChanged: () => () => {}, onNavigate: () => () => {} } as unknown as DesktopAPI;
     render(<App api={api} />);
     await screen.findByRole('region', { name: '待办任务列表' });
-    fireEvent.click(screen.getByRole('button', { name: '任务' }));
-    expect(screen.queryByRole('button', { name: /双周值班.*活动已全部取消/ })).toBeNull();
+    fireEvent.click(within(await screen.findByRole('navigation', { name: '主导航' })).getByRole('button', { name: '今天' }));
+    expect(screen.queryByRole('button', { name: '双周值班' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '全部' }));
-    const row = screen.getByRole('button', { name: /双周值班.*活动已全部取消/ }).closest('article')!;
-    fireEvent.click(within(row).getByRole('button', { name: '查看安排' }));
+    const row = screen.getByRole('button', { name: '双周值班' }).closest('article')!;
+    expect(within(row).getByText(/活动已全部取消/)).toBeTruthy();
+    rowAction(row, '查看安排');
     const history = screen.getByRole('region', { name: '已安排活动' });
     expect(within(history).getAllByText(/已取消 · 2026/)).toHaveLength(3);
     expect(within(history).queryByRole('button', { name: '调整时间' })).toBeNull();
