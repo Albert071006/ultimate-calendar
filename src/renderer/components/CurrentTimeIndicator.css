@@ -1,0 +1,41 @@
+.calendar-panel .calendar-current-time {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 2px solid #bb5a48;
+  color: #9b4334;
+  pointer-events: none;
+  user-select: none;
+  z-index: 7;
+}
+.calendar-panel .calendar-current-time-dot {
+  position: absolute;
+  left: 0;
+  top: -1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #bb5a48;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.calendar-panel .calendar-current-time-label {
+  position: absolute;
+  left: 9px;
+  bottom: 4px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: #fff0e9;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.calendar-panel .calendar-current-time[data-at-start] .calendar-current-time-label {
+  top: 4px;
+  bottom: auto;
+}

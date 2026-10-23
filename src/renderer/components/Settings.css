@@ -1,0 +1,35 @@
+.settings-page .settings-group { padding: 20px 24px; margin-bottom: 14px; }
+.settings-group-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.settings-group-heading h3 { margin: 0; font-size: 16px; }
+.settings-group-heading > span { font-size: 11px; color: #788c77; }
+.settings-ai-overview { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 24px; padding-bottom: 18px; }
+.settings-account { min-width: 0; }
+.settings-model { min-width: 0; border-left: 1px solid #e1e7da; padding-left: 24px; }
+.settings-model h4, .settings-campus-grid h4 { margin: 0 0 14px; font-size: 13px; }
+.settings-model > :is(label, .form-grid, button, p) { margin-bottom: 12px; }
+.settings-model > .form-grid { grid-template-columns: minmax(0, 1fr); }
+.settings-account .account-heading { flex-wrap: wrap; margin-bottom: 10px; }
+.settings-account .account-heading h4 { font-size: 13px; }
+.settings-account .account-heading button { font-size: 11px; padding: 7px 10px; }
+.settings-account .account-panel > p { margin: 10px 0; }
+.settings-account .account-balances { gap: 10px; }
+.settings-page .settings-disclosure { border-top: 1px solid #e1e7da; margin: 0; padding: 13px 0; }
+.settings-page .settings-disclosure:last-child { padding-bottom: 0; }
+.settings-page .settings-disclosure > summary, .settings-campus > summary { cursor: pointer; color: inherit; line-height: 1.7; }
+.settings-page .settings-disclosure > summary strong, .settings-campus > summary strong { font-size: 13px; font-weight: 600; }
+.settings-campus > summary strong { font-size: 15px; }
+.settings-page .settings-summary, .settings-page .settings-disclosure .usage-total { margin-left: 14px; font-size: 11px; color: #788c77; font-weight: 400; }
+.settings-page .settings-disclosure > summary:focus-visible, .settings-campus > summary:focus-visible { outline: 3px solid #7ebcaf; outline-offset: 4px; border-radius: 3px; }
+.settings-disclosure-body { padding-top: 16px; }
+.settings-disclosure-body > :is(label, .form-grid, p, .toolbar, details) { margin-bottom: 14px; }
+.settings-disclosure-body > :last-child { margin-bottom: 0; }
+.settings-campus-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; }
+.settings-campus-grid section > :is(label, .form-grid, p) { margin-bottom: 14px; }
+.settings-calendar-options { display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap; border-top: 1px solid #e1e7da; padding-top: 16px; margin-top: 4px; }
+.settings-page .sticky-save { align-items: center; justify-content: space-between; gap: 18px; }
+.settings-key .toolbar { flex-wrap: wrap; }
+@media (max-width: 1080px) {
+  .settings-ai-overview, .settings-campus-grid { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .settings-model { border-left: 0; border-top: 1px solid #e1e7da; padding-left: 0; padding-top: 18px; }
+  .settings-page .settings-summary { display: block; margin-left: 16px; }
+}

@@ -1,0 +1,95 @@
+{
+  "name": "ultimate-calendar",
+  "productName": "终极日历",
+  "version": "0.3.2",
+  "private": true,
+  "description": "本地优先的 Windows 个人计划应用",
+  "author": "Albert071006",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Albert071006/ultimate-calendar.git"
+  },
+  "homepage": "https://github.com/Albert071006/ultimate-calendar#readme",
+  "bugs": {
+    "url": "https://github.com/Albert071006/ultimate-calendar/issues"
+  },
+  "type": "module",
+  "main": "dist-electron/main.cjs",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "postinstall": "node node_modules/electron/install.js",
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "package": "node scripts/package.mjs",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "0.9.12",
+    "lucide-react": "1.61.0",
+    "parse5": "8.0.0",
+    "pdfjs-dist": "6.4.299",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "read-excel-file": "9.3.12",
+    "ws": "8.22.0",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "24.19.2",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@types/ws": "8.18.2",
+    "electron": "45.0.0",
+    "electron-builder": "26.15.3",
+    "esbuild": "0.28.2",
+    "happy-dom": "^21.0.4",
+    "typescript": "7.0.2",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "electron-winstaller": false
+  },
+  "build": {
+    "appId": "local.ultimate-calendar.desktop",
+    "productName": "终极日历",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "assets/app-icon.*",
+      "LICENSE",
+      "package.json"
+    ],
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": false,
+      "installerLanguages": [
+        "zh_CN"
+      ],
+      "language": "2052",
+      "artifactName": "UltimateCalendar-Setup-${version}.${ext}"
+    },
+    "electronDist": "node_modules/electron/dist",
+    "asar": true,
+    "npmRebuild": false,
+    "win": {
+      "target": "nsis",
+      "icon": "assets/app-icon.ico",
+      "signAndEditExecutable": true
+    }
+  }
+}

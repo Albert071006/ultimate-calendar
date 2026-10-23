@@ -1,0 +1,71 @@
+.calendar-panel .time-grid.continuous-time-grid { height: 2304px; min-height: 2304px; }
+.calendar-panel .calendar-term-week { font-size: 12px; white-space: nowrap; color: #357465; background: #eaf4ed; padding: 3px 6px; border-radius: 5px; }
+.calendar-panel .continuous-day {
+  background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 95px, #e4e9e2 95px, #e4e9e2 96px);
+  touch-action: none;
+  cursor: crosshair;
+  outline-offset: -2px;
+}
+.calendar-panel .continuous-day:focus-visible { outline: 2px solid #539a8a; }
+.calendar-panel .continuous-time-grid.is-selecting { user-select: none; }
+.calendar-panel .timeline-event {
+  position: absolute;
+  box-sizing: border-box;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid #ffffff90;
+  border-left: 3px solid currentColor;
+  border-radius: 5px;
+  z-index: 2;
+  cursor: pointer;
+}
+.calendar-panel .timeline-event.pending { border-style: dashed; opacity: .88; }
+.calendar-panel .timeline-event.is-moving { opacity: .3; }
+.calendar-panel .timeline-event-button {
+  display: block;
+  width: 100%; height: 100%; min-height: 0;
+  border: 0; padding: 5px 5px 4px; border-radius: 0;
+  background: transparent; color: inherit; text-align: left;
+  overflow: hidden; touch-action: none;
+}
+.calendar-panel .timeline-event-button.can-move { cursor: grab; }
+.calendar-panel .timeline-event-button:active.can-move { cursor: grabbing; }
+.calendar-panel .timeline-event-button strong { display: block; font-size: 11px; line-height: 1.35; font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.calendar-panel .timeline-event-button small { display: block; font-size: 9px; white-space: nowrap; opacity: .85; }
+.calendar-panel .timeline-event.compact .timeline-event-button { padding: 0 4px; }
+.calendar-panel .timeline-event.compact .timeline-event-button strong { font-size: 9px; line-height: 1.1; white-space: nowrap; }
+.calendar-panel .timeline-event.compact small { display: none; }
+.calendar-panel .timeline-event.compact { overflow: visible; }
+.calendar-panel .timeline-resize {
+  position: absolute; left: 2px; right: 2px; height: 7px; min-height: 0;
+  padding: 0; border: 0; border-radius: 2px; background: transparent;
+  cursor: ns-resize; touch-action: none; z-index: 3;
+}
+.calendar-panel .timeline-resize.start { top: 0; }
+.calendar-panel .timeline-resize.end { bottom: 0; }
+.calendar-panel .timeline-event.compact .timeline-resize.start { top: -5px; height: 4px; }
+.calendar-panel .timeline-event.compact .timeline-resize.end { bottom: -5px; height: 4px; }
+.calendar-panel .timeline-resize:hover, .calendar-panel .timeline-resize:focus-visible { background: #1d6d6340; }
+.calendar-panel .timeline-point {
+  position: absolute; left: 3px; right: 3px; padding: 0 3px; min-height: 0;
+  border: 0; border-top: 1px solid currentColor; border-radius: 0;
+  font-size: 9px; line-height: 16px; text-align: left; z-index: 4;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.calendar-panel .timeline-preview {
+  position: absolute; left: 2px; right: 2px; box-sizing: border-box;
+  border: 1px solid #277f6e; background: #73bfa83d; border-radius: 3px;
+  pointer-events: none; z-index: 5; color: #175a4d;
+}
+.calendar-panel .timeline-preview-label {
+  position: sticky; top: 1px; display: block; width: max-content; max-width: 100%;
+  padding: 2px 3px; background: #e3f5ee; border-radius: 3px;
+  font-size: 10px; white-space: nowrap;
+}
+.calendar-panel .timeline-cursor {
+  position: absolute; left: 0; right: 0; height: 0;
+  border-top: 1px solid #287e7080; pointer-events: none; z-index: 6;
+}
+.calendar-panel .timeline-cursor span { display: block; position: absolute; top: -15px; right: 3px; background: #edf7f0; color: #216f60; font-size: 10px; }
+.calendar-panel .timeline-help { font-size: 10px; line-height: 1.5; padding: 6px 12px; }
+.calendar-panel .timeline-live-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
