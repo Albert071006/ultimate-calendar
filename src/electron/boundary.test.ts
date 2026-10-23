@@ -12,12 +12,24 @@ import { createRestoreManager } from './restore';
 import { createBackup } from '../storage/backups';
 import { createReminderScheduler, createReminderSummary } from './notifications';
 import { emptyAccountState } from '../shared/account';
+import { UpdateStateSchema } from '../shared/update';
 
 const dirs: string[] = [];
 async function temporary() { const p = await mkdtemp(join(tmpdir(), 'planner-boundary-')); dirs.push(p); return p; }
 afterEach(async () => { for (const p of dirs.splice(0)) await rm(p, { recursive: true, force: true }); });
 const caller = { senderId: 7, frameId: 4, url: 'file:///C:/app/dist/index.html' };
 describe('desktop trust boundary', () => {
+  it('update commands reject caller-supplied URLs, installer paths and foreign frames', async () => {
+    const state = UpdateStateSchema.parse({ currentVersion: '0.3.3', status: 'idle', latestVersion: null, releaseNotes: '', progressPercent: null, checkedAt: null, message: '尚未检查' });
+    for (const method of ['updateSnapshot', 'checkForUpdates', 'downloadUpdate', 'installUpdate']) {
+      let calls = 0; const handlers = { [method]: async () => { calls++; return { ok: true, data: state }; } };
+      for (const input of [{ url: 'https://other.invalid/update' }, { path: 'C:/arbitrary.exe' }, { silent: true }, {}]) expect((await dispatchRequest(method, input, caller, caller, handlers)).ok).toBe(false);
+      expect((await dispatchRequest(method, undefined, { ...caller, frameId: 99 }, caller, handlers)).ok).toBe(false); expect(calls).toBe(0);
+      expect(await dispatchRequest(method, undefined, caller, caller, handlers)).toEqual({ ok: true, data: state });
+      const invalid = await dispatchRequest(method, undefined, caller, caller, { [method]: async () => ({ ok: true, data: { ...state, installerPath: 'synthetic-private-path' } }) });
+      expect(invalid.ok).toBe(false); expect(JSON.stringify(invalid)).not.toContain('synthetic-private-path');
+    }
+  });
   it('credential recovery only exposes safe status and accepts no file paths or key material', async () => {
     let calls = 0;
     const api = { retryApiKey: async () => { calls++; return { ok: true, data: { configured: false, sessionOnly: false, loadError: 'decrypt' } }; } };

@@ -57,6 +57,11 @@ async function stop() {
 try {
   await connect();
   const first = await evaluate('window.planner.snapshot()'); assert(first.ok && first.data.tasks.length === 0 && !first.data.keyStatus.configured, 'Initial profile was not empty');
+  const updateState = await evaluate('window.planner.updateSnapshot()');
+  assert(updateState.ok && updateState.data.status === 'unavailable' && /^\d+\.\d+\.\d+$/.test(updateState.data.currentVersion), 'Isolated profile must expose version without enabling real updates');
+  const isolatedCheck = await evaluate('window.planner.checkForUpdates()');
+  assert(isolatedCheck.ok && isolatedCheck.data.status === 'unavailable', 'Isolated profile unexpectedly enabled update checks');
+  assert(!(await evaluate('window.planner.downloadUpdate()')).ok && !(await evaluate('window.planner.installUpdate()')).ok, 'Isolated profile allowed real update download or installation');
   const capture = await evaluate('window.planner.captureSnapshot()'); assert(capture.ok && !capture.data.config.enabled && capture.data.config.groupIds.length === 0, 'Capture is not opt-in');
   const captureConfig = await evaluate(`window.planner.captureConfigure(${JSON.stringify({ ...capture.data.config, endpoint: `ws://127.0.0.1:${qqServer.address().port}`, analysisEnabled: false })})`); assert(captureConfig.ok, 'Capture configure IPC failed');
   const connected = await evaluate(`window.planner.captureConnect({token:${JSON.stringify(qqToken)}})`); assert(connected.ok && connected.data.connection === 'online' && connected.data.config.accountId === '100', 'Capture did not verify QQ online identity');
@@ -104,7 +109,9 @@ try {
   assert(await evaluate('document.querySelector(".ledger-page").textContent.includes("实际支付") && document.querySelector(".ledger-page").textContent.includes("个人开销") && document.querySelector(".ledger-page").textContent.includes("¥20.00") && document.querySelector(".ledger-page").textContent.includes("¥12.00")'), 'Ledger detail UI lost actual payment vs personal share');
   await evaluate(`Array.from(document.querySelectorAll('nav button')).find(button => button.textContent.trim() === '设置').click(); true`);
   for (let i = 0; i < 50; i++) { if (await evaluate('!!document.querySelector(".settings-page")')) break; await wait(50); }
-  assert(await evaluate(`document.querySelectorAll('.settings-page .settings-group').length === 4
+  assert(await evaluate(`document.querySelectorAll('.settings-page form .settings-group').length === 4
+    && !!document.querySelector('.settings-page .software-update')
+    && document.querySelector('.settings-page .software-version').textContent.includes('v')
     && !document.querySelector('.settings-campus').open && !document.querySelector('.api-usage').open
     && document.querySelector('.settings-pricing').closest('.settings-group') === document.querySelector('.api-usage').closest('.settings-group')
     && new FormData(document.querySelector('.settings-page form')).has('periodMap')

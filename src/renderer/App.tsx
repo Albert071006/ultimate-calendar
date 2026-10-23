@@ -6,6 +6,8 @@ import { todayDate } from "./calendar-layout";
 import { usePlanner } from "./hooks/usePlanner";
 import { isPendingCandidate } from '../domain/candidate-eligibility';
 import { useCurrentTime } from './hooks/useCurrentTime';
+import { useAppUpdates } from './hooks/useAppUpdates';
+import { SoftwareUpdate, UpdateShortcut } from './components/SoftwareUpdate';
 import { Sidebar, type Page } from "./components/Sidebar";
 import {
   Calendar,
@@ -45,6 +47,8 @@ export function App({ api = window.planner }: { api?: DesktopAPI }) {
   const now = useCurrentTime();
   const ui = usePlanner(api),
     snapshot = ui.snapshot;
+  const updates = useAppUpdates(api);
+  const [updateOpen, setUpdateOpen] = useState(false);
   const [captureReference, setCaptureReference] = useState<NonNullable<Source['captureRef']>>();
   const [ledgerCreateRequest, setLedgerCreateRequest] = useState(0);
   const [page, setPage] = useState<Page>("calendar"),
@@ -174,6 +178,7 @@ export function App({ api = window.planner }: { api?: DesktopAPI }) {
             </div>
           </div>
           <div className="toolbar">
+            <UpdateShortcut updates={updates} open={() => setUpdateOpen(true)} />
             <span className="local-status">
               <span className="live-dot" />
               {api ? "本地工作空间" : "桌面服务未连接"}
@@ -276,6 +281,7 @@ export function App({ api = window.planner }: { api?: DesktopAPI }) {
                     snapshot={snapshot}
                     ui={ui}
                     courses={() => setCourseOpen(true)}
+                    updates={updates}
                   />
                 )}
                 {page === "today" && (
@@ -424,6 +430,7 @@ export function App({ api = window.planner }: { api?: DesktopAPI }) {
           </>
         )}
       </main>
+      {updateOpen && <Modal title="软件更新" onClose={() => setUpdateOpen(false)}><SoftwareUpdate updates={updates} plannerBusy={ui.busy} /></Modal>}
       {snapshot && (
         <>
           {importing && (

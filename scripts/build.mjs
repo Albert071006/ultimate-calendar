@@ -6,7 +6,7 @@ await viteBuild();
 for (const entry of ['main', 'preload']) {
   const path = `src/electron/${entry}.ts`;
   await bundle({ entryPoints: [path], outfile: `dist-electron/${entry}.cjs`, platform: 'node',
-    format: 'cjs', target: 'node24', bundle: true, external: ['electron'], sourcemap: false });
+    format: 'cjs', target: 'node24', bundle: true, external: ['electron', 'electron-updater'], sourcemap: false });
 }
 
 await mkdir('dist-electron/pdf-assets', { recursive: true });

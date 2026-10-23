@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import { AccountStateSchema } from '../shared/account';
 import { CaptureSnapshotSchema } from '../shared/capture';
+import { UpdateStateSchema } from '../shared/update';
 import { ChangedEventSchema, NavigateEventSchema, type DesktopAPI } from '../shared/contracts';
 import { requests, responses, type Method } from './protocol';
 
@@ -29,6 +30,8 @@ function accountChanged(listener: Parameters<DesktopAPI['onAccountChanged']>[0])
 }
 // Explicit fixed methods only: no ipcRenderer, event objects or arbitrary channels cross contextBridge.
 const api = {
+  updateSnapshot: () => invoke('updateSnapshot'), checkForUpdates: () => invoke('checkForUpdates'), downloadUpdate: () => invoke('downloadUpdate'), installUpdate: () => invoke('installUpdate'),
+  onUpdateChanged: (listener: Parameters<DesktopAPI['onUpdateChanged']>[0]) => { const handler = (_event: IpcRendererEvent, value: unknown) => { const parsed = UpdateStateSchema.safeParse(value); if (parsed.success) listener(parsed.data); }; ipcRenderer.on('planner:update-changed', handler); return () => ipcRenderer.removeListener('planner:update-changed', handler); },
   ledgerSnapshot: (request?: unknown) => invoke('ledgerSnapshot', request), ledgerMutate: (request: unknown) => invoke('ledgerMutate', request), ledgerUndo: (request: unknown) => invoke('ledgerUndo', request), ledgerExport: (request: unknown) => invoke('ledgerExport', request),
   captureSnapshot: () => invoke('captureSnapshot'), captureConfigure: (request: unknown) => invoke('captureConfigure', request), captureConnect: (request: unknown) => invoke('captureConnect', request), captureGroups: () => invoke('captureGroups'), captureMessages: (request: unknown) => invoke('captureMessages', request), captureBatches: (request: unknown) => invoke('captureBatches', request), captureAction: (request: unknown) => invoke('captureAction', request), captureChunks: (request: unknown) => invoke('captureChunks', request), captureCleanup: (request: unknown) => invoke('captureCleanup', request),
   onCaptureChanged: (listener: Parameters<DesktopAPI['onCaptureChanged']>[0]) => { const handler = (_event: IpcRendererEvent, value: unknown) => { const parsed = CaptureSnapshotSchema.safeParse(value); if (parsed.success) listener(parsed.data); }; ipcRenderer.on('planner:capture-changed', handler); return () => ipcRenderer.removeListener('planner:capture-changed', handler); },

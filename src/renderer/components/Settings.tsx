@@ -8,15 +8,19 @@ import { displayInstant } from "../calendar-layout";
 import type { PlannerUI } from "../hooks/usePlanner";
 import { useAccount } from "../hooks/useAccount";
 import { AccountPanel, AccountResourceStatus, OfficialPrices } from "./AccountPanel";
+import type { AppUpdates } from '../hooks/useAppUpdates';
+import { SoftwareUpdate } from './SoftwareUpdate';
 import './Settings.css';
 export function Settings({
   snapshot,
   ui,
   courses,
+  updates,
 }: {
   snapshot: Snapshot;
   ui: PlannerUI;
   courses: () => void;
+  updates?: AppUpdates;
 }) {
   const keyRef = useRef<HTMLInputElement>(null),
     s = snapshot.settings;
@@ -156,6 +160,7 @@ export function Settings({
       <div className="section-heading">
         <div><h2>让日历适合你</h2><p>常用设置集中显示，详细配置按需展开。</p></div>
       </div>
+      {updates && <div className="settings-card settings-group"><SoftwareUpdate updates={updates} plannerBusy={ui.busy} /></div>}
       <form onSubmit={e => { e.preventDefault(); void save(e.currentTarget); }}
         onInvalidCapture={e => {
           // Keep native validation usable when a required field is inside a collapsed group.

@@ -2,10 +2,12 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, p
 import { join, basename, extname } from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import { NsisUpdater } from 'electron-updater';
 import { createRepository, type Repository } from '../storage/repository';
 import { createPlanner } from '../domain/planner';
 import { createController } from '../application/controller';
-import { createBackup, automaticBackup } from '../storage/backups';
+import { createBackup, automaticBackup, inspectBackupBundle } from '../storage/backups';
 import { createLedgerService, type LedgerService } from '../ledger/service';
 import { nowInstant } from '../domain/time';
 import { reminderDigest } from '../domain/reminders';
@@ -24,6 +26,8 @@ import { createCaptureService } from '../capture/service';
 import { createDocumentExtractor } from '../capture/documents/runtime';
 import { CaptureSnapshotSchema } from '../shared/capture';
 import { createModelRequestQueue } from '../ai/request-queue';
+import { createUpdateService } from './update-service';
+import { UpdateStateSchema } from '../shared/update';
 
 app.setName('终极日历');
 const APP_ID = 'local.ultimate-calendar.desktop'; app.setAppUserModelId(APP_ID);
@@ -32,6 +36,7 @@ let quitting = false; let timer: ReturnType<typeof setInterval> | undefined; let
 let pendingNavigation: NavigateEvent | null = null;
 let stopAccount: (() => void) | undefined;
 let stopCapture: (() => void) | undefined;
+let stopUpdates: (() => void) | undefined;
 let ledger: LedgerService | null = null;
 const missed = createReminderSummary(); let acknowledgeReminders: (ids: string[]) => Promise<void> = async () => {};
 let startupNotice: { title: string; message: string } | null = null;
@@ -43,7 +48,7 @@ if (!locked) app.quit();
 else {
   app.on('second-instance', () => showWindow());
   app.on('before-quit', () => { quitting = true; });
-  app.on('will-quit', () => { if (timer) clearInterval(timer); stopAccount?.(); stopCapture?.(); ledger?.close(); repository?.close(); tray?.destroy(); });
+  app.on('will-quit', () => { if (timer) clearInterval(timer); stopUpdates?.(); stopAccount?.(); stopCapture?.(); ledger?.close(); repository?.close(); tray?.destroy(); });
   app.on('activate', () => showWindow());
   app.on('window-all-closed', () => { if (!tray || quitting) app.quit(); });
   void app.whenReady().then(start).catch(() => {
@@ -127,7 +132,25 @@ async function start() {
   stopCapture = () => { capture.stop(); documents.dispose(); captureStore.close(); };
   const workflow = async <T>(work: () => Promise<T>): Promise<T> => { activeWorkflows++; try { return await work(); } finally { activeWorkflows--; } };
   const restore = createRestoreManager(repo, () => activeWorkflows === 0 && !capture.busy(), captureStore);
-  const api: Omit<DesktopAPI, 'onChanged' | 'onNavigate' | 'onAccountChanged' | 'onCaptureChanged'> = {
+  let activeRequests = 0, captureSuspendedForUpdate = false;
+  const updates = createUpdateService({
+    currentVersion: app.getVersion(), packaged: app.isPackaged, platform: process.platform, isolatedProfile: !!profile,
+    getUpdater: () => new NsisUpdater(),
+    isBusy: () => activeRequests > 0 || activeWorkflows > 0 || capture.busy() || modelQueue.busy(),
+    prepareInstall: () => {
+      // Only pause this app's local capture socket. Never stop or restart the user's QQ process.
+      capture.suspendForRestore(); captureSuspendedForUpdate = true;
+      const backupPath = join(data, 'backups', `before-update-${randomUUID()}.sqlite`);
+      createBackup(repo, backupPath); inspectBackupBundle(backupPath);
+    },
+    resumeAfterFailedInstall: async () => { if (captureSuspendedForUpdate) { captureSuspendedForUpdate = false; await capture.resume(); } },
+    setQuitting: value => { quitting = value; },
+    onChanged: state => { if (window && !window.isDestroyed()) window.webContents.send('planner:update-changed', UpdateStateSchema.parse(state)); },
+  });
+  stopUpdates = updates.stop;
+  const api: Omit<DesktopAPI, 'onChanged' | 'onNavigate' | 'onAccountChanged' | 'onCaptureChanged' | 'onUpdateChanged'> = {
+    updateSnapshot: async () => ({ ok: true, data: updates.snapshot() }),
+    checkForUpdates: updates.checkForUpdates, downloadUpdate: updates.downloadUpdate, installUpdate: updates.installUpdate,
     ledgerSnapshot: async request => { const generated = localLedger.ensureMonthlyAllowance(); if (generated) { automaticBackup(repo); changed({reason:'mutation'}); } return {ok:true,data:localLedger.snapshot(request?.month)}; },
     ledgerMutate: async request => { const result = localLedger.mutate(request); automaticBackup(repo); changed({reason:'mutation'}); return {ok:true,data:result}; },
     ledgerUndo: async request => { const result = localLedger.undo(request); automaticBackup(repo); changed({reason:'undo'}); return {ok:true,data:result}; },
@@ -195,7 +218,16 @@ async function start() {
     // Chromium's native save dialog is opened only by the user-triggered template Blob download.
     item.setSaveDialogOptions({ title: '保存课表 CSV 模板', defaultPath: join(app.getPath('documents'), '终极日历课表模板.csv'), filters: [{ name: 'CSV 模板', extensions: ['csv'] }], properties: ['showOverwriteConfirmation'] });
   });
-  for (const method of methods) ipcMain.handle(`planner:${method}`, (event, input: unknown) => dispatchRequest(method, input, actual(event), owner(), api));
+  const updateMethods = new Set(['updateSnapshot', 'checkForUpdates', 'downloadUpdate', 'installUpdate']);
+  for (const method of methods) ipcMain.handle(`planner:${method}`, (event, input: unknown) => dispatchRequest(method, input, actual(event), owner(), {
+    [method]: async (request: unknown) => {
+      const handler = api[method] as (value: unknown) => Promise<unknown>;
+      if (updateMethods.has(method)) return handler(request);
+      if (updates.isInstalling()) throw new WorkflowError('CONFLICT', '正在备份并准备重启更新，请稍候再操作。');
+      activeRequests++;
+      try { return await handler(request); } finally { activeRequests--; }
+    },
+  }));
   ipcMain.on('planner:navigation-ready', event => { if (!trustedCaller(actual(event), owner())) return; navigationReady = true; void showRetainedSummary(); });
   const image = nativeImage.createFromPath(icon); tray = new Tray(image.resize({ width: 20, height: 20 })); tray.setToolTip('终极日历 · 本地计划与提醒');
   tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开终极日历', click: () => { showWindow(); void showRetainedSummary(); } }, { label: '查看漏过提醒', click: () => { showWindow(); void showRetainedSummary(true); } }, { type: 'separator' }, { label: '退出（停止提醒）', click: () => { quitting = true; app.quit(); } }]));
@@ -226,6 +258,7 @@ async function start() {
   powerMonitor.on('resume', () => { lastTick = Date.now(); void check(true); void account.refresh({ force: true, balanceOnly: true }); });
   applyAutoLaunch(repo.snapshot().settings.autoLaunch);
   account.start();
+  updates.start();
   void capture.start().catch(() => { /* Connection detail is shown in the QQ page. */ });
   await window.loadURL(documentUrl()); showWindow(); void showRetainedSummary();
 }

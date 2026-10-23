@@ -2,7 +2,7 @@ import { createServer } from 'vite';
 import { spawn } from 'node:child_process';
 import { build } from 'esbuild';
 import electron from 'electron';
-for (const entry of ['main', 'preload']) await build({ entryPoints: [`src/electron/${entry}.ts`], outfile: `dist-electron/${entry}.cjs`, platform: 'node', format: 'cjs', target: 'node24', bundle: true, external: ['electron'] });
+for (const entry of ['main', 'preload']) await build({ entryPoints: [`src/electron/${entry}.ts`], outfile: `dist-electron/${entry}.cjs`, platform: 'node', format: 'cjs', target: 'node24', bundle: true, external: ['electron', 'electron-updater'] });
 const server = await createServer({ server: { host: '127.0.0.1', port: 5173, strictPort: true } }); await server.listen();
 const env = { ...process.env, PLANNER_DEV_URL: 'http://127.0.0.1:5173/' }; delete env.ELECTRON_RUN_AS_NODE;
 const child = spawn(electron, ['.', ...process.argv.slice(2)], { env, stdio: 'inherit' });

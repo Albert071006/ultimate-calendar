@@ -389,6 +389,11 @@ export const NavigateEventSchema = z.strictObject({ entity: EntityKindSchema, id
 export type NavigateEvent = z.infer<typeof NavigateEventSchema>;
 /** Only this narrow asynchronous surface may cross the sandboxed renderer/preload boundary. */
 export interface DesktopAPI extends importCaptureAPI {
+  updateSnapshot(): Promise<ApiResult<import('./update').UpdateState>>;
+  checkForUpdates(): Promise<ApiResult<import('./update').UpdateState>>;
+  downloadUpdate(): Promise<ApiResult<import('./update').UpdateState>>;
+  installUpdate(): Promise<ApiResult<import('./update').UpdateState>>;
+  onUpdateChanged(listener: (state: import('./update').UpdateState) => void): () => void;
   ledgerSnapshot(request?: { month?: string }): Promise<ApiResult<import('./ledger').LedgerSnapshot>>;
   ledgerMutate(request: import('./ledger').LedgerMutationRequest): Promise<ApiResult<import('./ledger').LedgerMutationResult>>;
   ledgerUndo(request: import('./ledger').LedgerUndoRequest): Promise<ApiResult<import('./ledger').LedgerMutationResult>>;
