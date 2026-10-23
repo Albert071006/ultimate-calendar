@@ -18,7 +18,7 @@ const emptyPage = <T,>(): Page<T> => ({ items: [], total: 0, offset: 0, limit: 3
 function sizeLabel(bytes: number) { return bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
 
 export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialReference?: NonNullable<Source['captureRef']> }) {
-  const api = ui.api;
+  const api = ui.host;
   const account = useAccount(api);
   const model = ui.snapshot?.settings.model;
   const modelModalities = account.state?.models.data?.find(item => item.id === model)?.inputModalities;

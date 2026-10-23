@@ -25,7 +25,7 @@ export function Settings({
   const keyRef = useRef<HTMLInputElement>(null),
     s = snapshot.settings;
   const keyStatus = snapshot.keyStatus;
-  const account = useAccount(ui.api);
+  const account = useAccount(ui.host);
   const [model, setModel] = useState(s.model),
     [manualModel, setManualModel] = useState(false),
     [pricingMode, setPricingMode] = useState(s.pricingMode),
@@ -101,7 +101,7 @@ export function Settings({
           : null,
       });
       await ui.run(
-        () => ui.api!.saveSettings({ settings }),
+        () => ui.host!.saveSettings({ settings }),
         () => ui.setNotice("设置已保存"),
       );
       setError("");
@@ -110,10 +110,10 @@ export function Settings({
     }
   }
   async function saveKey(clear = false) {
-    if (!ui.api) return;
+    if (!ui.host) return;
     const input = keyRef.current;
     if (!clear && !input?.value.trim()) return;
-    const pending = ui.api.setApiKey({ key: clear ? null : input!.value });
+    const pending = ui.host.setApiKey({ key: clear ? null : input!.value });
     if (input) input.value = "";
     await ui.run(
       () => pending,
@@ -123,13 +123,13 @@ export function Settings({
     );
   }
   async function retryKey() {
-    const status = await ui.run(() => ui.api!.retryApiKey());
+    const status = await ui.run(() => ui.host!.retryApiKey());
     if (status) ui.setNotice(status.configured
       ? "已恢复读取保存的密钥，无需重新填写"
       : status.loadError ? "暂时仍无法读取，原密钥文件已保留，请稍后重试" : "没有找到已保存的密钥");
   }
   async function restoreBackup() {
-    const r = await ui.run(() => ui.api!.restore({ confirmed: false }));
+    const r = await ui.run(() => ui.host!.restore({ confirmed: false }));
     if (r?.status === "preview") setRestore(r);
   }
   async function savePreference() {
@@ -565,7 +565,7 @@ export function Settings({
           <button type="button"
             onClick={() =>
               void ui.run(
-                () => ui.api!.backup(),
+                () => ui.host!.backup(),
                 (r) => ui.setNotice(`备份已导出：${r.path}（包含来源资料）`),
               )
             }
@@ -593,7 +593,7 @@ export function Settings({
               onClick={() =>
                 void ui.run(
                   () =>
-                    ui.api!.restore({
+                    ui.host!.restore({
                       confirmed: true,
                       confirmationToken: restore.confirmationToken,
                     }),

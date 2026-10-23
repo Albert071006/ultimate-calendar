@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { DesktopAPI } from '../../shared/contracts';
+import type { HostCapabilities } from '../../shared/client';
 import type { UpdateState } from '../../shared/update';
 
 type UpdateAction = 'check' | 'download' | 'install';
 const activeStatuses = new Set<UpdateState['status']>(['checking', 'downloading', 'installing']);
 
 /** Update notifications never refresh planner data or replace an in-progress form. */
-export function useAppUpdates(api: DesktopAPI | undefined) {
+export function useAppUpdates(api: HostCapabilities | undefined) {
   const [state, setState] = useState<UpdateState | null>(null);
   const [error, setError] = useState('');
   const [pending, setPending] = useState<UpdateAction | null>(null);
@@ -14,7 +14,7 @@ export function useAppUpdates(api: DesktopAPI | undefined) {
   const stateRef = useRef(state);
   stateRef.current = state;
   const supported = !!api && ['updateSnapshot', 'onUpdateChanged', 'checkForUpdates', 'downloadUpdate', 'installUpdate']
-    .every(method => typeof api[method as keyof DesktopAPI] === 'function');
+    .every(method => typeof api[method as keyof HostCapabilities] === 'function');
 
   useEffect(() => {
     const current = ++generation.current;

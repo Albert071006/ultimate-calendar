@@ -14,7 +14,7 @@ describe('settings durable history', () => {
       { id: 'older', operationId: 'create', createdAt: '2026-01-10T12:00:00+08:00', origin: 'manual', message: '已保存，可撤销', changes: [{ entity: 'task', id: 'task', action: 'create', beforeVersion: null, afterVersion: 1, title: '交作业' }], undoneAt: '2026-01-10T13:00:00+08:00', undoable: true },
     ] });
     const undo = vi.fn(async () => {});
-    const ui = { api: undefined, busy: false, undo } as unknown as PlannerUI;
+    const ui = { client: undefined, host: undefined, busy: false, undo } as unknown as PlannerUI;
     const { container } = render(<Settings snapshot={snapshot} ui={ui} courses={() => {}} />);
     const history = container.querySelector('details.operation-history') as HTMLDetailsElement;
     expect(history.open).toBe(false);

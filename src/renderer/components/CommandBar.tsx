@@ -34,14 +34,14 @@ export function CommandBar({
   }, [history, expanded]);
 
   async function execute(request: CommandRequest, replyId: string) {
-    if (!ui.api || inFlight.current || ui.busy) return;
+    if (!ui.client || inFlight.current || ui.busy) return;
     inFlight.current = true;
     setRunning(true);
     setExpanded(true);
     setHistory(previous => previous.map(entry => entry.id === replyId
       ? { ...entry, text: "正在处理…", status: "pending", request }
       : entry));
-    const result = await ui.run(() => ui.api!.command(request));
+    const result = await ui.run(() => ui.client!.command(request));
     inFlight.current = false;
     setRunning(false);
     if (!result) {
@@ -79,7 +79,7 @@ export function CommandBar({
       } : entry));
   }
   function send() {
-    if (!ui.api || !text.trim() || inFlight.current || ui.busy) return;
+    if (!ui.client || !text.trim() || inFlight.current || ui.busy) return;
     const id = operationId();
     const request: CommandRequest = {
       operationId: id,

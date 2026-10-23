@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, Download, HeartHandshake, RefreshCw, Undo2, Wallet } from 'lucide-react';
-import type { DesktopAPI } from '../../shared/contracts';
+import type { HostCapabilities, PlannerClient } from '../../shared/client';
 import { LEDGER_ACCOUNTS, LedgerEntryDraftSchema, type LedgerAccountId, type LedgerEntry, type LedgerEntryKind, type LedgerMutationRequest, type LedgerRules, type LedgerSnapshot } from '../../shared/ledger';
 import { operationId, todayDate } from '../calendar-layout';
 import { localDateTime } from '../calendar-timeline';
@@ -41,7 +41,7 @@ const ledgerRulesText = [
   '账本保存在电脑并自动备份，可导出 CSV 和完整账本。自然语言理解使用已配置的 DeepSeek；手工记账与查看本地记录可离线。',
 ];
 
-export function LedgerPage({ api, createRequest = 0 }: { api: DesktopAPI; createRequest?: number }) {
+export function LedgerPage({ api, host, createRequest = 0 }: { api: PlannerClient; host?: HostCapabilities; createRequest?: number }) {
   const [month, setMonth] = useState(todayDate().slice(0, 7));
   const [tab, setTab] = useState<Tab>('overview');
   const [snapshot, setSnapshot] = useState<LedgerSnapshot | null>(null);
@@ -86,7 +86,8 @@ export function LedgerPage({ api, createRequest = 0 }: { api: DesktopAPI; create
   const exportLedger = async (format: 'csv' | 'json') => {
     setBusy(true); setError('');
     try {
-      const result = await api.ledgerExport({ format, ...(format === 'csv' ? { month } : {}) });
+      if (!host) return;
+      const result = await host.ledgerExport({ format, ...(format === 'csv' ? { month } : {}) });
       if (result.ok) { if (result.data) setNotice(`已导出${format === 'csv' ? '本月 CSV' : '完整账本'}：${result.data.path}`); }
       else if (result.error.code !== 'CANCELLED') setError(result.error.message);
     } catch { setError('导出尚未完成，请重试。'); }
@@ -118,14 +119,14 @@ export function LedgerPage({ api, createRequest = 0 }: { api: DesktopAPI; create
         <div className="ledger-section-heading"><h3>最近账单</h3><button onClick={() => filterDetails({})}>查看全部明细<ArrowUpRight size={14} /></button></div>{rows(recent)}
       </>}
       {tab === 'details' && <>
-        <div className="ledger-section-heading"><h3>{entries.length} 笔明细 {day && <span className="ledger-tag">{day}</span>}</h3><div className="ledger-toolbar"><button disabled={busy} onClick={() => void exportLedger('csv')}><Download size={14} />导出本月 CSV</button><button disabled={busy} onClick={() => void exportLedger('json')}>完整账本备份</button></div></div>
+        <div className="ledger-section-heading"><h3>{entries.length} 笔明细 {day && <span className="ledger-tag">{day}</span>}</h3>{host && <div className="ledger-toolbar"><button disabled={busy} onClick={() => void exportLedger('csv')}><Download size={14} />导出本月 CSV</button><button disabled={busy} onClick={() => void exportLedger('json')}>完整账本备份</button></div>}</div>
         <div className="ledger-filters"><label>搜索项目或备注<input value={search} onChange={event => setSearch(event.target.value)} placeholder="搜索账单" /></label><label>账户<select value={account} onChange={event => setAccount(event.target.value)}><option value="">全部账户</option><option value="unknown">账户待确认</option>{LEDGER_ACCOUNTS.map(value => <option value={value.id} key={value.id}>{value.name}</option>)}</select></label><label>分类<select value={category} onChange={event => setCategory(event.target.value)}><option value="">全部分类</option>{categories.map(value => <option key={value}>{value}</option>)}</select></label><label className="ledger-checkbox"><input type="checkbox" checked={showVoided} onChange={event => setShowVoided(event.target.checked)} />显示已作废</label>{(account || category || day || search) && <button onClick={() => filterDetails({})}>清除筛选</button>}</div>
         {summary.pendingAccountCount > 0 && <p className="ledger-form-note">本月 {summary.pendingAccountCount} 笔账户待确认；展开记录，点击“补充账户 / 更正”完善原笔。</p>}{rows(entries)}
       </>}
       {tab === 'accounts' && <>
         <div className="ledger-section-heading"><h3>账户账面余额</h3><small>来自已记流水与快照，不是支付平台实时余额</small></div><AccountCards snapshot={snapshot} onAccount={value => filterDetails({ account: value })} />
         <div className="ledger-accounts-grid" style={{ marginTop: 14 }}>{summary.accounts.filter(value => value.kind !== 'family').map(value => <div key={value.id} className="ledger-account-card"><span>{value.name}</span><small>本月资金变化 {ledgerMoney(value.periodChangeCents)}</small><button onClick={() => setBalanceAccount(value.id)}>核对余额</button>{value.pendingEntryIds.length > 0 && <small className="warning">{value.pendingEntryIds.length} 笔与快照先后关系待核对</small>}</div>)}</div>
-        <section className="ledger-account-history"><div className="ledger-section-heading"><h3>余额快照历史</h3><div className="ledger-toolbar"><button disabled={busy} onClick={() => void exportLedger('json')}><Download size={14} />导出完整账本</button></div></div><div className="table-scroll"><table><thead><tr><th>账户</th><th>快照日期 / 时点</th><th>余额</th><th>已覆盖记录</th><th>备注</th></tr></thead><tbody>{[...snapshot.balanceSnapshots].sort((a, b) => b.date.localeCompare(a.date) || b.recordedAt.localeCompare(a.recordedAt)).map(value => <tr key={value.id}><td>{accountName(value.accountId)}</td><td>{value.date}<small style={{ display: 'block' }}>{value.asOf ? timeText(value.asOf) : '具体时点未知'}</small></td><td>{ledgerMoney(value.balanceCents)}</td><td>{value.coveredEntryIds.length} 笔</td><td>{value.note || '—'}</td></tr>)}</tbody></table>{!snapshot.balanceSnapshots.length && <p className="ledger-form-note">尚无余额快照。点击账户的“核对余额”记录当前余额。</p>}</div></section>
+        <section className="ledger-account-history"><div className="ledger-section-heading"><h3>余额快照历史</h3>{host && <div className="ledger-toolbar"><button disabled={busy} onClick={() => void exportLedger('json')}><Download size={14} />导出完整账本</button></div>}</div><div className="table-scroll"><table><thead><tr><th>账户</th><th>快照日期 / 时点</th><th>余额</th><th>已覆盖记录</th><th>备注</th></tr></thead><tbody>{[...snapshot.balanceSnapshots].sort((a, b) => b.date.localeCompare(a.date) || b.recordedAt.localeCompare(a.recordedAt)).map(value => <tr key={value.id}><td>{accountName(value.accountId)}</td><td>{value.date}<small style={{ display: 'block' }}>{value.asOf ? timeText(value.asOf) : '具体时点未知'}</small></td><td>{ledgerMoney(value.balanceCents)}</td><td>{value.coveredEntryIds.length} 笔</td><td>{value.note || '—'}</td></tr>)}</tbody></table>{!snapshot.balanceSnapshots.length && <p className="ledger-form-note">尚无余额快照。点击账户的“核对余额”记录当前余额。</p>}</div></section>
       </>}
       {tab === 'rules' && <><RulesEditor key={snapshot.revision} rules={snapshot.rules} busy={busy} save={save} /><section className="ledger-card"><div className="ledger-section-heading"><h3>记账口径</h3><small>修订保留历史说明</small></div><ol className="ledger-rule-list">{ledgerRulesText.map(value => <li key={value}>{value}</li>)}</ol></section><section className="ledger-account-history"><h3>账户名称与别名</h3>{LEDGER_ACCOUNTS.map(value => <p className="ledger-form-note" key={value.id}>{value.name}：{value.aliases.join('、')}</p>)}</section></>}
     </section>

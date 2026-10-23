@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Undo2 } from "lucide-react";
 import type { CourseImportResult, DesktopAPI, Source } from "../shared/contracts";
+import type { HostCapabilities, PlannerClient } from "../shared/client";
+import { resolveConnection } from "./client-context";
 import { buildCalendar } from "../domain/calendar";
 import { todayDate } from "./calendar-layout";
 import { usePlanner } from "./hooks/usePlanner";
@@ -44,11 +46,12 @@ const titles: Record<Page, string> = {
   capture: "QQ 采集",
   ledger: "我的账单",
 };
-export function App({ api = window.planner }: { api?: DesktopAPI }) {
+export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: HostCapabilities }) {
+  const { client: api, host } = resolveConnection(props);
   const now = useCurrentTime();
-  const ui = usePlanner(api),
+  const ui = usePlanner(api, host),
     snapshot = ui.snapshot;
-  const updates = useAppUpdates(api);
+  const updates = useAppUpdates(host);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [captureReference, setCaptureReference] = useState<NonNullable<Source['captureRef']>>();
   const [ledgerCreateRequest, setLedgerCreateRequest] = useState(0);
@@ -64,7 +67,7 @@ export function App({ api = window.planner }: { api?: DesktopAPI }) {
     [sourceId, setSourceId] = useState<string | null>(null);
   useEffect(
     () =>
-      api?.onNavigate((event) => {
+      host?.onNavigate((event) => {
         if (event.entity === "source") {
           setSourceId(event.id);
           return;
@@ -82,7 +85,7 @@ export function App({ api = window.planner }: { api?: DesktopAPI }) {
                   : "calendar",
         );
       }),
-    [api],
+    [host],
   );
   const pending =
     snapshot?.candidates.filter((c) => isPendingCandidate(c, now)).length ?? 0;
@@ -144,12 +147,13 @@ export function App({ api = window.planner }: { api?: DesktopAPI }) {
   };
   const source = snapshot?.sources.find((s) => s.id === sourceId);
   return (
-    <div className={`app-shell${api ? ' desktop-chrome' : ''}`}>
-      {api && <div className="window-drag-region" aria-hidden="true" />}
+    <div className={`app-shell${host ? ' desktop-chrome' : ''}`}>
+      {host && <div className="window-drag-region" aria-hidden="true" />}
       <Sidebar
         page={page}
         navigate={setPage}
         pending={pending}
+        hostPages={!!host}
         onImport={() => setImporting(true)}
       />
       <main className="workspace">
@@ -234,7 +238,7 @@ export function App({ api = window.planner }: { api?: DesktopAPI }) {
               className={`workspace-body ${page === "settings" || page === "capture" || page === "ledger" ? "no-detail" : ""}`}
             >
               <div className="main-content">
-                {page === "ledger" && <LedgerPage api={api} createRequest={ledgerCreateRequest} />}
+                {page === "ledger" && <LedgerPage api={api} host={host} createRequest={ledgerCreateRequest} />}
                 {page === "capture" && <CapturePage ui={ui} initialReference={captureReference} />}
                 {page === "calendar" && (
                   <Calendar

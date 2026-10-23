@@ -22,11 +22,11 @@ export function ImportDialog({
     [image, setImage] = useState<SelectedImage | null>(null),
     [saved, setSaved] = useState<Source | null>(null);
   async function save(analyze: boolean) {
-    if (!ui.api) return;
+    if (!ui.client) return;
     const source =
       saved ??
       (await ui.run(() =>
-        ui.api!.importSource({
+        ui.client!.importSource({
           operationId: operationId(),
           source: {
             kind,
@@ -44,7 +44,7 @@ export function ImportDialog({
     if (analyze) {
       const result = await ui.run(
         () =>
-          ui.api!.analyzeSource({
+          ui.client!.analyzeSource({
             operationId: operationId(),
             sourceId: source.id,
           }),
@@ -69,7 +69,7 @@ export function ImportDialog({
         >
           粘贴文字
         </button>
-        <button
+        {ui.host && <button
           className={kind === "image" ? "selected" : ""}
           onClick={() => {
             setKind("image");
@@ -77,7 +77,7 @@ export function ImportDialog({
           }}
         >
           消息截图
-        </button>
+        </button>}
       </div>
       <label>
         群 / 来源标签
@@ -120,7 +120,7 @@ export function ImportDialog({
           <button
             onClick={() =>
               void ui.run(
-                () => ui.api!.selectImage(),
+                () => ui.host!.selectImage(),
                 (selected) => {
                   if (selected) {
                     setImage(selected);
@@ -198,10 +198,11 @@ export function SourceViewer({
 }) {
   const [ack, setAck] = useState(false);
   async function retry() {
-    if (!ui.api || source.captureRef) return;
+    if (!ui.client || source.captureRef) return;
     if (source.purpose === "courses") {
+      if (!ui.host) return;
       const r = await ui.run(() =>
-        ui.api!.importCourses({
+        ui.host!.importCourses({
           kind: "source",
           operationId: operationId(),
           sourceId: source.id,
@@ -211,7 +212,7 @@ export function SourceViewer({
     } else
       await ui.run(
         () =>
-          ui.api!.analyzeSource({
+          ui.client!.analyzeSource({
             operationId: operationId(),
             sourceId: source.id,
           }),

@@ -2,13 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import type {
   ApiResult,
   ApiError,
-  DesktopAPI,
   MutationInput,
   MutationResult,
   Snapshot,
 } from "../../shared/contracts";
+import type { HostCapabilities, PlannerClient } from "../../shared/client";
 import { operationId } from "../calendar-layout";
-export function usePlanner(api: DesktopAPI | undefined) {
+export function usePlanner(api: PlannerClient | undefined, host?: HostCapabilities) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState("");
   const [errorCode, setErrorCode] = useState<ApiError["code"] | null>(null);
@@ -101,7 +101,8 @@ export function usePlanner(api: DesktopAPI | undefined) {
     if (api) await run(() => api.undo(id), receive);
   }
   return {
-    api,
+    client: api,
+    host,
     snapshot,
     error,
     errorCode,

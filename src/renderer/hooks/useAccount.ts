@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AccountState } from '../../shared/account';
-import type { DesktopAPI } from '../../shared/contracts';
+import type { HostCapabilities } from '../../shared/client';
 
 /** Account updates are independent of planner refreshes and never reset form drafts. */
-export function useAccount(api: DesktopAPI | undefined) {
+export function useAccount(api: HostCapabilities | undefined) {
   const [state, setState] = useState<AccountState | null>(null);
   const [error, setError] = useState('');
   const [refreshing, setRefreshing] = useState(false);

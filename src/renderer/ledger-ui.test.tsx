@@ -15,8 +15,8 @@ function fixture() {
   const ledgerSnapshot = vi.fn(async () => ({ ok: true as const, data: snapshot }));
   const ledgerExport = vi.fn(async () => ({ ok: true as const, data: { path: 'C:\\fixture\\ledger.csv' } }));
   const api = { ledgerSnapshot, ledgerMutate, ledgerExport, onChanged: () => () => {} } as unknown as DesktopAPI;
-  const view = render(<LedgerPage api={api} />);
-  return { ...view, api, ledgerMutate, ledgerSnapshot, ledgerExport, snapshot, openNew: () => view.rerender(<LedgerPage api={api} createRequest={1} />) };
+  const view = render(<LedgerPage api={api} host={api} />);
+  return { ...view, api, ledgerMutate, ledgerSnapshot, ledgerExport, snapshot, openNew: () => view.rerender(<LedgerPage api={api} host={api} createRequest={1} />) };
 }
 
 describe('local ledger UI', () => {
@@ -103,7 +103,7 @@ describe('local ledger UI', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存账单' }));
     await waitFor(() => expect(f.ledgerMutate).toHaveBeenCalledTimes(1));
     expect(f.ledgerMutate.mock.calls[0]![0].changes[0]).toMatchObject({ entry: { personalCents: null } });
-    f.rerender(<LedgerPage api={f.api} createRequest={2} />);
+    f.rerender(<LedgerPage api={f.api} host={f.api} createRequest={2} />);
     fireEvent.change(screen.getByLabelText('类型'), { target: { value: 'refund' } });
     fireEvent.change(screen.getByLabelText('项目'), { target: { value: '退款' } });
     fireEvent.change(screen.getByLabelText('实际收到（元）'), { target: { value: '10' } });

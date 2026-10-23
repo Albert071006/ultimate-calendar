@@ -37,7 +37,7 @@ function fixture(initial?: Partial<CaptureSnapshot>, reference?: NonNullable<Sou
     captureChunks: vi.fn(async () => ({ ok: true, data: { items: [], total: 0, offset: 0, limit: 5 } })),
     onCaptureChanged: (next: typeof listener) => { listener = next; return () => {}; },
   } as unknown as DesktopAPI;
-  render(<CapturePage ui={{ api, ...(modalities !== undefined ? { snapshot: { settings: { model: 'test-model' } } } : {}) } as PlannerUI} initialReference={reference} />);
+  render(<CapturePage ui={{ client: api, host: api, ...(modalities !== undefined ? { snapshot: { settings: { model: 'test-model' } } } : {}) } as unknown as PlannerUI} initialReference={reference} />);
   return { api, config, connect, action, clear, emit(next: Partial<CaptureSnapshot>) { state = CaptureSnapshotSchema.parse({ ...state, ...next }); act(() => listener(state)); } };
 }
 
@@ -153,7 +153,7 @@ describe('QQ capture page', () => {
     const reference = { accountId: '10001', groupId: 'g1', messageId: 'qqm:stable-id', attachmentId: 'attachment-1', locator: '第 3 页', transcribed: true };
     const source = SourceSchema.parse({ id: 'source-1', version: 1, createdAt: time, updatedAt: time, kind: 'text', text: '保留的候选依据', importedAt: time, captureRef: reference });
     const open = vi.fn();
-    render(<SourceViewer source={source} ui={{ api: {}, busy: false } as PlannerUI} onClose={() => {}} settings={() => {}} courses={() => {}} onCapture={open} />);
+    render(<SourceViewer source={source} ui={{ client: {}, host: {}, busy: false } as PlannerUI} onClose={() => {}} settings={() => {}} courses={() => {}} onCapture={open} />);
     expect(screen.getByText('AI 图片转写 · 请对照原件核对')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '提交 / 重试消息分析' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '查看 QQ 原消息与附件位置' })); expect(open).toHaveBeenCalledWith(reference);

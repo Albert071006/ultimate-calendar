@@ -46,19 +46,19 @@ export function CourseEditor({
     setError("");
   }
   async function importFile() {
-    if (ui.api) {
+    if (ui.host) {
       const result = await ui.run(() =>
-        ui.api!.importCourses({ kind: "file", operationId: operationId() }),
+        ui.host!.importCourses({ kind: "file", operationId: operationId() }),
       );
       if (result) receive(result);
     }
   }
   async function importImage() {
-    if (!ui.api) return;
-    const image = await ui.run(() => ui.api!.selectImage());
+    if (!ui.host) return;
+    const image = await ui.run(() => ui.host!.selectImage());
     if (!image) return;
     const result = await ui.run(() =>
-      ui.api!.importCourses({
+      ui.host!.importCourses({
         kind: "image",
         operationId: operationId(),
         imageDataUrl: image.imageDataUrl,
@@ -158,7 +158,7 @@ export function CourseEditor({
           onClick={() =>
             void ui.run(
               () =>
-                ui.api!.importCourses({
+                ui.host!.importCourses({
                   kind: "text",
                   operationId: operationId(),
                   text,

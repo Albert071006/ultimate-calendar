@@ -51,7 +51,7 @@ function fixture(settings: Partial<SettingsValue> = {}, initial = readyState(), 
     onAccountChanged: (listener: (state: AccountState) => void) => { changed = listener; return unsubscribe; },
     saveSettings, retryApiKey, setApiKey,
   } as unknown as DesktopAPI;
-  function Harness() { const ui = usePlanner(api); return ui.snapshot ? <Settings snapshot={ui.snapshot} ui={ui} courses={courses} /> : null; }
+  function Harness() { const ui = usePlanner(api, api); return ui.snapshot ? <Settings snapshot={ui.snapshot} ui={ui} courses={courses} /> : null; }
   const view = render(<Harness />);
   return { ...view, api, snapshot, saveSettings, refreshAccount, retryApiKey, setApiKey, courses, unsubscribe, emit(next: AccountState) { account = next; act(() => changed?.(next)); } };
 }

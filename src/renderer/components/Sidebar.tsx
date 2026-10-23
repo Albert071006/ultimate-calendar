@@ -51,11 +51,14 @@ export function Sidebar({
   navigate,
   pending,
   onImport,
+  hostPages = true,
 }: {
   page: Page;
   navigate: (page: Page) => void;
   pending: number;
   onImport: () => void;
+  /** Capture and settings run only on the Windows host. */
+  hostPages?: boolean;
 }) {
   return (
     <aside className="sidebar">
@@ -69,7 +72,7 @@ export function Sidebar({
         ＋ 导入消息
       </button>
       <nav aria-label="主导航">
-        {entries.map(([id, label, Icon]) => (
+        {entries.filter(([id]) => hostPages || (id !== "capture" && id !== "settings")).map(([id, label, Icon]) => (
           <button
             key={id}
             className={page === id ? "active" : ""}
