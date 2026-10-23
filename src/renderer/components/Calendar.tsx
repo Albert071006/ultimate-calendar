@@ -11,7 +11,9 @@ import {
 import { DAY_HEIGHT, DAY_MINUTES, HOUR_HEIGHT, dayStart, draftRange, gestureRange, localDateTime, minuteAt, minutePosition, positionIntervals, type TimelineOperation } from '../calendar-timeline';
 import { useCurrentTime } from '../hooks/useCurrentTime';
 import { CurrentTimeIndicator, currentTimePosition } from './CurrentTimeIndicator';
+import { calendarAttention } from '../calendar-attention';
 import './CalendarTimeline.css';
+import './calendar-attention.css';
 export interface Selection {
   entity: CalendarItem["refKind"];
   id: string;
@@ -71,6 +73,11 @@ export function Calendar({
   const days = calendarDays(date, view),
     today = localDateTime(now).slice(0, 10);
   const items = buildCalendar(snapshot, days[0]!, days.at(-1)!, pending);
+  const itemAttention = new Map(items.map(item => [item.id, calendarAttention(item, snapshot, now)]));
+  const attentionClass = (item: CalendarItem) => `calendar-${itemAttention.get(item.id)!.tone}`;
+  const attentionLabel = (item: CalendarItem) => itemAttention.get(item.id)!.label;
+  const statusLabel = (item: CalendarItem) => attentionLabel(item)
+    ? <span className="calendar-item-status">{attentionLabel(item)}</span> : null;
   const termWeek = snapshot.settings.termStart ? Math.floor(dayDistance(snapshot.settings.termStart, date) / 7) + 1 : null;
   useLayoutEffect(() => {
     if (scroll.current && !focusCurrentTime(scroll.current, date, view)) scroll.current.scrollTop = 7 * HOUR_HEIGHT;
@@ -282,10 +289,12 @@ export function Calendar({
                   .map((i) => (
                     <button
                       key={i.id}
-                      className={`month-item ${i.category}`}
+                      className={`month-item ${i.category} ${attentionClass(i)}`}
                       onClick={() => open(i, day)}
+                      title={`${i.title}${attentionLabel(i) ? ` · ${attentionLabel(i)}` : ''}`}
                     >
                       {i.start ? i.start.slice(11, 16) : "截止"} {i.title}
+                      {statusLabel(i)}
                     </button>
                   ))}
                 <button
@@ -340,10 +349,10 @@ export function Calendar({
                   .filter((i) => !i.start && i.date === day)
                   .map((i) => (
                     <button
-                      className={`marker ${i.category}`}
+                      className={`marker ${i.category} ${attentionClass(i)}`}
                       key={i.id}
                       onClick={() => open(i)}
-                      title={i.title}
+                      title={`${i.title}${attentionLabel(i) ? ` · ${attentionLabel(i)}` : ''}`}
                     >
                       {i.category === "candidate"
                         ? "待判"
@@ -351,6 +360,7 @@ export function Calendar({
                           ? "截止"
                           : "时间点"}{" "}
                       {i.start?.slice(11, 16)} {i.title}
+                      {statusLabel(i)}
                     </button>
                   ))}
               </div>
@@ -397,15 +407,16 @@ export function Calendar({
                   {positioned.map(({ item, startMinute, endMinute, column, columns: count }) => {
                     const movable = item.refKind === 'block';
                     const startsHere = Date.parse(item.start!) >= dayStart(day), endsHere = Date.parse(item.end!) <= dayStart(day) + 86400_000;
-                    const label = `${item.title} ${item.start!.slice(11, 16)}–${item.end!.slice(11, 16)}${item.end!.slice(0, 10) !== item.start!.slice(0, 10) ? '（跨日）' : ''}`;
+                    const label = `${item.title} ${item.start!.slice(11, 16)}–${item.end!.slice(11, 16)}${item.end!.slice(0, 10) !== item.start!.slice(0, 10) ? '（跨日）' : ''}${attentionLabel(item) ? ` · ${attentionLabel(item)}` : ''}`;
                     return <div key={item.id} data-timeline-item={item.id}
-                      className={`timeline-event ${item.category} ${item.pending ? 'pending' : ''} ${endMinute - startMinute < 18 ? 'compact' : ''} ${preview?.itemId === item.id ? 'is-moving' : ''}`}
+                      className={`timeline-event ${item.category} ${attentionClass(item)} ${item.pending ? 'pending' : ''} ${endMinute - startMinute < 18 ? 'compact' : ''} ${preview?.itemId === item.id ? 'is-moving' : ''}`}
                       style={{ top: minutePosition(startMinute), height: minutePosition(endMinute - startMinute), left: `calc(${column / count * 100}% + 3px)`, width: `calc(${100 / count}% - 6px)` }}>
                       <button className={`timeline-event-button ${movable ? 'can-move' : ''}`} title={`${label}\n${item.start!.slice(0, 10)} 至 ${item.end!.slice(0, 10)}${movable ? '\n拖动移动；Alt + 上下方向键微调 1 分钟' : ''}`}
                         onPointerDown={e => { if (movable) begin(e, day, 'move', item); else e.stopPropagation(); }}
                         onKeyDown={e => keyboardBlock(e, item, 'move')}
                         onClick={e => { if (suppressClick.current === item.id && e.detail !== 0) { suppressClick.current = null; return; } open(item, day); }}>
                         <strong>{item.title}</strong><small>{item.start!.slice(11, 16)}–{item.end!.slice(11, 16)}{item.end!.slice(0, 10) !== item.start!.slice(0, 10) ? ' · 跨日' : ''}</small>
+                        {statusLabel(item)}
                         {item.location && <small>{item.location}</small>}
                       </button>
                       {movable && startsHere && <button className="timeline-resize start" aria-label={`调整 ${item.title} 开始时间`} title="拖动调整开始；上下方向键微调 1 分钟"
@@ -414,11 +425,12 @@ export function Calendar({
                         onPointerDown={e => begin(e, day, 'resize-end', item)} onKeyDown={e => keyboardBlock(e, item, 'resize-end')} onClick={e => e.stopPropagation()} />}
                     </div>;
                   })}
-                  {items.filter(item => item.start && !item.end && item.date === day).map(item => <button key={item.id} className={`timeline-point ${item.category}`}
-                    title={`${item.title} · ${item.start!.slice(11, 16)}（不占用时间）`}
+                  {items.filter(item => item.start && !item.end && item.date === day).map(item => <button key={item.id} className={`timeline-point ${item.category} ${attentionClass(item)}`}
+                    title={`${item.title} · ${item.start!.slice(11, 16)}（不占用时间）${attentionLabel(item) ? ` · ${attentionLabel(item)}` : ''}`}
                     style={{ top: minutePosition(Math.max(0, Math.min(1439, (Date.parse(item.start!) - dayStart(day)) / 60000))) }}
                     onPointerDown={e => e.stopPropagation()} onClick={() => open(item, day)}>
                     ◆ {item.start!.slice(11, 16)} {item.title}
+                    {statusLabel(item)}
                   </button>)}
                   {projected && <div className="timeline-preview" style={{ top: minutePosition(projected.startMinute), height: minutePosition(projected.endMinute - projected.startMinute) }}>
                     <span className="timeline-preview-label">{clock(projected.startMinute)}–{clock(projected.endMinute)}</span>

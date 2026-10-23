@@ -31,8 +31,9 @@ import {
 import { ImportDialog, SourceViewer } from "./components/ImportDialog";
 import { Modal } from "./components/Modal";
 import { Preview } from "./components/Preview";
-import { taskEvents, taskNoticeTiming, noticeTimePassed, nextTaskEvent } from './task-schedule';
+import { taskEvents, taskArrangements, taskNoticeTiming, noticeTimePassed, nextTaskArrangement } from './task-schedule';
 import { effectiveActivityEnd } from '../domain/activity-duration';
+import './task-attention.css';
 const titles: Record<Page, string> = {
   today: "今天",
   calendar: "我的日历",
@@ -96,11 +97,11 @@ export function App({ api = window.planner }: { api?: DesktopAPI }) {
     setEditor({ entity: "block", id: draft.blockId, draft });
   const scheduleTask = (taskId: string, blockId?: string) => {
     if (!snapshot) return;
-    const events = taskEvents(snapshot, taskId);
-    const event = blockId ? events.find(block => block.id === blockId && !block.cancelled) : nextTaskEvent(events, Date.now());
+    const arrangements = taskArrangements(snapshot, taskId);
+    const event = blockId ? arrangements.find(block => block.id === blockId && !block.cancelled) : nextTaskArrangement(arrangements, Date.now());
     if (event) {
       setEditor({ entity: 'block', id: event.id });
-    } else if (events.length || blockId) {
+    } else if (arrangements.length || blockId) {
       setSelected({ entity: 'task', id: taskId });
     } else {
       const timing = taskNoticeTiming(snapshot, taskId);
@@ -264,6 +265,7 @@ export function App({ api = window.planner }: { api?: DesktopAPI }) {
                     ui={ui}
                     select={select}
                     create={() => setEditor({ entity: "task" })}
+                    editTask={(id) => setEditor({ entity: 'task', id })}
                     schedule={scheduleTask}
                     scheduleRecurring={scheduleRecurringTask}
                     removeTask={removeTask}
@@ -413,6 +415,7 @@ export function App({ api = window.planner }: { api?: DesktopAPI }) {
                   snapshot={snapshot}
                   selection={selected}
                   edit={editSelected}
+                  editTask={(id) => setEditor({ entity: 'task', id })}
                   close={() => setSelected(null)}
                   schedule={scheduleTask}
                   scheduleRecurring={scheduleRecurringTask}

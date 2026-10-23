@@ -190,6 +190,103 @@ try {
   assert(ordinaryUndo.ok && ordinaryUndo.data.status === 'applied' && !(await evaluate('window.planner.snapshot()')).data.blocks.some(block => block.id === ordinaryBlock.id), 'Ordinary same-task fixture could not be undone');
   const recurringUndo = await evaluate(`window.planner.undo(${JSON.stringify(recurringSaved.data.transactionId)})`);
   assert(recurringUndo.ok && recurringUndo.data.status === 'applied' && (await evaluate('window.planner.snapshot()')).data.blocks.length === 0, 'Recurring batch could not be undone atomically');
+  // Exercise overdue/ended personal tasks through the actual renderer, IPC and
+  // SQLite store. Dates are relative to this run, so the smoke remains useful
+  // after the release date. All records live only in the temporary profile.
+  const fixtureTransactions = [];
+  async function saveAttentionFixture(operationId, mutations) {
+    const request = { operationId, origin: 'manual', mutations };
+    let result = await evaluate(`window.planner.mutate(${JSON.stringify(request)})`);
+    if (result.ok && result.data.status === 'preview') result = await evaluate(`window.planner.mutate(${JSON.stringify({ ...result.data.proposedRequest, confirmed: true, confirmationToken: result.data.confirmationToken })})`);
+    assert(result.ok && result.data.status === 'applied', `${operationId}: fixture could not be saved`);
+    fixtureTransactions.push(result.data.transactionId);
+  }
+  const shanghaiDayOffset = days => new Date(Date.now() + days * 86400000 + 8 * 3600000).toISOString().slice(0, 10);
+  const overdueDay = shanghaiDayOffset(-3), endedDay = shanghaiDayOffset(-2), workDay = shanghaiDayOffset(7);
+  const attentionTitles = {
+    overdue: '合成逾期未完成事项（隔离验收）',
+    ended: '合成已结束待处理事项（隔离验收）',
+    work: '合成已安排执行事项（隔离验收）',
+    done: '合成已完成事项（隔离验收）',
+  };
+  for (const [key, title] of Object.entries(attentionTitles)) await saveAttentionFixture(`synthetic-attention-task-${key}`, [{ type: 'create', entity: 'task', values: {
+    title, status: key === 'done' ? 'done' : 'open', deadline: key === 'overdue' || key === 'done' ? { date: overdueDay, time: '12:00' } : null,
+    reminders: { enabled: false, leadMinutes: null, dateOnlyTime: null },
+  } }]);
+  const attentionTasks = Object.fromEntries(Object.entries(attentionTitles).map(([key, title]) => [key, title]));
+  const attentionSnapshot = (await evaluate('window.planner.snapshot()')).data;
+  for (const key of Object.keys(attentionTasks)) attentionTasks[key] = attentionSnapshot.tasks.find(task => task.title === attentionTitles[key]);
+  assert(Object.values(attentionTasks).every(Boolean), 'Attention task fixtures disappeared from storage');
+  for (const [key, kind, day] of [['ended', 'event', endedDay], ['work', 'work', workDay]]) await saveAttentionFixture(`synthetic-attention-block-${key}`, [{ type: 'create', entity: 'block', values: {
+    title: attentionTitles[key], taskId: attentionTasks[key].id, kind, start: `${day}T10:00:00+08:00`, end: `${day}T10:30:00+08:00`, location: '合成验收地点',
+    reminders: { enabled: false, leadMinutes: null, dateOnlyTime: null },
+  } }]);
+  const beforeWorkEdit = (await evaluate('window.planner.snapshot()')).data;
+  const workBlock = beforeWorkEdit.blocks.find(block => block.taskId === attentionTasks.work.id);
+  assert(workBlock?.kind === 'work', 'Synthetic execution block was not persisted');
+  async function waitForAttentionRows(selector) {
+    const ids = Object.values(attentionTasks).filter(task => task.status === 'open').map(task => task.id);
+    for (let i = 0; i < 50; i++) {
+      if (await evaluate(`${JSON.stringify(ids)}.every(id => Array.from(document.querySelectorAll(${JSON.stringify(selector)})).some(row => row.dataset.taskId === id))`)) return;
+      await wait(100);
+    }
+    throw Error(`${selector}: overdue, ended or scheduled open tasks disappeared`);
+  }
+  async function verifyAttentionRows(selector) {
+    await waitForAttentionRows(selector);
+    for (const reason of ['overdue', 'ended']) assert(await evaluate(`(() => {
+      const row = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find(row => row.dataset.taskId === ${JSON.stringify(attentionTasks[reason].id)});
+      return row?.dataset.attention === ${JSON.stringify(reason)} && row.classList.contains('task-needs-attention') && !!row.querySelector('.task-attention-label')?.textContent.trim();
+    })()`), `${selector}: ${reason} task lost its visible attention status`);
+    assert(await evaluate(`!Array.from(document.querySelectorAll(${JSON.stringify(selector)})).some(row => row.dataset.taskId === ${JSON.stringify(attentionTasks.done.id)})`), `${selector}: completed task leaked back into open tasks`);
+  }
+  async function openExistingWork(selector) {
+    assert(await evaluate(`(() => {
+      const row = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find(row => row.dataset.taskId === ${JSON.stringify(attentionTasks.work.id)});
+      const button = Array.from(row?.querySelectorAll('button') ?? []).find(button => button.textContent.trim() === '查看安排');
+      if (!button) return false; button.click(); return true;
+    })()`), `${selector}: scheduled execution task did not offer 查看安排`);
+    for (let i = 0; i < 50; i++) { if (await evaluate('!!document.querySelector("[role=dialog] input[name=start]")')) break; await wait(50); }
+    assert(await evaluate(`(() => {
+      const dialog = document.querySelector('[role=dialog]');
+      return dialog?.querySelector('h2')?.textContent === '编辑时段'
+        && dialog.querySelector('[name=start]')?.value === ${JSON.stringify(`${workDay}T10:00`)}
+        && dialog.querySelector('[name=end]')?.value === ${JSON.stringify(`${workDay}T10:30`)}
+        && dialog.querySelector('[name=kind]')?.value === 'work'
+        && dialog.querySelector('[name=taskId]')?.value === ${JSON.stringify(attentionTasks.work.id)};
+    })()`), `${selector}: 查看安排 opened a new draft or lost the existing execution time`);
+  }
+  await evaluate(`Array.from(document.querySelectorAll('nav button')).find(button => button.textContent.trim() === '任务').click(); true`);
+  await verifyAttentionRows('.task-row');
+  await openExistingWork('.task-row');
+  await evaluate(`(() => {
+    const dialog = document.querySelector('[role=dialog]'), location = dialog.querySelector('[name=location]');
+    location.value = '合成验收调整后的地点'; location.dispatchEvent(new Event('input', { bubbles: true }));
+    Array.from(dialog.querySelectorAll('button')).find(button => button.textContent.trim() === '保存').click();
+    return true;
+  })()`);
+  for (let i = 0; i < 50; i++) { if (!(await evaluate('!!document.querySelector("[role=dialog]")'))) break; await wait(100); }
+  const afterWorkEdit = (await evaluate('window.planner.snapshot()')).data;
+  assert(!(await evaluate('!!document.querySelector("[role=dialog]")')) && afterWorkEdit.blocks.length === beforeWorkEdit.blocks.length
+    && afterWorkEdit.blocks.filter(block => block.taskId === attentionTasks.work.id).length === 1
+    && afterWorkEdit.blocks.find(block => block.id === workBlock.id)?.location === '合成验收调整后的地点'
+    && afterWorkEdit.blocks.find(block => block.id === workBlock.id)?.version === workBlock.version + 1,
+  'Saving 查看安排 did not update the original execution block, or created a duplicate');
+  await evaluate(`Array.from(document.querySelectorAll('nav button')).find(button => button.textContent.trim() === '日历').click(); true`);
+  await verifyAttentionRows('.rail-task');
+  await openExistingWork('.rail-task');
+  await evaluate(`Array.from(document.querySelectorAll('[role=dialog] button')).find(button => button.textContent.trim() === '取消').click(); true`);
+  assert(JSON.stringify((await evaluate('window.planner.snapshot()')).data.blocks) === JSON.stringify(afterWorkEdit.blocks), 'Cancelling the rail editor changed an existing execution block');
+  await writeFile(join(profile, 'attention-task-rail.png'), Buffer.from((await cdp('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+  const workEditUndo = await evaluate('window.planner.undo()');
+  assert(workEditUndo.ok && workEditUndo.data.status === 'applied', 'Actual execution edit could not be undone');
+  for (const transactionId of fixtureTransactions.reverse()) {
+    const result = await evaluate(`window.planner.undo(${JSON.stringify(transactionId)})`);
+    assert(result.ok && result.data.status === 'applied', 'Synthetic attention fixture cleanup could not be undone');
+  }
+  const afterAttentionCleanup = (await evaluate('window.planner.snapshot()')).data;
+  assert(afterAttentionCleanup.blocks.length === 0 && afterAttentionCleanup.tasks.length === 1 && afterAttentionCleanup.tasks[0].id === recurringTask.id,
+    'Attention smoke left synthetic fixtures in the persistence test');
   const bad = await evaluate('window.planner.mutate({operationId:"bad",arbitraryPath:"C:/secret"})'); assert(!bad.ok && bad.error.code === 'VALIDATION', 'Malformed DTO accepted');
   const key = await evaluate(`window.planner.setApiKey({key:${JSON.stringify(secret)}})`); assert(key.ok && key.data.configured && !key.data.sessionOnly, 'Async safeStorage encryption unavailable');
   assert(!(await readFile(join(profile, 'credentials', 'deepseek.bin'))).includes(Buffer.from(secret)), 'Credential file contains plaintext');
@@ -218,7 +315,7 @@ try {
   assert(await evaluate('typeof window.require === "undefined" && typeof window.process === "undefined"'), 'Renderer acquired Node capability');
   const files = await readdir(join(profile, 'backups')); for (const file of files) assert(!(await readFile(join(profile, 'backups', file))).includes(Buffer.from(secret)), 'Backup leaked credential');
   assert(!diagnostics.join('').match(/Unable to load preload|preload script.*Error|ReferenceError|Uncaught/i), 'Runtime preload/renderer error');
-  console.log(JSON.stringify({ ok: true, actualMain: true, sandboxPreload: true, ledgerCreateCorrectQueryUndo: true, ledgerIdempotencyAndPersistence: true, ledgerSidebarChartsAndDetailUI: true, recurringPreviewConfirmUndo: true, recurringScopeEditsAndCancellationUndo: true, recurringStableIdentityAndOrdinaryTaskIsolation: true, gracefulQuitBeforeRestart: true, twoLaunchPersistence: true, savedCredentialRecovery: true, persistentUndo: true, syntheticEncryptedRoundtrip: true, rendererHasNoNode: true, profile }, null, 2));
-  await writeFile(join(reportDirectory, 'smoke-result.json'), JSON.stringify({ ok: true, executable, profile, ledgerCreateCorrectQueryUndo: true, ledgerIdempotencyAndPersistence: true, ledgerSidebarChartsAndDetailUI: true, recurringScopeEditsAndCancellationUndo: true, recurringStableIdentityAndOrdinaryTaskIsolation: true, gracefulQuitBeforeRestart: true, twoLaunchPersistence: true, savedCredentialRecovery: true, syntheticEncryptedRoundtrip: true, diagnostics: diagnostics.join('').slice(-3000) }, null, 2));
+  console.log(JSON.stringify({ ok: true, actualMain: true, sandboxPreload: true, ledgerCreateCorrectQueryUndo: true, ledgerIdempotencyAndPersistence: true, ledgerSidebarChartsAndDetailUI: true, recurringPreviewConfirmUndo: true, recurringScopeEditsAndCancellationUndo: true, recurringStableIdentityAndOrdinaryTaskIsolation: true, overdueAndEndedOpenTasksRemainVisible: true, scheduledWorkReusesExistingEditor: true, scheduledWorkSaveDoesNotDuplicate: true, gracefulQuitBeforeRestart: true, twoLaunchPersistence: true, savedCredentialRecovery: true, persistentUndo: true, syntheticEncryptedRoundtrip: true, rendererHasNoNode: true, profile }, null, 2));
+  await writeFile(join(reportDirectory, 'smoke-result.json'), JSON.stringify({ ok: true, executable, profile, ledgerCreateCorrectQueryUndo: true, ledgerIdempotencyAndPersistence: true, ledgerSidebarChartsAndDetailUI: true, recurringScopeEditsAndCancellationUndo: true, recurringStableIdentityAndOrdinaryTaskIsolation: true, overdueAndEndedOpenTasksRemainVisible: true, scheduledWorkReusesExistingEditor: true, scheduledWorkSaveDoesNotDuplicate: true, gracefulQuitBeforeRestart: true, twoLaunchPersistence: true, savedCredentialRecovery: true, syntheticEncryptedRoundtrip: true, diagnostics: diagnostics.join('').slice(-3000) }, null, 2));
 } catch (error) { console.error(error.message); console.error(diagnostics.join('').replaceAll(secret, '[synthetic]').slice(-5000)); process.exitCode = 1; }
 finally { await stop(); for (const client of qqServer.clients) client.terminate(); await new Promise(resolve => qqServer.close(resolve)); }

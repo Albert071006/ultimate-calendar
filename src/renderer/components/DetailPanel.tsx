@@ -26,8 +26,8 @@ import { candidateExpiry } from '../../domain/candidate-eligibility';
 import { useCurrentTime } from '../hooks/useCurrentTime';
 import { CandidateTiming } from './CandidateTiming';
 import { candidateDisplay } from '../candidate-display';
-import { taskEvents, taskEventSummary, eventTimeLabel, taskNoticeTiming, taskNoticeSummary } from '../task-schedule';
-import { selectRailTasks } from '../task-rail';
+import { taskArrangements, taskArrangementSummary, eventTimeLabel, taskNoticeTiming, taskNoticeSummary } from '../task-schedule';
+import { selectRailTasks, taskAttention } from '../task-rail';
 import { effectiveActivityEnd, DEFAULT_ACTIVITY_MINUTES } from '../../domain/activity-duration';
 import { recurringEventTargets } from '../../domain/recurring-events';
 export const entityNames: Record<EntityKind, string> = {
@@ -64,6 +64,7 @@ export function DetailPanel({
   snapshot,
   selection,
   edit,
+  editTask,
   close,
   schedule,
   scheduleRecurring,
@@ -73,6 +74,7 @@ export function DetailPanel({
   snapshot: Snapshot;
   selection: Selection | null;
   edit: () => void;
+  editTask: (id: string) => void;
   close: () => void;
   schedule: (id: string, blockId?: string) => void;
   scheduleRecurring?: (id: string) => void;
@@ -81,8 +83,9 @@ export function DetailPanel({
 }) {
   const now = useCurrentTime();
   const value = selection ? findRecord(snapshot, selection) : undefined;
-  const events = selection?.entity === 'task' && value ? taskEvents(snapshot, value.id) : [];
-  const timing = selection?.entity === 'task' && value && !events.length ? taskNoticeTiming(snapshot, value.id) : null;
+  const arrangements = selection?.entity === 'task' && value ? taskArrangements(snapshot, value.id) : [];
+  const timing = selection?.entity === 'task' && value && !arrangements.length ? taskNoticeTiming(snapshot, value.id) : null;
+  const attention = selection?.entity === 'task' && value ? taskAttention(snapshot, value as Task, now) : null;
   const railTasks = selectRailTasks(snapshot, now);
   return (
     <aside className={`detail-panel${!value ? ' task-rail-panel' : ''}`}>
@@ -92,13 +95,16 @@ export function DetailPanel({
       </div>
       {!value ? (
         <section className="rail-tasks" aria-label="待办任务列表">
-            {!railTasks.length && <p className="fine-print">暂无未过期的待办任务</p>}
+            {!railTasks.length && <p className="fine-print">暂无待办任务</p>}
             {railTasks.map((t) => {
-                const taskActivities = taskEvents(snapshot, t.id);
+                const taskActivities = taskArrangements(snapshot, t.id);
                 const taskTiming = !taskActivities.length ? taskNoticeTiming(snapshot, t.id) : null;
+                const taskStatus = taskAttention(snapshot, t, now);
                 return (
                   <div
-                    className="rail-task"
+                    className={`rail-task${taskStatus ? ' task-needs-attention' : ''}`}
+                    data-task-id={t.id}
+                    data-attention={taskStatus?.kind}
                     key={t.id}
                     draggable
                     onDragStart={(e) =>
@@ -110,12 +116,15 @@ export function DetailPanel({
                   >
                     <span>{t.title}
                       {t.deadline && <small className="rail-task-deadline">截止 · {t.deadline.date} {t.deadline.time ?? '当天结束'}</small>}
-                      {taskActivities.length > 0 && <small>{taskEventSummary(taskActivities, now)}</small>}
+                      {taskActivities.length > 0 && <small>{taskArrangementSummary(taskActivities, now)}</small>}
                       {taskTiming && <small>{taskNoticeSummary(taskTiming, now)}</small>}
+                      {taskStatus && <small className="task-attention-label">{taskStatus.label}</small>}
                     </span>
                     <div className="rail-task-actions">
+                      {taskStatus && <button className="task-attention-action" disabled={ui.busy} onClick={() => taskStatus.kind === 'overdue' ? editTask(t.id) : schedule(t.id, taskStatus.blockId)}>{taskStatus.actionLabel}</button>}
                       <button onClick={() => schedule(t.id)}>{taskActivities.length ? '查看安排' : '安排'}</button>
                       {scheduleRecurring && <button onClick={() => scheduleRecurring(t.id)}>重复安排</button>}
+                      {taskStatus && <button disabled={ui.busy} aria-label={`完成任务 ${t.title}`} onClick={() => void ui.mutate([{ type: 'finishTask', id: t.id, expectedVersion: t.version, completed: true }])}>完成</button>}
                       <button className="danger-text" disabled={ui.busy} aria-label={`移除 ${t.title}`} onClick={() => removeTask(t.id)}>移除</button>
                     </div>
                   </div>
@@ -134,11 +143,16 @@ export function DetailPanel({
           {"description" in value && (
             <p className="prewrap">{value.description}</p>
           )}
-          {events.length > 0 && <section className="task-event-details" aria-label="已安排活动">
-            <h3>{events.some(event => event.cancelled) ? '活动安排与历史' : '已加入日历'}</h3>
-            {events.map(event => <div className="detail-field" key={event.id}>
-              {events.length > 1 && <small>{event.title}</small>}
-              <strong>{event.cancelled ? '已取消 · ' : ''}{eventTimeLabel(event)}</strong>
+          {attention && <section className="task-attention-notice" aria-label="任务待处理">
+            <strong className="task-attention-label">{attention.label}</strong>
+            <p>可修改截止时间、调整安排、标记完成或移除；时间已过不会自动完成任务。</p>
+            <button className="task-attention-action" disabled={ui.busy} onClick={() => attention.kind === 'overdue' ? editTask(value.id) : schedule(value.id, attention.blockId)}>{attention.actionLabel}</button>
+          </section>}
+          {arrangements.length > 0 && <section className="task-event-details" aria-label="已安排活动">
+            <h3>{arrangements.some(event => event.cancelled || event.completed) ? '日历安排与历史' : '已加入日历'}</h3>
+            {arrangements.map(event => <div className="detail-field" key={event.id}>
+              <small>{event.kind === 'work' ? '执行时段' : '固定活动'}{arrangements.length > 1 ? ` · ${event.title}` : ''}</small>
+              <strong>{event.cancelled ? '已取消 · ' : event.completed ? '已完成 · ' : ''}{eventTimeLabel(event)}</strong>
               {event.location && <p>地点 · {event.location}</p>}
               {!event.cancelled && <button onClick={() => schedule(value.id, event.id)}>调整时间</button>}
             </div>)}
@@ -218,10 +232,11 @@ export function DetailPanel({
             <button className="primary" onClick={edit}>
               编辑{entityNames[selection!.entity]}
             </button>
-            {selection!.entity === "task" && !events.length && (
+            {selection!.entity === "task" && !arrangements.length && (
               <button onClick={() => schedule(value.id)}>{timing ? '安排活动' : '安排执行时段'}</button>
             )}
             {selection!.entity === 'task' && <button className="danger-text" disabled={ui.busy} aria-label={`移除 ${(value as Task).title}`} onClick={() => removeTask(value.id)}>移除任务</button>}
+            {selection!.entity === 'task' && (value as Task).status !== 'done' && <button disabled={ui.busy} onClick={() => void ui.mutate([{ type: 'finishTask', id: value.id, expectedVersion: value.version, completed: true }])}>完成任务</button>}
             {selection!.entity === 'task' && (value as Task).status !== 'done' && scheduleRecurring && <button onClick={() => scheduleRecurring(value.id)}>重复安排</button>}
             {selection!.entity === "block" && (
               <button

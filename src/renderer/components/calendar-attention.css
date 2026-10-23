@@ -1,0 +1,27 @@
+.calendar-panel .calendar-attention {
+  color: #85531d;
+  background-color: #fff1dc;
+  border-color: #d9a257;
+}
+.calendar-panel .calendar-completed {
+  color: #7d8a86;
+  background-color: #f0f3ef;
+  border-color: #c5cfc7;
+}
+.calendar-panel .calendar-item-status {
+  display: block;
+  margin-top: 2px;
+  font-size: 9px;
+  line-height: 1.25;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.calendar-panel .calendar-completed .calendar-item-status { font-weight: 400; }
+.calendar-panel .timeline-event.compact .calendar-item-status { display: none; }
+.calendar-panel .month-item .calendar-item-status,
+.calendar-panel .marker .calendar-item-status,
+.calendar-panel .timeline-point .calendar-item-status {
+  display: inline;
+  margin-left: 4px;
+  font-size: inherit;
+}

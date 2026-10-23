@@ -109,6 +109,7 @@ describe('durable planner rules', () => {
     const before = p.snapshot(); expect(confirm(preview).status).toBe('clarification'); expect(mutate(request)).toMatchObject({ status: 'clarification', message: '任务已有固定活动，请查看现有安排，不能重复添加' }); expect(p.snapshot()).toEqual(before);
   });
   it('keeps pending and ignored decisions outside busy time', () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-23T12:00:00+08:00'));
     const { repository: r, planner: p, mutate } = setup(); const c = candidate(r, seed(r).id);
     expect(buildCalendar(p.snapshot(), '2026-10-23', '2026-10-23', true)).toMatchObject([{ busy: false, pending: true }]);
     expect(buildCalendar(p.snapshot(), '2026-10-23', '2026-10-23', false)).toEqual([]);

@@ -36,6 +36,29 @@ export function eventTimeLabel(event: Block): string {
   return `${displayInstant(event.start)} – ${displayInstant(effectiveActivityEnd(event.start, event.end))}${event.end ? '' : ' · 默认30分钟'}`;
 }
 
+/** All saved arrangements, including work sessions and cancelled history. */
+export function taskArrangements(snapshot: Pick<Snapshot, 'blocks'>, taskId: string): Block[] {
+  return snapshot.blocks
+    .filter(block => block.taskId === taskId)
+    .sort((a, b) => a.start.localeCompare(b.start) || a.id.localeCompare(b.id));
+}
+
+/** Prefer the next active arrangement; ended unfinished sessions remain editable. */
+export function nextTaskArrangement(blocks: Block[], now: number): Block | undefined {
+  const active = blocks.filter(block => !block.cancelled);
+  return active.find(block => !block.completed && !noticeTimePassed(block, now))
+    ?? active.filter(block => !block.completed).at(-1)
+    ?? active.at(-1);
+}
+
+export function taskArrangementSummary(blocks: Block[], now = Date.now()): string {
+  const onlyEvents = blocks.every(block => block.kind === 'event');
+  const next = nextTaskArrangement(blocks, now);
+  if (!next) return blocks.length ? `${onlyEvents ? '活动' : '安排'}已全部取消 · 历史记录保留` : '';
+  const remaining = blocks.filter(block => !block.cancelled && !block.completed && !noticeTimePassed(block, now)).length;
+  return `${onlyEvents ? '已加入日历' : '已安排'} · ${eventTimeLabel(next)}${onlyEvents ? '' : ` · ${next.kind === 'work' ? '执行时段' : '固定活动'}`}${next.completed ? ' · 本次已完成' : ''}${blocks.length > 1 && remaining > 0 ? ` · 剩余${remaining}次` : ''}`;
+}
+
 export function nextTaskEvent(events: Block[], now: number): Block | undefined {
   const active = events.filter(event => !event.cancelled);
   return active.find(event => !event.completed && !noticeTimePassed(event, now)) ?? active.at(-1);

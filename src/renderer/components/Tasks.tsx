@@ -2,14 +2,15 @@ import type { Snapshot } from "../../shared/contracts";
 import type { PlannerUI } from "../hooks/usePlanner";
 import type { Selection } from "./Calendar";
 import { useState } from "react";
-import { taskEvents, taskEventSummary, taskNoticeTiming, taskNoticeSummary } from '../task-schedule';
+import { taskArrangements, taskArrangementSummary, taskNoticeTiming, taskNoticeSummary } from '../task-schedule';
 import { useCurrentTime } from '../hooks/useCurrentTime';
-import { selectRailTasks } from '../task-rail';
+import { selectRailTasks, taskAttention } from '../task-rail';
 export function Tasks({
   snapshot,
   ui,
   select,
   create,
+  editTask,
   schedule,
   scheduleRecurring,
   removeTask,
@@ -18,7 +19,8 @@ export function Tasks({
   ui: PlannerUI;
   select: (s: Selection) => void;
   create: () => void;
-  schedule: (id: string) => void;
+  editTask: (id: string) => void;
+  schedule: (id: string, blockId?: string) => void;
   scheduleRecurring?: (id: string) => void;
   removeTask: (id: string) => void;
 }) {
@@ -32,7 +34,7 @@ export function Tasks({
       <div className="section-heading">
         <div>
           <h2>留出时间，完成重要的事</h2>
-          <p>已知活动时间会自动加入日历；只有截止日期的任务，可自行安排执行时段。</p>
+          <p>查看已有安排，继续处理未完成的事。截止已过或安排已结束时会标记提醒，由你决定如何处理。</p>
         </div>
         <button className="primary" onClick={create}>
           ＋ 新建任务
@@ -62,11 +64,14 @@ export function Tasks({
       )}
       <div className="task-list">
         {tasks.map((task) => {
-          const events = taskEvents(snapshot, task.id);
-          const timing = !events.length ? taskNoticeTiming(snapshot, task.id) : null;
+          const arrangements = taskArrangements(snapshot, task.id);
+          const timing = !arrangements.length ? taskNoticeTiming(snapshot, task.id) : null;
+          const attention = taskAttention(snapshot, task, now);
           return (
             <article
-              className="task-row"
+              className={`task-row${attention ? ' task-needs-attention' : ''}`}
+              data-task-id={task.id}
+              data-attention={attention?.kind}
               key={task.id}
               draggable
               onDragStart={(e) =>
@@ -99,7 +104,7 @@ export function Tasks({
                 <strong className={task.status === "done" ? "completed" : ""}>
                   {task.title}
                 </strong>
-                {events.length > 0 && <small className="task-event-time">{taskEventSummary(events, now)}</small>}
+                {arrangements.length > 0 && <small className="task-event-time">{taskArrangementSummary(arrangements, now)}</small>}
                 {timing && <small className="task-event-time">{taskNoticeSummary(timing, now)}</small>}
                 <small>
                   {task.deadline
@@ -108,13 +113,15 @@ export function Tasks({
                   {task.goalId &&
                     ` · ${snapshot.goals.find((g) => g.id === task.goalId)?.title ?? "目标"}`}
                 </small>
+                {attention && <small className="task-attention-label">{attention.label}</small>}
               </button>
-              <button onClick={() => schedule(task.id)}>{events.length ? '查看安排' : '安排时间'}</button>
-              {task.status !== 'done' && scheduleRecurring && <button onClick={() => scheduleRecurring(task.id)}>重复安排</button>}
-              <button onClick={() => select({ entity: "task", id: task.id })}>
-                编辑
-              </button>
-              <button className="danger-text" disabled={ui.busy} aria-label={`移除 ${task.title}`} onClick={() => removeTask(task.id)}>移除</button>
+              <div className="task-row-actions">
+                {attention && <button className="task-attention-action" disabled={ui.busy} onClick={() => attention.kind === 'overdue' ? editTask(task.id) : schedule(task.id, attention.blockId)}>{attention.actionLabel}</button>}
+                <button onClick={() => schedule(task.id)}>{arrangements.length ? '查看安排' : '安排时间'}</button>
+                {task.status !== 'done' && scheduleRecurring && <button onClick={() => scheduleRecurring(task.id)}>重复安排</button>}
+                <button onClick={() => editTask(task.id)}>编辑</button>
+                <button className="danger-text" disabled={ui.busy} aria-label={`移除 ${task.title}`} onClick={() => removeTask(task.id)}>移除</button>
+              </div>
             </article>
           );
         })}

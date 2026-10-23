@@ -35,12 +35,12 @@ function fakeUI() {
 function input(label: string) { return screen.getByLabelText(label) as HTMLInputElement; }
 
 describe('task selection and recurring schedule editor', () => {
-  it('excludes ended activities, completed tasks and expired deadlines from a new task association', () => {
+  it('keeps ended and overdue unfinished tasks available for rescheduling while excluding completed tasks', () => {
     const snapshot = fixture();
     const { ui } = fakeUI();
     render(<EntityEditor target={{ entity: 'block' }} snapshot={snapshot} ui={ui} onClose={vi.fn()} />);
     const selection = screen.getByLabelText('关联任务');
-    expect(within(selection).getAllByRole('option').map(o => o.textContent)).toEqual(['无', '双周周二晚活动室值班检查']);
+    expect(within(selection).getAllByRole('option').map(o => o.textContent)).toEqual(['无', '过期DDL', '活动室周四晚上九点半开会', '双周周二晚活动室值班检查']);
     expect(snapshot.tasks).toHaveLength(4);
   });
 
@@ -109,7 +109,7 @@ describe('task selection and recurring schedule editor', () => {
     const api = { snapshot: vi.fn(async () => ({ ok: true, data: snapshot })), onChanged: () => () => {}, onNavigate: () => () => {} } as unknown as DesktopAPI;
     render(<App api={api} />);
     const rail = await screen.findByRole('region', { name: '待办任务列表' });
-    fireEvent.click(within(rail).getByRole('button', { name: '重复安排' }));
+    fireEvent.click(within(rail.querySelector<HTMLElement>('[data-task-id="duty"]')!).getByRole('button', { name: '重复安排' }));
     let dialog = await screen.findByRole('dialog', { name: '重复安排' });
     expect((within(dialog).getByLabelText('关联任务') as HTMLSelectElement).value).toBe('duty');
     fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
