@@ -551,7 +551,7 @@ describe("desktop workspace interaction", () => {
     const day = container.querySelector(".today-column")!;
     const event = new Event("drop", { bubbles: true });
     Object.defineProperties(event, {
-      clientY: { value: (14 * 60 + 25) / 60 * 96 },
+      clientY: { value: minutePosition(14 * 60 + 25) },
       dataTransfer: {
         value: { getData: () => JSON.stringify({ kind: "block", id: "b1" }) },
       },

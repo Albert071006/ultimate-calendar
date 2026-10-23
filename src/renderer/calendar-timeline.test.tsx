@@ -54,8 +54,8 @@ describe('continuous minute calendar', () => {
     const ui = setup(state);
     const first = screen.getByRole('button', { name: /第一节课.*08:30–10:05/ }).parentElement!;
     const second = screen.getByRole('button', { name: /第二节课.*10:25–12:00/ }).parentElement!;
-    expect(parseFloat(first.style.top)).toBe(816); expect(parseFloat(first.style.height)).toBe(152);
-    expect(parseFloat(second.style.top)).toBe(1000); expect(parseFloat(second.style.height)).toBe(152);
+    expect(parseFloat(first.style.top)).toBe(minutePosition(510)); expect(parseFloat(first.style.height)).toBe(minutePosition(95));
+    expect(parseFloat(second.style.top)).toBe(minutePosition(625)); expect(parseFloat(second.style.height)).toBe(minutePosition(95));
     expect(first.style.width).toContain('50%'); expect(second.style.width).toContain('100%');
     expect(ui.container.querySelectorAll('.slot')).toHaveLength(0);
   });
@@ -75,7 +75,7 @@ describe('continuous minute calendar', () => {
       { date, time: '08:30', end: `${date}T10:05` }, { date, time: '08:30', end: `${date}T10:05` },
     ]);
     ui.schedule.mockClear(); const point = ui.point(510);
-    fireEvent.pointerDown(ui.column(), point); ui.viewport.scrollTop += 16;
+    fireEvent.pointerDown(ui.column(), point); ui.viewport.scrollTop += minutePosition(10);
     fireEvent.pointerMove(ui.grid, point); fireEvent.pointerUp(ui.grid, point);
     expect(ui.schedule).toHaveBeenCalledWith({ date, time: '08:30', end: `${date}T08:40` });
   });
@@ -115,8 +115,8 @@ describe('continuous minute calendar', () => {
     const state = snapshot(); state.blocks.push(block('night', `${date}T23:30:00+08:00`, '2026-10-24T00:25:00+08:00')); const ui = setup(state);
     const first = ui.column().querySelector<HTMLElement>('[data-timeline-item="night"]')!;
     const second = ui.column('2026-10-24').querySelector<HTMLElement>('[data-timeline-item="night"]')!;
-    expect(parseFloat(first.style.top)).toBe(2256); expect(parseFloat(first.style.height)).toBe(48);
-    expect(parseFloat(second.style.top)).toBe(0); expect(parseFloat(second.style.height)).toBe(40);
+    expect(parseFloat(first.style.top)).toBe(minutePosition(1410)); expect(parseFloat(first.style.height)).toBe(minutePosition(30));
+    expect(parseFloat(second.style.top)).toBe(0); expect(parseFloat(second.style.height)).toBe(minutePosition(25));
     expect(within(ui.column()).queryByRole('button', { name: '调整 报告准备 结束时间' })).toBeNull();
     const end = within(ui.column('2026-10-24')).getByRole('button', { name: '调整 报告准备 结束时间' });
     ui.drag(end, 25, 27, '2026-10-24');
@@ -132,14 +132,16 @@ describe('continuous minute calendar', () => {
     expect(ui.schedule).toHaveBeenLastCalledWith({ date, time: '10:25', taskId: 'task-1' });
   });
 
-  it('places timed deadlines and pending event ranges on the minute axis while keeping all-day markers above it', () => {
+  it('lists every deadline with its time in the deadline row and keeps pending event ranges on the minute axis', () => {
     const state = snapshot();
     state.tasks.push(TaskSchema.parse({ ...metadata, id: 'deadline', title: '上午截止', deadline: { date, time: '10:25' } }), TaskSchema.parse({ ...metadata, id: 'all-day', title: '当天截止', deadline: { date, time: null } }));
     state.candidates.push(CandidateSchema.parse({ ...metadata, id: 'candidate', title: '待确认活动', sourceIds: ['source'], eventStart: `${date}T14:00:00+08:00`, eventEnd: `${date}T15:35:00+08:00` }));
     const ui = setup(state);
-    expect(parseFloat(screen.getByRole('button', { name: /10:25 上午截止/ }).style.top)).toBe(1000);
-    expect(within(ui.container.querySelector('.marker-row') as HTMLElement).getByRole('button', { name: /当天截止/ })).toBeTruthy();
-    expect(parseFloat(screen.getByRole('button', { name: /待确认活动.*14:00–15:35/ }).parentElement!.style.height)).toBe(152);
-    fireEvent.click(screen.getByLabelText('待判断层')); expect(screen.queryByRole('button', { name: /待确认活动.*14:00/ })).toBeNull();
+    const deadlines = within(ui.container.querySelector('.a2-ddl-row') as HTMLElement);
+    expect(deadlines.getByRole('button', { name: /上午截止.*10:25/ })).toBeTruthy();
+    expect(deadlines.getByRole('button', { name: /当天截止/ })).toBeTruthy();
+    expect(ui.container.querySelector('.time-scroll')!.textContent).not.toContain('上午截止');
+    expect(parseFloat(screen.getByRole('button', { name: /待确认活动.*14:00–15:35/ }).parentElement!.style.height)).toBe(minutePosition(95));
+    fireEvent.click(screen.getByLabelText('待判断标记')); expect(screen.queryByRole('button', { name: /待确认活动.*14:00/ })).toBeNull();
   });
 });

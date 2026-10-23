@@ -1,4 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { ChevronLeft, ChevronRight, PanelRight } from "lucide-react";
+import type { PlannerUI } from "../hooks/usePlanner";
+import { PageToolbar } from "./shell/PageToolbar";
+import { belongingColor } from "../../domain/belonging";
 import { buildCalendar } from "../../domain/calendar";
 import { dayDistance } from "../../domain/time";
 import type { CalendarItem, Snapshot } from "../../shared/contracts";
@@ -14,6 +18,7 @@ import { CurrentTimeIndicator, currentTimePosition } from './CurrentTimeIndicato
 import { calendarAttention } from '../calendar-attention';
 import './CalendarTimeline.css';
 import './calendar-attention.css';
+import './calendar/Calendar.css';
 export interface Selection {
   entity: CalendarItem["refKind"];
   id: string;
@@ -52,6 +57,11 @@ export function Calendar({
   select,
   schedule,
   courses,
+  ui,
+  side,
+  drawerOpen = false,
+  toggleDrawer,
+  unscheduledCount = 0,
 }: {
   snapshot: Snapshot;
   date: string;
@@ -59,6 +69,13 @@ export function Calendar({
   select: (item: Selection) => void;
   schedule: (draft: ScheduleDraft) => void;
   courses: () => void;
+  /** Supplies the save notice and undo in the toolbar. */
+  ui?: PlannerUI;
+  /** Right side of the calendar: the unscheduled drawer or selected details. */
+  side?: ReactNode;
+  drawerOpen?: boolean;
+  toggleDrawer?: () => void;
+  unscheduledCount?: number;
 }) {
   const [view, setView] = useState<CalendarView>("week");
   const [pending, setPending] = useState(snapshot.settings.showPending);
@@ -204,59 +221,44 @@ export function Calendar({
       /* Ignore unrelated drag payloads. */
     }
   }
+  const shortDate = (day: string) => `${Number(day.slice(5, 7))}月${Number(day.slice(8))}日`;
+  const title = view === "month" ? `${Number(date.slice(0, 4))} 年 ${Number(date.slice(5, 7))} 月`
+    : view === "day" ? `${shortDate(date)} 星期${weekdays[(new Date(`${date}T00:00Z`).getUTCDay() + 6) % 7]}`
+    : days[0]!.slice(5, 7) === days.at(-1)!.slice(5, 7) ? `${shortDate(days[0]!)} – ${Number(days.at(-1)!.slice(8))}日` : `${shortDate(days[0]!)} – ${shortDate(days.at(-1)!)}`;
+  /** Belonging color of a course, or of the task behind a block or deadline. */
+  const colorStyle = (item: CalendarItem): CSSProperties => {
+    const block = item.refKind === "block" ? snapshot.blocks.find(value => value.id === item.refId) : undefined;
+    const task = block?.taskId ? snapshot.tasks.find(value => value.id === block.taskId)
+      : item.refKind === "task" ? snapshot.tasks.find(value => value.id === item.refId) : undefined;
+    const course = item.refKind === "course" ? snapshot.courses.find(value => value.id === item.refId) : undefined;
+    const color = course?.color ?? (task ? belongingColor(task, snapshot) : null);
+    return color ? { "--c": color, "--wf": `color-mix(in srgb, ${color} 82%, #111)` } as CSSProperties : {};
+  };
+  const kindClass = (item: CalendarItem) => item.category === "candidate" ? "pending" : item.category;
+  const markerClass = (item: CalendarItem, day: string) => item.category === "candidate" ? "pending"
+    : itemAttention.get(item.id)!.tone === "attention" ? "overdue" : itemAttention.get(item.id)!.tone === "completed" ? "done" : day === today ? "today" : "ddl";
+  const columnsStyle = { gridTemplateColumns: `56px repeat(${days.length}, minmax(0,1fr))` };
   return (
-    <section className="calendar-panel">
-      <div className="calendar-toolbar">
-        <div className="date-controls">
-          <button
-            onClick={() => setDate(moveDate(date, view, -1))}
-            aria-label="上一页"
-          >
-            ‹
-          </button>
-          <button onClick={() => { setDate(today); focusCurrentTime(scroll.current, today, view); }}>今天</button>
-          <button
-            onClick={() => setDate(moveDate(date, view, 1))}
-            aria-label="下一页"
-          >
-            ›
-          </button>
-          <h2>
-            {Number(date.slice(0, 4))} 年 {Number(date.slice(5, 7))} 月
-          </h2>
-          {termWeek !== null && termWeek >= 1 && termWeek <= snapshot.settings.termWeeks && <span className="calendar-term-week">第 {termWeek} 周</span>}
+    <div className="a2-page a2-calendar-page">
+      <PageToolbar ui={ui} title={title} sub={termWeek !== null && termWeek >= 1 && termWeek <= snapshot.settings.termWeeks
+          ? <span className="calendar-term-week">第 {termWeek} 周</span> : undefined}
+        lead={<div className="a2-cal-nav">
+          <button className="ui-btn icon" onClick={() => setDate(moveDate(date, view, -1))} aria-label="上一页"><ChevronLeft aria-hidden="true" /></button>
+          <button className="ui-btn" onClick={() => { setDate(today); focusCurrentTime(scroll.current, today, view); }}>今天</button>
+          <button className="ui-btn icon" onClick={() => setDate(moveDate(date, view, 1))} aria-label="下一页"><ChevronRight aria-hidden="true" /></button>
+        </div>}>
+        <span className="ui-legend" aria-hidden="true"><i className="course" />课程<i className="work" />执行时段<i className="event" />活动<i className="pending" />待定</span>
+        <label className="a2-check"><input type="checkbox" checked={pending} onChange={(e) => setPending(e.target.checked)} />待判断标记</label>
+        <div className="ui-seg" role="group" aria-label="视图">
+          {(["day", "week", "month"] as const).map((v, i) => (
+            <button aria-pressed={v === view} onClick={() => setView(v)} key={v}>{["日", "周", "月"][i]}</button>
+          ))}
         </div>
-        <div className="toolbar">
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={pending}
-              onChange={(e) => setPending(e.target.checked)}
-            />
-            待判断层
-          </label>
-          <div className="segmented">
-            {(["day", "week", "month"] as const).map((v, i) => (
-              <button
-                className={v === view ? "selected" : ""}
-                onClick={() => setView(v)}
-                key={v}
-              >
-                {["日", "周", "月"][i]}
-              </button>
-            ))}
-          </div>
-          <button onClick={courses}>课表</button>
-        </div>
-      </div>
-      <div className="calendar-legend">
-        <span className="dot course" />
-        课程 <span className="dot work" />
-        执行时段 <span className="dot event" />
-        固定活动 <span className="dot deadline" />
-        截止 <span className="dot candidate" />
-        待判断 <span className="legend-hint">截止与待判断不占用已确认时间</span>
-      </div>
+        <button className="ui-btn ghost" onClick={courses}>课表</button>
+        {toggleDrawer && <button className={`ui-btn${drawerOpen ? " on" : ""}`} aria-pressed={drawerOpen} onClick={toggleDrawer}><PanelRight aria-hidden="true" />未安排 {unscheduledCount}</button>}
+      </PageToolbar>
+      <div className={`a2-cal-body${side ? " with-side" : ""}`}>
+      <section className="calendar-panel a2-cal" title="点击或拖选空白时间新建；拖动时段或上下边缘调整到分钟；方向键选分钟，Enter 新建；Alt + 上下键移动时段">
       {view === "month" ? (
         <div className="month-view">
           <div className="month-head">
@@ -264,124 +266,59 @@ export function Calendar({
               <span key={w}>周{w}</span>
             ))}
           </div>
-          <div
-            className="month-grid"
-            style={{
-              gridTemplateRows: `repeat(${days.length / 7}, minmax(100px,1fr))`,
-            }}
-          >
+          <div className="month-grid" style={{ gridTemplateRows: `repeat(${days.length / 7}, minmax(100px,1fr))` }}>
             {days.map((day) => (
-              <div
-                key={day}
-                className={`month-cell ${day.slice(5, 7) !== date.slice(5, 7) ? "muted-day" : ""}`}
-              >
-                <button
-                  className={`day-number ${day === today ? "today-number" : ""}`}
-                  onClick={() => {
-                    setDate(day);
-                    setView("day");
-                  }}
-                >
+              <div key={day} className={`month-cell ${day.slice(5, 7) !== date.slice(5, 7) ? "muted-day" : ""}`}>
+                <button className={`day-number ${day === today ? "today-number" : ""}`} onClick={() => { setDate(day); setView("day"); }}>
                   {Number(day.slice(8))}
                 </button>
-                {items
-                  .filter((i) => inDay(i, day))
-                  .map((i) => (
-                    <button
-                      key={i.id}
-                      className={`month-item ${i.category} ${attentionClass(i)}`}
-                      onClick={() => open(i, day)}
-                      title={`${i.title}${attentionLabel(i) ? ` · ${attentionLabel(i)}` : ''}`}
-                    >
-                      {i.start ? i.start.slice(11, 16) : "截止"} {i.title}
-                      {statusLabel(i)}
-                    </button>
-                  ))}
-                <button
-                  className="month-add"
-                  onClick={() => schedule({ date: day, time: "09:00" })}
-                >
-                  ＋ 安排
-                </button>
+                {items.filter((i) => inDay(i, day)).map((i) => (
+                  <button key={i.id} className={`month-item ${i.category} ${attentionClass(i)}`} onClick={() => open(i, day)}
+                    title={`${i.title}${attentionLabel(i) ? ` · ${attentionLabel(i)}` : ''}`}>
+                    {i.start ? i.start.slice(11, 16) : "截止"} {i.title}
+                    {statusLabel(i)}
+                  </button>
+                ))}
+                <button className="month-add" onClick={() => schedule({ date: day, time: "09:00" })}>＋ 安排</button>
               </div>
             ))}
           </div>
         </div>
       ) : (
         <>
-          <div
-            className="week-heading"
-            style={{
-              gridTemplateColumns: `52px repeat(${days.length}, minmax(0,1fr))`,
-            }}
-          >
-            <span className="timezone">GMT+8</span>
+          <div className="a2-days" style={columnsStyle}>
+            <span className="timezone" title="北京时间">GMT+8</span>
             {days.map((day, i) => (
-              <div key={day}>
-                <span>
-                  周
-                  {view === "day"
-                    ? weekdays[(new Date(`${day}T00:00Z`).getUTCDay() + 6) % 7]
-                    : weekdays[i]}
-                </span>
-                <button
-                  className={`day-number ${day === today ? "today-number" : ""}`}
-                  onClick={() => {
-                    setDate(day);
-                    setView("day");
-                  }}
-                >
-                  {Number(day.slice(8))}
-                </button>
+              <div key={day} className={day === today ? "today" : ""}>
+                <button className="day-number dn" title="打开这一天" onClick={() => { setDate(day); setView("day"); }}>{Number(day.slice(8))}</button>
+                <span className="wd">周{view === "day" ? weekdays[(new Date(`${day}T00:00Z`).getUTCDay() + 6) % 7] : weekdays[i]}</span>
               </div>
             ))}
           </div>
-          <div
-            className="marker-row"
-            style={{
-              gridTemplateColumns: `52px repeat(${days.length}, minmax(0,1fr))`,
-            }}
-          >
-            <span>标记</span>
+          <div className="a2-ddl-row" style={columnsStyle}>
+            <span>截止</span>
             {days.map((day) => (
               <div key={day}>
-                {items
-                  .filter((i) => !i.start && i.date === day)
-                  .map((i) => (
-                    <button
-                      className={`marker ${i.category} ${attentionClass(i)}`}
-                      key={i.id}
-                      onClick={() => open(i)}
-                      title={`${i.title}${attentionLabel(i) ? ` · ${attentionLabel(i)}` : ''}`}
-                    >
-                      {i.category === "candidate"
-                        ? "待判"
-                        : i.category === "deadline"
-                          ? "截止"
-                          : "时间点"}{" "}
-                      {i.start?.slice(11, 16)} {i.title}
-                      {statusLabel(i)}
-                    </button>
-                  ))}
+                {items.filter((i) => (i.category === "deadline" || i.category === "candidate" || !i.start) && !i.end && i.date === day).map((i) => (
+                  <button className={`marker ui-chip ${markerClass(i, day)} ${attentionClass(i)}`} key={i.id} style={colorStyle(i)} onClick={() => open(i)}
+                    title={`${i.category === "candidate" ? "待定 · " : ""}${i.title}${i.start ? ` ${i.start.slice(11, 16)}` : ""}${attentionLabel(i) ? ` · ${attentionLabel(i)}` : ''}`}>
+                    {i.category === "candidate" ? "待定 · " : !i.start && i.category !== "deadline" ? "时间点 · " : ""}{i.title}
+                    {i.start && <b>{i.start.slice(11, 16)}</b>}
+                    {statusLabel(i)}
+                  </button>
+                ))}
               </div>
             ))}
           </div>
           <div className="time-scroll" ref={scroll}>
-            <div
-              className={`time-grid continuous-time-grid ${dragging ? 'is-selecting' : ''}`}
-              style={{
-                gridTemplateColumns: `52px repeat(${days.length}, minmax(0,1fr))`,
-              }}
+            <div className={`time-grid continuous-time-grid ${dragging ? "is-selecting" : ""}`} style={{ ...columnsStyle, height: DAY_HEIGHT, minHeight: DAY_HEIGHT, "--hour": `${HOUR_HEIGHT}px` } as CSSProperties}
               onPointerMove={e => { if (gesture.current?.pointerId === e.pointerId) updateGesture(e.clientX, e.clientY); }}
               onPointerUp={finish}
               onPointerCancel={cancelGesture}
-              onLostPointerCapture={e => { if (gesture.current?.pointerId === e.pointerId) cancelGesture(); }}
-            >
+              onLostPointerCapture={e => { if (gesture.current?.pointerId === e.pointerId) cancelGesture(); }}>
               <div className="hours">
                 {Array.from({ length: 24 }, (_, h) => (
-                  <span style={{ top: h * HOUR_HEIGHT }} key={h}>
-                    {String(h).padStart(2, "0")}:00
-                  </span>
+                  <span style={{ top: h * HOUR_HEIGHT }} key={h}>{h ? `${String(h).padStart(2, "0")}:00` : ""}</span>
                 ))}
               </div>
               {days.map((day) => {
@@ -408,15 +345,17 @@ export function Calendar({
                     const movable = item.refKind === 'block';
                     const startsHere = Date.parse(item.start!) >= dayStart(day), endsHere = Date.parse(item.end!) <= dayStart(day) + 86400_000;
                     const label = `${item.title} ${item.start!.slice(11, 16)}–${item.end!.slice(11, 16)}${item.end!.slice(0, 10) !== item.start!.slice(0, 10) ? '（跨日）' : ''}${attentionLabel(item) ? ` · ${attentionLabel(item)}` : ''}`;
+                    const short = endMinute - startMinute < 34;
                     return <div key={item.id} data-timeline-item={item.id}
-                      className={`timeline-event ${item.category} ${attentionClass(item)} ${item.pending ? 'pending' : ''} ${endMinute - startMinute < 18 ? 'compact' : ''} ${preview?.itemId === item.id ? 'is-moving' : ''}`}
-                      style={{ top: minutePosition(startMinute), height: minutePosition(endMinute - startMinute), left: `calc(${column / count * 100}% + 3px)`, width: `calc(${100 / count}% - 6px)` }}>
+                      className={`timeline-event ${kindClass(item)} ${attentionClass(item)} ${item.pending ? 'pending' : ''} ${short ? 'compact' : ''} ${preview?.itemId === item.id ? 'is-moving' : ''}`}
+                      style={{ ...colorStyle(item), top: minutePosition(startMinute), height: minutePosition(endMinute - startMinute), left: `calc(${column / count * 100}% + 4px)`, width: `calc(${100 / count}% - 8px)` }}>
                       <button className={`timeline-event-button ${movable ? 'can-move' : ''}`} title={`${label}\n${item.start!.slice(0, 10)} 至 ${item.end!.slice(0, 10)}${movable ? '\n拖动移动；Alt + 上下方向键微调 1 分钟' : ''}`}
                         onPointerDown={e => { if (movable) begin(e, day, 'move', item); else e.stopPropagation(); }}
                         onKeyDown={e => keyboardBlock(e, item, 'move')}
                         onClick={e => { if (suppressClick.current === item.id && e.detail !== 0) { suppressClick.current = null; return; } open(item, day); }}>
-                        <strong>{item.title}</strong><small>{item.start!.slice(11, 16)}–{item.end!.slice(11, 16)}{item.end!.slice(0, 10) !== item.start!.slice(0, 10) ? ' · 跨日' : ''}</small>
-                        {statusLabel(item)}
+                        <strong>{item.title}</strong><small>{short ? item.start!.slice(11, 16) : `${item.start!.slice(11, 16)}–${item.end!.slice(11, 16)}`}{item.end!.slice(0, 10) !== item.start!.slice(0, 10) ? ' · 跨日' : ''}</small>
+                        {/* Short blocks rely on their color; the status stays in the title tooltip. */}
+                        {endMinute - startMinute >= 55 && statusLabel(item)}
                         {item.location && <small>{item.location}</small>}
                       </button>
                       {movable && startsHere && <button className="timeline-resize start" aria-label={`调整 ${item.title} 开始时间`} title="拖动调整开始；上下方向键微调 1 分钟"
@@ -425,9 +364,9 @@ export function Calendar({
                         onPointerDown={e => begin(e, day, 'resize-end', item)} onKeyDown={e => keyboardBlock(e, item, 'resize-end')} onClick={e => e.stopPropagation()} />}
                     </div>;
                   })}
-                  {items.filter(item => item.start && !item.end && item.date === day).map(item => <button key={item.id} className={`timeline-point ${item.category} ${attentionClass(item)}`}
+                  {items.filter(item => item.start && !item.end && item.date === day && item.category !== "deadline" && item.category !== "candidate").map(item => <button key={item.id} className={`timeline-point ${kindClass(item)} ${attentionClass(item)}`}
                     title={`${item.title} · ${item.start!.slice(11, 16)}（不占用时间）${attentionLabel(item) ? ` · ${attentionLabel(item)}` : ''}`}
-                    style={{ top: minutePosition(Math.max(0, Math.min(1439, (Date.parse(item.start!) - dayStart(day)) / 60000))) }}
+                    style={{ ...colorStyle(item), top: minutePosition(Math.max(0, Math.min(1439, (Date.parse(item.start!) - dayStart(day)) / 60000))) }}
                     onPointerDown={e => e.stopPropagation()} onClick={() => open(item, day)}>
                     ◆ {item.start!.slice(11, 16)} {item.title}
                     {statusLabel(item)}
@@ -443,10 +382,11 @@ export function Calendar({
           </div>
         </>
       )}
-      <footer className="calendar-footnote timeline-help" id="calendar-minute-help">
-        点击或拖选空白时间 · 拖动时段或上下边缘可精确到分钟，松开后核对并保存 · 方向键选分钟，Enter 新建；Alt + 上下键移动时段
-      </footer>
+      <span className="a2-visually-hidden" id="calendar-minute-help">点击或拖选空白时间新建；拖动时段或上下边缘可精确到分钟，松开后核对并保存；方向键选分钟，Enter 新建；Alt + 上下键移动时段</span>
       <span className="timeline-live-status" aria-live="polite">{cursor ? `${cursor.day} ${clock(cursor.minute)}` : preview ? `${localDateTime(preview.start)} 至 ${localDateTime(preview.end)}` : ''}</span>
-    </section>
+      </section>
+      {side}
+      </div>
+    </div>
   );
 }

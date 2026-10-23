@@ -1,7 +1,7 @@
 import type { CalendarItem } from '../shared/contracts';
 import { clipInterval } from './calendar-layout';
 
-export const HOUR_HEIGHT = 96;
+export const HOUR_HEIGHT = 60;
 export const DAY_MINUTES = 1440;
 export const DAY_HEIGHT = HOUR_HEIGHT * 24;
 export const minutePosition = (minute: number) => minute * HOUR_HEIGHT / 60;

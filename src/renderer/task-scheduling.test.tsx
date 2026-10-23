@@ -95,11 +95,10 @@ describe('scheduling accepted tasks with existing activity times', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
-  it('reuses a start-only event from the rail with a disclosed, editable thirty-minute default', async () => {
+  it('reuses a start-only event from the to-do row with a disclosed, editable thirty-minute default', async () => {
     const { api, mutate, snapshot } = fixture({ end: null });
     render(<App api={api} />);
-    const rail = (await screen.findByRole('heading', { name: '待办任务', level: 3 })).closest('aside')!;
-    fireEvent.click(await within(rail).findByRole('button', { name: '查看安排' }));
+    rowAction(await taskRow(), '查看安排');
     const dialog = await screen.findByRole('dialog', { name: '编辑时段' });
     expect(field(dialog, '开始').value).toBe('2026-11-06T15:35');
     expect(field(dialog, '结束（活动留空默认30分钟）').value).toBe('2026-11-06T16:05');
@@ -174,12 +173,13 @@ describe('scheduling accepted tasks with existing activity times', () => {
     expect(snapshot.blocks).toHaveLength(2);
   });
 
-  it.each(['row', 'rail'] as const)('shows work as an existing arrangement from the %s and updates it without creating a duplicate', async entry => {
+  it('keeps an arranged task out of the unscheduled drawer and updates its work from the row without creating a duplicate', async () => {
     const { api, mutate, snapshot } = fixture();
     snapshot.tasks[0]!.candidateId = null;
     snapshot.blocks[0] = BlockSchema.parse({ ...snapshot.blocks[0], kind: 'work', candidateId: null });
     render(<App api={api} />);
-    const container = entry === 'row' ? await taskRow() : (await screen.findByRole('heading', { name: '待办任务', level: 3 })).closest('aside')!;
+    expect(within(await screen.findByRole('complementary', { name: '未安排任务' })).queryByText('参加学院讲座')).toBeNull();
+    const container = await taskRow();
     expect(within(container).queryByRole('button', { name: /^安排(时间)?$/ })).toBeNull();
     rowAction(container, '查看安排');
     const dialog = await screen.findByRole('dialog', { name: '编辑时段' });

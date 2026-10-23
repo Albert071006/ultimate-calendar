@@ -116,8 +116,8 @@ function rowAction(row: HTMLElement, name: string | RegExp) {
     const snapshot = fixture();
     const api = { snapshot: vi.fn(async () => ({ ok: true, data: snapshot })), onChanged: () => () => {}, onNavigate: () => () => {} } as unknown as DesktopAPI;
     render(<App api={api} />);
-    const rail = await screen.findByRole('region', { name: '待办任务列表' });
-    fireEvent.click(within(rail.querySelector<HTMLElement>('[data-task-id="duty"]')!).getByRole('button', { name: '重复安排' }));
+    const drawer = await screen.findByRole('complementary', { name: '未安排任务' });
+    rowAction(drawer.querySelector<HTMLElement>('[data-task-id="duty"]')!, '重复安排');
     let dialog = await screen.findByRole('dialog', { name: '重复安排' });
     expect((within(dialog).getByLabelText('关联任务') as HTMLSelectElement).value).toBe('duty');
     fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));

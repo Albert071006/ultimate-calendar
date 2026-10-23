@@ -20,6 +20,8 @@ import { ImportDialog, SourceViewer } from "./components/ImportDialog";
 import { Modal } from "./components/Modal";
 import { Preview } from "./components/Preview";
 import { Today } from "./pages/today/Today";
+import { UnscheduledDrawer } from "./components/calendar/UnscheduledDrawer";
+import { unscheduledTasks } from "../domain/unscheduled";
 import { MePage, type MeSection } from "./pages/me/MePage";
 import { taskEvents, taskArrangements, taskNoticeTiming, noticeTimePassed, nextTaskArrangement } from './task-schedule';
 import { effectiveActivityEnd } from '../domain/activity-duration';
@@ -44,7 +46,8 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
     [editor, setEditor] = useState<EditorTarget | null>(null),
     [importing, setImporting] = useState(false),
     [coursePreview, setCoursePreview] = useState<CourseImportResult | undefined>(),
-    [sourceId, setSourceId] = useState<string | null>(null);
+    [sourceId, setSourceId] = useState<string | null>(null),
+    [drawerOpen, setDrawerOpen] = useState(true);
   const openMe = (section: MeSection) => { setMeSection(section); setPage("me"); };
   useEffect(
     () =>
@@ -147,16 +150,10 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
                   detail={selected ? detail : undefined} />
               )}
               {page === "calendar" && (
-                <div className="a2-page">
-                  <PageToolbar title="日历" ui={ui} />
-                  <div className="a2-legacy-body">
-                    <div className="main-content">
-                      <Calendar snapshot={snapshot} date={date} setDate={setDate} select={select} schedule={schedule}
-                        courses={() => { setCoursePreview(undefined); openMe("courses"); }} />
-                    </div>
-                    {detail}
-                  </div>
-                </div>
+                <Calendar snapshot={snapshot} date={date} setDate={setDate} select={select} schedule={schedule} ui={ui}
+                  courses={() => { setCoursePreview(undefined); openMe("courses"); }}
+                  drawerOpen={drawerOpen} toggleDrawer={() => setDrawerOpen(open => !open)} unscheduledCount={unscheduledTasks(snapshot, now).length}
+                  side={selected ? detail : drawerOpen ? <UnscheduledDrawer snapshot={snapshot} ui={ui} now={now} collapse={() => setDrawerOpen(false)} actions={taskActions} /> : null} />
               )}
               {page === "inbox" && (
                 <div className="a2-page">

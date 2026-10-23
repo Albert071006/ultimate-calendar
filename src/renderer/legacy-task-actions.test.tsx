@@ -69,10 +69,10 @@ async function taskRow() {
   return task.closest('article')!;
 }
 
+/** The calendar's unscheduled drawer replaced the side rail; it lists this task because it has no arrangement yet. */
 async function emptyRail() {
-  const rail = (await screen.findByRole('heading', { name: '待办任务', level: 3 })).closest('aside')!;
-  await within(rail).findByText(title);
-  return rail;
+  const drawer = await screen.findByRole('complementary', { name: '未安排任务' });
+  return (await within(drawer).findByRole('button', { name: title })).closest('article')!;
 }
 
 describe('scheduling an accepted notice whose extracted activity time was lost', () => {
@@ -108,7 +108,7 @@ describe('scheduling an accepted notice whose extracted activity time was lost',
     vi.mocked(Date.now).mockReturnValue(Date.parse('2026-10-22T20:00:00+08:00'));
     const { api, mutate, snapshot } = fixture();
     render(<App api={api} />);
-    fireEvent.click(within(await emptyRail()).getByRole('button', { name: '安排' }));
+    rowAction(await emptyRail(), '安排');
     const dialog = await screen.findByRole('dialog', { name: '新建时段' });
     expect(field(dialog, '开始').value).toBe('2026-10-22T21:30');
     expect(field(dialog, '结束（活动留空默认30分钟）').value).toBe('2026-10-22T22:00');

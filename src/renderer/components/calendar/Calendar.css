@@ -1,0 +1,77 @@
+/* A2 calendar: paper grid, type by shape and lightness, items by belonging color. Overrides legacy calendar rules. */
+.a2-cal-nav { display: flex; gap: 6px; }
+.a2-check { display: inline-flex; flex-direction: row; align-items: center; gap: 7px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.a2-check input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+.a2-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.a2-calendar-page .calendar-term-week { font-family: var(--font-ui); font-size: 13px; color: var(--ink-3); background: none; padding: 0; }
+
+.a2-cal-body { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; overflow: hidden; }
+.a2-cal-body.with-side { grid-template-columns: minmax(0, 1fr) auto; }
+.calendar-panel.a2-cal { display: flex; flex-direction: column; height: auto; min-height: 0; min-width: 0; background: var(--bg); border: 0; border-radius: 0; padding: 0; box-shadow: none; }
+
+.a2-days, .a2-ddl-row { display: grid; flex-shrink: 0; }
+.a2-days > .timezone { align-self: end; padding: 0 6px 8px; font-size: 10.5px; color: var(--ink-3); }
+.a2-days > div { display: flex; align-items: baseline; gap: 8px; padding: 10px 10px 8px; border-left: 1px solid var(--line); }
+.a2-days > div.today { box-shadow: inset 0 -3px 0 var(--accent); }
+.a2-days .dn { padding: 0; font-family: var(--font-num); font-size: 26px; line-height: 1; color: var(--ink); background: none; border: 0; cursor: pointer; }
+.a2-days .today .dn { color: var(--accent); }
+.a2-days .dn:hover { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 4px; }
+.a2-days .wd { font-size: 12px; color: var(--ink-3); }
+.a2-ddl-row { min-height: 34px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line-2); }
+.a2-ddl-row > span { display: grid; place-items: center; font-size: 11px; color: var(--ink-3); }
+.a2-ddl-row > div { display: flex; flex-direction: column; gap: 3px; padding: 5px; border-left: 1px solid var(--line); min-width: 0; }
+.a2-ddl-row .ui-chip { width: 100%; cursor: pointer; font: inherit; font-size: 12px; text-align: left; justify-content: flex-start; }
+.a2-ddl-row .ui-chip b { margin-left: auto; }
+.a2-ddl-row .ui-chip.done { color: var(--ink-3); border: 1px solid var(--line-2); background: transparent; text-decoration: line-through; }
+.a2-ddl-row .calendar-item-status { display: none; }
+
+.a2-cal .time-scroll { background: var(--bg); }
+.a2-cal .time-grid.continuous-time-grid { display: grid; }
+.a2-cal .hours span { left: auto; right: 8px; transform: translateY(-50%); font-family: var(--font-time); font-size: 11px; color: var(--ink-3); }
+.a2-cal .continuous-day {
+  border-left: 1px solid var(--line);
+  background-color: transparent;
+  background-image:
+    linear-gradient(var(--line) 1px, transparent 1px),
+    repeating-linear-gradient(transparent 0 calc(var(--hour) / 2 - 1px), rgba(196, 179, 143, 0.28) calc(var(--hour) / 2 - 1px) calc(var(--hour) / 2));
+  background-size: 100% var(--hour), 100% var(--hour);
+}
+.a2-cal .continuous-day.today-column { background-color: var(--today-bg); }
+.a2-cal .continuous-day:focus-visible { outline: 2px solid var(--ink); }
+
+.a2-cal .timeline-event { border: 0; border-radius: var(--radius); overflow: hidden; }
+.a2-cal .timeline-event-button { padding: 6px 8px; color: inherit; background: none; text-align: left; font: inherit; }
+.a2-cal .timeline-event-button strong { font-family: var(--font-display); font-weight: 600; font-size: 12.5px; line-height: 1.35; white-space: nowrap; }
+.a2-cal .timeline-event-button small { font-family: var(--font-time); font-size: 11px; opacity: 1; margin-top: 2px; }
+.a2-cal .timeline-event-button small + small { font-family: var(--font-ui); }
+.a2-cal .timeline-event.compact .timeline-event-button { display: flex; align-items: center; gap: 6px; padding: 0 8px; }
+.a2-cal .timeline-event.compact .timeline-event-button strong { font-size: 12px; }
+.a2-cal .timeline-event.compact small { display: inline; margin: 0; }
+.a2-cal .timeline-event.compact small + small { display: none; }
+
+.a2-cal .timeline-event.course { background: color-mix(in srgb, var(--c, #3b5b9a) 22%, var(--surface)); border-left: 3px solid var(--c, #3b5b9a); color: color-mix(in srgb, var(--c, #3b5b9a) 75%, #000); }
+.a2-cal .timeline-event.course small { color: color-mix(in srgb, var(--c, #3b5b9a) 55%, var(--ink-2)); }
+.a2-cal .timeline-event.work { background: var(--wf, var(--work-fill)); color: var(--on-dark); }
+.a2-cal .timeline-event.work small { color: rgba(245, 240, 230, 0.75); }
+.a2-cal .timeline-event.event { background: repeating-linear-gradient(135deg, var(--surface) 0 6px, var(--hatch) 6px 9px); border: 1.5px solid var(--ink); color: var(--ink); }
+.a2-cal .timeline-event.event small { color: var(--ink-2); }
+.a2-cal .timeline-event.pending { border: 1.5px dashed var(--accent); background: rgba(184, 58, 38, 0.04); color: var(--accent); opacity: 1; }
+.a2-cal .timeline-event.pending small { color: var(--accent); }
+.a2-cal .timeline-event.calendar-attention { background: color-mix(in srgb, var(--warn-fill) 18%, var(--surface)); border: 1.5px solid var(--warn-fill); color: var(--warn-ink); }
+.a2-cal .timeline-event.calendar-attention small { color: var(--warn); }
+.a2-cal .timeline-event.calendar-completed { background: transparent; border: 1px solid var(--line-2); color: var(--ink-3); }
+.a2-cal .timeline-event.calendar-completed small { color: var(--ink-3); }
+.a2-cal .timeline-event.calendar-completed strong { text-decoration: line-through; text-decoration-thickness: 1px; }
+.a2-cal .calendar-item-status { display: block; margin-top: 4px; font-size: 11px; font-weight: 600; color: var(--warn); }
+.a2-cal .calendar-completed .calendar-item-status { display: none; }
+.a2-cal .timeline-resize:hover, .a2-cal .timeline-resize:focus-visible { background: rgba(31, 28, 24, 0.25); }
+
+.a2-cal .timeline-point { font-family: var(--font-ui); font-size: 11.5px; line-height: 18px; color: var(--ink); background: var(--surface); border-top: 1.5px solid var(--ink); }
+.a2-cal .timeline-preview { border: 1.5px solid var(--ink); background: rgba(43, 58, 85, 0.12); color: var(--ink); }
+.a2-cal .timeline-preview-label { background: var(--ink); color: var(--surface); font-family: var(--font-time); }
+.a2-cal .timeline-cursor { border-top-color: var(--ink-2); }
+.a2-cal .timeline-cursor span { background: var(--surface); color: var(--ink); font-family: var(--font-time); }
+
+.a2-cal .calendar-current-time { border-top: 1.5px solid var(--accent); color: var(--accent); }
+.a2-cal .calendar-current-time-dot { background: var(--accent); }
+.a2-cal .calendar-current-time-label { left: auto; right: 4px; background: var(--accent); color: #fff; font-family: var(--font-time); font-size: 10.5px; }

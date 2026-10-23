@@ -90,13 +90,13 @@ describe('personal calendar attention states', () => {
     expect(calendarAttention(notice, state, Date.parse('2026-10-23T14:00:00+08:00'))).toEqual({ tone: 'normal', label: '' });
   });
 
-  it('marks timed and all-day overdue deadlines in timeline, marker row and month view without warning for completed tasks', () => {
+  it('marks timed and all-day overdue deadlines in the deadline row and month view without warning for completed tasks', () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-23T10:00:30+08:00'));
     const state = snapshot();
     state.tasks.push(task('昨天截止', { deadline: { date: '2026-10-22', time: null } }), task('准点截止', { deadline: { date: '2026-10-23', time: '10:00' } }), task('完成的截止', { status: 'done', deadline: { date: '2026-10-22', time: null } }));
     const ui = calendar(state);
-    expect(ui.container.querySelector('.marker.calendar-attention')!.textContent).toContain('昨天截止');
-    expect(ui.container.querySelector('.timeline-point.calendar-attention')!.textContent).toContain('准点截止');
+    // Timed and date-only deadlines both sit in the deadline row above the minute axis.
+    expect([...ui.container.querySelectorAll('.marker.calendar-attention')].map(marker => marker.textContent)).toEqual([expect.stringContaining('昨天截止'), expect.stringContaining('准点截止')]);
     expect(screen.getAllByText('已逾期')).toHaveLength(2);
     expect(screen.queryByText(/完成的截止/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '月' }));

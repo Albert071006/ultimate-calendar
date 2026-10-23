@@ -132,7 +132,7 @@ function rowAction(row: HTMLElement, name: string | RegExp) {
     const snapshot = fixture(); snapshot.blocks.forEach(block => { block.cancelled = true; });
     const api = { snapshot: vi.fn(async () => ({ ok: true, data: snapshot })), onChanged: () => () => {}, onNavigate: () => () => {} } as unknown as DesktopAPI;
     render(<App api={api} />);
-    await screen.findByRole('region', { name: '待办任务列表' });
+    await screen.findByRole('complementary', { name: '未安排任务' });
     fireEvent.click(within(await screen.findByRole('navigation', { name: '主导航' })).getByRole('button', { name: '今天' }));
     expect(screen.queryByRole('button', { name: '双周值班' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '全部' }));
