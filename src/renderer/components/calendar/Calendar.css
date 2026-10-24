@@ -9,7 +9,9 @@
 .a2-cal-body.with-side { grid-template-columns: minmax(0, 1fr) auto; }
 .calendar-panel.a2-cal { display: flex; flex-direction: column; height: auto; min-height: 0; min-width: 0; background: var(--bg); border: 0; border-radius: 0; padding: 0; box-shadow: none; }
 
-.a2-days, .a2-ddl-row { display: grid; flex-shrink: 0; }
+/* Reserve the same native scrollbar gutter in all three grids, including the
+   non-scrolling headings, so date boundaries stay aligned at every zoom level. */
+.a2-days, .a2-ddl-row { display: grid; flex-shrink: 0; overflow: hidden; scrollbar-gutter: stable; }
 .a2-days > .timezone { align-self: end; padding: 0 6px 8px; font-size: 10.5px; color: var(--ink-3); }
 .a2-days > div { display: flex; align-items: baseline; gap: 8px; padding: 10px 10px 8px; border-left: 1px solid var(--line); }
 .a2-days > div.today { box-shadow: inset 0 -3px 0 var(--accent); }
@@ -25,7 +27,7 @@
 .a2-ddl-row .ui-chip.done { color: var(--ink-3); border: 1px solid var(--line-2); background: transparent; text-decoration: line-through; }
 .a2-ddl-row .calendar-item-status { display: none; }
 
-.a2-cal .time-scroll { background: var(--bg); }
+.a2-cal .time-scroll { background: var(--bg); scrollbar-gutter: stable; }
 .a2-cal .time-grid.continuous-time-grid { display: grid; }
 .a2-cal .hours span { left: auto; right: 8px; transform: translateY(-50%); font-family: var(--font-time); font-size: 11px; color: var(--ink-3); }
 .a2-cal .continuous-day {
