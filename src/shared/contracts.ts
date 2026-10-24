@@ -403,6 +403,9 @@ export const NavigateEventSchema = z.strictObject({ entity: EntityKindSchema, id
 export type NavigateEvent = z.infer<typeof NavigateEventSchema>;
 /** Only this narrow asynchronous surface may cross the sandboxed renderer/preload boundary. */
 export interface DesktopAPI extends importCaptureAPI {
+  spaceSnapshot(): Promise<ApiResult<import('./space').SpaceSnapshot>>;
+  spaceConfigure(policy: import('./space').SpacePolicy): Promise<ApiResult<import('./space').SpaceSnapshot>>;
+  spaceCleanup(request: { clearCache: boolean }): Promise<ApiResult<import('./space').SpaceSnapshot>>;
   updateSnapshot(): Promise<ApiResult<import('./update').UpdateState>>;
   checkForUpdates(): Promise<ApiResult<import('./update').UpdateState>>;
   downloadUpdate(): Promise<ApiResult<import('./update').UpdateState>>;

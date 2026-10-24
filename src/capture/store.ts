@@ -12,6 +12,7 @@ import {
 } from '../shared/capture';
 import { nowInstant } from '../domain/time';
 import { openDatabase } from '../storage/database';
+import { planAttachmentRetention, applyAttachmentRetention, type AttachmentRetentionPolicy } from './retention';
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const JsonSchema = z.json();
@@ -64,6 +65,7 @@ const BatchSchema = z.strictObject({
   result: JsonSchema.nullable(), inputFingerprint: z.string().max(1000).nullable(),
 });
 export type CaptureBatch = z.infer<typeof BatchSchema>;
+export const captureBackupSchemas = { message: StoredMessageSchema, attachment: StoredAttachmentSchema, chunk: ChunkSchema, batch: BatchSchema };
 const ExportSchema = z.strictObject({
   schemaVersion: z.literal(1), config: CaptureConfigSchema,
   selections: z.array(z.strictObject({ accountId: IdSchema, groupIds: z.array(IdSchema).max(100) })),
@@ -417,7 +419,9 @@ export function createCaptureStore(path: string, internal: { database?: Database
       InstantSchema.parse(at);
       return transaction(() => {
         const value = batch(id); if (!value || !['applied', 'failed', 'uncertain'].includes(value.status)) throw Error('仅已完成、失败或响应未知的批次可重新分析');
+        if (value.result && typeof value.result === 'object' && !Array.isArray(value.result) && value.result['attachmentsCleared']) throw Error('附件缓存已清理，不能重新分析不完整的资料；消息正文与已有事项仍保留');
         if (value.messageIds.some(id => message(id)?.deleted)) throw Error('原文已清理，不能重新分析');
+        if (value.messageIds.some(id => attachments(id).some(item => item.status === 'deleted'))) throw Error('附件缓存已清理，不能重新分析不完整的资料；消息正文与已有事项仍保留');
         value.operationId = `qq-apply:${randomUUID()}`; value.result = null; value.inputFingerprint = null;
         value.status = 'pending'; value.updatedAt = at; value.error = null;
         for (const id of value.messageIds) for (const item of attachments(id)) {
@@ -487,6 +491,10 @@ export function createCaptureStore(path: string, internal: { database?: Database
     findExtraction(hash: string, extractorVersion: string): { attachment: StoredCaptureAttachment; chunks: CaptureChunk[] } | null {
       const row = db.prepare("SELECT payload FROM capture_attachments WHERE hash=? AND json_extract(payload,'$.extractorVersion')=? AND json_extract(payload,'$.status')='ready' ORDER BY rowid LIMIT 1").get(hash, extractorVersion);
       const value = parsePayload(row, StoredAttachmentSchema); return value ? { attachment: value, chunks: chunks(value.id) } : null;
+    },
+    previewAttachmentRetention(policy: AttachmentRetentionPolicy) { return planAttachmentRetention(db, policy).summary; },
+    cleanAttachments(policy: AttachmentRetentionPolicy) {
+      return transaction(() => applyAttachmentRetention(db, planAttachmentRetention(db, policy)));
     },
     cleanup(request: CaptureCleanupRequest) {
       const parsed = CaptureCleanupRequestSchema.parse(request);

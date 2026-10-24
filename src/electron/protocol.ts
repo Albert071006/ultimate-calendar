@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SpacePolicySchema, SpaceSnapshotSchema, SpaceCleanupRequestSchema } from '../shared/space';
 import { LedgerMonthSchema, LedgerMutationRequestSchema, LedgerMutationResultSchema, LedgerSnapshotSchema, LedgerUndoRequestSchema } from '../shared/ledger';
 import { AccountStateSchema } from '../shared/account';
 import { UpdateStateSchema } from '../shared/update';
@@ -6,6 +7,7 @@ import { CaptureConfigSchema, CaptureSnapshotSchema, CaptureGroupSchema, Capture
 import { CaptureConnectSchema, CaptureActionSchema, CaptureChunksRequestSchema, CaptureChunksSchema } from '../shared/capture-api';
 import { SnapshotSchema, MutationRequestSchema, MutationResultSchema, IdSchema, ImportSourceRequestSchema, SourceSchema, AnalyzeSourceRequestSchema, AnalysisResultSchema, CommandRequestSchema, CommandResultSchema, CourseImportRequestSchema, CourseImportResultSchema, SaveSettingsRequestSchema, SettingsSchema, SetApiKeyRequestSchema, KeyStatusSchema, BackupResultSchema, RestoreRequestSchema, RestoreResultSchema, SelectedImageSchema, apiResultSchema } from '../shared/contracts';
 export const requests = {
+  spaceSnapshot: z.undefined(), spaceConfigure: SpacePolicySchema, spaceCleanup: SpaceCleanupRequestSchema,
   updateSnapshot: z.undefined(), checkForUpdates: z.undefined(), downloadUpdate: z.undefined(), installUpdate: z.undefined(),
   ledgerSnapshot: z.strictObject({ month: LedgerMonthSchema.optional() }).optional(), ledgerMutate: LedgerMutationRequestSchema, ledgerUndo: LedgerUndoRequestSchema,
   ledgerExport: z.strictObject({ format: z.enum(['csv', 'json']), month: LedgerMonthSchema.optional() }),
@@ -17,6 +19,7 @@ export const requests = {
   backup: z.undefined(), restore: RestoreRequestSchema,
 } as const;
 export const responses = {
+  spaceSnapshot: apiResultSchema(SpaceSnapshotSchema), spaceConfigure: apiResultSchema(SpaceSnapshotSchema), spaceCleanup: apiResultSchema(SpaceSnapshotSchema),
   updateSnapshot: apiResultSchema(UpdateStateSchema), checkForUpdates: apiResultSchema(UpdateStateSchema), downloadUpdate: apiResultSchema(UpdateStateSchema), installUpdate: apiResultSchema(UpdateStateSchema),
   ledgerSnapshot: apiResultSchema(LedgerSnapshotSchema), ledgerMutate: apiResultSchema(LedgerMutationResultSchema), ledgerUndo: apiResultSchema(LedgerMutationResultSchema), ledgerExport: apiResultSchema(z.strictObject({ path: z.string() })),
   captureSnapshot: apiResultSchema(CaptureSnapshotSchema), captureConfigure: apiResultSchema(CaptureSnapshotSchema), captureConnect: apiResultSchema(CaptureSnapshotSchema), captureGroups: apiResultSchema(z.array(CaptureGroupSchema)), captureMessages: apiResultSchema(CaptureMessagePageSchema), captureBatches: apiResultSchema(CaptureBatchPageSchema), captureAction: apiResultSchema(CaptureSnapshotSchema), captureChunks: apiResultSchema(CaptureChunksSchema), captureCleanup: apiResultSchema(CaptureSnapshotSchema),

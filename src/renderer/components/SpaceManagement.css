@@ -1,0 +1,46 @@
+/* Space management in 我的 › 数据与备份: usage, clean now, then the automatic rules. */
+.space-management { margin: 4px 0 18px; color: var(--ink); }
+.space-management h4 { margin: 0; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.space-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.space-management .space-sub { margin-top: 22px; }
+.space-management h4.space-sub { margin-bottom: 8px; }
+.space-muted { font-size: 12px; color: var(--ink-3); }
+
+.space-usage { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 10px 0 0; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); }
+.space-usage > div { min-width: 0; padding: 10px 14px; }
+.space-usage > div + div { border-left: 1px solid var(--line); }
+.space-usage dt { font-size: 12px; color: var(--ink-3); }
+.space-usage dd { margin: 2px 0 0; font-family: var(--font-time); font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.space-usage small { display: block; margin-top: 2px; font-size: 11.5px; line-height: 1.5; color: var(--ink-3); }
+
+.space-now { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.space-now > p { flex: 1 1 260px; margin: 0; font-size: 13px; }
+.space-management .space-check { display: inline-flex; flex-direction: row; align-items: center; gap: 7px; margin: 0; font-size: 13px; color: var(--ink); white-space: nowrap; }
+.space-management .space-check input { width: 15px; height: 15px; margin: 0; flex: 0 0 auto; accent-color: var(--accent); }
+.space-management .space-check .space-muted { margin-left: 6px; white-space: normal; }
+
+.space-confirm { margin-top: 12px; padding: 12px 14px; background: color-mix(in srgb, var(--accent) 6%, var(--surface)); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--surface)); border-left: 3px solid var(--accent); border-radius: var(--radius); }
+.space-confirm p { margin: 0 0 10px; font-size: 13px; line-height: 1.7; }
+.space-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+
+.space-rules { list-style: none; margin: 8px 0 0; padding: 0; border-top: 1px solid var(--line); }
+.space-rules li { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 40px; border-bottom: 1px solid var(--line); }
+.space-rules .k { font-size: 13px; }
+.space-rules .v { display: inline-flex; align-items: center; gap: 6px; }
+.space-management .space-rules input { width: 84px; height: 28px; padding: 0 8px; font-family: var(--font-time); font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
+.space-rules .u { width: 22px; font-size: 13px; color: var(--ink-2); }
+.space-rules small { width: 76px; font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.space-rule-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 10px; }
+
+.space-scope { margin-top: 10px; font-size: 12.5px; color: var(--ink-3); }
+.space-scope summary { width: fit-content; cursor: pointer; color: var(--ink-2); }
+.space-scope p { margin: 6px 0 0; line-height: 1.7; }
+.space-warnings { margin: 12px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.7; color: var(--accent); }
+.space-last-run { margin: 10px 0 0; font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; }
+.space-notice { margin: 10px 0 0; font-size: 12.5px; color: var(--income); }
+
+@media (max-width: 1080px) {
+  .space-usage { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .space-usage > div:nth-child(3) { border-left: 0; }
+  .space-usage > div:nth-child(n+3) { border-top: 1px solid var(--line); }
+}

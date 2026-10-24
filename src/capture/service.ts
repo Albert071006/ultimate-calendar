@@ -267,6 +267,11 @@ export function createCaptureService(options: {
       return { ...page, items: page.items.map(c => ({ id: c.id, locator: c.location, text: c.text, imageDataUrl: c.imageDataUrl && ImageDataUrlSchema.safeParse(c.imageDataUrl).success ? c.imageDataUrl : null, status: c.status, error: c.error })) };
     },
     cleanup(request: Parameters<CaptureStore['cleanup']>[0]) { if (running || historyRunning) throw new WorkflowError('CONFLICT', '请等待当前采集/分析完成后再清理'); store.cleanup(request); emit(); return snapshot(); },
+    previewAttachmentRetention: store.previewAttachmentRetention,
+    cleanAttachments(policy: Parameters<CaptureStore['cleanAttachments']>[0]) {
+      if (running || historyRunning || connectPromise) throw new WorkflowError('CONFLICT', '请等待当前采集/分析完成后再清理附件');
+      const result = store.cleanAttachments(policy); emit(); return result;
+    },
   };
 }
 export type CaptureService = ReturnType<typeof createCaptureService>;

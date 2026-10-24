@@ -1,15 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, truncateSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createRepository, type Repository } from '../storage/repository';
-import { createBackup, inspectBackupBundle } from '../storage/backups';
-import { createRestoreManager } from '../electron/restore';
+import { createBackup, inspectBackupBundle, inspectBackupFile } from '../storage/backups';
+import { createRestoreManager as makeRestoreManager } from '../electron/restore';
 import { createCaptureStore, type CaptureStore } from './store';
 import { openDatabase } from '../storage/database';
 
 const directories: string[] = [], repositories: Repository[] = [], captures: CaptureStore[] = [];
+const managers: ReturnType<typeof makeRestoreManager>[] = [];
+function createRestoreManager(...args: Parameters<typeof makeRestoreManager>) { const manager = makeRestoreManager(...args); managers.push(manager); return manager; }
 const account = 'synthetic-account', group = 'synthetic-group', at = '2026-10-23T12:00:00+08:00', later = '2026-10-23T12:02:00+08:00';
 function directory() { const dir = mkdtempSync(join(tmpdir(), 'calendar-capture-backup-')); directories.push(dir); return dir; }
 function setup(path: string) {
@@ -26,6 +28,7 @@ function ingest(capture: CaptureStore, messageId: string, withFile = false) {
 function task(repository: Repository, title: string) { repository.writeInternal({ operationId: title, changes: [{ entity: 'task', values: { title } }] }); }
 afterEach(() => {
   vi.restoreAllMocks();
+  for (const manager of managers.splice(0)) manager.dispose();
   for (const capture of captures.splice(0)) capture.close();
   for (const repository of repositories.splice(0)) repository.close();
   for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -127,10 +130,46 @@ describe('planner and QQ backup restoration', () => {
     ingest(capture, 'first'); const chosen = join(dir, 'chosen.sqlite'); createBackup(repository, chosen);
     await expect(createRestoreManager(repository).preview(chosen)).rejects.toThrow('QQ 采集资料');
   });
-  it('rejects a backup estimated above the restore ceiling before writing a file', () => {
+  it('backs up data above the former size ceiling when disk space is sufficient', () => {
     const dir = directory(), { repository } = setup(join(dir, 'live.sqlite'));
     vi.spyOn(repository, 'estimatedBackupBytes').mockReturnValue(513 * 1024 * 1024);
     const vacuum = vi.spyOn(repository, 'vacuumInto');
-    expect(() => createBackup(repository, join(dir, 'too-large.sqlite'))).toThrow('512 MB'); expect(vacuum).not.toHaveBeenCalled();
+    const target = join(dir, 'above-old-limit.sqlite');
+    expect(createBackup(repository, target).path).toBe(target); expect(vacuum).toHaveBeenCalledOnce();
+    expect(inspectBackupFile(target).capture?.attachments).toBe(0);
+  });
+
+  it('previews and restores a valid file larger than 512 MB without exporting the complete capture archive', async () => {
+    const dir = directory(), { repository, capture } = setup(join(dir, 'live.sqlite'));
+    task(repository, '大文件里的任务'); const source = ingest(capture, 'large-backup', true);
+    const target = join(dir, 'large.sqlite'); createBackup(repository, target);
+    // Trailing sparse space leaves SQLite pages intact while exercising the former file-size gate.
+    truncateSync(target, 513 * 1024 * 1024);
+    expect(inspectBackupFile(target).capture?.messages).toBe(1);
+    vi.spyOn(capture, 'exportState').mockImplementation(() => { throw Error('Must not export complete attachment archive'); });
+    task(repository, '新任务');
+    const manager = createRestoreManager(repository, () => true, capture);
+    const preview = await manager.preview(target);
+    expect(readdirSync(join(dir, 'restore-staging'))).toHaveLength(1);
+    const result = await manager.confirm(preview.confirmationToken);
+    expect(repository.snapshot().tasks.map(item => item.title)).toEqual(['大文件里的任务']);
+    expect(capture.readAttachmentBytes(capture.attachments(source)[0]!.id)).toEqual(Buffer.from('synthetic attachment bytes'));
+    expect(existsSync(result.safetyBackupPath)).toBe(true);
+    expect(readdirSync(join(dir, 'restore-staging'))).toEqual([]);
+  });
+
+  it('keeps preview stable if the originally selected backup changes and removes discarded staging files', async () => {
+    const dir = directory(), { repository, capture } = setup(join(dir, 'live.sqlite'));
+    task(repository, '选择时的任务'); ingest(capture, 'preview-message', true);
+    const target = join(dir, 'chosen.sqlite'); createBackup(repository, target);
+    const manager = createRestoreManager(repository, () => true, capture);
+    const first = await manager.preview(target);
+    const second = await manager.preview(target);
+    expect(readdirSync(join(dir, 'restore-staging'))).toHaveLength(1);
+    await expect(manager.confirm(first.confirmationToken)).rejects.toThrow('凭据无效');
+    const db = openDatabase(target); db.exec('DELETE FROM records'); db.close();
+    await manager.confirm(second.confirmationToken);
+    expect(repository.snapshot().tasks.map(item => item.title)).toEqual(['选择时的任务']);
+    expect(readdirSync(join(dir, 'restore-staging'))).toEqual([]);
   });
 });

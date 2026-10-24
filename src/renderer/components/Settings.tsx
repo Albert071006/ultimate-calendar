@@ -10,6 +10,7 @@ import { useAccount } from "../hooks/useAccount";
 import { AccountPanel, AccountResourceStatus, OfficialPrices } from "./AccountPanel";
 import type { AppUpdates } from '../hooks/useAppUpdates';
 import { SoftwareUpdate } from './SoftwareUpdate';
+import { SpaceManagement } from './SpaceManagement';
 import './Settings.css';
 export type SettingsSection = "ai" | "term" | "reminders" | "data" | "update";
 
@@ -567,9 +568,10 @@ export function Settings({
         </section>
         <section className="settings-card settings-group" aria-labelledby="settings-data-title" data-section="data" hidden={hide("data")}>
           <h3 id="settings-data-title">数据与历史</h3>
+          <SpaceManagement host={ui.host} active={!hide("data")} plannerBusy={ui.busy} />
           <details className="settings-disclosure settings-backup">
             <summary><strong>数据备份与恢复</strong><span className="settings-summary">导出本地备份或恢复已有数据</span></summary>
-            <div className="settings-disclosure-body"><p>本地备份包含日历和 QQ 原文、附件。当前版本的备份恢复上限为 512 MB；超过上限时会明确提示，原有数据和备份保留。可在 QQ 采集页按群或日期清理资料。</p>
+            <div className="settings-disclosure-body"><p>本地备份包含日历、账单和现存的 QQ 原文、附件。大备份按批校验和恢复，不再受 512 MB 限制；请留出备份、恢复暂存和安全备份所需的磁盘空间。</p>
         <p>导出包含原始文字、截图和操作记录，密钥不包含在内。</p>
         <div className="toolbar">
           <button type="button"
@@ -653,7 +655,7 @@ export function Settings({
       </details>
         </section>
         {error && <p className="error prewrap" role="alert">{error}</p>}
-        <div className="sticky-save" hidden={section === "update"}><span className="hint">切换分区或收起不会丢失修改</span><button type="submit" className="primary" disabled={ui.busy}>保存全部设置</button></div>
+        <div className="sticky-save" hidden={section === "update" || section === "data"}><span className="hint">切换分区或收起不会丢失修改</span><button type="submit" className="primary" disabled={ui.busy}>保存全部设置</button></div>
       </form>
     </div>
   );

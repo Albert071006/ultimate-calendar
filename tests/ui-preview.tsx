@@ -5,6 +5,7 @@ import { SnapshotSchema, type DesktopAPI } from "../src/shared/contracts";
 import { DEFAULT_LEDGER_RULES, LedgerEntrySchema, LedgerSnapshotSchema, ledgerToday } from "../src/shared/ledger";
 import { summarizeLedger } from "../src/ledger/summary";
 import { emptyAccountState } from "../src/shared/account";
+import { SpaceSnapshotSchema } from "../src/shared/space";
 import "../src/renderer/styles.css";
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -84,10 +85,19 @@ const readOnly = async () => ({ ok: false as const, error: { code: "INTERNAL" as
 const ok = <T,>(data: T) => async () => ({ ok: true as const, data });
 const quiet = () => () => {};
 const update = { currentVersion: "0.0.0-preview", status: "unavailable" as const, latestVersion: null, releaseNotes: "", progressPercent: null, checkedAt: null, message: "布局预览不检查更新" };
+const space = SpaceSnapshotSchema.parse({
+  policy: {}, backupDirectory: 'C:\\Synthetic\\Documents\\终极日历\\备份', databaseBytes: 180 * 1048576, reusableBytes: 4 * 1048576, cacheBytes: 3 * 1048576,
+  backupBytes: 600 * 1048576, managedBackupBytes: 400 * 1048576, unmanagedBackupBytes: 200 * 1048576,
+  backupCount: 6, removableBackupCount: 2, removableBackupBytes: 100 * 1048576,
+  attachments: { totalBytes: 160 * 1048576, eligibleBytes: 100 * 1048576, protectedBytes: 60 * 1048576,
+    reclaimableBytes: 80 * 1048576, remainingBytes: 80 * 1048576, selectedAttachments: 4, protectedAttachments: 2, overBudgetBytes: 0 },
+  lastRunAt: null, lastResult: null, warnings: [],
+});
 
 // Every bridge method is listed so the type checker flags new ones; reads return synthetic data and writes refuse.
 const api: DesktopAPI = {
   snapshot: ok(snapshot), onChanged: quiet, onNavigate: quiet,
+  spaceSnapshot: ok(space), spaceConfigure: readOnly, spaceCleanup: readOnly,
   mutate: readOnly, undo: readOnly, importSource: readOnly, analyzeSource: readOnly, command: readOnly, importCourses: readOnly,
   saveSettings: readOnly, setApiKey: readOnly, retryApiKey: readOnly, backup: readOnly, restore: readOnly,
   selectImage: ok(null),

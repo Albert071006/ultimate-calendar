@@ -152,6 +152,7 @@ describe('capture orchestration against real local OneBot websocket', () => {
     await service.configure({ ...store.config(), enabled: false, analysisEnabled: true }); await waitFor(() => !service.busy());
     service.action({ action: 'analyze' }); await waitFor(() => !!release);
     expect(() => service.action({ action: 'disconnect' })).toThrow('仍在处理');
+    expect(() => service.cleanAttachments({ retentionDays: 30, maxBytes: 1024 ** 3 })).toThrow('请等待当前采集/分析完成后再清理附件');
     expect(store.config().accountId).toBe('100');
     await service.configure({ ...store.config(), analysisEnabled: false }); release!('synthetic'); await waitFor(() => !service.busy());
     expect(calls).toBe(0); expect(store.listBatches().items[0]?.status).toBe('pending');

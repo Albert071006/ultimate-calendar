@@ -74,5 +74,6 @@
 .a2-me-content button.danger-text:not(.ui-btn) { color: var(--accent); background: transparent; border-color: transparent; }
 .a2-me-content .a2-palette .pal button { border: 0; }
 .a2-me-content .sticky-save { bottom: -28px; gap: 12px; align-items: center; background: color-mix(in srgb, var(--bg) 92%, transparent); border-top: 1px solid var(--line); }
+.a2-me-content .sticky-save[hidden] { display: none; }
 .a2-me-content .warning { border-radius: var(--radius); }
 .a2-me-h > h2 + .capture-status { align-self: center; }

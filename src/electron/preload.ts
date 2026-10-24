@@ -30,6 +30,7 @@ function accountChanged(listener: Parameters<DesktopAPI['onAccountChanged']>[0])
 }
 // Explicit fixed methods only: no ipcRenderer, event objects or arbitrary channels cross contextBridge.
 const api = {
+  spaceSnapshot: () => invoke('spaceSnapshot'), spaceConfigure: (request: unknown) => invoke('spaceConfigure', request), spaceCleanup: (request: unknown) => invoke('spaceCleanup', request),
   updateSnapshot: () => invoke('updateSnapshot'), checkForUpdates: () => invoke('checkForUpdates'), downloadUpdate: () => invoke('downloadUpdate'), installUpdate: () => invoke('installUpdate'),
   onUpdateChanged: (listener: Parameters<DesktopAPI['onUpdateChanged']>[0]) => { const handler = (_event: IpcRendererEvent, value: unknown) => { const parsed = UpdateStateSchema.safeParse(value); if (parsed.success) listener(parsed.data); }; ipcRenderer.on('planner:update-changed', handler); return () => ipcRenderer.removeListener('planner:update-changed', handler); },
   ledgerSnapshot: (request?: unknown) => invoke('ledgerSnapshot', request), ledgerMutate: (request: unknown) => invoke('ledgerMutate', request), ledgerUndo: (request: unknown) => invoke('ledgerUndo', request), ledgerExport: (request: unknown) => invoke('ledgerExport', request),

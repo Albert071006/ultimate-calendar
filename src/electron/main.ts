@@ -1,13 +1,16 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, safeStorage, session, Tray, type IpcMainInvokeEvent, type IpcMainEvent } from 'electron';
 import { join, basename, extname } from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { NsisUpdater } from 'electron-updater';
 import { createRepository, type Repository } from '../storage/repository';
 import { createPlanner } from '../domain/planner';
 import { createController } from '../application/controller';
-import { createBackup, automaticBackup, inspectBackupBundle } from '../storage/backups';
+import { createBackup, automaticBackup, inspectBackupFile } from '../storage/backups';
+import { createSpaceManager } from '../storage/space-management';
+import { initializeBackupDirectory, resolveBackupDirectory } from '../storage/space-policy';
 import { createLedgerService, type LedgerService } from '../ledger/service';
 import { nowInstant } from '../domain/time';
 import { reminderDigest } from '../domain/reminders';
@@ -28,6 +31,7 @@ import { CaptureSnapshotSchema } from '../shared/capture';
 import { createModelRequestQueue } from '../ai/request-queue';
 import { createUpdateService } from './update-service';
 import { UpdateStateSchema } from '../shared/update';
+import { prepareDataDirectory, resolveDataDirectory } from './data-directory';
 
 app.setName('终极日历');
 const APP_ID = 'local.ultimate-calendar.desktop'; app.setAppUserModelId(APP_ID);
@@ -37,22 +41,32 @@ let pendingNavigation: NavigateEvent | null = null;
 let stopAccount: (() => void) | undefined;
 let stopCapture: (() => void) | undefined;
 let stopUpdates: (() => void) | undefined;
+let stopSpace: (() => void) | undefined;
+let disposeRestore: (() => void) | undefined;
 let ledger: LedgerService | null = null;
 const missed = createReminderSummary(); let acknowledgeReminders: (ids: string[]) => Promise<void> = async () => {};
 let startupNotice: { title: string; message: string } | null = null;
-let profile: string | null;
-try { profile = profileFromArgs(process.argv); if (profile) app.setPath('userData', profile); }
+const legacyDataDirectory = app.getPath('userData');
+let profile: string | null = null;
+try {
+  profile = profileFromArgs(process.argv);
+  const dataDirectory = resolveDataDirectory(app.getPath('documents'), profile);
+  mkdirSync(dataDirectory, { recursive: true });
+  app.setPath('userData', dataDirectory);
+}
 catch { dialog.showErrorBox('无法打开数据目录', '请使用 --planner-profile=本地绝对目录，并避免磁盘根目录或重复参数。'); app.exit(1); }
 const locked = app.requestSingleInstanceLock();
 if (!locked) app.quit();
 else {
   app.on('second-instance', () => showWindow());
   app.on('before-quit', () => { quitting = true; });
-  app.on('will-quit', () => { if (timer) clearInterval(timer); stopUpdates?.(); stopAccount?.(); stopCapture?.(); ledger?.close(); repository?.close(); tray?.destroy(); });
+  app.on('will-quit', () => { if (timer) clearInterval(timer); stopSpace?.(); disposeRestore?.(); stopUpdates?.(); stopAccount?.(); stopCapture?.(); ledger?.close(); repository?.close(); tray?.destroy(); });
   app.on('activate', () => showWindow());
   app.on('window-all-closed', () => { if (!tray || quitting) app.quit(); });
-  void app.whenReady().then(start).catch(() => {
-    dialog.showErrorBox('日历启动失败', `无法打开本地数据或界面。请检查目录权限与可用空间，再重新启动。\n数据目录：${app.getPath('userData')}\n不要删除已有数据库；可从备份恢复。`); app.quit();
+  const dataPreparation = prepareDataDirectory({ directory: app.getPath('userData'), legacyDirectory: legacyDataDirectory, profile });
+  void Promise.all([app.whenReady(), dataPreparation]).then(start).catch(error => {
+    const detail = error instanceof Error ? error.message : '请检查目录权限与可用空间。';
+    dialog.showErrorBox('日历启动失败', `无法打开本地数据或界面。${detail}\n数据目录：${app.getPath('userData')}\n不要删除已有数据库；可从备份恢复。`); app.quit();
   });
 }
 function showWindow() { if (window && !window.isDestroyed()) { if (window.isMinimized()) window.restore(); window.show(); window.focus(); } }
@@ -88,6 +102,7 @@ async function showRetainedSummary(explicit = false) {
 }
 async function start() {
   const data = app.getPath('userData'); await mkdir(data, { recursive: true });
+  initializeBackupDirectory(data, app.getPath('documents'), !!profile);
   repository = createRepository(join(data, 'planner.sqlite')); const repo = repository; const planner = createPlanner(repo);
   ledger = createLedgerService(repo.path); const localLedger = ledger;
   localLedger.ensureMonthlyAllowance();
@@ -132,23 +147,32 @@ async function start() {
   stopCapture = () => { capture.stop(); documents.dispose(); captureStore.close(); };
   const workflow = async <T>(work: () => Promise<T>): Promise<T> => { activeWorkflows++; try { return await work(); } finally { activeWorkflows--; } };
   const restore = createRestoreManager(repo, () => activeWorkflows === 0 && !capture.busy(), captureStore);
+  disposeRestore = () => { void restore.dispose(); };
   let activeRequests = 0, captureSuspendedForUpdate = false;
   const updates = createUpdateService({
     currentVersion: app.getVersion(), packaged: app.isPackaged, platform: process.platform, isolatedProfile: !!profile,
     getUpdater: () => new NsisUpdater(),
-    isBusy: () => activeRequests > 0 || activeWorkflows > 0 || capture.busy() || modelQueue.busy(),
+    isBusy: () => activeRequests > 0 || activeWorkflows > 0 || capture.busy() || modelQueue.busy() || space.isRunning(),
     prepareInstall: () => {
       // Only pause this app's local capture socket. Never stop or restart the user's QQ process.
       capture.suspendForRestore(); captureSuspendedForUpdate = true;
-      const backupPath = join(data, 'backups', `before-update-${randomUUID()}.sqlite`);
-      createBackup(repo, backupPath); inspectBackupBundle(backupPath);
+      const backupPath = join(resolveBackupDirectory(data), `before-update-${randomUUID()}.sqlite`);
+      createBackup(repo, backupPath); inspectBackupFile(backupPath);
     },
     resumeAfterFailedInstall: async () => { if (captureSuspendedForUpdate) { captureSuspendedForUpdate = false; await capture.resume(); } },
     setQuitting: value => { quitting = value; },
     onChanged: state => { if (window && !window.isDestroyed()) window.webContents.send('planner:update-changed', UpdateStateSchema.parse(state)); },
   });
   stopUpdates = updates.stop;
+  const space = createSpaceManager({ directory: data,
+    isBusy: () => activeRequests > 0 || activeWorkflows > 0 || capture.busy() || modelQueue.busy() || updates.isInstalling(),
+    attachments: capture, clearCache: () => session.defaultSession.clearCache(),
+  });
+  stopSpace = space.stop;
   const api: Omit<DesktopAPI, 'onChanged' | 'onNavigate' | 'onAccountChanged' | 'onCaptureChanged' | 'onUpdateChanged'> = {
+    spaceSnapshot: async () => ({ ok: true, data: space.snapshot() }),
+    spaceConfigure: async policy => ({ ok: true, data: space.configure(policy) }),
+    spaceCleanup: async request => ({ ok: true, data: await space.cleanup(request) }),
     updateSnapshot: async () => ({ ok: true, data: updates.snapshot() }),
     checkForUpdates: updates.checkForUpdates, downloadUpdate: updates.downloadUpdate, installUpdate: updates.installUpdate,
     ledgerSnapshot: async request => { const generated = localLedger.ensureMonthlyAllowance(); if (generated) { automaticBackup(repo); changed({reason:'mutation'}); } return {ok:true,data:localLedger.snapshot(request?.month)}; },
@@ -187,14 +211,14 @@ async function start() {
       const path = result.filePaths[0]; return { ok: true, data: imageFromBytes(path, await boundedFile(path, MAX_IMAGE_BYTES)) };
     },
     backup: async () => {
-      const result = await dialog.showSaveDialog(window!, { title: '备份日历（包含来源原文与截图，不包含 API 密钥）', defaultPath: join(app.getPath('documents'), `终极日历-${nowInstant().slice(0, 10)}.sqlite`), filters: [{ name: '日历备份', extensions: ['sqlite'] }], properties: ['createDirectory', 'showOverwriteConfirmation'] });
+      const result = await dialog.showSaveDialog(window!, { title: '备份日历（包含来源原文与截图，不包含 API 密钥）', defaultPath: join(resolveBackupDirectory(data), `终极日历-${nowInstant().slice(0, 10)}.sqlite`), filters: [{ name: '日历备份', extensions: ['sqlite'] }], properties: ['createDirectory', 'showOverwriteConfirmation'] });
       if (result.canceled || !result.filePath) throw new WorkflowError('CANCELLED', '已取消备份');
       // VACUUM refuses an existing file. Do not silently overwrite a prior backup.
       try { return { ok: true, data: createBackup(repo, result.filePath) }; } catch (error) { if (error instanceof WorkflowError) throw error; throw new WorkflowError('STORAGE', '备份未完成：请选择一个尚不存在的文件名，并检查目录写入权限'); }
     },
     restore: async request => {
       if (request.confirmed) { if (!request.confirmationToken) throw new WorkflowError('VALIDATION', '请先选择并预览恢复文件'); capture.suspendForRestore(); try { const result = await restore.confirm(request.confirmationToken); applyAutoLaunch(repo.snapshot().settings.autoLaunch); changed({ reason: 'restore' }); return { ok: true, data: result }; } finally { await capture.resume(); } }
-      const result = await dialog.showOpenDialog(window!, { title: '选择日历备份以预览恢复', properties: ['openFile'], filters: [{ name: '日历备份', extensions: ['sqlite'] }] });
+      const result = await dialog.showOpenDialog(window!, { title: '选择日历备份以预览恢复', defaultPath: resolveBackupDirectory(data), properties: ['openFile'], filters: [{ name: '日历备份', extensions: ['sqlite'] }] });
       if (result.canceled || !result.filePaths[0]) throw new WorkflowError('CANCELLED', '已取消恢复');
       try { return { ok: true, data: await restore.preview(result.filePaths[0]) }; } catch { throw new WorkflowError('STORAGE', '备份无法读取或校验未通过，请选择本应用生成的完整 SQLite 备份'); }
     },
@@ -224,6 +248,9 @@ async function start() {
       const handler = api[method] as (value: unknown) => Promise<unknown>;
       if (updateMethods.has(method)) return handler(request);
       if (updates.isInstalling()) throw new WorkflowError('CONFLICT', '正在备份并准备重启更新，请稍候再操作。');
+      if (space.isRunning()) throw new WorkflowError('CONFLICT', '正在整理本机存储，请稍候再操作。');
+      // Cleanup checks other active requests; do not count its own IPC request as a conflict.
+      if (method === 'spaceCleanup') return handler(request);
       activeRequests++;
       try { return await handler(request); } finally { activeRequests--; }
     },
@@ -262,6 +289,7 @@ async function start() {
   applyAutoLaunch(repo.snapshot().settings.autoLaunch);
   account.start();
   updates.start();
+  space.start();
   void capture.start().catch(() => { /* Connection detail is shown in the QQ page. */ });
   await window.loadURL(documentUrl()); showWindow(); void showRetainedSummary();
 }
