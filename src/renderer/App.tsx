@@ -181,7 +181,8 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
                   edit={(s) => { if (["task", "block", "course", "candidate"].includes(s.entity)) editRecord({ ...s, entity: s.entity as EditorTarget["entity"] }); }}
                   courses={() => { setCoursePreview(undefined); openMe("courses"); }}
                   drawerOpen={drawerOpen} toggleDrawer={() => setDrawerOpen(open => !open)} unscheduledCount={unscheduledTasks(snapshot, now).length}
-                  side={editor ? editPanel(false) : drawerOpen ? <UnscheduledDrawer snapshot={snapshot} ui={ui} now={now} collapse={() => setDrawerOpen(false)} actions={taskActions} /> : null} />
+                  panel={editPanel(false) || undefined} openCandidate={(id) => { setSelected({ entity: "candidate", id }); setPage("inbox"); }}
+                  drawer={drawerOpen ? <UnscheduledDrawer snapshot={snapshot} ui={ui} now={now} collapse={() => setDrawerOpen(false)} actions={taskActions} /> : null} />
               )}
               {page === "inbox" && (
                 <div className="a2-page">

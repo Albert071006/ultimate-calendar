@@ -75,3 +75,9 @@
 .a2-cal .calendar-current-time { border-top: 1.5px solid var(--accent); color: var(--accent); }
 .a2-cal .calendar-current-time-dot { background: var(--accent); }
 .a2-cal .calendar-current-time-label { left: auto; right: 4px; background: var(--accent); color: #fff; font-family: var(--font-time); font-size: 10.5px; }
+
+/* Sessions sit on their own layer so the day view can keep them to the left six tenths. */
+.a2-cal .a2-ev-layer { position: absolute; inset: 0; pointer-events: none; }
+.a2-cal .a2-ev-layer > * { pointer-events: auto; }
+.a2-cal.view-day .a2-ev-layer { right: 42%; }
+.a2-cal.view-day .a2-days .wd { font-size: 12.5px; }
