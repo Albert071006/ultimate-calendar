@@ -30,7 +30,8 @@
     "release:check-tag": "node scripts/release.mjs check-tag",
     "release:verify": "node scripts/release-artifacts.mjs",
     "release:publish": "node scripts/release.mjs publish",
-    "font:subset": "node scripts/font-subset.mjs"
+    "font:subset": "node scripts/font-subset.mjs",
+    "icon": "electron scripts/icon.mjs"
   },
   "dependencies": {
     "@xmldom/xmldom": "0.9.12",

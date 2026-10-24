@@ -229,7 +229,10 @@ async function start() {
     },
   }));
   ipcMain.on('planner:navigation-ready', event => { if (!trustedCaller(actual(event), owner())) return; navigationReady = true; void showRetainedSummary(); });
-  const image = nativeImage.createFromPath(icon); tray = new Tray(image.resize({ width: 20, height: 20 })); tray.setToolTip('终极日历 · 本地计划与提醒');
+  // On Windows the multi-size ICO lets the tray pick a drawn size for the current scale; elsewhere scale the PNG down.
+  // Load it through nativeImage: a bare path inside app.asar cannot be opened by the tray itself.
+  const trayIcon = process.platform === 'win32' ? nativeImage.createFromPath(join(__dirname, '../assets/app-icon.ico')) : nativeImage.createFromPath(icon).resize({ width: 20, height: 20 });
+  tray = new Tray(trayIcon); tray.setToolTip('终极日历 · 本地计划与提醒');
   tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开终极日历', click: () => { showWindow(); void showRetainedSummary(); } }, { label: '查看漏过提醒', click: () => { showWindow(); void showRetainedSummary(true); } }, { type: 'separator' }, { label: '退出（停止提醒）', click: () => { quitting = true; app.quit(); } }]));
   tray.on('double-click', showWindow);
   const noticeFile = join(data, 'tray-notice-seen'); let noticeSeen = false;
