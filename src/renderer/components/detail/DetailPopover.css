@@ -3,8 +3,7 @@
 .a2-pop::before { content: ""; position: absolute; top: var(--arrow, 20px); width: 12px; height: 12px; background: var(--surface); transform: rotate(45deg); }
 .a2-pop.right::before { left: -7px; border-left: 1px solid var(--ink); border-bottom: 1px solid var(--ink); }
 .a2-pop.left::before { right: -7px; border-right: 1px solid var(--ink); border-top: 1px solid var(--ink); }
-.a2-pop.no-arrow::before, .a2-pop.docked::before { display: none; }
-.a2-pop.docked { position: static; width: 340px; max-height: none; flex-shrink: 0; margin: 16px 16px 16px 0; align-self: start; overflow: auto; box-shadow: none; border-color: var(--line-2); }
+.a2-pop.no-arrow::before { display: none; }
 
 .a2-pop-h { position: relative; padding: 14px 44px 10px 16px; border-bottom: 1px solid var(--line); }
 .a2-pop-h .kind { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-3); }

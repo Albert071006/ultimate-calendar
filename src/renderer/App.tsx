@@ -30,6 +30,7 @@ import { taskEvents, taskArrangements, taskNoticeTiming, noticeTimePassed, nextT
 import { effectiveActivityEnd } from '../domain/activity-duration';
 import './theme/tokens.css';
 import './theme/base.css';
+import './theme/forms.css';
 import './task-attention.css';
 import './components/shell/shell.css';
 
@@ -137,8 +138,8 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
     openMe("ai");
   };
   const taskActions = { select, editTask: (id: string) => editRecord({ entity: 'task', id }), schedule: scheduleTask, scheduleRecurring: scheduleRecurringTask, removeTask };
-  const detail = (docked: boolean) => snapshot && selected && (
-    <DetailPopover key={`${selected.entity}:${selected.id}:${selected.occurrenceDate ?? ''}`} snapshot={snapshot} selection={selected} anchor={anchor} docked={docked} ui={ui}
+  const detail = () => snapshot && selected && (
+    <DetailPopover key={`${selected.entity}:${selected.id}:${selected.occurrenceDate ?? ''}`} snapshot={snapshot} selection={selected} anchor={anchor} ui={ui}
       close={() => setSelected(null)} actions={{ ...taskActions, edit: editSelected }} />
   );
   const editPanel = (overlay: boolean) => snapshot && editor && (
@@ -185,16 +186,8 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
                   drawer={drawerOpen ? <UnscheduledDrawer snapshot={snapshot} ui={ui} now={now} collapse={() => setDrawerOpen(false)} actions={taskActions} /> : null} />
               )}
               {page === "inbox" && (
-                <div className="a2-page">
-                  <PageToolbar title="待判断" ui={ui} />
-                  <div className="a2-legacy-body">
-                    <div className="main-content">
-                      <Inbox snapshot={snapshot} ui={ui} select={select} edit={(id) => editRecord({ entity: "candidate", id })}
-                        importMessage={() => setImporting(true)} openSource={setSourceId} />
-                    </div>
-                    {detail(true)}
-                  </div>
-                </div>
+                <Inbox snapshot={snapshot} ui={ui} select={select} edit={(id) => editRecord({ entity: "candidate", id })} host={host}
+                  importMessage={() => setImporting(true)} openSource={setSourceId} focus={selected?.entity === "candidate" ? selected.id : null} />
               )}
               {page === "ledger" && (
                 <div className="a2-page">
@@ -210,7 +203,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
               )}
               {page !== "calendar" && editPanel(true)}
             </div>
-            {page !== "inbox" && !editor && detail(false)}
+            {(page !== "inbox" || selected?.entity !== "candidate") && !editor && detail()}
             <Assistant ui={ui} selected={selected} date={date} domain={page === "ledger" ? "ledger" : undefined} />
           </>
         )}

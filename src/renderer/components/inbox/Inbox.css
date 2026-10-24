@@ -1,0 +1,78 @@
+/* 待判断: list with quick decisions beside the selected notice's detail. */
+.a2-page.a2-inbox { grid-template-rows: auto auto minmax(0, 1fr); }
+.a2-inbox .ui-tabs { align-items: center; }
+.a2-inbox .ui-tabs .ui-seg { margin-left: auto; }
+.a2-ib-body { display: grid; grid-template-columns: 380px minmax(0, 1fr); min-height: 0; overflow: hidden; }
+
+.a2-ib-list { min-height: 0; overflow: auto; border-right: 1px solid var(--line); }
+.a2-ib-item { position: relative; padding: 14px 104px 14px 16px; border-bottom: 1px solid var(--line); border-left: 3px solid transparent; cursor: pointer; }
+.a2-ib-item:not(.quick) { padding-right: 16px; }
+.a2-ib-item:hover { background: color-mix(in srgb, var(--surface) 60%, transparent); }
+.a2-ib-item.on { background: var(--surface); border-left-color: var(--accent); }
+.a2-ib-item .src { display: flex; gap: 8px; font-size: 11.5px; color: var(--ink-3); }
+.a2-ib-item .src span:last-child { position: absolute; top: 14px; right: 18px; font-family: var(--font-time); }
+.a2-ib-item:not(.quick) .src span:last-child { position: static; margin-left: auto; }
+.a2-ib-item h3 { margin: 5px 0 6px; font-size: 15px; }
+.a2-ib-item .pick { padding: 0; font-family: var(--font-display); font-size: 15px; font-weight: 600; line-height: 1.4; color: var(--ink); text-align: left; background: none; border: 0; cursor: pointer; }
+.a2-ib-item .pick:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.a2-ib-item .when { display: flex; flex-wrap: wrap; gap: 6px; }
+.a2-ib-item .ui-chip b { margin-left: 4px; }
+.a2-ib-item .qa { position: absolute; right: 16px; bottom: 14px; display: flex; gap: 6px; }
+.a2-ib-item .qa button { width: 34px; height: 30px; display: grid; place-items: center; padding: 0; color: var(--ink-2); background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); cursor: pointer; }
+.a2-ib-item .qa button svg { width: 16px; height: 16px; stroke-width: 2; }
+.a2-ib-item .qa .ok { color: var(--ink); border-color: var(--ink); }
+.a2-ib-item .qa .ok:hover, .a2-ib-item.on .qa .ok { color: var(--surface); background: var(--ink); }
+.a2-ib-item .qa .no:hover { color: var(--ink); border-color: var(--ink-2); }
+.a2-ib-item .qa button:disabled { opacity: 0.45; cursor: default; }
+.a2-ib-item .qa button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.a2-ib-toast { margin: 12px 16px; }
+.a2-ib-keys { margin: 0; padding: 12px 16px; font-size: 12px; color: var(--ink-3); }
+
+.a2-ib-detail { min-height: 0; overflow: auto; padding: 22px 32px 0; }
+.a2-ib-detail > .src { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-3); }
+.a2-ib-detail > .src .ui-btn { margin-left: auto; }
+.a2-ib-detail h2 { margin: 6px 0 18px; font-family: var(--font-display); font-size: 24px; font-weight: 600; letter-spacing: 0.5px; line-height: 1.35; }
+.a2-ib-facts { display: grid; grid-template-columns: 1fr 1fr; margin-bottom: 18px; border-top: 2px solid var(--ink); border-bottom: 1px solid var(--line-2); }
+.a2-ib-facts > div { padding: 12px 14px 12px 0; min-width: 0; }
+.a2-ib-facts > div + div { padding-left: 14px; border-left: 1px solid var(--line); }
+.a2-ib-facts .k, .a2-ib-times .k { font-size: 12px; color: var(--ink-3); margin-bottom: 5px; }
+.a2-ib-facts .v { font-size: 14.5px; line-height: 1.6; overflow-wrap: anywhere; }
+.a2-ib-facts .v p { margin: 0; }
+.a2-ib-facts .tag { display: inline-block; margin-left: 6px; padding: 0 5px; font-size: 11px; color: var(--ink-3); border: 1px solid var(--line-2); border-radius: 2px; vertical-align: 1px; }
+.a2-ib-times { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+.a2-ib-times > div { min-width: 0; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); }
+.a2-ib-times .v { margin-top: 4px; font-family: var(--font-time); font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.a2-ib-times .v.red { color: var(--accent); }
+.a2-ib-times .v.place { font-family: var(--font-ui); font-weight: 500; }
+.a2-ib-times .v.none { font-family: var(--font-ui); font-weight: 400; color: var(--ink-3); }
+.a2-ib-times .q { margin-top: 4px; font-size: 11.5px; color: var(--ink-3); overflow-wrap: anywhere; }
+.a2-ib-times .notes { grid-column: 1 / -1; }
+.a2-ib-times .notes p { margin: 2px 0 0; font-size: 13px; color: var(--ink-2); }
+.a2-ib-times > .warning { grid-column: 1 / -1; margin: 0; }
+.a2-ib-sub { margin: 0 0 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.5px; color: var(--ink-3); }
+.a2-ib-quote { margin: 0 0 20px; padding: 4px 0 4px 14px; font-size: 13.5px; line-height: 1.8; color: var(--ink-2); border-left: 3px solid var(--line-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.a2-ib-quote mark { padding: 0 1px; color: inherit; background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.a2-ib-plain { margin: 0 0 18px; padding-left: 18px; font-size: 13.5px; line-height: 1.7; color: var(--ink-2); }
+.a2-ib-note { margin: 0 0 16px; padding: 10px 12px; font-size: 13px; color: var(--ink-2); background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); }
+.a2-ib-note.warn { color: var(--warn-ink); background: color-mix(in srgb, var(--warn-fill) 10%, var(--surface)); border-color: color-mix(in srgb, var(--warn-fill) 45%, var(--surface)); }
+.a2-ib-note p { margin: 4px 0 0; }
+.a2-ib-sources { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; font-size: 12.5px; color: var(--ink-3); }
+.a2-ib-sources > span { align-self: center; }
+.a2-ib-decide { position: sticky; bottom: 0; display: flex; align-items: center; gap: 8px; padding: 14px 0 18px; background: linear-gradient(transparent, var(--bg) 30%); }
+.a2-ib-decide > input { flex: 1; min-width: 0; height: 32px; padding: 0 10px; font: inherit; font-size: 13px; color: var(--ink); background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); }
+.a2-ib-decide > input:focus-visible { outline: 2px solid var(--ink); outline-offset: 0; }
+.a2-ib-snooze { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
+.a2-ib-snooze label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-2); }
+.a2-ib-snooze input { height: 32px; padding: 0 8px; font: inherit; font-size: 13px; color: var(--ink); background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); }
+.a2-ib-done { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-2); }
+
+.a2-ib-empty { min-height: 0; overflow: auto; display: flex; flex-direction: column; align-items: center; padding-top: 72px; }
+.a2-ib-empty .a2-ib-toast { margin: -48px 0 24px; }
+.a2-ib-sourcelist { min-height: 0; overflow: auto; padding: 12px 22px 18px; display: flex; flex-direction: column; gap: 8px; }
+.a2-ib-source { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 14px; font: inherit; color: var(--ink); text-align: left; background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); cursor: pointer; }
+.a2-ib-source:hover { border-color: var(--ink-3); }
+.a2-ib-source .kind { font-size: 11.5px; color: var(--ink-3); }
+.a2-ib-source .main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.a2-ib-source strong { font-family: var(--font-display); font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
+.a2-ib-source small { font-size: 12px; color: var(--ink-3); }
+.a2-ib-source .go { font-size: 12.5px; color: var(--ink-2); }

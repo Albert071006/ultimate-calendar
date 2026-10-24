@@ -1,0 +1,40 @@
+/* A2 form controls for the edit panel and dialogs. */
+.a2 .editor-form { gap: 14px; font-size: 13px; }
+.a2 .editor-form label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--ink-2); }
+.a2 .editor-form label.check { flex-direction: row; align-items: center; gap: 7px; color: var(--ink); }
+.a2 .editor-form input:not([type="checkbox"]), .a2 .editor-form select, .a2 .editor-form textarea {
+  width: 100%; min-height: 32px; padding: 5px 8px; font: inherit; font-size: 13px; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius);
+}
+.a2 .editor-form textarea { min-height: 64px; resize: vertical; }
+.a2 .editor-form input[readonly] { background: var(--surface-2); color: var(--ink-2); }
+.a2 .editor-form :is(input, select, textarea):focus-visible { outline: 2px solid var(--ink); outline-offset: 0; border-color: var(--ink); }
+.a2 .editor-form input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+.a2 .form-grid { gap: 12px; }
+.a2 fieldset { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; gap: 10px; }
+.a2 legend { font-size: 11.5px; color: var(--ink-3); padding: 0 4px; }
+.a2 .hint { font-size: 11.5px; line-height: 1.6; color: var(--ink-3); margin: 0; }
+.a2 .warning { margin: 0; padding: 8px 10px; font-size: 12.5px; line-height: 1.6; color: var(--warn-ink); background: color-mix(in srgb, var(--warn-fill) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--warn-fill) 45%, var(--surface)); border-radius: var(--radius); }
+.a2 .warning button { margin-top: 8px; }
+.a2 .linked-tasks p { margin: 4px 0 0; color: var(--ink); }
+.a2 .exception-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; }
+.a2 .editor-form button { height: 30px; padding: 0 12px; font: inherit; font-size: 12.5px; color: var(--ink); background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); cursor: pointer; }
+.a2 .editor-form button:hover { background: var(--surface-2); }
+.a2 .editor-form button.primary { color: #fff; background: var(--accent); border-color: var(--accent); }
+.a2 .editor-form button.danger { color: #fff; background: var(--warn-fill); border-color: var(--warn-fill); }
+.a2 .editor-form button.danger-text { color: var(--accent); border-color: transparent; background: transparent; }
+.a2 .editor-form button:disabled { opacity: 0.45; cursor: default; }
+.a2 .form-footer { border-top: 1px solid var(--line); }
+
+/* Dialogs: paper sheet with an ink edge, matching the detail card. */
+.a2 .modal-backdrop { background: rgba(31, 28, 24, 0.32); backdrop-filter: none; }
+.a2 .modal { padding: 0 22px 20px; color: var(--ink); background: var(--bg); border: 1px solid var(--ink); border-radius: 3px; box-shadow: 6px 6px 0 rgba(31, 28, 24, 0.12), var(--overlay-shadow); }
+.a2 .modal > header { position: sticky; top: 0; z-index: 1; margin: 0 -22px 18px; padding: 16px 22px 12px; background: var(--bg); border-bottom: 1px solid var(--line); }
+.a2 .modal > header h2 { font-family: var(--font-display); font-size: 17px; font-weight: 600; }
+.a2 .modal > header button { height: 28px; padding: 0 10px; font: inherit; font-size: 12.5px; color: var(--ink-2); background: transparent; border: 1px solid var(--line-2); border-radius: var(--radius); cursor: pointer; }
+.a2 .modal > header button:hover { color: var(--ink); background: var(--surface-2); }
+.a2 .modal .tabs { display: inline-flex; gap: 0; padding: 2px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--surface); }
+.a2 .modal .tabs button { height: 28px; padding: 0 12px; font: inherit; font-size: 13px; color: var(--ink-2); background: transparent; border: 0; border-radius: 2px; }
+.a2 .modal .tabs button.selected { color: var(--surface); background: var(--ink); }
+.a2 .modal .original-text { padding: 12px 14px; font-size: 13px; line-height: 1.8; color: var(--ink-2); background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--line-2); border-radius: var(--radius); white-space: pre-wrap; }
+.a2 .modal .source-metadata dt { color: var(--ink-3); }

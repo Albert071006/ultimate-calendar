@@ -47,11 +47,11 @@ function reminderLabel(value: ReminderConfig) {
 }
 
 /** Where the card sits beside its anchor: the right side when it fits, else the left; kept inside the window. */
-function usePlacement(anchor: DOMRect | null | undefined, docked: boolean) {
+function usePlacement(anchor: DOMRect | null | undefined) {
   const ref = useRef<HTMLElement>(null);
   const [place, setPlace] = useState<{ left: number; top: number; side: "right" | "left"; arrow: number } | null>(null);
   useLayoutEffect(() => {
-    if (docked || !ref.current) return;
+    if (!ref.current) return;
     // Stay above the assistant bar so the card's actions are never covered.
     const height = ref.current.offsetHeight, width = window.innerWidth;
     const viewport = document.querySelector('[aria-label="生活助手"]')?.getBoundingClientRect().top || window.innerHeight;
@@ -60,30 +60,28 @@ function usePlacement(anchor: DOMRect | null | undefined, docked: boolean) {
     const left = side === "right" ? Math.min(anchor.right + GAP, width - WIDTH - MARGIN) : anchor.left - GAP - WIDTH;
     const top = Math.max(MARGIN, Math.min(anchor.top, viewport - height - MARGIN));
     setPlace({ left: Math.max(MARGIN, left), top, side, arrow: Math.max(14, Math.min(height - 26, anchor.top + Math.min(anchor.height, 40) / 2 - top - 6)) });
-  }, [anchor, docked]);
+  }, [anchor]);
   return { ref, place };
 }
 
 /**
  * The small card that opens beside a clicked item. It summarises the record and offers its everyday
- * actions; anything longer goes to the side edit panel. Docked, it sits inline (the inbox's detail column).
+ * actions; anything longer goes to the side edit panel.
  */
-export function DetailPopover({ snapshot, selection, anchor, docked = false, ui, close, actions }: {
+export function DetailPopover({ snapshot, selection, anchor, ui, close, actions }: {
   snapshot: Snapshot;
   selection: Selection;
   anchor?: DOMRect | null;
-  docked?: boolean;
   ui: PlannerUI;
   close: () => void;
   actions: DetailActions;
 }) {
   const now = useCurrentTime();
   const value = findRecord(snapshot, selection);
-  const { ref, place } = usePlacement(anchor, docked);
+  const { ref, place } = usePlacement(anchor);
   const closeRef = useRef(close);
   closeRef.current = close;
   useEffect(() => {
-    if (docked) return;
     const key = (event: KeyboardEvent) => {
       // A modal or the edit panel above the card handles its own Escape.
       if (event.key === "Escape" && !document.querySelector('[role="dialog"]')) { event.preventDefault(); closeRef.current(); }
@@ -95,7 +93,7 @@ export function DetailPopover({ snapshot, selection, anchor, docked = false, ui,
     document.addEventListener("keydown", key);
     document.addEventListener("mousedown", outside);
     return () => { document.removeEventListener("keydown", key); document.removeEventListener("mousedown", outside); };
-  }, [docked, ref]);
+  }, [ref]);
   if (!value) return null;
   const name = entityNames[selection.entity];
   let body: ReactNode = null, kind = name, swatch: CSSProperties | undefined, title = "title" in value ? value.title : "text" in value ? value.text : "详情";
@@ -232,8 +230,8 @@ export function DetailPopover({ snapshot, selection, anchor, docked = false, ui,
 
   return (
     <aside ref={ref} aria-label={`${name}详情`}
-      className={`a2-pop${docked ? " docked" : ""}${place ? ` ${place.side}` : ""}${place?.arrow === -1 ? " no-arrow" : ""}`}
-      style={docked ? undefined : { left: place?.left ?? 0, top: place?.top ?? 0, visibility: place ? undefined : "hidden", "--arrow": `${place?.arrow ?? 20}px` } as CSSProperties}>
+      className={`a2-pop${place ? ` ${place.side}` : ""}${place?.arrow === -1 ? " no-arrow" : ""}`}
+      style={{ left: place?.left ?? 0, top: place?.top ?? 0, visibility: place ? undefined : "hidden", "--arrow": `${place?.arrow ?? 20}px` } as CSSProperties}>
       <header className="a2-pop-h">
         <div className="kind"><i className={`swatch ${selection.entity === "block" ? (value as Block).kind : selection.entity}`} style={swatch} aria-hidden="true" />{kind}</div>
         <h3>{title}</h3>
