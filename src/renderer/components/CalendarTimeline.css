@@ -67,5 +67,4 @@
   border-top: 1px solid #287e7080; pointer-events: none; z-index: 6;
 }
 .calendar-panel .timeline-cursor span { display: block; position: absolute; top: -15px; right: 3px; background: #edf7f0; color: #216f60; font-size: 10px; }
-.calendar-panel .timeline-help { font-size: 10px; line-height: 1.5; padding: 6px 12px; }
 .calendar-panel .timeline-live-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }

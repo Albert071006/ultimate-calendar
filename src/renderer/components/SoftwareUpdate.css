@@ -11,5 +11,3 @@
 .software-release-notes { border-top: 1px solid #e1e7da; margin-top: 12px; padding-top: 12px; font-size: 12px; }
 .software-release-notes summary { cursor: pointer; }
 .software-release-notes p { max-height: 230px; overflow: auto; line-height: 1.8; overflow-wrap: anywhere; margin-bottom: 0; }
-.workspace-header .update-shortcut { color: #267f70; border-color: #bcd9ce; padding: 7px 10px; font-size: 11px; }
-@media (max-width: 1080px) { .workspace-header:has(.update-shortcut) .local-status { display: none; } }

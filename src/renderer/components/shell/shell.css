@@ -32,9 +32,6 @@
 .a2-main { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
 .a2-page-slot { grid-row: 2; min-height: 0; display: grid; }
 .a2-page { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; min-width: 0; }
-.a2-legacy-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; min-height: 0; overflow: hidden; }
-.a2-legacy-body > .main-content { min-width: 0; min-height: 0; overflow: auto; }
-.a2-legacy-scroll { min-height: 0; overflow: auto; }
 
 .a2-toolbar { display: flex; align-items: center; gap: 12px; padding: 14px 22px; min-height: 61px; border-bottom: 1px solid var(--line); }
 .a2-title { margin: 0; font-family: var(--font-display); font-size: 20px; font-weight: 600; letter-spacing: 0.3px; display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
