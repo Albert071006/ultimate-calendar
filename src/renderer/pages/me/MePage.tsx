@@ -8,6 +8,7 @@ import { Goals } from "../../components/Goals";
 import { CourseEditor } from "../../components/CourseEditor";
 import { CapturePage } from "../../components/CapturePage";
 import { Settings } from "../../components/Settings";
+import { LedgerRulesSettings } from "../../components/ledger/Rules";
 import "./MePage.css";
 
 export type MeSection = "goals" | "courses" | "capture" | "ai" | "term" | "reminders" | "ledger" | "data" | "update";
@@ -50,7 +51,8 @@ export function MePage({ snapshot, ui, section, setSection, updates, select, edi
           {current === "goals" && <Goals snapshot={snapshot} select={select} create={() => edit({ entity: "goal" })} />}
           {current === "courses" && <CourseEditor key={coursePreview?.sourceId ?? "courses"} snapshot={snapshot} ui={ui} edit={edit} initial={coursePreview} openSource={openSource} />}
           {current === "capture" && <CapturePage ui={ui} initialReference={captureReference} />}
-          {["ai", "term", "reminders", "ledger", "data", "update"].includes(current) && (
+          {current === "ledger" && ui.client && <LedgerRulesSettings api={ui.client} />}
+          {["ai", "term", "reminders", "data", "update"].includes(current) && (
             <Settings snapshot={snapshot} ui={ui} courses={() => setSection("courses")} updates={updates} />
           )}
         </section>

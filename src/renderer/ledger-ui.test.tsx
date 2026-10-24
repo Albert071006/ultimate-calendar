@@ -5,24 +5,25 @@ import type { ApiResult, DesktopAPI } from '../shared/contracts';
 import { DEFAULT_LEDGER_RULES, LEDGER_ACCOUNTS, LedgerEntrySchema, LedgerSnapshotSchema, type LedgerMutationRequest, type LedgerMutationResult } from '../shared/ledger';
 import { todayDate } from './calendar-layout';
 import { LedgerPage } from './components/LedgerPage';
+import { LedgerRulesSettings } from './components/ledger/Rules';
 
 afterEach(cleanup);
 const today = todayDate(), month = today.slice(0, 7), stamp = `${today}T12:00:00+08:00`;
 const entry = LedgerEntrySchema.parse({ id: 'lunch', kind: 'expense', date: today, month, title: '午饭', category: '餐饮', amountCents: 2000, personalCents: 1200, cashflows: [{ accountId: null, deltaCents: -2000 }], sourceId: 'old-source', sourceKey: 'old-001', note: 'AA：本人承担 12 元', version: 1, createdAt: stamp, updatedAt: stamp });
-function fixture() {
+function fixture(page: 'ledger' | 'rules' = 'ledger') {
   const snapshot = LedgerSnapshotSchema.parse({ revision: 1, entries: [entry], balanceSnapshots: [], rules: DEFAULT_LEDGER_RULES, audit: [], sources: [], summary: { month, from: null, to: null, actualPaidCents: 2000, personalCents: 1200, incomeCents: 0, assetSaleCents: 0, familyUsageCents: 0, pendingPersonalCount: 0, pendingAccountCount: 1, uncertainDateCents: 0, cashBalanceCents: null, storedBalanceCents: null, accounts: LEDGER_ACCOUNTS.map(account => ({ id: account.id, name: account.name, kind: account.kind, balanceCents: null, snapshotDate: null, snapshotAt: null, pendingEntryIds: [], periodChangeCents: 0, recordedUsageCents: 0 })), categories: [{ category: '餐饮', cents: 1200 }], days: [{ date: today, cents: 1200 }] } });
   const ledgerMutate = vi.fn(async (request: LedgerMutationRequest): Promise<ApiResult<LedgerMutationResult>> => ({ ok: true, data: { status: 'saved', operationId: request.operationId, snapshot, entryIds: [], message: '已记账', undoAvailable: true } }));
   const ledgerSnapshot = vi.fn(async () => ({ ok: true as const, data: snapshot }));
   const ledgerExport = vi.fn(async () => ({ ok: true as const, data: { path: 'C:\\fixture\\ledger.csv' } }));
   const api = { ledgerSnapshot, ledgerMutate, ledgerExport, onChanged: () => () => {} } as unknown as DesktopAPI;
-  const view = render(<LedgerPage api={api} host={api} />);
+  const view = render(page === 'rules' ? <LedgerRulesSettings api={api} /> : <LedgerPage api={api} host={api} />);
   return { ...view, api, ledgerMutate, ledgerSnapshot, ledgerExport, snapshot, openNew: () => view.rerender(<LedgerPage api={api} host={api} createRequest={1} />) };
 }
 
 describe('local ledger UI', () => {
   it('drills chart categories into real details and keeps actual payment distinct from personal expense', async () => {
     const f = fixture();
-    await screen.findByRole('tab', { name: '概览' });
+    await screen.findByRole('tab', { name: '收支' });
     fireEvent.click(screen.getByRole('button', { name: '查看餐饮明细 ¥12.00' }));
     expect((screen.getByRole('combobox', { name: '分类' }) as HTMLSelectElement).value).toBe('餐饮');
     const row = screen.getByText('午饭').closest('details')!;
@@ -30,12 +31,13 @@ describe('local ledger UI', () => {
     expect(within(row).getByText('¥12.00')).toBeTruthy();
     expect(within(row).getByText('实际支付')).toBeTruthy();
     expect(within(row).getByText('个人开销')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '导出本月 CSV' }));
+    fireEvent.click(screen.getByRole('button', { name: '导出账本' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '导出本月 CSV' }));
     await waitFor(() => expect(f.ledgerExport).toHaveBeenCalledWith({ format: 'csv', month }));
   });
 
   it('records a real expense with an unknown account without guessing a balance account', async () => {
-    const f = fixture(); await screen.findByRole('tab', { name: '概览' }); f.openNew();
+    const f = fixture(); await screen.findByRole('tab', { name: '收支' }); f.openNew();
     const dialog = screen.getByRole('dialog', { name: '记一笔' });
     fireEvent.change(within(dialog).getByLabelText('项目'), { target: { value: '晚饭' } });
     fireEvent.change(within(dialog).getByLabelText('实际支付（元）'), { target: { value: '18.50' } });
@@ -46,7 +48,7 @@ describe('local ledger UI', () => {
   });
 
   it('retries an unconfirmed save with the same operation ID instead of duplicating the expense', async () => {
-    const f = fixture(); await screen.findByRole('tab', { name: '概览' });
+    const f = fixture(); await screen.findByRole('tab', { name: '收支' });
     f.ledgerMutate.mockRejectedValueOnce(new Error('IPC reply lost')); f.openNew();
     fireEvent.change(screen.getByLabelText('项目'), { target: { value: '车费' } });
     fireEvent.change(screen.getByLabelText('实际支付（元）'), { target: { value: '2' } });
@@ -70,7 +72,7 @@ describe('local ledger UI', () => {
   });
 
   it('keeps duplicate clarification visible after refreshing and only proceeds after explicit verification', async () => {
-    const f = fixture(); await screen.findByRole('tab', { name: '概览' }); f.openNew();
+    const f = fixture(); await screen.findByRole('tab', { name: '收支' }); f.openNew();
     f.ledgerMutate.mockResolvedValueOnce({ ok: false, error: { code: 'CONFLICT', message: '已有相同日期、项目和金额的“午饭”，请先确认是否确实是另一笔', retryable: false } });
     fireEvent.change(screen.getByLabelText('项目'), { target: { value: '午饭' } });
     fireEvent.change(screen.getByLabelText('实际支付（元）'), { target: { value: '20' } });
@@ -84,7 +86,7 @@ describe('local ledger UI', () => {
   });
 
   it('allows a pure personal expense adjustment without inventing a payment', async () => {
-    const f = fixture(); await screen.findByRole('tab', { name: '概览' }); f.openNew();
+    const f = fixture(); await screen.findByRole('tab', { name: '收支' }); f.openNew();
     fireEvent.change(screen.getByLabelText('类型'), { target: { value: 'adjustment' } });
     fireEvent.change(screen.getByLabelText('项目'), { target: { value: '核对个人承担' } });
     const original = screen.getByLabelText('原消费（按住 Ctrl 可选多笔）') as HTMLSelectElement;
@@ -96,7 +98,7 @@ describe('local ledger UI', () => {
   });
 
   it('keeps an unknown AA personal share null and requires a real original expense before adjustment', async () => {
-    const f = fixture(); await screen.findByRole('tab', { name: '概览' }); f.openNew();
+    const f = fixture(); await screen.findByRole('tab', { name: '收支' }); f.openNew();
     fireEvent.change(screen.getByLabelText('项目'), { target: { value: '聚餐代付' } });
     fireEvent.change(screen.getByLabelText('实际支付（元）'), { target: { value: '100' } });
     fireEvent.click(screen.getByLabelText('个人承担金额还不明确（例如 AA 比例待定）'));
@@ -130,8 +132,8 @@ describe('local ledger UI', () => {
   });
 
   it('edits explicit allowance and family rules while preserving unknown real remaining amount', async () => {
-    const f = fixture(); await screen.findByRole('tab', { name: '规则' });
-    fireEvent.click(screen.getByRole('tab', { name: '规则' }));
+    // The rules moved from the ledger page to 我的 › 设置 › 记账.
+    const f = fixture('rules'); await screen.findByRole('button', { name: '保存记账规则' });
     expect((screen.getByLabelText('新记交易与余额核对的先后') as HTMLSelectElement).value).toBe('after');
     fireEvent.change(screen.getByLabelText('每月金额（元）'), { target: { value: '1200' } });
     fireEvent.change(screen.getByLabelText('规则修改说明'), { target: { value: '生活费调整' } });
@@ -141,12 +143,40 @@ describe('local ledger UI', () => {
   });
 
   it('saves the balance ordering preference without changing other bookkeeping rules', async () => {
-    const f = fixture(); await screen.findByRole('tab', { name: '规则' });
-    fireEvent.click(screen.getByRole('tab', { name: '规则' }));
+    // The rules moved from the ledger page to 我的 › 设置 › 记账.
+    const f = fixture('rules'); await screen.findByRole('button', { name: '保存记账规则' });
     fireEvent.change(screen.getByLabelText('新记交易与余额核对的先后'), { target: { value: 'ask' } });
     fireEvent.change(screen.getByLabelText('规则修改说明'), { target: { value: '以后先核对余额先后' } });
     fireEvent.click(screen.getByRole('button', { name: '保存记账规则' }));
     await waitFor(() => expect(f.ledgerMutate).toHaveBeenCalledTimes(1));
     expect(f.ledgerMutate.mock.calls[0]![0].changes).toEqual([{ type: 'updateRules', note: '以后先核对余额先后', rules: { ...f.snapshot.rules, sameDayNewEntryOrder: 'ask' } }]);
+  });
+});
+
+describe('收支 and 账户', () => {
+  it('shows the four totals, flags the unreturned advance and accents the highest day', async () => {
+    const f = fixture();
+    expect((await screen.findAllByRole('tab')).map(tab => tab.textContent)).toEqual(['收支', '账户']);
+    const sums = f.container.querySelector('.a2-ledger-sum')!;
+    expect([...sums.children].map(card => card.querySelector('.k')!.textContent)).toEqual(['支出', '个人开销', '收入', '待收回']);
+    expect(sums.textContent).toContain('20.00'); expect(sums.textContent).toContain('12.00');
+    expect(sums.children[3]!.textContent).toContain('8.00');
+    expect(sums.children[3]!.textContent).toContain('代垫 1 笔');
+    const row = screen.getByText('午饭').closest('details')!;
+    expect(within(row).getByText('代垫 · 待收回')).toBeTruthy();
+    expect(row.closest('.a2-ledger-day')!.querySelector('.day-h')!.textContent).toContain('¥20.00');
+    expect(screen.getByRole('button', { name: `${today} 个人开销 ¥12.00` }).className).toContain('hi');
+    fireEvent.click(screen.getByRole('button', { name: `${today} 个人开销 ¥12.00` }));
+    expect(screen.getByRole('button', { name: /取消日期筛选/ })).toBeTruthy();
+  });
+
+  it('hides export without a host and shows a plain empty month', async () => {
+    const f = fixture();
+    const empty = { ...f.snapshot, entries: [] };
+    const api = { ledgerSnapshot: vi.fn(async () => ({ ok: true as const, data: empty })), onChanged: () => () => {} } as unknown as DesktopAPI;
+    cleanup();
+    render(<LedgerPage api={api} />);
+    expect(await screen.findByRole('heading', { name: '本月还没有账目' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '导出账本' })).toBeNull();
   });
 });

@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MoreHorizontal } from "lucide-react";
 
 export interface MenuItem { label: string; onSelect: () => void; danger?: boolean; disabled?: boolean; ariaLabel?: string }
 
-/** "⋯" button holding a row's secondary actions. */
-export function MoreMenu({ label, items }: { label: string; items: MenuItem[] }) {
+/** "⋯" button holding a row's secondary actions; a toolbar menu passes its own visible trigger. */
+export function MoreMenu({ label, items, trigger }: { label: string; items: MenuItem[]; trigger?: ReactNode }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -17,8 +17,8 @@ export function MoreMenu({ label, items }: { label: string; items: MenuItem[] })
   }, [open]);
   return (
     <div className="a2-more" ref={root}>
-      <button type="button" className="ui-more" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <MoreHorizontal aria-hidden="true" />
+      <button type="button" className={trigger ? "ui-btn ghost" : "ui-more"} aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
+        {trigger ?? <MoreHorizontal aria-hidden="true" />}
       </button>
       {open && (
         <div className="ui-menu ui-overlay" role="menu">

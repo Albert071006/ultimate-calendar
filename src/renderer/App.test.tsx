@@ -405,7 +405,7 @@ describe("desktop workspace interaction", () => {
 
     fireEvent.click(screen.getByRole('button', { name: '收起对话' }));
     fireEvent.click(screen.getByRole('button', { name: '账单' }));
-    await screen.findByRole('heading', { level: 1, name: '账单' });
+    await screen.findByRole('tablist', { name: '账单页面' });
     fireEvent.change(screen.getByLabelText('自然语言指令'), { target: { value: '记账' } });
     fireEvent.click(screen.getByRole('button', { name: '发送指令' }));
     await screen.findByText('已收到这笔 VPN 消费');

@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus } from "lucide-react";
 import type { CourseImportResult, DesktopAPI, Source } from "../shared/contracts";
 import type { HostCapabilities, PlannerClient } from "../shared/client";
 import { resolveConnection } from "./client-context";
@@ -10,7 +9,6 @@ import { useCurrentTime } from './hooks/useCurrentTime';
 import { useAppUpdates } from './hooks/useAppUpdates';
 import { SoftwareUpdate, UpdateShortcut } from './components/SoftwareUpdate';
 import { Nav, type Page } from "./components/shell/Nav";
-import { PageToolbar } from "./components/shell/PageToolbar";
 import { Assistant } from "./components/shell/Assistant";
 import { Calendar, type Selection, type ScheduleDraft } from "./components/Calendar";
 import { Inbox } from "./components/Inbox";
@@ -42,7 +40,6 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
   const updates = useAppUpdates(host);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [captureReference, setCaptureReference] = useState<NonNullable<Source['captureRef']>>();
-  const [ledgerCreateRequest, setLedgerCreateRequest] = useState(0);
   const [page, setPage] = useState<Page>("calendar"),
     [meSection, setMeSection] = useState<MeSection>("goals"),
     [date, setDate] = useState(todayDate()),
@@ -190,12 +187,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
                   importMessage={() => setImporting(true)} openSource={setSourceId} focus={selected?.entity === "candidate" ? selected.id : null} />
               )}
               {page === "ledger" && (
-                <div className="a2-page">
-                  <PageToolbar title="账单" ui={ui} undo={false}>
-                    <button className="ui-btn" onClick={() => setLedgerCreateRequest(value => value + 1)}><Plus aria-hidden="true" />记一笔</button>
-                  </PageToolbar>
-                  <div className="a2-legacy-scroll"><LedgerPage api={api} host={host} createRequest={ledgerCreateRequest} /></div>
-                </div>
+                <LedgerPage api={api} host={host} />
               )}
               {page === "me" && (
                 <MePage snapshot={snapshot} ui={ui} section={meSection} setSection={setMeSection} updates={updates} select={select}
