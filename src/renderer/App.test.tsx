@@ -24,6 +24,8 @@ import {
 import { App } from "./App";
 import { todayDate } from './calendar-layout';
 import { minutePosition } from './calendar-timeline';
+import { DEFAULT_LEDGER_RULES } from '../shared/ledger';
+import { summarizeLedger } from '../ledger/summary';
 afterEach(cleanup);
 function fixture() {
   const snapshot = SnapshotSchema.parse({
@@ -427,6 +429,49 @@ describe("desktop workspace interaction", () => {
       { role: 'user', text: '记账' },
       { role: 'assistant', text: '已收到这笔 VPN 消费', outcome: savedState },
     ]);
+  });
+  it('sends the visible ledger month and tab, then drops that view when leaving the ledger', async () => {
+    const { api } = fixture();
+    const today = todayDate(), month = today.slice(0, 7);
+    const earlier = new Date(`${month}-01T00:00:00Z`);
+    earlier.setUTCMonth(earlier.getUTCMonth() - 1);
+    const previousMonth = earlier.toISOString().slice(0, 7);
+    const data = { revision: 0, entries: [], balanceSnapshots: [], rules: structuredClone(DEFAULT_LEDGER_RULES), audit: [], sources: [] };
+    api.ledgerSnapshot = vi.fn<DesktopAPI['ledgerSnapshot']>(async request => ({ ok: true, data: { ...data, summary: summarizeLedger(data, request) } }));
+    let replies = 0;
+    vi.mocked(api.command).mockImplementation(async () => ({ ok: true, data: { reply: `合成答复 ${++replies}`, items: [], mutationResult: null } }));
+    render(<App api={api} />);
+    await screen.findByLabelText('自然语言指令');
+    const send = async (message: string, number: number) => {
+      fireEvent.change(screen.getByLabelText('自然语言指令'), { target: { value: message } });
+      fireEvent.click(screen.getByRole('button', { name: '发送指令' }));
+      expect(screen.getByText(message).closest('.message.user')).toBeTruthy();
+      expect((screen.getByLabelText('自然语言指令') as HTMLTextAreaElement).value).toBe('');
+      await screen.findByText(`合成答复 ${number}`);
+      return vi.mocked(api.command).mock.calls[number - 1]![0];
+    };
+
+    fireEvent.click(screen.getByRole('button', { name: '账单' }));
+    await screen.findByText('本月还没有账目');
+    expect(await send('这里待收回的钱是什么', 1)).toMatchObject({ domain: 'ledger', ledgerView: { month, tab: 'flows' } });
+
+    fireEvent.click(screen.getByRole('button', { name: '上个月' }));
+    const previous = await send('上面这笔待收回的钱来自哪里', 2);
+    expect(previous).toMatchObject({ domain: 'ledger', ledgerView: { month: previousMonth, tab: 'flows' }, fromDate: today, toDate: today });
+    expect(previous.history).toEqual([{ role: 'user', text: '这里待收回的钱是什么' }, { role: 'assistant', text: '合成答复 1' }]);
+
+    fireEvent.click(screen.getByRole('tab', { name: '账户' }));
+    expect(await send('现在支付宝余额是多少', 3)).toMatchObject({ ledgerView: { month: previousMonth, tab: 'accounts' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /^日历$/ }));
+    const calendar = await send('明天有什么课', 4);
+    expect(calendar.ledgerView).toBeUndefined();
+    expect(calendar.domain).toBeUndefined();
+    expect(calendar.history).toHaveLength(6);
+
+    fireEvent.click(screen.getByRole('button', { name: '账单' }));
+    await screen.findByText('本月还没有账目');
+    expect(await send('本页收入是多少', 5)).toMatchObject({ ledgerView: { month, tab: 'flows' } });
   });
   it("retains an answered clarification while excluding an intervening failed instruction from a new request", async () => {
     const { api } = fixture();

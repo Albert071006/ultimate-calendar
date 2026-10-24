@@ -1,7 +1,7 @@
 /* 待判断: list with quick decisions beside the selected notice's detail. */
 .a2-page.a2-inbox { grid-template-rows: auto auto minmax(0, 1fr); }
-.a2-inbox .ui-tabs { align-items: center; }
-.a2-inbox .ui-tabs .ui-seg { margin-left: auto; }
+.a2-inbox .ui-tabs { align-items: center; flex-wrap: wrap; gap: 4px 22px; }
+.a2-inbox .ui-tabs .ui-seg { flex: 0 0 auto; margin: 6px 0 6px auto; }
 .a2-ib-body { display: grid; grid-template-columns: 380px minmax(0, 1fr); min-height: 0; overflow: hidden; }
 
 .a2-ib-list { min-height: 0; overflow: auto; border-right: 1px solid var(--line); }

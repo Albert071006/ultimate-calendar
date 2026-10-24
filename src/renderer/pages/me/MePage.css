@@ -1,11 +1,11 @@
-.a2-me { display: grid; grid-template-columns: 220px 1fr; min-height: 0; overflow: hidden; }
+.a2-me { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 0; overflow: hidden; }
 .a2-me-menu { border-right: 1px solid var(--line); padding: 14px 10px; overflow: auto; }
 .a2-me-menu h2 { margin: 14px 10px 6px; font-family: var(--font-ui); font-size: 11.5px; color: var(--ink-3); font-weight: 600; letter-spacing: 1px; }
 .a2-me-menu > div:first-child h2 { margin-top: 2px; }
 .a2-me-menu button { display: block; width: 100%; text-align: left; padding: 8px 10px; font: inherit; font-size: 13.5px; color: var(--ink-2); background: transparent; border: 0; border-radius: var(--radius); cursor: pointer; }
 .a2-me-menu button:hover { background: var(--surface-2); }
 .a2-me-menu button.on { background: var(--nav-active); color: var(--ink); font-weight: 600; }
-.a2-me-content { overflow: auto; min-height: 0; position: relative; }
+.a2-me-content { overflow: auto; min-width: 0; min-height: 0; position: relative; }
 .a2-me-content { padding: 18px 28px 28px; }
 .a2-me-h { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
 .a2-me-h h2 { margin: 0; font-family: var(--font-display); font-size: 20px; font-weight: 600; }
@@ -17,10 +17,10 @@
 
 /* Color chip and palette popover. */
 .a2-color { position: relative; display: inline-block; }
-.a2-sw { display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px 0 4px; font: inherit; font-size: 12.5px; color: var(--ink); background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); cursor: pointer; }
+.a2-sw { display: inline-flex; align-items: center; gap: 8px; min-width: max-content; height: 28px; padding: 0 8px 0 4px; font: inherit; font-size: 12.5px; line-height: 1; white-space: nowrap; overflow-wrap: normal; color: var(--ink); background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); cursor: pointer; }
 .a2-sw:hover { border-color: var(--ink-3); }
 .a2-sw:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
-.a2-sw i { width: 18px; height: 18px; border-radius: 2px; background: var(--c); box-shadow: inset 0 0 0 1px rgba(31, 28, 24, 0.12); }
+.a2-sw i { flex: 0 0 18px; width: 18px; height: 18px; border-radius: 2px; background: var(--c); box-shadow: inset 0 0 0 1px rgba(31, 28, 24, 0.12); }
 .a2-palette { position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; width: 300px; padding: 14px; background: var(--surface); border: 1px solid var(--ink); border-radius: 3px; box-shadow: 5px 5px 0 rgba(31, 28, 24, 0.1), var(--overlay-shadow); }
 .a2-palette h4 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
 .a2-palette .ui-hint { margin: 0; }
@@ -34,6 +34,7 @@
 .a2-course-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .a2-course-table th { padding: 8px 10px; font-size: 12px; font-weight: 600; text-align: left; color: var(--ink-3); border-top: 2px solid var(--ink); border-bottom: 1px solid var(--line-2); }
 .a2-course-table td { padding: 10px; vertical-align: middle; border-bottom: 1px solid var(--line); }
+.a2-course-table :is(th, td):first-child { width: 1%; white-space: nowrap; }
 .a2-course-table td.t button { padding: 0; font: inherit; font-family: var(--font-display); font-size: 14.5px; font-weight: 600; color: var(--ink); text-align: left; background: none; border: 0; cursor: pointer; }
 .a2-course-table td.n { font-family: var(--font-time); color: var(--ink-2); }
 .a2-course-table .a2-slot { display: block; width: fit-content; min-height: 0; margin: 0; padding: 1px 0; font: inherit; color: inherit; text-align: left; background: none; border: 0; cursor: pointer; }

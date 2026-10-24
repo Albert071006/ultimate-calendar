@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { CaptureDesktopAPI as importCaptureAPI } from './capture-api';
 import { LedgerCommandProposalSchema } from './ledger-command';
+import { LedgerMonthSchema } from './ledger';
 import { PALETTE_COLORS } from './palette';
 
 /** Shared transport boundary. Unknown properties are rejected, never silently stripped. */
@@ -338,9 +339,13 @@ export const AnalysisResultSchema = z.strictObject({ sourceId: IdSchema, status:
 export type AnalysisResult = z.infer<typeof AnalysisResultSchema>;
 export const ConversationStateSchema = z.strictObject({ domain: z.enum(['calendar', 'ledger']), phase: z.enum(['clarification', 'saved', 'query', 'preview']) });
 export type ConversationState = z.infer<typeof ConversationStateSchema>;
+/** Visible ledger scope helps interpret questions; it never sets a new transaction's date. */
+export const LedgerViewContextSchema = z.strictObject({ month: LedgerMonthSchema, tab: z.enum(['flows', 'accounts']), selectedEntryId: IdSchema.optional() });
+export type LedgerViewContext = z.infer<typeof LedgerViewContextSchema>;
 export const CommandRequestSchema = z.strictObject({ operationId: IdSchema, text: text.trim().min(1),
   selected: z.array(z.strictObject({ entity: EntityKindSchema, id: IdSchema })).max(100).default([]),
   domain: z.enum(['calendar', 'ledger']).optional(),
+  ledgerView: LedgerViewContextSchema.optional(),
   fromDate: DateOnlySchema.optional(), toDate: DateOnlySchema.optional(),
   history: z.array(z.strictObject({ role: z.enum(['user', 'assistant']), text: z.string().max(10_000), outcome: ConversationStateSchema.optional() })).max(20).default([]),
 });

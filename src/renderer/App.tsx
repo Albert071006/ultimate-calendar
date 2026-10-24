@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { CourseImportResult, DesktopAPI, Source } from "../shared/contracts";
+import type { CourseImportResult, DesktopAPI, LedgerViewContext, Source } from "../shared/contracts";
 import type { HostCapabilities, PlannerClient } from "../shared/client";
 import { resolveConnection } from "./client-context";
 import { todayDate } from "./calendar-layout";
@@ -40,6 +40,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
   const updates = useAppUpdates(host);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [captureReference, setCaptureReference] = useState<NonNullable<Source['captureRef']>>();
+  const [ledgerView, setLedgerView] = useState<LedgerViewContext>();
   const [page, setPage] = useState<Page>("calendar"),
     [meSection, setMeSection] = useState<MeSection>("goals"),
     [date, setDate] = useState(todayDate()),
@@ -187,7 +188,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
                   importMessage={() => setImporting(true)} openSource={setSourceId} focus={selected?.entity === "candidate" ? selected.id : null} />
               )}
               {page === "ledger" && (
-                <LedgerPage api={api} host={host} />
+                <LedgerPage api={api} host={host} onViewChange={setLedgerView} />
               )}
               {page === "me" && (
                 <MePage snapshot={snapshot} ui={ui} section={meSection} setSection={setMeSection} updates={updates} select={select}
@@ -196,7 +197,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
               {page !== "calendar" && editPanel(true)}
             </div>
             {(page !== "inbox" || selected?.entity !== "candidate") && !editor && detail()}
-            <Assistant ui={ui} selected={selected} date={date} domain={page === "ledger" ? "ledger" : undefined} />
+            <Assistant ui={ui} selected={selected} date={date} domain={page === "ledger" ? "ledger" : undefined} ledgerView={page === "ledger" ? ledgerView : undefined} />
           </>
         )}
       </main>

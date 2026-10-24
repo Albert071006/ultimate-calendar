@@ -124,16 +124,23 @@ export function createController(options: ControllerOptions) {
         const request = CommandRequestSchema.parse(input); const prior = repository.transact(state => receipt(state, id, fingerprint));
         if (prior && prior.kind !== 'command') throw new WorkflowError('CONFLICT', '操作类型不匹配');
         if (prior?.result && prior.result.mutationResult?.status !== 'preview') return prior.result;
-        const context = { ...buildCommandContext(planner.snapshot(), request, now()), currentUiDomain: request.domain ?? 'calendar' };
+        const context = { ...buildCommandContext(planner.snapshot(), request, now()), currentUiDomain: request.domain ?? 'calendar',
+          availableServices: { ledger: !!options.ledger }, currentLedgerView: request.domain === 'ledger' ? request.ledgerView : undefined };
         let intent = prior?.intent ?? await model(CommandIntentSchema, commandMessages(context, request.text, request.history), input.operationId, 'command');
         if (intent.kind === 'ledger') {
           const ledger = options.ledger;
           if (!ledger) throw new WorkflowError('VALIDATION', '账本服务尚未连接，请重新打开应用');
           ledger.ensureMonthlyAllowance();
           const currentMonth = ledgerToday(new Date(now())).slice(0,7);
-          const snapshot = ledger.snapshot(currentMonth);
+          const defaultQueryMonth = request.domain === 'ledger' ? request.ledgerView?.month ?? currentMonth : currentMonth;
+          const snapshot = ledger.snapshot(defaultQueryMonth);
           const ledgerView = ledgerContext(snapshot, request, now());
           const proposal: z.infer<typeof LedgerCommandProposalSchema> = prior?.ledgerProposal ?? { intent: await model(LedgerIntentSchema, ledgerMessages(ledgerView, request), `${input.operationId}:ledger`, 'command'), revision: snapshot.revision };
+          // Resolve the visible ledger range once, so a retried query stays on the
+          // same month. Calendar selection never changes a transaction's date.
+          if (proposal.intent.kind === 'query' && !proposal.intent.query.month && !proposal.intent.query.from && !proposal.intent.query.to) {
+            proposal.intent.query = { ...proposal.intent.query, month: defaultQueryMonth };
+          }
           if (proposal.intent.kind === 'mutate' && !proposal.mutationRequest) {
             const changes = ledgerChanges(proposal.intent,snapshot,request,new Set(ledgerView.entries.map(entry=>entry.id)),now());
             const months = [...new Set(changes.flatMap(change => change.type === 'putEntry' ? [change.entry.month] : []))];

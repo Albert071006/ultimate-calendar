@@ -8,6 +8,7 @@ import {
   type LedgerQuery, type LedgerSnapshot, type LedgerUndoRequest,
 } from '../shared/ledger';
 import { ledgerEntryMatches, summarizeLedger } from './summary';
+import { ledgerReceivable } from './receivable';
 
 export class LedgerError extends Error {
   constructor(readonly code: 'VALIDATION' | 'CONFLICT' | 'DUPLICATE' | 'STORAGE', message: string, readonly details?: unknown) { super(message); this.name = 'LedgerError'; }
@@ -127,7 +128,7 @@ export class LedgerService {
   query(input: LedgerQuery = {}) {
     const query = LedgerQuerySchema.parse(input); const data = readLedgerDatabase(this.db);
     const month = query.month ?? ((!query.from && !query.to) ? ledgerToday(this.now()).slice(0, 7) : undefined);
-    return { entries: data.entries.filter(entry => ledgerEntryMatches(entry, { ...query, month })), summary: summarizeLedger(data, query, this.now()) };
+    return { entries: data.entries.filter(entry => ledgerEntryMatches(entry, { ...query, month })), summary: summarizeLedger(data, query, this.now()), receivables: ledgerReceivable(data.entries, { ...query, month }) };
   }
   private toSnapshot(data: LedgerData, month?: string): LedgerSnapshot {
     return { ...data, sources: data.sources.map(({ content: _content, ...source }) => source), summary: summarizeLedger(data, { month: month ? LedgerMonthSchema.parse(month) : undefined }, this.now()) };

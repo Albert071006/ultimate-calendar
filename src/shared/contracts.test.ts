@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DateOnlySchema, InstantSchema, TaskInputSchema, BlockInputSchema, SourceImportSchema, CandidateInputSchema, CourseInputSchema, CourseExceptionInputSchema, SettingsSchema, MutationRequestSchema, SnapshotSchema, toShanghaiInstant, addCalendarDays } from './contracts';
+import { DateOnlySchema, InstantSchema, TaskInputSchema, BlockInputSchema, SourceImportSchema, CandidateInputSchema, CourseInputSchema, CourseExceptionInputSchema, SettingsSchema, MutationRequestSchema, CommandRequestSchema, SnapshotSchema, toShanghaiInstant, addCalendarDays } from './contracts';
 
 const block = { title: '报告', start: '2026-10-22T19:00:00+08:00', end: '2026-10-22T21:00:00+08:00', kind: 'work', taskId: null, location: '', completed: false };
 const course = { title: '数学', location: '', weekday: 1, startTime: '08:00', endTime: '09:40', firstWeek: 1, lastWeek: 18, parity: 'all', termStart: '2026-09-07' };
@@ -20,6 +20,15 @@ describe('real Shanghai dates and intervals', () => {
 });
 
 describe('untrusted records at shared boundaries', () => {
+  it('accepts optional visible ledger scope without changing legacy command dates', () => {
+    const input = { operationId: 'ledger-view', text: '这里待收回的钱是什么', fromDate: '2026-10-24', toDate: '2026-10-24' };
+    expect(CommandRequestSchema.parse(input).ledgerView).toBeUndefined();
+    const ledgerView = { month: '2026-09', tab: 'flows', selectedEntryId: 'synthetic-entry' };
+    expect(CommandRequestSchema.parse({ ...input, domain: 'ledger', ledgerView })).toMatchObject({ ...input, ledgerView });
+    for (const value of [{ ...ledgerView, month: '2026-13' }, { ...ledgerView, tab: 'unknown' }, { ...ledgerView, balance: 123 }]) {
+      expect(CommandRequestSchema.safeParse({ ...input, ledgerView: value }).success).toBe(false);
+    }
+  });
   it('rejects blank title and entity fields belonging to another record', () => {
     expect(TaskInputSchema.safeParse({ title: '   ' }).success).toBe(false);
     expect(TaskInputSchema.safeParse({ title: '任务', start: block.start }).success).toBe(false);

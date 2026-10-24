@@ -14,11 +14,12 @@ type ConversationEntry = {
 };
 
 /** One-line assistant at the bottom of every page; its conversation opens upward over the page. */
-export function Assistant({ ui, selected, date, domain }: {
+export function Assistant({ ui, selected, date, domain, ledgerView }: {
   ui: PlannerUI;
   selected: Selection | null;
   date: string;
   domain?: 'ledger';
+  ledgerView?: CommandRequest['ledgerView'];
 }) {
   const [text, setText] = useState(""),
     [history, setHistory] = useState<ConversationEntry[]>([]),
@@ -97,6 +98,7 @@ export function Assistant({ ui, selected, date, domain }: {
       operationId: id,
       text,
       ...(domain ? { domain } : {}),
+      ...(domain === 'ledger' && ledgerView ? { ledgerView } : {}),
       selected: selected ? [{ entity: selected.entity, id: selected.id }] : [],
       fromDate: date,
       toDate: date,

@@ -134,7 +134,7 @@ export function Flows({ snapshot, month, busy, filter, setFilter, create, edit, 
       <Sum label="支出" cents={summary.actualPaidCents} note="实际付款，含代垫" />
       <Sum label="个人开销" cents={summary.personalCents} note={summary.pendingPersonalCount ? `${summary.pendingPersonalCount} 笔个人承担待确认` : '扣除代垫和报销'} />
       <Sum label="收入" cents={summary.incomeCents} note={summary.assetSaleCents ? `另有资产变现 ${ledgerMoney(summary.assetSaleCents)}` : '不含退款、返款和变现'} />
-      <Sum label="待收回" cents={receivable.cents} warn={receivable.cents > 0} note={receivable.entryIds.length ? `代垫 ${receivable.entryIds.length} 笔，按已关联的返款计算` : '没有待收回的代垫'} />
+      <Sum label="待收回" cents={receivable.cents} warn={receivable.cents > 0} note={receivable.uncertainties.length ? `${receivable.entryIds.length} 笔差额；另有 ${receivable.uncertainties.length} 项返款或承担金额待核对` : receivable.entryIds.length ? `代垫 ${receivable.entryIds.length} 笔，已扣关联返款、退款和报销` : '没有待收回的代垫'} />
     </div>
     <div className="a2-ledger-cols">
       <section aria-label="收支明细">

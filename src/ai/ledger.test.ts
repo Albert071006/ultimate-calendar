@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { LedgerIntentSchema } from '../shared/ledger-command';
 import { DEFAULT_LEDGER_RULES, LedgerEntrySchema, type LedgerEntry } from '../shared/ledger';
 import { LedgerService } from '../ledger/service';
-import { ledgerChanges, ledgerQueryReply, ledgerSavedReply } from './ledger';
+import { ledgerChanges, ledgerContext, ledgerQueryReply, ledgerSavedReply } from './ledger';
 
 const now = '2026-01-21T19:00:00+08:00';
 const before = '2026-01-21T18:00:00+08:00';
@@ -92,5 +92,39 @@ describe('ledger AI adaptation', () => {
     const query = ledgerQueryReply({ month: '2026-01' }, { entries: [], summary: snapshot.summary, rules: snapshot.rules }, 'balances');
     expect(query).toContain('当前真实剩余额度 ¥789.00');
     expect(query).not.toContain('¥未知');
+  });
+  it('keeps the visible ledger month separate from the clock and ignores stale views outside the ledger page', () => {
+    const { service } = fixture([entry({ id: 'old-period', date: '2025-12-12', month: '2025-12', amountCents: 2400, personalCents: 2400, cashflows: [{ accountId: 'alipay', deltaCents: -2400 }] })]);
+    const view = { month: '2025-12', tab: 'flows' as const };
+    const request = { operationId: 'view-context', text: '这里的个人开销是多少', domain: 'ledger' as const, ledgerView: view };
+    const shown = ledgerContext(service.snapshot('2025-12'), request, now);
+    expect(shown).toMatchObject({ now, timezone: 'Asia/Shanghai', currentView: view, defaultQueryMonth: '2025-12', summary: { month: '2025-12', personalCents: 2400 } });
+    for (const current of [
+      { operationId: 'legacy-context', text: '个人开销是多少' },
+      { ...request, operationId: 'calendar-context', domain: 'calendar' as const },
+    ]) {
+      const context = ledgerContext(service.snapshot('2026-01'), current, now);
+      expect(context.defaultQueryMonth).toBe('2026-01');
+      expect(context.currentView == null).toBe(true);
+      expect(context.summary.month).toBe('2026-01');
+    }
+  });
+  it('formats locally computed receivable components including settled records and cross-month returns', () => {
+    const old = { date: '2025-12-12', month: '2025-12' };
+    const { service } = fixture([
+      entry({ ...old, id: 'settled', title: '合成已还代垫', amountCents: 8900, personalCents: 2900, cashflows: [{ accountId: 'alipay', deltaCents: -8900 }] }),
+      entry({ ...old, id: 'partial', title: '合成部分返款代垫', amountCents: 4900, personalCents: 900, cashflows: [{ accountId: 'alipay', deltaCents: -4900 }] }),
+      entry({ id: 'back-full', kind: 'aa_return', title: '合成次月返款甲', amountCents: 6000, personalCents: 0, cashflows: [{ accountId: 'wechat', deltaCents: 6000 }], relatedEntryIds: ['settled'] }),
+      entry({ id: 'back-partial', kind: 'aa_return', title: '合成次月返款乙', amountCents: 1000, personalCents: 0, cashflows: [{ accountId: 'wechat', deltaCents: 1000 }], relatedEntryIds: ['partial'] }),
+    ]);
+    const beforeQuery = service.snapshot('2025-12');
+    const intent = LedgerIntentSchema.parse({ kind: 'query', query: { month: '2025-12' }, detail: 'receivables' });
+    if (intent.kind !== 'query') throw Error('Expected query');
+    const data = service.query(intent.query);
+    expect(data.entries.map(value => value.id)).toEqual(['settled', 'partial']);
+    const reply = ledgerQueryReply(intent.query, data, intent.detail);
+    for (const value of ['合成已还代垫', '合成部分返款代垫', '89.00', '29.00', '60.00', '49.00', '9.00', '10.00', '30.00', '已结清']) expect(reply).toContain(value);
+    expect(reply).not.toContain('¥未知');
+    expect(service.snapshot('2025-12')).toEqual(beforeQuery);
   });
 });

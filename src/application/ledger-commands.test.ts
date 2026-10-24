@@ -4,7 +4,8 @@ import { createPlanner } from '../domain/planner';
 import { createLedgerService, type LedgerService } from '../ledger/service';
 import { createController } from './controller';
 import { WorkflowError } from '../ai/deepseek';
-import { LedgerEntryDraftSchema } from '../shared/ledger';
+import { DEFAULT_LEDGER_RULES, LedgerEntryDraftSchema, LedgerEntrySchema, type LedgerEntry } from '../shared/ledger';
+import type { CommandRequest } from '../shared/contracts';
 
 const at = '2026-10-23T21:30:00+08:00';
 const disposables: Array<Repository|LedgerService> = [];
@@ -18,6 +19,13 @@ function setup(intents: unknown[]) {
 }
 const route = {kind:'ledger',reply:'交由账本处理'};
 function expense(accountId:'alipay'|null = null) {return {kind:'mutate',changes:[{type:'createEntry',key:'new:0',values:{kind:'expense',date:'2026-10-23',month:'2026-10',title:'午饭',category:'餐饮',amountCents:2000,personalCents:2000,cashflows:[{accountId,deltaCents:-2000}]}}]};}
+function syntheticEntry(id: string, values: Partial<LedgerEntry> = {}): LedgerEntry {
+  return LedgerEntrySchema.parse({ id, kind: 'expense', date: '2026-10-20', month: '2026-10', title: `合成记录 ${id}`, category: '其他', amountCents: 100, personalCents: 100,
+    cashflows: [{ accountId: 'alipay', deltaCents: -100 }], version: 1, createdAt: at, updatedAt: at, ...values });
+}
+function importSynthetic(ledger: LedgerService, entries: LedgerEntry[]) {
+  ledger.import({ format: 'ultimate-calendar-ledger', formatVersion: 1, entries, balanceSnapshots: [], rules: DEFAULT_LEDGER_RULES, audit: [], sources: [] }, 'synthetic-receivable-import');
+}
 describe('main assistant local ledger commands',()=>{
   it('continues the screenshot domain clarification with the original purchase facts and saves exactly once',async()=>{
     const clarification = {kind:'clarification',reply:'需要确认操作类型',questions:['这是记账还是安排日历事项？']};
@@ -114,5 +122,89 @@ describe('main assistant local ledger commands',()=>{
     const result=await controller.command(input);expect(result.ok).toBe(true);
     if(result.ok){expect(result.data.reply).toContain('个人开销 ¥20.00');expect(result.data.reply).toContain('普通收入 ¥1000.00');expect(result.data.conversationState).toEqual({domain:'ledger',phase:'query'});}
     await controller.command(input);expect(payloads).toHaveLength(4);expect(ledger.snapshot().summary.personalCents).toBe(2000);
+  });
+  it('explains a visible historical month from the full ledger beyond the model entry window and includes later repayments without changing the ledger', async () => {
+    const { controller, ledger, payloads } = setup([route, { kind: 'query', query: {}, detail: 'receivables' }]);
+    const old = { date: '2026-09-02', month: '2026-09', createdAt: '2026-09-02T12:00:00+08:00', updatedAt: '2026-09-02T12:00:00+08:00' };
+    importSynthetic(ledger, [
+      syntheticEntry('old-advance', { ...old, title: '合成活动材料甲', amountCents: 54800, personalCents: 16000, cashflows: [{ accountId: 'alipay', deltaCents: -54800 }] }),
+      syntheticEntry('settled-advance', { ...old, title: '合成活动材料乙', amountCents: 12000, personalCents: 2000, cashflows: [{ accountId: 'alipay', deltaCents: -12000 }] }),
+      syntheticEntry('later-return', { kind: 'aa_return', title: '合成跨月返款甲', amountCents: 7600, personalCents: 0, cashflows: [{ accountId: 'wechat', deltaCents: 7600 }], relatedEntryIds: ['old-advance'], createdAt: '2026-10-20T12:00:00+08:00', updatedAt: '2026-10-20T12:00:00+08:00' }),
+      syntheticEntry('settled-return', { kind: 'aa_return', title: '合成跨月返款乙', amountCents: 10000, personalCents: 0, cashflows: [{ accountId: 'wechat', deltaCents: 10000 }], relatedEntryIds: ['settled-advance'], createdAt: '2026-10-20T12:00:00+08:00', updatedAt: '2026-10-20T12:00:00+08:00' }),
+      ...Array.from({ length: 55 }, (_, index) => syntheticEntry(`recent-${index}`)),
+    ]);
+    const before = ledger.snapshot('2026-09');
+    const query = vi.spyOn(ledger, 'query');
+    const input: CommandRequest = { operationId: 'historical-receivables', text: '这里待收回的约300块是哪来的', domain: 'ledger', ledgerView: { month: '2026-09', tab: 'flows' }, fromDate: '2026-10-23', toDate: '2026-10-23' };
+    const result = await controller.command(input);
+    expect(result.ok).toBe(true); if (!result.ok) throw Error('query failed');
+    expect(query).toHaveBeenCalledWith({ month: '2026-09' });
+    const routing = JSON.parse(payloads[0]!.messages.at(-1)!.content).context;
+    expect(routing).toMatchObject({ availableServices: { ledger: true }, currentLedgerView: input.ledgerView });
+    expect(JSON.stringify(payloads[0])).not.toContain('合成活动材料甲');
+    const context = JSON.parse(payloads[1]!.messages.at(-1)!.content).context;
+    expect(context).toMatchObject({ now: at, currentView: input.ledgerView, defaultQueryMonth: '2026-09', summary: { month: '2026-09' } });
+    expect(context.entries.some((entry: { id: string }) => entry.id === 'old-advance')).toBe(false);
+    for (const evidence of ['合成活动材料甲', '548.00', '160.00', '76.00', '312.00', '合成活动材料乙', '已结清']) expect(result.data.reply).toContain(evidence);
+    expect(result.data.reply).not.toContain('待收回 ¥300.00');
+    expect(result.data.items).toEqual([]);
+    expect(result.data.conversationState).toEqual({ domain: 'ledger', phase: 'query' });
+    expect(ledger.snapshot('2026-09')).toEqual(before);
+    expect(await controller.command(input)).toEqual(result);
+    expect(payloads).toHaveLength(2);
+    expect(ledger.snapshot('2026-09')).toEqual(before);
+  });
+  it.each([
+    { query: { month: '2026-10' }, text: '查十月的待收回', title: '合成十月代垫', excluded: '合成九月代垫', cents: '20.00' },
+    { query: { from: '2026-09-01', to: '2026-09-30' }, text: '查九月一日至三十日的待收回', title: '合成九月代垫', excluded: '合成十月代垫', cents: '10.00' },
+  ])('lets an explicit query range override the visible month: $text', async ({ query, text, title, excluded, cents }) => {
+    const { controller, ledger } = setup([route, { kind: 'query', query, detail: 'receivables' }]);
+    importSynthetic(ledger, [
+      syntheticEntry('sept', { date: '2026-09-12', month: '2026-09', title: '合成九月代垫', amountCents: 1000, personalCents: 0, cashflows: [{ accountId: 'alipay', deltaCents: -1000 }] }),
+      syntheticEntry('oct', { title: '合成十月代垫', amountCents: 2000, personalCents: 0, cashflows: [{ accountId: 'alipay', deltaCents: -2000 }] }),
+    ]);
+    const queryCall = vi.spyOn(ledger, 'query');
+    const result = await controller.command({ operationId: `explicit-${title}`, text, domain: 'ledger', ledgerView: { month: '2026-08', tab: 'flows' } });
+    expect(result.ok).toBe(true); if (!result.ok) throw Error('query failed');
+    expect(queryCall).toHaveBeenCalledWith(query);
+    expect(result.data.reply).toContain(title); expect(result.data.reply).toContain(cents); expect(result.data.reply).not.toContain(excluded);
+  });
+  it('keeps a new expense on today while the user is browsing an earlier ledger month', async () => {
+    const { controller, ledger, payloads } = setup([route, expense('alipay')]);
+    const result = await controller.command({ operationId: 'today-from-history', text: '今天午饭20元支付宝', domain: 'ledger', ledgerView: { month: '2026-09', tab: 'flows' } });
+    expect(result.ok).toBe(true);
+    expect(ledger.snapshot().entries).toEqual([expect.objectContaining({ title: '午饭', date: '2026-10-23', month: '2026-10', amountCents: 2000 })]);
+    expect(JSON.parse(payloads[1]!.messages.at(-1)!.content).context).toMatchObject({ now: at, defaultQueryMonth: '2026-09' });
+    expect(ledger.snapshot('2026-09').summary.personalCents).toBe(0);
+  });
+  it('still answers a calendar question from the ledger page in one model call without sending bookkeeping records', async () => {
+    const { controller, ledger, payloads } = setup([{ kind: 'query', reply: '合成课表查询', fromDate: '2026-10-24', toDate: '2026-10-24' }]);
+    importSynthetic(ledger, [syntheticEntry('private-context', { title: '合成隐私账目' })]);
+    const before = ledger.snapshot();
+    const result = await controller.command({ operationId: 'calendar-on-ledger', text: '明天有什么课', domain: 'ledger', ledgerView: { month: '2026-09', tab: 'accounts' } });
+    expect(result.ok).toBe(true); if (!result.ok) throw Error('query failed');
+    expect(result.data.conversationState).toEqual({ domain: 'calendar', phase: 'query' });
+    expect(payloads).toHaveLength(1);
+    expect(JSON.stringify(payloads)).not.toContain('合成隐私账目');
+    expect(ledger.snapshot()).toEqual(before);
+  });
+  it.each([
+    { label: 'old client', context: {} },
+    { label: 'cross-page query', context: { domain: 'calendar' as const, ledgerView: { month: '2026-09', tab: 'flows' as const } } },
+  ])('defaults $label to the current month instead of an absent or stale ledger view', async ({ context }) => {
+    const { controller, ledger, payloads } = setup([route, { kind: 'query', query: {}, detail: 'receivables' }]);
+    importSynthetic(ledger, [syntheticEntry('current-advance', { title: '合成本月代垫', amountCents: 5000, personalCents: 0, cashflows: [{ accountId: 'alipay', deltaCents: -5000 }] })]);
+    const queryCall = vi.spyOn(ledger, 'query');
+    const result = await controller.command({ operationId: `current-month-${context.domain ?? 'legacy'}`, text: '我还有哪些代垫没收回', ...context });
+    expect(result.ok).toBe(true); if (!result.ok) throw Error('query failed');
+    expect(result.data.reply).toContain('合成本月代垫');
+    expect(queryCall).toHaveBeenCalledTimes(1);
+    const effectiveQuery = queryCall.mock.calls[0]![0];
+    expect(effectiveQuery?.month ?? '2026-10').toBe('2026-10');
+    const routing = JSON.parse(payloads[0]!.messages.at(-1)!.content).context;
+    const ledgerView = JSON.parse(payloads[1]!.messages.at(-1)!.content).context;
+    expect(routing.currentLedgerView == null).toBe(true);
+    expect(ledgerView.currentView == null).toBe(true);
+    expect(ledgerView.defaultQueryMonth).toBe('2026-10');
   });
 });

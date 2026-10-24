@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Download, Plus, Undo2 } from 'lucide-react';
 import type { HostCapabilities, PlannerClient } from '../../shared/client';
+import type { LedgerViewContext } from '../../shared/contracts';
 import type { LedgerAccountId, LedgerEntry } from '../../shared/ledger';
 import { Modal } from './Modal';
 import { PageToolbar } from './shell/PageToolbar';
@@ -14,7 +15,7 @@ import './LedgerPage.css';
 type Tab = 'flows' | 'accounts';
 
 /** 账单: 收支 (totals, daily spending, categories, day-grouped details) and 账户 (balances and snapshots). */
-export function LedgerPage({ api, host, createRequest = 0 }: { api: PlannerClient; host?: HostCapabilities; createRequest?: number }) {
+export function LedgerPage({ api, host, createRequest = 0, onViewChange }: { api: PlannerClient; host?: HostCapabilities; createRequest?: number; onViewChange?: (view: LedgerViewContext | undefined) => void }) {
   const ledger = useLedger(api, host);
   const { month, snapshot, busy, error, notice } = ledger;
   const [tab, setTab] = useState<Tab>('flows');
@@ -24,6 +25,8 @@ export function LedgerPage({ api, host, createRequest = 0 }: { api: PlannerClien
   const [balanceAccount, setBalanceAccount] = useState<LedgerAccountId | null>(null);
   const createSeen = useRef(createRequest);
   useEffect(() => { if (createRequest !== createSeen.current) { createSeen.current = createRequest; setEditor('new'); } }, [createRequest]);
+  useEffect(() => { onViewChange?.({ month, tab }); }, [month, tab, onViewChange]);
+  useEffect(() => () => { onViewChange?.(undefined); }, [onViewChange]);
   const moveMonth = (direction: number) => { ledger.moveMonth(direction); setFilter(value => ({ ...value, day: '' })); };
   const title = `${Number(month.slice(0, 4))} 年 ${Number(month.slice(5))} 月`;
   return <div className="a2-page a2-ledger">
