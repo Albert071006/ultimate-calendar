@@ -44,6 +44,13 @@ async function connect() {
 async function cdp(method, params = {}) { const id = ++seq; const response = new Promise((resolve, reject) => { const timeout = setTimeout(() => { pending.delete(id); reject(Error(`CDP timeout: ${method}`)); }, 15000); pending.set(id, v => { clearTimeout(timeout); v.error ? reject(Error('CDP call failed')) : resolve(v.result); }); }); ws.send(JSON.stringify({ id, method, params })); return response; }
 async function evaluate(expression) { const result = await cdp('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (result.exceptionDetails) throw Error('Renderer evaluation failed'); return result.result.value; }
 function assert(condition, message) { if (!condition) throw Error(message); }
+// Main navigation buttons may carry a count after the label (e.g. "待判断 3").
+async function nav(label) { assert(await evaluate(`(() => { const button = Array.from(document.querySelectorAll('nav[aria-label="主导航"] button')).find(b => b.textContent.trim().startsWith(${JSON.stringify(label)})); button?.click(); return !!button; })()`), `Main navigation lost ${label}`); }
+async function meItem(label) {
+  await nav('我的');
+  assert(await evaluate(`(() => { const button = Array.from(document.querySelectorAll('nav[aria-label="我的"] button')).find(b => b.textContent.trim() === ${JSON.stringify(label)}); button?.click(); return !!button; })()`), `我的 menu lost ${label}`);
+}
+async function until(expression, tries = 50, interval = 100) { for (let i = 0; i < tries; i++) { if (await evaluate(expression)) return true; await wait(interval); } return false; }
 async function stop() {
   if (child && child.exitCode === null && ws?.readyState === WebSocket.OPEN) {
     try { await evaluate('setTimeout(() => window.close(), 50); true'); } catch {}
@@ -74,8 +81,8 @@ try {
   assert(qqMessages?.ok && qqMessages.data.total === 1 && qqMessages.data.items[0].text === notice.message[0].data.text, 'Real bridge capture/dedup/allowlist failed');
   assert(!(await readFile(join(profile, 'credentials', 'qq-bridge.bin'))).includes(Buffer.from(qqToken)), 'QQ bridge credential stored as plaintext');
   const qqSnapshot = await evaluate('window.planner.captureSnapshot()'); assert(!JSON.stringify(qqSnapshot).includes(qqToken), 'QQ bridge credential leaked');
-  await evaluate(`Array.from(document.querySelectorAll('nav button')).find(b => b.textContent.includes('QQ 采集')).click(); true`);
-  for (let i = 0; i < 50; i++) { if (await evaluate('!!document.querySelector(".capture-page")?.textContent.includes("合成验收")')) break; await wait(100); }
+  await meItem('QQ 采集');
+  await until('!!document.querySelector(".capture-page")?.textContent.includes("合成验收")');
   assert(await evaluate('!!document.querySelector(".capture-page") && document.querySelector(".capture-page").textContent.includes("合成验收")'), 'Capture page did not show stored message');
   const account = await evaluate('window.planner.accountSnapshot()'); assert(account.ok && !account.data.configured && account.data.balance.data === null, 'Account IPC or empty-account state failed');
   assert(await evaluate('typeof window.planner.refreshAccount === "function" && typeof window.planner.onAccountChanged === "function"'), 'Account bridge methods missing');
@@ -100,26 +107,31 @@ try {
   assert(ledgerUndo.ok && ledgerUndo.data.snapshot.entries.find(entry => entry.id === ledgerDraft.id).cashflows[0].accountId === null && ledgerUndo.data.snapshot.summary.accounts.find(account => account.id === 'alipay').balanceCents === 10000, 'Ledger undo did not restore original entry and balance together');
   const ledgerFinal = await evaluate(`window.planner.ledgerMutate(${JSON.stringify({ ...ledgerCorrection, operationId: 'synthetic-ledger-correct-final', expectedRevision: ledgerUndo.data.snapshot.revision })})`);
   assert(ledgerFinal.ok, 'Ledger correction after undo failed');
-  await evaluate(`Array.from(document.querySelectorAll('nav button')).find(button => button.textContent.trim() === '账单').click(); true`);
-  for (let i = 0; i < 50; i++) { if (await evaluate('!!document.querySelector(".ledger-page .ledger-charts")')) break; await wait(100); }
-  assert(await evaluate('!!document.querySelector(".ledger-charts") && document.querySelector(".ledger-page").textContent.includes("合成午饭") && document.querySelector(".workspace-header .primary").textContent.includes("记一笔") && !document.querySelector(".detail-panel")'), 'Ledger sidebar/page integration, charts, or dedicated header failed');
+  await nav('账单');
+  await until('!!document.querySelector(".a2-ledger .a2-ledger-daily") && document.querySelector(".a2-ledger").textContent.includes("合成午饭")');
+  assert(await evaluate(`!!document.querySelector('.a2-ledger .a2-ledger-daily') && document.querySelector('.a2-ledger').textContent.includes('合成午饭')
+    && Array.from(document.querySelectorAll('.a2-ledger button')).some(button => button.textContent.trim() === '记一笔')
+    && Array.from(document.querySelectorAll('[role=tablist][aria-label="账单页面"] [role=tab]')).map(tab => tab.textContent).join() === '收支,账户'
+    && !document.querySelector('.detail-panel')`), 'Ledger page, daily chart, tabs, or 记一笔 action failed');
   await writeFile(join(profile, 'ledger-overview.png'), Buffer.from((await cdp('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
-  await evaluate(`Array.from(document.querySelectorAll('.ledger-page [role="tab"]')).find(button => button.textContent === '明细').click(); true`);
-  for (let i = 0; i < 50; i++) { if (await evaluate('!!document.querySelector(".ledger-filters")')) break; await wait(50); }
-  assert(await evaluate('document.querySelector(".ledger-page").textContent.includes("实际支付") && document.querySelector(".ledger-page").textContent.includes("个人开销") && document.querySelector(".ledger-page").textContent.includes("¥20.00") && document.querySelector(".ledger-page").textContent.includes("¥12.00")'), 'Ledger detail UI lost actual payment vs personal share');
-  await evaluate(`Array.from(document.querySelectorAll('nav button')).find(button => button.textContent.trim() === '设置').click(); true`);
-  for (let i = 0; i < 50; i++) { if (await evaluate('!!document.querySelector(".settings-page")')) break; await wait(50); }
+  assert(await evaluate(`(() => { const row = Array.from(document.querySelectorAll('.a2-ledger details.a2-tx')).find(row => row.querySelector('summary').textContent.includes('合成午饭')); if (!row) return false; row.open = true;
+    const detail = row.querySelector('.a2-tx-detail').textContent; return detail.includes('实际支付') && detail.includes('个人开销') && detail.includes('¥20.00') && detail.includes('¥12.00'); })()`), 'Ledger detail UI lost actual payment vs personal share');
+  await meItem('AI 与费用');
+  await until('!!document.querySelector(".settings-page form")', 50, 50);
   assert(await evaluate(`document.querySelectorAll('.settings-page form .settings-group').length === 4
-    && !!document.querySelector('.settings-page .software-update')
-    && document.querySelector('.settings-page .software-version').textContent.includes('v')
+    && Array.from(document.querySelectorAll('.settings-page .settings-group')).filter(group => !group.hidden).length === 1
+    && !document.querySelector('.settings-page .settings-group[data-section="ai"]').hidden
     && !document.querySelector('.settings-campus').open && !document.querySelector('.api-usage').open
     && document.querySelector('.settings-pricing').closest('.settings-group') === document.querySelector('.api-usage').closest('.settings-group')
     && new FormData(document.querySelector('.settings-page form')).has('periodMap')
-    && new FormData(document.querySelector('.settings-page form')).has('campus')`), 'Grouped settings lost collapsed values or separated AI usage/pricing');
+    && new FormData(document.querySelector('.settings-page form')).has('campus')`), 'Sectioned settings lost hidden values, showed several sections, or separated AI usage/pricing');
   await writeFile(join(profile, 'settings-overview.png'), Buffer.from((await cdp('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
-  await evaluate(`document.querySelector('.settings-campus > summary').click(); document.querySelector('.settings-campus').scrollIntoView({ block: 'start' }); true`);
+  await meItem('学期与节次');
+  assert(await until('!document.querySelector(".settings-campus").hidden && document.querySelector(".settings-campus").open', 50, 50), 'Term section did not open its campus settings');
   await writeFile(join(profile, 'settings-campus.png'), Buffer.from((await cdp('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
-  await evaluate(`Array.from(document.querySelectorAll('nav button')).find(button => button.textContent.trim() === '日历').click(); true`);
+  await meItem('软件更新');
+  assert(await until('!!document.querySelector(".settings-page .software-update") && document.querySelector(".settings-page .software-version").textContent.includes("v")', 50, 50), 'Software update section missing its version');
+  await nav('日历');
   const created = await evaluate(`window.planner.mutate(${JSON.stringify({ operationId: 'synthetic-smoke-create', origin: 'manual', mutations: [{ type: 'create', entity: 'task', values: { title: '合成验收任务（隔离测试）', deadline: { date: '2026-12-20', time: null } } }] })})`); assert(created.ok && created.data.status === 'applied', 'Real preload/IPC mutation failed');
   const recurringTask = (await evaluate('window.planner.snapshot()')).data.tasks[0];
   const recurringRequest = { operationId: 'synthetic-smoke-recurring', origin: 'manual', mutations: [{ type: 'scheduleRecurringTask', id: recurringTask.id, expectedVersion: recurringTask.version,
@@ -224,41 +236,45 @@ try {
   const beforeWorkEdit = (await evaluate('window.planner.snapshot()')).data;
   const workBlock = beforeWorkEdit.blocks.find(block => block.taskId === attentionTasks.work.id);
   assert(workBlock?.kind === 'work', 'Synthetic execution block was not persisted');
-  async function waitForAttentionRows(selector) {
-    const ids = Object.values(attentionTasks).filter(task => task.status === 'open').map(task => task.id);
-    for (let i = 0; i < 50; i++) {
-      if (await evaluate(`${JSON.stringify(ids)}.every(id => Array.from(document.querySelectorAll(${JSON.stringify(selector)})).some(row => row.dataset.taskId === id))`)) return;
-      await wait(100);
-    }
-    throw Error(`${selector}: overdue, ended or scheduled open tasks disappeared`);
+  const rowIds = selector => evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(selector)})).map(row => row.dataset.taskId)`);
+  async function waitForRows(selector, ids) {
+    if (await until(`${JSON.stringify(ids)}.every(id => Array.from(document.querySelectorAll(${JSON.stringify(selector)})).some(row => row.dataset.taskId === id))`)) return;
+    throw Error(`${selector}: open tasks that need attention disappeared`);
   }
-  async function verifyAttentionRows(selector) {
-    await waitForAttentionRows(selector);
+  async function verifyTodayRows() {
+    await waitForRows('.a2-task-row', [attentionTasks.overdue.id, attentionTasks.ended.id, attentionTasks.work.id]);
     for (const reason of ['overdue', 'ended']) assert(await evaluate(`(() => {
-      const row = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find(row => row.dataset.taskId === ${JSON.stringify(attentionTasks[reason].id)});
-      return row?.dataset.attention === ${JSON.stringify(reason)} && row.classList.contains('task-needs-attention') && !!row.querySelector('.task-attention-label')?.textContent.trim();
-    })()`), `${selector}: ${reason} task lost its visible attention status`);
-    assert(await evaluate(`!Array.from(document.querySelectorAll(${JSON.stringify(selector)})).some(row => row.dataset.taskId === ${JSON.stringify(attentionTasks.done.id)})`), `${selector}: completed task leaked back into open tasks`);
+      const row = Array.from(document.querySelectorAll('.a2-task-row')).find(row => row.dataset.taskId === ${JSON.stringify(attentionTasks[reason].id)});
+      return row?.dataset.attention === ${JSON.stringify(reason)} && row.classList.contains('warn') && !!row.querySelector('.a2-task-meta .warn')?.textContent.trim();
+    })()`), `today: ${reason} task lost its visible attention status`);
+    assert(!(await rowIds('.a2-task-row')).includes(attentionTasks.done.id), 'today: completed task leaked back into open tasks');
   }
-  async function openExistingWork(selector) {
-    assert(await evaluate(`(() => {
-      const row = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find(row => row.dataset.taskId === ${JSON.stringify(attentionTasks.work.id)});
-      const button = Array.from(row?.querySelectorAll('button') ?? []).find(button => button.textContent.trim() === '查看安排');
-      if (!button) return false; button.click(); return true;
-    })()`), `${selector}: scheduled execution task did not offer 查看安排`);
-    for (let i = 0; i < 50; i++) { if (await evaluate('!!document.querySelector("[role=dialog] input[name=start]")')) break; await wait(50); }
+  // The unscheduled drawer keeps overdue and ended tasks, but not ones with a session still ahead or already done.
+  async function verifyDrawer() {
+    await waitForRows('.a2-drawer .a2-card', [attentionTasks.overdue.id, attentionTasks.ended.id]);
+    const ids = await rowIds('.a2-drawer .a2-card');
+    assert(!ids.includes(attentionTasks.work.id) && !ids.includes(attentionTasks.done.id), 'drawer: scheduled or completed task leaked into 未安排');
+    assert(await evaluate(`document.querySelector('.a2-drawer .a2-card[data-task-id=${JSON.stringify(attentionTasks.ended.id)}] .cm').textContent.includes('安排已结束')`), 'drawer: ended task lost its 安排已结束 status');
+  }
+  async function expectBlockEditor(task, day, kind, from) {
+    await until('!!document.querySelector("[role=dialog] input[name=start]")', 50, 50);
     assert(await evaluate(`(() => {
       const dialog = document.querySelector('[role=dialog]');
       return dialog?.querySelector('h2')?.textContent === '编辑时段'
-        && dialog.querySelector('[name=start]')?.value === ${JSON.stringify(`${workDay}T10:00`)}
-        && dialog.querySelector('[name=end]')?.value === ${JSON.stringify(`${workDay}T10:30`)}
-        && dialog.querySelector('[name=kind]')?.value === 'work'
-        && dialog.querySelector('[name=taskId]')?.value === ${JSON.stringify(attentionTasks.work.id)};
-    })()`), `${selector}: 查看安排 opened a new draft or lost the existing execution time`);
+        && dialog.querySelector('[name=start]')?.value === ${JSON.stringify(`${day}T10:00`)}
+        && dialog.querySelector('[name=end]')?.value === ${JSON.stringify(`${day}T10:30`)}
+        && dialog.querySelector('[name=kind]')?.value === ${JSON.stringify(kind)}
+        && dialog.querySelector('[name=taskId]')?.value === ${JSON.stringify(task.id)};
+    })()`), `${from}: opened a new draft or lost the existing session time`);
   }
-  await evaluate(`Array.from(document.querySelectorAll('nav button')).find(button => button.textContent.trim() === '任务').click(); true`);
-  await verifyAttentionRows('.task-row');
-  await openExistingWork('.task-row');
+  await nav('今天');
+  await verifyTodayRows();
+  assert(await evaluate(`(() => {
+    const row = Array.from(document.querySelectorAll('.a2-task-row')).find(row => row.dataset.taskId === ${JSON.stringify(attentionTasks.work.id)});
+    const button = Array.from(row?.querySelectorAll('button') ?? []).find(button => button.textContent.trim() === '查看安排');
+    if (!button) return false; button.click(); return true;
+  })()`), 'today: scheduled execution task did not offer 查看安排');
+  await expectBlockEditor(attentionTasks.work, workDay, 'work', 'today 查看安排');
   await evaluate(`(() => {
     const dialog = document.querySelector('[role=dialog]'), location = dialog.querySelector('[name=location]');
     location.value = '合成验收调整后的地点'; location.dispatchEvent(new Event('input', { bubbles: true }));
@@ -272,11 +288,17 @@ try {
     && afterWorkEdit.blocks.find(block => block.id === workBlock.id)?.location === '合成验收调整后的地点'
     && afterWorkEdit.blocks.find(block => block.id === workBlock.id)?.version === workBlock.version + 1,
   'Saving 查看安排 did not update the original execution block, or created a duplicate');
-  await evaluate(`Array.from(document.querySelectorAll('nav button')).find(button => button.textContent.trim() === '日历').click(); true`);
-  await verifyAttentionRows('.rail-task');
-  await openExistingWork('.rail-task');
+  await nav('日历');
+  await verifyDrawer();
+  // Drawer card → task detail popover → 调整时间 reopens the ended session instead of drafting a new one.
+  await evaluate(`document.querySelector('.a2-drawer .a2-card[data-task-id=${JSON.stringify(attentionTasks.ended.id)}] button.ct').click(); true`);
+  assert(await until(`!!document.querySelector('aside[aria-label="任务详情"] [aria-label="已安排活动"]')`, 50, 50), 'drawer: task detail popover did not list its arrangement');
+  await evaluate(`Array.from(document.querySelectorAll('aside[aria-label="任务详情"] [aria-label="已安排活动"] button')).find(button => button.textContent.trim() === '调整时间').click(); true`);
+  await expectBlockEditor(attentionTasks.ended, endedDay, 'event', 'drawer 调整时间');
+  assert(await evaluate('!document.querySelector(".a2-drawer")'), 'Edit panel did not take the drawer\'s place');
   await evaluate(`Array.from(document.querySelectorAll('[role=dialog] button')).find(button => button.textContent.trim() === '取消').click(); true`);
-  assert(JSON.stringify((await evaluate('window.planner.snapshot()')).data.blocks) === JSON.stringify(afterWorkEdit.blocks), 'Cancelling the rail editor changed an existing execution block');
+  assert(await until('!document.querySelector("[role=dialog] input[name=start]") && !!document.querySelector(".a2-drawer")', 50, 50), 'Cancelling the edit panel did not bring the drawer back');
+  assert(JSON.stringify((await evaluate('window.planner.snapshot()')).data.blocks) === JSON.stringify(afterWorkEdit.blocks), 'Cancelling the calendar editor changed an existing session');
   await writeFile(join(profile, 'attention-task-rail.png'), Buffer.from((await cdp('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
   const workEditUndo = await evaluate('window.planner.undo()');
   assert(workEditUndo.ok && workEditUndo.data.status === 'applied', 'Actual execution edit could not be undone');
