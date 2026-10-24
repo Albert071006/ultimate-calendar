@@ -223,7 +223,9 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
           )}
           {ui.preview && (
             <Modal wide title="更改预览" onClose={ui.cancelPreview}>
-              <Preview value={ui.preview} confirm={() => void ui.confirm()} cancel={ui.cancelPreview} busy={ui.busy} />
+              <Preview value={ui.preview} confirm={() => void ui.confirm()} cancel={ui.cancelPreview} busy={ui.busy}
+                names={id => snapshot && ([...snapshot.tasks, ...snapshot.goals, ...snapshot.courses, ...snapshot.candidates, ...snapshot.blocks].find(record => record.id === id)?.title
+                  ?? snapshot.sources.find(source => source.id === id)?.label ?? undefined)} />
             </Modal>
           )}
         </>

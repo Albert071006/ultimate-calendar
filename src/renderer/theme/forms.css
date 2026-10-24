@@ -38,3 +38,15 @@
 .a2 .modal .tabs button.selected { color: var(--surface); background: var(--ink); }
 .a2 .modal .original-text { padding: 12px 14px; font-size: 13px; line-height: 1.8; color: var(--ink-2); background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--line-2); border-radius: var(--radius); white-space: pre-wrap; }
 .a2 .modal .source-metadata dt { color: var(--ink-3); }
+
+/* Change preview: plain sentences first, the field tables folded under 查看具体变更. */
+.a2 .preview-summary { padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: var(--radius); }
+.a2 .preview-summary .preview-lead { margin: 0 0 6px; font-size: 13px; color: var(--ink-2); }
+.a2 .preview-summary ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 14px; line-height: 1.6; color: var(--ink); }
+.a2 .preview-summary li.more { list-style: none; margin-left: -18px; font-size: 12.5px; color: var(--ink-3); }
+.a2 .preview-summary .preview-note { margin: 10px 0 0; font-size: 12px; color: var(--ink-3); }
+.a2 .preview-more { margin-top: 14px; }
+.a2 .preview-more > summary { width: fit-content; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.a2 .preview-more > summary:hover { color: var(--ink); }
+.a2 .preview-more[open] > summary { margin-bottom: 12px; }
+.a2 .preview-content > .preview-detail { margin-top: 16px; }

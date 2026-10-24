@@ -287,7 +287,7 @@ describe("desktop workspace interaction", () => {
     fireEvent.click(screen.getByRole("button", { name: "发送指令" }));
     expect(
       within(await screen.findByRole("dialog", { name: "更改预览" })).getByText(
-        "尚未执行 · 请确认更改",
+        "尚未执行 · 确认后可以撤销",
       ),
     ).toBeTruthy();
     expect(mutate).not.toHaveBeenCalled();

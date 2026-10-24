@@ -72,14 +72,18 @@ const values: Record<string, string> = {
   work: "执行时段",
   event: "固定活动",
 };
-function format(value: unknown): string {
+// Fields that point at another record; the preview names the record instead of showing its id.
+const linkFields = new Set(["taskId", "goalId", "courseId", "candidateId", "duplicateOfId", "revisionOfId", "sourceIds"]);
+const linkNouns: Record<string, string> = { taskId: "任务", goalId: "目标", courseId: "课程", candidateId: "通知", duplicateOfId: "通知", revisionOfId: "通知", sourceIds: "来源" };
+type Lookup = (id: string) => string | undefined;
+function format(value: unknown, name?: Lookup): string {
   if (value === null || value === undefined) return "未设置";
   if (typeof value === "boolean") return value ? "是" : "否";
   if (typeof value === "string")
     return (
-      values[value] ?? (value.includes("T") ? displayInstant(value) : value)
+      values[value] ?? name?.(value) ?? (/^\d{4}-\d{2}-\d{2}T/.test(value) ? displayInstant(value) : value)
     );
-  if (Array.isArray(value)) return value.length ? value.map(format).join("、") : "无";
+  if (Array.isArray(value)) return value.length ? value.map(item => format(item, name)).join("、") : "无";
   if (typeof value === "object") {
     return Object.entries(value)
       .map(
@@ -90,7 +94,7 @@ function format(value: unknown): string {
   }
   return String(value);
 }
-function differences(before: Entity | null, after: Entity | null) {
+function differences(before: Entity | null, after: Entity | null, name?: Lookup) {
   const a = (before ?? {}) as Record<string, unknown>,
     b = (after ?? {}) as Record<string, unknown>;
   return [...new Set([...Object.keys(a), ...Object.keys(b)])]
@@ -98,7 +102,36 @@ function differences(before: Entity | null, after: Entity | null) {
       (k) =>
         !internalFields.has(k) && JSON.stringify(a[k]) !== JSON.stringify(b[k]),
     )
-    .map((k) => ({ key: k, before: format(a[k]), after: format(b[k]) }));
+    .map((k) => ({ key: k, before: format(a[k], linkFields.has(k) ? name : undefined), after: format(b[k], linkFields.has(k) ? name : undefined), cleared: b[k] === null || b[k] === undefined }));
+}
+type Detail = Extract<MutationResult, { status: "preview" }>["details"][number];
+const fieldsOf = (entity: Entity | null) => (entity ?? {}) as unknown as Record<string, unknown>;
+const titleOf = (detail: Detail) => String(fieldsOf(detail.after ?? detail.before).title ?? "");
+/** The word a person would use: notices rather than candidates, sessions vs. activities by kind. */
+function noun(detail: Detail) {
+  if (detail.entity === "candidate") return "通知";
+  if (detail.entity === "block") return fieldsOf(detail.after ?? detail.before).kind === "event" ? "活动" : "时段";
+  return entityNames[detail.entity];
+}
+/** One plain sentence per change; the field-by-field table stays behind 查看具体变更. */
+function sentence(detail: Detail, name: Lookup, removed: Set<string>) {
+  const title = titleOf(detail), quoted = title ? `「${title}」` : "";
+  if (!detail.before) return `新建${noun(detail)}${quoted}`;
+  if (!detail.after) {
+    const start = fieldsOf(detail.before).start;
+    return `${detail.entity === "task" ? "移除" : "删除"}${noun(detail)}${quoted}${typeof start === "string" ? `（${displayInstant(start)}）` : ""}`;
+  }
+  const rows = differences(detail.before, detail.after, name);
+  if (!rows.length) return `更新${noun(detail)}${quoted}的内部记录`;
+  if (rows.every(row => linkFields.has(row.key) && row.cleared)) {
+    const unlinked = rows.map(row => {
+      const id = fieldsOf(detail.before)[row.key];
+      return typeof id === "string" && removed.has(id) ? `被移除的${linkNouns[row.key]}` : `${linkNouns[row.key]}「${row.before}」`;
+    });
+    return `${noun(detail)}${quoted}保留，只是不再关联${unlinked.join("、")}`;
+  }
+  const shown = rows.slice(0, 3).map(row => `${labels[row.key] ?? row.key} ${row.before} → ${row.after}`);
+  return `修改${noun(detail)}${quoted}：${shown.join("；")}${rows.length > 3 ? ` 等 ${rows.length} 项` : ""}`;
 }
 function ActivityArrangement({ block }: { block: Block }) {
   const reminder = block.reminders;
@@ -114,11 +147,14 @@ export function Preview({
   confirm,
   cancel,
   busy,
+  names,
 }: {
   value: Extract<MutationResult, { status: "preview" }>;
   confirm: () => void;
   cancel: () => void;
   busy: boolean;
+  /** Names records the preview itself does not carry, e.g. the course a task links to. */
+  names?: Lookup;
 }) {
   const recurring = value.proposedRequest.mutations.length === 1 &&
     ['scheduleRecurringTask', 'createRecurringTask'].includes(value.proposedRequest.mutations[0]!.type);
@@ -129,19 +165,33 @@ export function Preview({
   const seriesChanges = seriesMutation ? value.details.filter(d => d.entity === 'block' && d.before && d.after && 'start' in d.before && 'start' in d.after) : [];
   const cancelling = seriesMutation?.type === 'cancelRecurringEvent';
   const occurrenceIds = new Set([...occurrences, ...seriesChanges].map(d => d.id));
+  const others = value.details.filter(d => !occurrenceIds.has(d.id));
+  const inPreview = new Map(value.details.map(d => [d.id, titleOf(d)]));
+  const name: Lookup = id => inPreview.get(id) || names?.(id);
+  const removed = new Set(value.details.filter(d => d.before && !d.after).map(d => d.id));
+  const lines = [
+    ...(occurrences.length ? [`新增 ${occurrences.length} 次固定活动`] : []),
+    ...(seriesChanges.length ? [`${cancelling ? '取消' : '修改'} ${seriesChanges.length} 次活动`] : []),
+    // Removals first, then additions, then edits, so the consequential part reads first.
+    ...[...others].sort((a, b) => Number(!!a.after) - Number(!!b.after) || Number(!!a.before) - Number(!!b.before)).map(d => sentence(d, name, removed)),
+  ];
+  const shownLines = lines.length > 7 ? lines.slice(0, 6) : lines;
   return (
     <div className="preview-content">
-      <p className="warning">
-        <strong>尚未执行 · 请确认更改</strong>
-        <br />
-        {value.message}
-      </p>
+      <section className="preview-summary" aria-label="更改摘要">
+        <p className="preview-lead">确认后将：</p>
+        <ul>
+          {shownLines.map((line, i) => <li key={i}>{line}</li>)}
+          {shownLines.length < lines.length && <li className="more">还有 {lines.length - shownLines.length} 项，见「查看具体变更」</li>}
+        </ul>
+        <p className="preview-note">尚未执行 · 确认后可以撤销</p>
+      </section>
       {value.conflicts.map((c, i) => (
         <div className="conflict" key={i}>
           <strong>{c.kind === "time" ? "时间重叠" : "需要确认"}</strong>
           <p>{c.message}</p>
           {c.conflictingIds.length > 0 && (
-            <small>关联记录：{c.conflictingIds.join("、")}</small>
+            <small>关联：{c.conflictingIds.map(id => name(id) ?? "另一条记录").join("、")}</small>
           )}
         </div>
       ))}
@@ -168,45 +218,34 @@ export function Preview({
           })}</tbody>
         </table>
       </section>}
-      {value.details.filter(d => !occurrenceIds.has(d.id)).map((d, i) => (
-        <section className="preview-detail" key={i}>
-          <h3>
-            {d.before ? (d.after ? "修改" : "删除") : "新建"}
-            {entityNames[d.entity]} ·{" "}
-            {value.changes.find((c) => c.id === d.id)?.title ??
-              String(
-                ((d.after ?? d.before) as unknown as Record<string, unknown>)?.[
-                  "title"
-                ] ?? "",
-              )}
-          </h3>
-          <table>
-            <thead>
-              <tr>
-                <th>字段</th>
-                <th>当前</th>
-                <th>确认后</th>
-              </tr>
-            </thead>
-            <tbody>
-              {differences(d.before, d.after).map((row) => (
-                <tr key={row.key}>
-                  <th scope="row">{labels[row.key] ?? row.key}</th>
-                  <td>{row.before}</td>
-                  <td>{row.after}</td>
-                </tr>
-              ))}
-              {differences(d.before, d.after).length === 0 && (
-                <tr><td colSpan={3}>业务字段未改变（仅内部记录信息变化）</td></tr>
-              )}
-            </tbody>
-          </table>
-        </section>
-      ))}
-      <p className="fine-print">
-        预览有效至 {displayInstant(value.expiresAt)}
-        。确认仅授权这里列出的确切变更。
-      </p>
+      {others.length > 0 && <details className="preview-more">
+        <summary>查看具体变更</summary>
+        {others.map((d, i) => {
+          const rows = differences(d.before, d.after, name);
+          // A record being created or removed only needs what it holds, not a column of 未设置.
+          const whole = !d.before || !d.after;
+          const shown = whole ? rows.filter(row => (d.after ? row.after : row.before) !== "未设置") : rows;
+          return (
+            <section className="preview-detail" key={i}>
+              <h3>{d.before ? (d.after ? "修改" : d.entity === "task" ? "移除" : "删除") : "新建"}{noun(d)} · {titleOf(d)}</h3>
+              <table>
+                <thead><tr><th>字段</th>{whole ? <th>{d.after ? "内容" : "移除的内容"}</th> : <><th>当前</th><th>确认后</th></>}</tr></thead>
+                <tbody>
+                  {shown.map(row => (
+                    <tr key={row.key}>
+                      <th scope="row">{labels[row.key] ?? row.key}</th>
+                      {whole ? <td>{d.after ? row.after : row.before}</td> : <><td>{row.before}</td><td>{row.after}</td></>}
+                    </tr>
+                  ))}
+                  {rows.length === 0 && <tr><td colSpan={3}>业务字段未改变（仅内部记录信息变化）</td></tr>}
+                </tbody>
+              </table>
+            </section>
+          );
+        })}
+        <p className="fine-print">预览有效至 {displayInstant(value.expiresAt)}。确认仅授权这里列出的确切变更。</p>
+      </details>}
+      {others.length === 0 && <p className="fine-print">预览有效至 {displayInstant(value.expiresAt)}。确认仅授权这里列出的确切变更。</p>}
       <footer className="form-footer">
         <button onClick={cancel}>取消更改</button>
         <button className="primary" onClick={confirm} disabled={busy}>
