@@ -16,6 +16,8 @@
 
 当前面向 Windows x64，以北京时间处理日程和账目。手机端、跨设备同步和微信采集尚未提供。
 
+使用其他 agent 制定并导入计划，请阅读 [Agent 规划与导入规范](docs/agent-planning-guide.md)，其中包含交接模板、接口示例、重复安排和防止重复写入的规则。当前尚无通用计划 JSON／ICS 文件导入口，示例请求需通过已有应用操作能力执行。
+
 ## 开始使用
 
 1. 在 [Releases](https://github.com/Albert071006/ultimate-calendar/releases) 下载 `UltimateCalendar-Setup-*.exe`，安装时可选择目录。
@@ -75,7 +77,7 @@ node scripts/document-smoke.mjs --no-legacy
 
 ## 版本发布
 
-每次功能修改通过检查后同步源码；需要向用户提供更新时再升版本和推送标签：
+仅在明确要求上传或发布时执行以下流程；日常本机修改按影响范围验证，不自动推送或发布：
 
 1. 同步修改 `package.json` 与 `package-lock.json` 的版本，编写 `docs/release-notes/<version>.md`，说明本次变化。
 2. 执行类型检查、测试和打包验证，将源码提交到 `main`。

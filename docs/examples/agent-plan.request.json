@@ -1,0 +1,45 @@
+{
+  "operationId": "fictional-plan-203004-r1-batch-01",
+  "origin": "ai",
+  "confirmed": false,
+  "mutations": [
+    {
+      "type": "createScheduledTask",
+      "values": {
+        "title": "提醒提交报名表",
+        "description": "确认填写完整后提交；提交成功即完成。",
+        "deadline": null
+      },
+      "start": "2030-04-15T18:00:00+08:00",
+      "end": null,
+      "reminders": {"enabled": true, "leadMinutes": [0], "dateOnlyTime": null}
+    },
+    {
+      "type": "create",
+      "entity": "task",
+      "values": {
+        "title": "提交项目报告",
+        "description": "完成正文、核对引用、提交最终文件；执行时段另行安排。",
+        "deadline": {"date": "2030-04-19", "time": "17:00"}
+      }
+    },
+    {
+      "type": "createRecurringTask",
+      "values": {
+        "title": "每周复盘",
+        "description": "回顾本周完成情况并整理下一步；完成一次复盘不代表整个系列结束。",
+        "deadline": null
+      },
+      "rule": {
+        "frequency": "weekly",
+        "fromDate": "2030-04-15",
+        "untilDate": "2030-05-12",
+        "weekday": 2,
+        "time": "20:10",
+        "durationMinutes": 30,
+        "termStart": null
+      },
+      "reminders": {"enabled": true, "leadMinutes": [10], "dateOnlyTime": null}
+    }
+  ]
+}
