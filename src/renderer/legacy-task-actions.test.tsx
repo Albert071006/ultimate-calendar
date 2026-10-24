@@ -83,7 +83,7 @@ describe('scheduling an accepted notice whose extracted activity time was lost',
     rowAction(row, '安排');
     const dialog = await screen.findByRole('dialog', { name: '新建时段' });
     expect(field(dialog, '开始').value).toBe('2026-10-22T21:30');
-    expect(field(dialog, '结束（活动留空默认30分钟）').value).toBe('2026-10-22T22:00');
+    expect(field(dialog, '结束（留空默认30分钟）').value).toBe('2026-10-22T22:00');
     expect(within(dialog).getAllByText(/默认30分钟/).some(element => element.tagName !== 'LABEL')).toBe(true);
     expect(field(dialog, '类型').value).toBe('event');
     expect(field(dialog, '关联任务').value).toBe('task-meeting');
@@ -111,7 +111,7 @@ describe('scheduling an accepted notice whose extracted activity time was lost',
     rowAction(await emptyRail(), '安排');
     const dialog = await screen.findByRole('dialog', { name: '新建时段' });
     expect(field(dialog, '开始').value).toBe('2026-10-22T21:30');
-    expect(field(dialog, '结束（活动留空默认30分钟）').value).toBe('2026-10-22T22:00');
+    expect(field(dialog, '结束（留空默认30分钟）').value).toBe('2026-10-22T22:00');
     fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(mutate).not.toHaveBeenCalled();
@@ -127,7 +127,7 @@ describe('scheduling an accepted notice whose extracted activity time was lost',
     rowAction(await taskRow(), '安排');
     const dialog = await screen.findByRole('dialog', { name: '新建时段' });
     expect(field(dialog, '开始').value).toBe('2026-11-05T20:35');
-    expect(field(dialog, '结束（活动留空默认30分钟）').value).toBe('2026-11-05T21:25');
+    expect(field(dialog, '结束（留空默认30分钟）').value).toBe('2026-11-05T21:25');
     expect(field(dialog, '类型').value).toBe('event');
     expect(mutate).not.toHaveBeenCalled();
   });

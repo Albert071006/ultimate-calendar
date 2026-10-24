@@ -260,6 +260,9 @@ export const MutationSchema = z.union([
   z.strictObject({ type: z.literal('finishTask'), id: IdSchema, expectedVersion: version, completed: z.boolean().default(true) }),
   z.strictObject({ type: z.literal('removeTask'), id: IdSchema, expectedVersion: version, includeLinkedBlocks: z.boolean().default(true) }),
   z.strictObject({ type: z.literal('scheduleTaskEvent'), id: IdSchema, expectedVersion: version, values: BlockInputSchema }),
+  // One user action creates both records; the service supplies their shared taskId.
+  z.strictObject({ type: z.literal('createScheduledTask'), values: TaskInputSchema, start: InstantSchema, end: InstantSchema.nullable().default(null), location: shortText.default(''), reminders: ReminderConfigSchema.optional() })
+    .refine(value => value.end === null || Date.parse(value.end) > Date.parse(value.start), '活动结束必须晚于开始'),
   z.strictObject({ type: z.literal('scheduleRecurringTask'), id: IdSchema, expectedVersion: version, rule: RecurrenceRuleSchema, location: shortText.default(''), reminders: ReminderConfigSchema.optional() }),
   z.strictObject({ type: z.literal('createRecurringTask'), values: TaskInputSchema, rule: RecurrenceRuleSchema, location: shortText.default(''), reminders: ReminderConfigSchema.optional() }),
   z.strictObject({ type: z.literal('finishBlock'), id: IdSchema, expectedVersion: version, completed: z.boolean().default(true) }),

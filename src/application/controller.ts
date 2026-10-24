@@ -9,6 +9,8 @@ import { completeJson, safeError, WorkflowError } from '../ai/deepseek';
 import { ExtractionSchema } from '../ai/schemas';
 import { extractionMessages, commandMessages, courseMessages } from '../ai/prompts';
 import { buildCommandContext, validateCommandReferences } from '../ai/commands';
+import { groundTimedCommand } from '../ai/timed-commands';
+import { commandMutationReply } from './command-reply';
 import { normalizeCandidate, candidateFingerprint } from '../imports/messages';
 import { parseCourseFile, parseCsv, previewCourseRows, type SelectedCourseFile } from '../imports/courses';
 import type { PriceQuote } from '../shared/account';
@@ -127,6 +129,7 @@ export function createController(options: ControllerOptions) {
         const context = { ...buildCommandContext(planner.snapshot(), request, now()), currentUiDomain: request.domain ?? 'calendar',
           availableServices: { ledger: !!options.ledger }, currentLedgerView: request.domain === 'ledger' ? request.ledgerView : undefined };
         let intent = prior?.intent ?? await model(CommandIntentSchema, commandMessages(context, request.text, request.history), input.operationId, 'command');
+        if (!prior?.intent) intent = groundTimedCommand(intent, request, context.now);
         if (intent.kind === 'ledger') {
           const ledger = options.ledger;
           if (!ledger) throw new WorkflowError('VALIDATION', '账本服务尚未连接，请重新打开应用');
@@ -197,7 +200,10 @@ export function createController(options: ControllerOptions) {
           const replay = intent.transactionId ? repository.read().journal.find(j => j.operationId === `undo:${intent.transactionId}`) : undefined;
           result = { reply: intent.reply, mutationResult: replay ? { status: 'applied', transactionId: replay.id, message: replay.message, changes: replay.changes, conflicts: [] } : planner.undo(intent.transactionId), items: [] };
         }
-        else result = { reply: intent.reply, mutationResult: planner.mutate({ operationId: `ai:${hash(input.operationId)}`, origin: 'ai', confirmed: false, mutations: intent.mutations }), items: [] };
+        else {
+          const mutationResult = planner.mutate({ operationId: `ai:${hash(input.operationId)}`, origin: 'ai', confirmed: false, mutations: intent.mutations });
+          result = { reply: commandMutationReply(mutationResult, planner.snapshot()), mutationResult, items: [] };
+        }
         result.conversationState = { domain:'calendar', phase:result.mutationResult?.status === 'preview' ? 'preview' : intent.kind === 'clarification' || result.mutationResult?.status === 'clarification' ? 'clarification' : result.mutationResult?.status === 'applied' ? 'saved' : 'query' };
         repository.transact(state => save(state, id, fingerprint, { kind: 'command', intent, result })); return result;
       });

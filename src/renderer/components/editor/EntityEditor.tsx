@@ -22,7 +22,7 @@ import type { PlannerUI } from "../../hooks/usePlanner";
 import type { ScheduleDraft } from "../Calendar";
 import { useCurrentTime } from '../../hooks/useCurrentTime';
 import { selectRailTasks } from '../../task-rail';
-import { DEFAULT_ACTIVITY_MINUTES } from '../../../domain/activity-duration';
+import { DEFAULT_ACTIVITY_MINUTES, effectiveActivityEnd } from '../../../domain/activity-duration';
 import { recurringEventTargets } from '../../../domain/recurring-events';
 import { courseIsCurrent } from '../../../domain/palette';
 import { findRecord } from '../detail/records';
@@ -135,7 +135,7 @@ export function EntityEditor({
   const duration =
     block?.end && block.start
       ? Date.parse(block.end) - Date.parse(block.start)
-      : ((target.draft?.kind ?? block?.kind) === 'event' ? DEFAULT_ACTIVITY_MINUTES : 60) * 60000;
+      : DEFAULT_ACTIVITY_MINUTES * 60000;
   const endValue = target.draft?.end ?? (target.draft
     ? new Date(Date.parse(`${start}:00+08:00`) + duration + 8 * 3600000)
         .toISOString()
@@ -218,17 +218,20 @@ export function EntityEditor({
           reminders: reminders(data),
           courseId: s("courseId") || null,
         });
-      if (entity === "block")
+      if (entity === "block") {
+        const blockStart = instant(data.get("start"));
+        const blockEnd = instant(data.get("end"));
         values = BlockInputSchema.parse({
           title,
-          start: instant(data.get("start")),
-          end: instant(data.get("end")),
+          start: blockStart,
+          end: blockEnd ?? (s('kind') === 'work' && blockStart ? effectiveActivityEnd(blockStart, null) : null),
           kind: s("kind"),
           taskId: s("taskId") || null,
           location: s("location"),
           completed: block?.completed ?? false,
           reminders: reminders(data),
         });
+      }
       if (entity === "goal")
         values = GoalInputSchema.parse({
           title,
@@ -560,17 +563,16 @@ export function EntityEditor({
                 name="start"
                 type="datetime-local"
                 required
-                defaultValue={series ? undefined : start}
-                value={series ? seriesStart : undefined}
-                onChange={series ? e => {
+                value={seriesStart}
+                onChange={e => {
                   setSeriesStart(e.target.value);
-                  if (!seriesEndEdited && e.target.value) setSeriesEnd(new Date(Date.parse(`${e.target.value}:00+08:00`) + duration + 8 * 3600000).toISOString().slice(0, 16));
-                } : undefined}
+                  if ((series || (!saved && !target.draft?.end)) && !seriesEndEdited && e.target.value) setSeriesEnd(new Date(Date.parse(`${e.target.value}:00+08:00`) + duration + 8 * 3600000).toISOString().slice(0, 16));
+                }}
               />
             </label>
             <label>
-              结束（活动留空默认30分钟）
-              <input name="end" type="datetime-local" defaultValue={series ? undefined : endValue} value={series ? seriesEnd : undefined} onChange={series ? e => { setSeriesEnd(e.target.value); setSeriesEndEdited(true); } : undefined} />
+              结束（留空默认30分钟）
+              <input name="end" type="datetime-local" value={seriesEnd} onChange={e => { setSeriesEnd(e.target.value); setSeriesEndEdited(true); }} />
             </label>
           </div>
           </>}

@@ -5,6 +5,7 @@ import { PageToolbar } from "./shell/PageToolbar";
 import { belongingColor } from "../../domain/belonging";
 import { buildCalendar } from "../../domain/calendar";
 import { dayDistance } from "../../domain/time";
+import { DEFAULT_ACTIVITY_MINUTES } from '../../domain/activity-duration';
 import type { CalendarItem, Snapshot } from "../../shared/contracts";
 import {
   calendarDays,
@@ -146,7 +147,7 @@ export function Calendar({
     e.preventDefault(); e.stopPropagation(); e.currentTarget.focus(); suppressClick.current = null;
     const pointer = pointerInstant(day, e.clientY, operation === 'create' ? 1439 : 1440);
     const initialStart = item?.start ? Date.parse(item.start) : pointer;
-    const initialEnd = item?.end ? Date.parse(item.end) : Math.min(pointer + 60 * 60_000, dayStart(day) + 86400_000);
+    const initialEnd = item?.end ? Date.parse(item.end) : Math.min(pointer + DEFAULT_ACTIVITY_MINUTES * 60_000, dayStart(day) + 86400_000);
     gesture.current = { operation, pointerId: e.pointerId, day, target: e.currentTarget, item, initialStart, initialEnd,
       initialPointer: pointer, grabOffset: pointer - initialStart, startX: e.clientX, startY: e.clientY, x: e.clientX, y: e.clientY, moved: false };
     e.currentTarget.setPointerCapture?.(e.pointerId);
@@ -203,7 +204,7 @@ export function Calendar({
       const viewport = scroll.current;
       if (viewport) { const top = minutePosition(next); if (top < viewport.scrollTop + 20) viewport.scrollTop = Math.max(0, top - 20); else if (top > viewport.scrollTop + viewport.clientHeight - 30) viewport.scrollTop = top - viewport.clientHeight + 30; }
     } else if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault(); schedule(draftRange(dayStart(day) + minute * 60000, dayStart(day) + Math.min(1440, minute + 60) * 60000));
+      e.preventDefault(); schedule(draftRange(dayStart(day) + minute * 60000, dayStart(day) + Math.min(1440, minute + DEFAULT_ACTIVITY_MINUTES) * 60000));
     }
   }
   function keyboardBlock(e: React.KeyboardEvent, item: CalendarItem, operation: 'move' | 'resize-start' | 'resize-end') {

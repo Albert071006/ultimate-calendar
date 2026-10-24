@@ -109,8 +109,8 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
         date: timing.start.slice(0, 10), time: timing.start.slice(11, 16), taskId,
         end: effectiveActivityEnd(timing.start, timing.end).slice(0, 16), kind: 'event', location: timing.location,
         noticeTaskVersion: snapshot.tasks.find(task => task.id === taskId)?.version,
-        timingNote: `${timing.end ? '已按原消息带入活动时间。' : '已按原消息带入开始时间；未提供结束时间，默认30分钟，可调整。'}${noticeTimePassed(timing, Date.now()) ? '原通知时间已过，请核对后保存。' : ''}`,
-      } : { date: page === 'today' ? todayDate() : date, time: '09:00', taskId });
+        timingNote: `${timing.source === 'reminder' ? '已带入指定的提醒时间；未提供结束时间，默认30分钟，可调整。' : timing.end ? '已按原消息带入活动时间。' : '已按原消息带入开始时间；未提供结束时间，默认30分钟，可调整。'}${noticeTimePassed(timing, Date.now()) ? `原${timing.source === 'reminder' ? '提醒' : '通知'}时间已过，请核对后保存。` : ''}`,
+      } : { date: todayDate(), time: '09:00', taskId });
     }
   };
   const scheduleRecurringTask = (taskId: string) => {

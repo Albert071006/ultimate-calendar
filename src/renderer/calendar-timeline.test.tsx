@@ -63,7 +63,7 @@ describe('continuous minute calendar', () => {
   it('clicks an arbitrary minute and carries a precise end into the confirmation form', () => {
     const ui = setup(); ui.viewport.scrollTop = 850;
     ui.drag(ui.column(), 625, 625);
-    expect(ui.schedule).toHaveBeenCalledWith({ date, time: '10:25', end: `${date}T11:25` });
+    expect(ui.schedule).toHaveBeenCalledWith({ date, time: '10:25', end: `${date}T10:55` });
     ui.schedule.mockClear(); ui.drag(ui.column(), 1439, 1439);
     expect(ui.schedule).toHaveBeenCalledWith({ date, time: '23:59', end: '2026-10-24T00:00' });
   });
@@ -125,7 +125,7 @@ describe('continuous minute calendar', () => {
 
   it('supports keyboard minute selection and external task drops without 30-minute snapping', () => {
     const ui = setup(); fireEvent.focus(ui.column()); fireEvent.keyDown(ui.column(), { key: 'ArrowDown' }); fireEvent.keyDown(ui.column(), { key: 'Enter' });
-    expect(ui.schedule).toHaveBeenCalledWith({ date, time: '09:01', end: `${date}T10:01` });
+    expect(ui.schedule).toHaveBeenCalledWith({ date, time: '09:01', end: `${date}T09:31` });
     const drop = new Event('drop', { bubbles: true });
     Object.defineProperties(drop, { clientY: { value: ui.point(625).clientY }, dataTransfer: { value: { getData: () => JSON.stringify({ kind: 'task', id: 'task-1' }) } } });
     fireEvent(ui.column(), drop);

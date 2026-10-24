@@ -66,14 +66,14 @@ describe('recurring activity scope editor', () => {
     fireEvent.change(scope(), { target: { value: 'this-and-following' } });
     expect(screen.getByRole('status').textContent).toContain('共 2 次 · 2026-11-17 至 2026-12-01');
     fireEvent.change(input('开始'), { target: { value: '2026-11-18T19:00' } });
-    expect(input('结束（活动留空默认30分钟）').value).toBe('2026-11-18T19:30');
+    expect(input('结束（留空默认30分钟）').value).toBe('2026-11-18T19:30');
     fireEvent.click(screen.getByRole('button', { name: '保存并预览' }));
     await waitFor(() => expect(mutate).toHaveBeenCalledWith([{ type: 'updateRecurringEvent', id: 'duty-1', expectedVersion: 1, scope: 'this-and-following', values: { start: '2026-11-18T19:00:00+08:00' } }]));
   });
 
   it('an explicit end edit is included, without rewriting other unchanged fields', async () => {
     const { mutate } = editor(fixture());
-    fireEvent.change(input('结束（活动留空默认30分钟）'), { target: { value: '2026-11-17T21:40' } });
+    fireEvent.change(input('结束（留空默认30分钟）'), { target: { value: '2026-11-17T21:40' } });
     fireEvent.click(screen.getByRole('button', { name: '保存并预览' }));
     await waitFor(() => expect(mutate).toHaveBeenCalledWith([{ type: 'updateRecurringEvent', id: 'duty-1', expectedVersion: 1, scope: 'single', values: { end: '2026-11-17T21:40:00+08:00' } }]));
   });

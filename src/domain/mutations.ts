@@ -49,6 +49,11 @@ export function expandMutations(state: StoredState, mutations: Mutation[]): { de
   let deliberate = mutations.length > 1;
   for (const m of mutations) {
     if ('entity' in m && m.entity === 'courseException') deliberate = true;
+    if (m.type === 'createScheduledTask') {
+      const task = newEntity(state, 'task', m.values) as Task;
+      newEntity(state, 'block', { title: task.title, start: m.start, end: effectiveActivityEnd(m.start, m.end), kind: 'event', taskId: task.id, location: m.location, reminders: m.reminders ?? task.reminders });
+      continue;
+    }
     if (m.type === 'createRecurringTask') {
       deliberate = true;
       const task = newEntity(state, 'task', m.values) as Task;

@@ -4,6 +4,7 @@ import { WorkflowError } from './deepseek';
 import { candidateDisposition } from '../domain/candidate-eligibility';
 import { dayDistance } from '../domain/time';
 import { locationProfile } from './prompts';
+import { explicitReminderStart } from './timed-commands';
 
 /** Bounded relevant records; raw imported sources/images never enter command context. */
 export function buildCommandContext(snapshot: Snapshot, request: CommandRequest, now: string) {
@@ -54,7 +55,7 @@ export function buildCommandContext(snapshot: Snapshot, request: CommandRequest,
     const occurrences = snapshot.blocks.filter(block => block.recurrence?.seriesId === seriesId).sort((a, b) => a.recurrence!.occurrenceStart.localeCompare(b.recurrence!.occurrenceStart));
     return { seriesId, title: occurrences[0]!.title.slice(0, 500), taskId: occurrences[0]!.taskId, occurrenceCount: occurrences.length, firstOccurrenceStart: occurrences[0]!.recurrence!.occurrenceStart, lastOccurrenceStart: occurrences.at(-1)!.recurrence!.occurrenceStart };
   });
-  const context = { now, timezone: snapshot.settings.timezone, academicTerm, userProfile: locationProfile(snapshot.settings), fromDate, toDate, selected: request.selected ?? [], tasks: trim(snapshot.tasks), goals: trim(snapshot.goals), candidates: trim(snapshot.candidates.map(candidate => ({ ...candidate, classification: candidateDisposition(candidate, now) }))), blocks: trim(blocks, 120), recurringSeries, courses: trim(snapshot.courses), courseExceptions: trim(snapshot.courseExceptions), preferences: snapshot.preferences.filter(p => p.enabled).slice(0, 20).map(p => ({ id: p.id, version: p.version, text: p.text.slice(0, 500), enabled: p.enabled })), journal: snapshot.journal.slice(0, 10).map(j => ({ id: j.id, message: j.message, undoable: j.undoable, undoneAt: j.undoneAt })), calendar: buildCalendar(snapshot, fromDate, toDate, true).slice(0, 150) };
+  const context = { now, timezone: snapshot.settings.timezone, explicitReminderStart: explicitReminderStart(request.text, now), academicTerm, userProfile: locationProfile(snapshot.settings), fromDate, toDate, selected: request.selected ?? [], tasks: trim(snapshot.tasks), goals: trim(snapshot.goals), candidates: trim(snapshot.candidates.map(candidate => ({ ...candidate, classification: candidateDisposition(candidate, now) }))), blocks: trim(blocks, 120), recurringSeries, courses: trim(snapshot.courses), courseExceptions: trim(snapshot.courseExceptions), preferences: snapshot.preferences.filter(p => p.enabled).slice(0, 20).map(p => ({ id: p.id, version: p.version, text: p.text.slice(0, 500), enabled: p.enabled })), journal: snapshot.journal.slice(0, 10).map(j => ({ id: j.id, message: j.message, undoable: j.undoable, undoneAt: j.undoneAt })), calendar: buildCalendar(snapshot, fromDate, toDate, true).slice(0, 150) };
   // Bound serialized context without silently truncating JSON; progressively shrink record lists.
   while (JSON.stringify(context).length > 60_000) {
     const lists = [context.tasks, context.goals, context.candidates, context.blocks, context.recurringSeries, context.courses, context.courseExceptions, context.calendar];

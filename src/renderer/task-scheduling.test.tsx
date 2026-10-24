@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { BlockSchema, SnapshotSchema, TaskSchema, type DesktopAPI, type MutationRequestInput } from '../shared/contracts';
 import { App } from './App';
+import { taskNoticeTiming } from './task-schedule';
 
 beforeEach(() => { vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-24T12:00:00+08:00')); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -75,7 +76,7 @@ describe('scheduling accepted tasks with existing activity times', () => {
     rowAction(row, '查看安排');
     const dialog = await screen.findByRole('dialog', { name: '编辑时段' });
     expect(field(dialog, '开始').value).toBe('2026-11-06T15:35');
-    expect(field(dialog, '结束（活动留空默认30分钟）').value).toBe('2026-11-06T17:10');
+    expect(field(dialog, '结束（留空默认30分钟）').value).toBe('2026-11-06T17:10');
     expect(field(dialog, '类型').value).toBe('event');
     expect(field(dialog, '关联任务').value).toBe('task-notice');
     expect(field(dialog, '地点').value).toBe('北校区报告厅');
@@ -101,7 +102,7 @@ describe('scheduling accepted tasks with existing activity times', () => {
     rowAction(await taskRow(), '查看安排');
     const dialog = await screen.findByRole('dialog', { name: '编辑时段' });
     expect(field(dialog, '开始').value).toBe('2026-11-06T15:35');
-    expect(field(dialog, '结束（活动留空默认30分钟）').value).toBe('2026-11-06T16:05');
+    expect(field(dialog, '结束（留空默认30分钟）').value).toBe('2026-11-06T16:05');
     expect(within(dialog).getAllByText(/默认30分钟/).some(element => element.tagName !== 'LABEL')).toBe(true);
     expect(field(dialog, '类型').value).toBe('event');
     expect(mutate).not.toHaveBeenCalled();
@@ -123,7 +124,7 @@ describe('scheduling accepted tasks with existing activity times', () => {
     fireEvent.click(within(details).getByRole('button', { name: '调整时间' }));
     const dialog = await screen.findByRole('dialog', { name: '编辑时段' });
     expect(field(dialog, '开始').value).toBe('2026-11-06T15:35');
-    expect(field(dialog, '结束（活动留空默认30分钟）').value).toBe('2026-11-06T17:10');
+    expect(field(dialog, '结束（留空默认30分钟）').value).toBe('2026-11-06T17:10');
     fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
     expect(mutate).not.toHaveBeenCalled();
     expect(snapshot.blocks).toHaveLength(1);
@@ -140,11 +141,89 @@ describe('scheduling accepted tasks with existing activity times', () => {
     const dialog = await screen.findByRole('dialog', { name: '新建时段' });
     expect(field(dialog, '类型').value).toBe('work');
     expect(field(dialog, '关联任务').value).toBe('task-notice');
-    expect(field(dialog, '开始').value).not.toBe('2026-11-12T23:59');
-    expect(field(dialog, '结束（活动留空默认30分钟）').value).not.toBe('2026-11-12T23:59');
+    expect(field(dialog, '开始').value).toBe('2026-10-24T09:00');
+    expect(field(dialog, '结束（留空默认30分钟）').value).toBe('2026-10-24T09:30');
     expect(mutate).not.toHaveBeenCalled();
     expect(snapshot.blocks).toHaveLength(0);
   });
+
+  it('starts an untimed task draft today even after browsing a different calendar week', async () => {
+    const { api, mutate } = fixture({ scheduled: false });
+    render(<App api={api} />);
+    const drawer = await screen.findByRole('complementary', { name: '未安排任务' });
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+    rowAction(within(drawer).getByRole('button', { name: '参加学院讲座' }).closest('article')!, '安排');
+    const dialog = await screen.findByRole('dialog', { name: '新建时段' });
+    expect(field(dialog, '开始').value).toBe('2026-10-24T09:00');
+    expect(field(dialog, '结束（留空默认30分钟）').value).toBe('2026-10-24T09:30');
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it('keeps the default thirty-minute end with a new start until the user explicitly sets an end', async () => {
+    const { api, mutate } = fixture({ scheduled: false });
+    render(<App api={api} />);
+    rowAction(await taskRow(), '安排');
+    const dialog = await screen.findByRole('dialog', { name: '新建时段' });
+    fireEvent.change(field(dialog, '开始'), { target: { value: '2026-10-26T18:00' } });
+    expect(field(dialog, '结束（留空默认30分钟）').value).toBe('2026-10-26T18:30');
+    fireEvent.change(field(dialog, '结束（留空默认30分钟）'), { target: { value: '2026-10-26T19:15' } });
+    fireEvent.change(field(dialog, '开始'), { target: { value: '2026-10-26T18:05' } });
+    expect(field(dialog, '结束（留空默认30分钟）').value).toBe('2026-10-26T19:15');
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1));
+    expect(mutate.mock.calls[0]![0].mutations[0]).toMatchObject({ type: 'create', entity: 'block', values: {
+      start: '2026-10-26T18:05:00+08:00', end: '2026-10-26T19:15:00+08:00', kind: 'work',
+    } });
+  });
+
+  it('uses thirty minutes when an execution draft end is left blank, including across midnight', async () => {
+    const { api, mutate } = fixture({ scheduled: false });
+    render(<App api={api} />);
+    rowAction(await taskRow(), '安排');
+    const dialog = await screen.findByRole('dialog', { name: '新建时段' });
+    fireEvent.change(field(dialog, '开始'), { target: { value: '2026-10-26T23:50' } });
+    fireEvent.change(field(dialog, '结束（留空默认30分钟）'), { target: { value: '' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1));
+    expect(mutate.mock.calls[0]![0].mutations[0]).toMatchObject({ type: 'create', entity: 'block', values: {
+      start: '2026-10-26T23:50:00+08:00', end: '2026-10-27T00:20:00+08:00', kind: 'work',
+    } });
+  });
+
+  it('recovers an older explicit reminder at its specified date and evening time instead of the viewed week', async () => {
+    const { api, mutate, snapshot } = fixture({ scheduled: false });
+    snapshot.tasks[0] = TaskSchema.parse({ ...snapshot.tasks[0], title: '提醒：归还图书', candidateId: null,
+      description: '提醒备忘：归还图书（仅提醒，不记账）', deadline: { date: '2026-10-26', time: '18:00' },
+      reminders: { enabled: true, leadMinutes: [0] },
+    });
+    render(<App api={api} />);
+    const drawer = await screen.findByRole('complementary', { name: '未安排任务' });
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+    rowAction(within(drawer).getByRole('button', { name: '提醒：归还图书' }).closest('article')!, '安排');
+    const dialog = await screen.findByRole('dialog', { name: '新建时段' });
+    expect(field(dialog, '开始').value).toBe('2026-10-26T18:00');
+    expect(field(dialog, '结束（留空默认30分钟）').value).toBe('2026-10-26T18:30');
+    expect(field(dialog, '类型').value).toBe('event');
+    expect(mutate).not.toHaveBeenCalled();
+    expect(snapshot.blocks).toHaveLength(0);
+  });
+
+  it.each(['ordinary title', 'missing marker', 'different reminder', 'date only', 'candidate linked'] as const)(
+    'does not reinterpret a deadline as an activity with %s', reason => {
+      const { snapshot } = fixture({ scheduled: false });
+      snapshot.tasks[0] = TaskSchema.parse({ ...snapshot.tasks[0], title: '提醒：提交读书报告', candidateId: null,
+        description: '提醒备忘：提交读书报告（仅提醒，不记账）', deadline: { date: '2026-10-26', time: '18:00' },
+        reminders: { enabled: true, leadMinutes: [0] },
+      });
+      const task = snapshot.tasks[0]!;
+      if (reason === 'ordinary title') task.title = '提交读书报告';
+      if (reason === 'missing marker') task.description = '周一前提交读书报告';
+      if (reason === 'different reminder') task.reminders.leadMinutes = [30];
+      if (reason === 'date only') task.deadline!.time = null;
+      if (reason === 'candidate linked') task.candidateId = 'notice';
+      expect(taskNoticeTiming(snapshot, task.id)).toBeNull();
+    },
+  );
 
   it('opens the next arrangement and keeps both fixed activities and work sessions editable in task details', async () => {
     const { api, mutate, snapshot } = fixture();
@@ -217,7 +296,7 @@ describe('scheduling accepted tasks with existing activity times', () => {
     dialog = await screen.findByRole('dialog', { name: '编辑时段' });
     expect(field(dialog, '开始').value).toBe('2026-10-22T19:00');
     fireEvent.change(field(dialog, '开始'), { target: { value: '2026-10-25T19:00' } });
-    fireEvent.change(field(dialog, '结束（活动留空默认30分钟）'), { target: { value: '2026-10-25T20:00' } });
+    fireEvent.change(field(dialog, '结束（留空默认30分钟）'), { target: { value: '2026-10-25T20:00' } });
     fireEvent.click(within(dialog).getByRole('button', { name: '保存' }));
     await waitFor(() => expect(mutate).toHaveBeenCalledTimes(2));
     expect(mutate.mock.calls[1]![0].mutations).toEqual([expect.objectContaining({ type: 'update', entity: 'block', id: 'event-notice' })]);

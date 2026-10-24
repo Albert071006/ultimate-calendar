@@ -3,14 +3,25 @@ import { displayInstant } from './calendar-layout';
 import { recoverCandidateTiming } from '../domain/temporal-evidence';
 import { effectiveActivityEnd } from '../domain/activity-duration';
 
-export interface TaskNoticeTiming { start: string; end: string | null; location: string }
+export interface TaskNoticeTiming { start: string; end: string | null; location: string; source?: 'reminder' }
 
 /** Read-only fallback for older accepted notices that never created their fixed event. */
 export function taskNoticeTiming(snapshot: Pick<Snapshot, 'tasks' | 'candidates' | 'sources'>, taskId: string): TaskNoticeTiming | null {
   const task = snapshot.tasks.find(value => value.id === taskId);
   const candidate = snapshot.candidates.find(value => value.id === task?.candidateId)
     ?? snapshot.candidates.find(value => value.taskId === taskId);
-  if (!candidate) return null;
+  if (!candidate) {
+    // Earlier reminder commands stored the requested instant in a deadline.
+    // Only the full generated reminder marker qualifies; ordinary deadlines
+    // (including tasks whose titles mention reminders) are not activity times.
+    if (!task?.candidateId && task?.deadline?.time &&
+        /^提醒[：:]/.test(task.title) && /^提醒备忘[：:]/.test(task.description) &&
+        /[（(]仅提醒，不记账[）)]\s*$/.test(task.description) &&
+        task.reminders.enabled && task.reminders.leadMinutes?.length === 1 && task.reminders.leadMinutes[0] === 0) {
+      return { start: `${task.deadline.date}T${task.deadline.time}:00+08:00`, end: null, location: '', source: 'reminder' };
+    }
+    return null;
+  }
   const recovered = recoverCandidateTiming(candidate, snapshot.sources);
   const start = candidate.eventStart ?? recovered.eventStart;
   if (!start) return null;
@@ -22,7 +33,7 @@ export function noticeTimePassed(timing: TaskNoticeTiming, now: number): boolean
 }
 
 export function taskNoticeSummary(timing: TaskNoticeTiming, now: number): string {
-  return `原通知 · ${displayInstant(timing.start)} – ${displayInstant(effectiveActivityEnd(timing.start, timing.end))}${timing.end ? '' : ' · 默认30分钟'}${noticeTimePassed(timing, now) ? ' · 已结束' : ''}`;
+  return `${timing.source === 'reminder' ? '提醒时间' : '原通知'} · ${displayInstant(timing.start)} – ${displayInstant(effectiveActivityEnd(timing.start, timing.end))}${timing.end ? '' : ' · 默认30分钟'}${noticeTimePassed(timing, now) ? ' · 已结束' : ''}`;
 }
 
 /** An accepted notice already owns its fixed activity; arranging it must not create a second block. */

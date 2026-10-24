@@ -166,7 +166,7 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
       <dl>
         <dt>截止</dt><dd>{task.deadline ? <>{dateLabel(task.deadline.date)} <b>{task.deadline.time ?? ""}</b></> : "未设定"}</dd>
         {belonging(task)}
-        {timing && <><dt>原通知</dt><dd>{taskNoticeSummary(timing, now)} · 尚未入历</dd></>}
+        {timing && <><dt>{timing.source === 'reminder' ? '提醒时间' : '原通知'}</dt><dd>{taskNoticeSummary(timing, now)} · 尚未入历</dd></>}
         <dt>提醒</dt><dd>{reminderLabel(task.reminders)}</dd>
         {task.status === "done" && <><dt>状态</dt><dd>已完成</dd></>}
       </dl>
