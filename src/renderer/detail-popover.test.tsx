@@ -102,3 +102,11 @@ it('links a task to a course from its form, one choice per course, and the sessi
   fireEvent.click(await block());
   expect(screen.getByRole('complementary', { name: '时段详情' }).textContent).toContain('合成高数');
 });
+
+it('closes the edit panel when switching pages so it never covers another page', async () => {
+  setup();
+  fireEvent.doubleClick(await block());
+  expect(screen.getByRole('dialog', { name: '编辑时段' })).toBeTruthy();
+  fireEvent.click(within(screen.getByRole('navigation', { name: '主导航' })).getByRole('button', { name: '账单' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+});

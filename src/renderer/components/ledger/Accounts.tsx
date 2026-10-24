@@ -1,6 +1,6 @@
 import { HeartHandshake } from 'lucide-react';
 import type { LedgerAccountId, LedgerSnapshot } from '../../../shared/ledger';
-import { ledgerMoney } from './money';
+import { ledgerChange, ledgerMoney } from './money';
 import { accountName, timeText } from './editors';
 
 /** Book balances from recorded flows and balance snapshots, with the snapshot history. */
@@ -24,7 +24,7 @@ export function Accounts({ snapshot, checkBalance, showAccount }: {
         {summary.accounts.filter(value => value.kind !== 'family').map(value => <div className="row" key={value.id}>
           <button className="name" onClick={() => showAccount(value.id)} title="查看这个账户本月的明细">{value.name}</button>
           <span className="bal">{ledgerMoney(value.balanceCents)}</span>
-          <span className="meta">{value.snapshotDate ? `快照 ${value.snapshotDate}` : '尚无余额快照'} · 本月变化 {ledgerMoney(value.periodChangeCents)}
+          <span className="meta">{value.snapshotDate ? `快照 ${value.snapshotDate}` : '尚无余额快照'} · 本月变化 {ledgerChange(value.periodChangeCents)}
             {value.pendingEntryIds.length > 0 && <b> · {value.pendingEntryIds.length} 笔与快照先后待核对</b>}</span>
           <button className="ui-btn sm" onClick={() => checkBalance(value.id)}>核对余额</button>
         </div>)}

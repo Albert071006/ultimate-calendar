@@ -1,7 +1,7 @@
 .a2-drawer { width: 300px; border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--surface); overflow: auto; }
 .a2-drawer-h { display: flex; align-items: center; gap: 8px; padding: 14px 12px 10px 16px; }
 .a2-drawer-h h2 { margin: 0; font-family: var(--font-display); font-size: 15px; font-weight: 600; }
-.a2-drawer-h .count { font-family: var(--font-num); color: var(--ink-3); font-size: 13px; }
+.a2-drawer-h .count { font-family: var(--font-time); color: var(--ink-3); font-size: 13px; }
 .a2-drawer-h .ui-btn { margin-left: auto; }
 .a2-drawer-list { padding: 0 10px 14px; display: flex; flex-direction: column; gap: 6px; }
 .a2-drawer-empty { padding: 4px 16px; }

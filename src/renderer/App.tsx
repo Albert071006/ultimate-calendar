@@ -148,7 +148,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
   return (
     <div className={`app-shell a2${host ? ' desktop-chrome' : ''}`}>
       {host && <div className="window-drag-region" aria-hidden="true" />}
-      <Nav page={page} navigate={setPage} pending={pending} />
+      <Nav page={page} navigate={(next) => { setEditor(null); setPage(next); }} pending={pending} />
       {host && <div className="a2-nav-update"><UpdateShortcut updates={updates} open={() => setUpdateOpen(true)} /></div>}
       <main className="a2-main">
         {!api ? (
