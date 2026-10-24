@@ -1,7 +1,7 @@
 {
   "name": "ultimate-calendar",
   "productName": "终极日历",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "description": "本地优先的 Windows 个人计划应用",
   "author": "Albert071006",

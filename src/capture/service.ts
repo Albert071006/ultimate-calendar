@@ -7,6 +7,7 @@ import { createReadOnlyBridge, detectExistingBridge, type ReadOnlyBridge, type B
 import { downloadAttachment, AttachmentDownloadError } from './download';
 import { EXTRACTOR_VERSION, type DocumentExtraction, type DocumentInput } from './documents';
 import { analyzeCapture } from './analysis';
+import { isAddressedElsewhere, mentionLabel } from './recipients';
 import type { CaptureStore, CapturedMessageInput, StoredCaptureMessage, StoredCaptureAttachment } from './store';
 import type { Repository } from '../storage/repository';
 import type { PriceQuote } from '../shared/account';
@@ -28,7 +29,7 @@ export function normalizeMessage(raw: Raw, accountId: string, groupNames: Map<st
   for (const segment of segments) {
     const data = object(segment.data); const type = string(segment.type);
     if (type === 'text') text.push(string(data.text));
-    else if (type === 'at') text.push(data.qq === 'all' ? '@全体成员' : '@群成员');
+    else if (type === 'at') text.push(mentionLabel(data.qq, accountId));
     else if (type === 'face') text.push('[表情]');
     else if (['image', 'file', 'record', 'video', 'reply', 'forward', 'node'].includes(type)) {
       const kind = type === 'record' ? 'voice' : ['reply', 'forward', 'node'].includes(type) ? 'other' : type as 'image' | 'file' | 'video';
@@ -219,7 +220,7 @@ export function createCaptureService(options: {
       for (let n = 0; n < 5 && !stopped && !suspended && store.config().analysisEnabled; n++) {
         const batch = store.claimBatch(); if (!batch) break; emit();
         try {
-          if (!batch.result) for (const m of store.batchMessages(batch.id)) for (const a of store.attachments(m.id)) {
+          if (!batch.result) for (const m of store.batchMessages(batch.id).filter(message => !isAddressedElsewhere(message))) for (const a of store.attachments(m.id)) {
             if (!store.config().analysisEnabled || stopped || suspended) throw new WorkflowError('CANCELLED', '分析已暂停');
             await processAttachment(m, a);
           }

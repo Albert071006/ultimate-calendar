@@ -31,6 +31,26 @@ async function setup(fetcher: typeof fetch = async () => { throw Error('AI must 
   return { service, store, repository, send, actions };
 }
 describe('capture orchestration against real local OneBot websocket', () => {
+  it('keeps self, other and all mention identities in normalized text', () => {
+    const message = normalizeMessage({ group_id: '200', message_id: 'recipients', time: Date.now() / 1000,
+      message: [{ type: 'at', data: { qq: '100' } }, { type: 'at', data: { qq: '300' } }, { type: 'at', data: { qq: 'all' } }] }, '100', new Map());
+    expect(message?.text).toBe('@我@其他成员@全体成员');
+    expect(message?.segments).toHaveLength(3);
+  });
+  it('collects messages addressed only to others without downloading their attachments or calling AI', async () => {
+    const downloader = vi.fn(async () => { throw Error('not needed'); });
+    const extract = vi.fn(async () => { throw Error('not needed'); });
+    const getApiKey = vi.fn(async () => 'synthetic-api');
+    const fetcher = vi.fn(async () => { throw Error('not needed'); });
+    const { service, store, repository } = await setup(fetcher, { downloader, extract, getApiKey });
+    await service.configure({ ...store.config(), enabled: true, groupIds: ['200'] }); await waitFor(() => !service.busy());
+    store.ingest([normalizeMessage({ group_id: '200', message_id: 'another-person-file', time: Date.now() / 1000,
+      message: [{ type: 'at', data: { qq: '300' } }, { type: 'text', data: { text: '请你提交附件' } }, { type: 'file', data: { file_id: 'synthetic-file', name: '材料.pdf' } }] }, '100', new Map())!]);
+    await service.configure({ ...store.config(), enabled: false, analysisEnabled: true }); await waitFor(() => !service.busy());
+    service.action({ action: 'analyze' }); await waitFor(() => store.listBatches().items[0]?.status === 'applied' && !service.busy());
+    expect(downloader).not.toHaveBeenCalled(); expect(extract).not.toHaveBeenCalled(); expect(fetcher).not.toHaveBeenCalled(); expect(getApiKey).not.toHaveBeenCalled();
+    expect(store.stats().messages).toBe(1); expect(repository.snapshot().candidates).toHaveLength(0);
+  });
   it('requires account/group opt-in, deduplicates and labels empty historical responses as partial', async () => {
     const { service, store, send, actions } = await setup();
     expect(service.snapshot()).toMatchObject({ accountName: '合成测试', config: { accountId: '100', enabled: false, groupIds: [] } });
