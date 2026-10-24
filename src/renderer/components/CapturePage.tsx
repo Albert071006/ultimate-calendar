@@ -172,10 +172,10 @@ export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialRe
   const groupChoices = selectionGroups.filter(group => `${group.name} ${group.id}`.includes(search.trim()));
   const page = tab === 'batches' ? visibleBatches : visibleMessages;
   if (!api) return <div className="empty-state">请在 Windows 桌面应用中打开 QQ 采集。</div>;
-  if (!snapshot) return <div className="page-scroll"><p role="status">{error || '正在读取 QQ 采集状态…'}</p></div>;
+  if (!snapshot) return <div className="capture-page"><p role="status">{error || '正在读取 QQ 采集状态…'}</p></div>;
 
-  return <div className="page-scroll capture-page">
-    <div className="section-heading"><div><h2>把重要群消息收进日历</h2><p>每群每 2 分钟整理一次，提取要做的事、收益和时间，最终由你决定。</p></div>
+  return <div className="capture-page">
+    <div className="a2-me-h"><h2 title="每群每 2 分钟整理一次，提取要做的事、收益和时间，进入待判断后由你决定。">QQ 采集</h2>
       <span className={`capture-status ${snapshot.connection === 'online' ? 'is-online' : ''}`}>{connections[snapshot.connection]}</span>
     </div>
     {error && <div className="error capture-alert" role="alert">{error}</div>}

@@ -33,7 +33,7 @@ function setup(weekday = 4) {
 async function editor(scope: string, occurrence: string) {
   fireEvent.click(await screen.findByRole('button', { name: '课表' }));
   const manager = within(screen.getByRole('region', { name: '课程表' }));
-  fireEvent.click(manager.getByRole('button', { name: /合成验收样例：单周课程/ }));
+  fireEvent.click(manager.getByRole('button', { name: '合成验收样例：单周课程' }));
   const form = within(screen.getByRole('dialog', { name: '编辑课程' }));
   fireEvent.change(form.getByLabelText('范围'), { target: { value: scope } });
   fireEvent.change(form.getByLabelText('原上课日期'), { target: { value: occurrence } });

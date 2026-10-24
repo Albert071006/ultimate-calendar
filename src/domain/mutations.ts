@@ -173,6 +173,9 @@ export function expandMutations(state: StoredState, mutations: Mutation[]): { de
       deleteEntity(state, m.entity, m.id);
     }
   }
-  return { deliberate };
+  // Recoloring a course (all records of its title) or a goal only changes presentation; it applies directly and stays undoable.
+  const recolor = mutations.every(m => m.type === 'update' && (m.entity === 'course' || m.entity === 'goal')
+    && Object.keys(m.values).every(key => key === 'color') && (m.entity !== 'course' || m.scope === 'all'));
+  return { deliberate: deliberate && !recolor };
 }
 function stripMetadata(value: Course) { const { id: _id, version: _v, createdAt: _c, updatedAt: _u, ...rest } = value; return rest; }

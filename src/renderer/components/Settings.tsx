@@ -11,17 +11,28 @@ import { AccountPanel, AccountResourceStatus, OfficialPrices } from "./AccountPa
 import type { AppUpdates } from '../hooks/useAppUpdates';
 import { SoftwareUpdate } from './SoftwareUpdate';
 import './Settings.css';
+export type SettingsSection = "ai" | "term" | "reminders" | "data" | "update";
+
+/**
+ * Settings share one form so saving never drops a field: with a section chosen, the others stay in the form
+ * but hidden. Without one (tests, older callers) every group shows.
+ */
 export function Settings({
   snapshot,
   ui,
   courses,
   updates,
+  section,
+  onSection,
 }: {
   snapshot: Snapshot;
   ui: PlannerUI;
   courses: () => void;
   updates?: AppUpdates;
+  section?: SettingsSection;
+  onSection?: (section: SettingsSection) => void;
 }) {
+  const hide = (key: SettingsSection) => section !== undefined && section !== key;
   const keyRef = useRef<HTMLInputElement>(null),
     s = snapshot.settings;
   const keyStatus = snapshot.keyStatus;
@@ -156,18 +167,17 @@ export function Settings({
     }
   }
   return (
-    <div className="page-scroll settings-page">
-      <div className="section-heading">
-        <div><h2>让日历适合你</h2><p>常用设置集中显示，详细配置按需展开。</p></div>
-      </div>
-      {updates && <div className="settings-card settings-group"><SoftwareUpdate updates={updates} plannerBusy={ui.busy} /></div>}
+    <div className="settings-page">
+      {updates && !hide("update") && <div className="settings-card settings-group"><SoftwareUpdate updates={updates} plannerBusy={ui.busy} /></div>}
       <form onSubmit={e => { e.preventDefault(); void save(e.currentTarget); }}
         onInvalidCapture={e => {
-          // Keep native validation usable when a required field is inside a collapsed group.
+          // Keep native validation usable when a required field is inside a collapsed group or another section.
+          const owner = (e.target as HTMLElement).closest<HTMLElement>('[data-section]')?.dataset.section as SettingsSection | undefined;
+          if (owner && hide(owner)) onSection?.(owner);
           let group = (e.target as HTMLElement).closest('details');
           while (group) { group.open = true; group = group.parentElement?.closest('details') ?? null; }
         }}>
-        <section className="settings-card settings-group" aria-labelledby="settings-ai-title">
+        <section className="settings-card settings-group" aria-labelledby="settings-ai-title" data-section="ai" hidden={hide("ai")}>
           <div className="settings-group-heading"><h3 id="settings-ai-title">AI 与费用</h3><span>DeepSeek</span></div>
           <div className="settings-ai-overview">
             <div className="settings-account">{keyStatus.loadError ? <div className="warning" role="status">
@@ -441,7 +451,7 @@ export function Settings({
         </details></div>
           </details>
         </section>
-        <details className="settings-card settings-group settings-campus">
+        <details className="settings-card settings-group settings-campus" data-section="term" hidden={hide("term")} open={section === "term" || undefined}>
           <summary><strong>日历与校园</strong><span className="settings-summary">{s.campus || '尚未设置学校'} · {s.termStart ? '学期始于 ' + s.termStart : '尚未设置学期'} · {s.termWeeks} 周 · {s.periodMap.length} 节</span></summary>
           <div className="settings-disclosure-body">
             <div className="settings-campus-grid">
@@ -493,7 +503,7 @@ export function Settings({
           </label><span className="hint">时区：Asia/Shanghai（北京时间）</span></div>
           </div>
         </details>
-        <section className="settings-card settings-group" aria-labelledby="settings-reminders-title">
+        <section className="settings-card settings-group" aria-labelledby="settings-reminders-title" data-section="reminders" hidden={hide("reminders")}>
           <h3 id="settings-reminders-title">提醒与启动</h3>
           <div className="check-grid">
             {[
@@ -555,7 +565,7 @@ export function Settings({
           </p></div>
           </details>
         </section>
-        <section className="settings-card settings-group" aria-labelledby="settings-data-title">
+        <section className="settings-card settings-group" aria-labelledby="settings-data-title" data-section="data" hidden={hide("data")}>
           <h3 id="settings-data-title">数据与历史</h3>
           <details className="settings-disclosure settings-backup">
             <summary><strong>数据备份与恢复</strong><span className="settings-summary">导出本地备份或恢复已有数据</span></summary>
@@ -641,15 +651,9 @@ export function Settings({
           <p className="hint">还没有操作记录。</p>
         )}
       </details>
-          <details className="settings-disclosure">
-            <summary><strong>QQ 采集说明</strong><span className="settings-summary">连接与群管理在左侧 QQ 采集页</span></summary>
-            <div className="settings-disclosure-body"><p>
-          在左侧「QQ 采集」连接本机 QQ 桥接并勾选重要群。消息与文档整理后进入「待判断」，由你决定是否接受。自动偏好学习、手机同步后续补充。
-        </p></div>
-          </details>
         </section>
         {error && <p className="error prewrap" role="alert">{error}</p>}
-        <div className="sticky-save"><span className="hint">展开或收起不会丢失修改</span><button type="submit" className="primary" disabled={ui.busy}>保存全部设置</button></div>
+        <div className="sticky-save" hidden={section === "update"}><span className="hint">切换分区或收起不会丢失修改</span><button type="submit" className="primary" disabled={ui.busy}>保存全部设置</button></div>
       </form>
     </div>
   );

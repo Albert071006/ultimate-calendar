@@ -1,7 +1,7 @@
 /* A2 form controls for the edit panel and dialogs. */
 .a2 .editor-form { gap: 14px; font-size: 13px; }
 .a2 .editor-form label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--ink-2); }
-.a2 .editor-form label.check { flex-direction: row; align-items: center; gap: 7px; color: var(--ink); }
+.a2 .editor-form :is(label.check, label.ledger-checkbox) { flex-direction: row; align-items: center; gap: 7px; color: var(--ink); }
 .a2 .editor-form input:not([type="checkbox"]), .a2 .editor-form select, .a2 .editor-form textarea {
   width: 100%; min-height: 32px; padding: 5px 8px; font: inherit; font-size: 13px; color: var(--ink);
   background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius);

@@ -121,7 +121,7 @@ describe("desktop workspace interaction", () => {
     render(<App api={api} />);
     fireEvent.click(await screen.findByRole("button", { name: "课表" }));
     const manager = screen.getByRole("region", { name: "课程表" });
-    const create = within(manager).getByRole("button", { name: "＋ 新建课程" });
+    const create = within(manager).getByRole("button", { name: "添加课程" });
     create.focus();
     fireEvent.click(create);
     const child = screen.getByRole("dialog", { name: "新建课程" });
@@ -133,7 +133,7 @@ describe("desktop workspace interaction", () => {
       manager,
     );
     expect(document.activeElement).toBe(create);
-    fireEvent.click(within(manager).getByRole("button", { name: /合成数学/ }));
+    fireEvent.click(within(manager).getByRole("button", { name: "合成数学" }));
     expect(screen.getAllByRole("dialog").at(-1)).toBe(
       screen.getByRole("dialog", { name: "编辑课程" }),
     );
@@ -169,7 +169,8 @@ describe("desktop workspace interaction", () => {
     });
     render(<App api={api} />);
     fireEvent.click(await screen.findByRole("button", { name: "课表" }));
-    fireEvent.click(screen.getByRole("button", { name: "导入 CSV / XLSX" }));
+    fireEvent.click(screen.getByRole("button", { name: "导入课表" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "导入 CSV / XLSX" }));
     fireEvent.click(
       await screen.findByRole("button", { name: "查看保留的课表原图" }),
     );
@@ -507,7 +508,8 @@ describe("desktop workspace interaction", () => {
     });
     render(<App api={api} />);
     fireEvent.click(await screen.findByRole("button", { name: "课表" }));
-    fireEvent.click(screen.getByRole("button", { name: "导入 CSV / XLSX" }));
+    fireEvent.click(screen.getByRole("button", { name: "导入课表" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "导入 CSV / XLSX" }));
     const start = await screen.findByLabelText("第2行开始");
     expect((start as HTMLInputElement).value).toBe("第1节");
     expect(mutate).not.toHaveBeenCalled();

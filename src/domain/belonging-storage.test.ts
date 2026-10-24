@@ -81,3 +81,19 @@ it('fills colors for records saved before colors existed, durably and without br
   expect(second.planner.snapshot().courses[0]!.color).toBe(color);
   expect(second.planner.undo().status).toBe('applied');
 });
+
+it('recolors every record of a course without a preview, keeps other edits behind one, and undoes the recolor', () => {
+  const { planner, mutate } = setup();
+  mutate({ type: 'create', entity: 'course', values: course });
+  mutate({ type: 'create', entity: 'course', values: { ...course, weekday: 3 } });
+  const [monday, wednesday] = planner.snapshot().courses;
+  const before = monday!.color;
+  const target = PALETTE_COLORS.find(color => color !== before)!;
+  const recolor = (value: typeof monday) => ({ type: 'update', entity: 'course', id: value!.id, expectedVersion: value!.version, scope: 'all', values: { color: target } }) as MutationInput;
+  expect(mutate(recolor(monday), recolor(wednesday)).status).toBe('applied');
+  expect(planner.snapshot().courses.map(value => value.color)).toEqual([target, target]);
+  const [current] = planner.snapshot().courses;
+  expect(mutate({ type: 'update', entity: 'course', id: current!.id, expectedVersion: current!.version, scope: 'all', values: { color: before, location: '新教室' } } as MutationInput).status).toBe('preview');
+  expect(planner.undo().status).toBe('applied');
+  expect(planner.snapshot().courses.map(value => value.color)).toEqual([before, before]);
+});

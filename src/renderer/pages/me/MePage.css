@@ -6,3 +6,72 @@
 .a2-me-menu button:hover { background: var(--surface-2); }
 .a2-me-menu button.on { background: var(--nav-active); color: var(--ink); font-weight: 600; }
 .a2-me-content { overflow: auto; min-height: 0; position: relative; }
+.a2-me-content { padding: 18px 28px 28px; }
+.a2-me-h { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+.a2-me-h h2 { margin: 0; font-family: var(--font-display); font-size: 20px; font-weight: 600; }
+.a2-me-h > :is(h2, .ui-hint) + :not(.ui-hint) { margin-left: auto; }
+.a2-me-h > .a2-more, .a2-me-h > .ui-btn { align-self: center; }
+.a2-me-paste { margin-bottom: 16px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.a2-me-paste label { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--ink-2); }
+.a2-me-paste .actions { display: flex; gap: 8px; margin-top: 10px; }
+
+/* Color chip and palette popover. */
+.a2-color { position: relative; display: inline-block; }
+.a2-sw { display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px 0 4px; font: inherit; font-size: 12.5px; color: var(--ink); background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); cursor: pointer; }
+.a2-sw:hover { border-color: var(--ink-3); }
+.a2-sw:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.a2-sw i { width: 18px; height: 18px; border-radius: 2px; background: var(--c); box-shadow: inset 0 0 0 1px rgba(31, 28, 24, 0.12); }
+.a2-palette { position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; width: 300px; padding: 14px; background: var(--surface); border: 1px solid var(--ink); border-radius: 3px; box-shadow: 5px 5px 0 rgba(31, 28, 24, 0.1), var(--overlay-shadow); }
+.a2-palette h4 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
+.a2-palette .ui-hint { margin: 0; }
+.a2-palette .pal { display: grid; grid-template-columns: repeat(8, 1fr); gap: 7px; margin: 10px 0 8px; }
+.a2-palette .pal button { position: relative; aspect-ratio: 1; padding: 0; background: var(--c); border: 0; border-radius: 3px; cursor: pointer; }
+.a2-palette .pal button.used::after { content: ""; position: absolute; right: -3px; bottom: -3px; width: 9px; height: 9px; border-radius: 50%; background: var(--surface); border: 1.5px solid var(--ink-2); }
+.a2-palette .pal button.cur, .a2-palette .pal button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.a2-palette .pal-sep { margin: 0; font-size: 11px; color: var(--ink-3); }
+
+/* Timetable. */
+.a2-course-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.a2-course-table th { padding: 8px 10px; font-size: 12px; font-weight: 600; text-align: left; color: var(--ink-3); border-top: 2px solid var(--ink); border-bottom: 1px solid var(--line-2); }
+.a2-course-table td { padding: 10px; vertical-align: middle; border-bottom: 1px solid var(--line); }
+.a2-course-table td.t button { padding: 0; font: inherit; font-family: var(--font-display); font-size: 14.5px; font-weight: 600; color: var(--ink); text-align: left; background: none; border: 0; cursor: pointer; }
+.a2-course-table td.n { font-family: var(--font-time); color: var(--ink-2); }
+.a2-course-table .a2-slot { display: block; width: fit-content; min-height: 0; margin: 0; padding: 1px 0; font: inherit; color: inherit; text-align: left; background: none; border: 0; cursor: pointer; }
+.a2-course-table :is(td.t button, .a2-slot):hover { text-decoration: underline; text-underline-offset: 3px; }
+.a2-me-content .course-preview { margin: 0 0 18px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--ink); border-radius: var(--radius); }
+.a2-me-content .course-preview h3 { margin: 0 0 10px; font-family: var(--font-display); font-size: 15px; }
+
+/* Goals. */
+.a2-goal-list { margin: 0; padding: 0; list-style: none; border-top: 2px solid var(--ink); }
+.a2-goal-list li { display: grid; grid-template-columns: auto minmax(0, 1fr) 180px; gap: 16px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.a2-goal-list li.quiet .t { color: var(--ink-3); }
+.a2-goal-list .main { min-width: 0; }
+.a2-goal-list .t { padding: 0; font: inherit; font-family: var(--font-display); font-size: 15px; font-weight: 600; color: var(--ink); text-align: left; background: none; border: 0; cursor: pointer; }
+.a2-goal-list .t:hover { text-decoration: underline; text-underline-offset: 3px; }
+.a2-goal-list .meta { display: block; margin-top: 2px; font-size: 12px; color: var(--ink-3); }
+.a2-goal-list p { margin: 4px 0 0; font-size: 12.5px; color: var(--ink-2); }
+.a2-goal-list .a2-goal-progress { display: flex; align-items: center; gap: 10px; }
+.a2-goal-list .a2-goal-progress .bar { flex: 1; height: 6px; background: var(--surface-2); }
+.a2-goal-list .a2-goal-progress .bar i { display: block; height: 100%; background: var(--ink-2); }
+.a2-goal-list .a2-goal-progress .n { min-width: 48px; font-family: var(--font-time); font-size: 12px; color: var(--ink-2); text-align: right; }
+
+/* Settings and QQ capture keep their structure; their controls take the A2 look. */
+.a2-me-content .settings-page { max-width: 880px; margin: 0; }
+.a2-me-content .settings-card { padding: 16px 18px; margin-bottom: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.a2-me-content .settings-card > h3, .a2-me-content .settings-group-heading h3 { font-family: var(--font-display); font-size: 16px; font-weight: 600; }
+.a2-me-content .settings-card p { font-size: 12.5px; }
+.a2-me-content .settings-card summary { color: var(--ink); }
+.a2-me-content .settings-card summary strong { font-weight: 600; }
+.a2-me-content .settings-summary { color: var(--ink-3); }
+.a2-me-content :where(label) { color: var(--ink-2); }
+.a2-me-content .ledger-checkbox { display: flex; flex-direction: row; align-items: center; gap: 7px; color: var(--ink); }
+.a2-me-content :where(input:not([type="checkbox"], [type="radio"], [type="range"]), select, textarea) { min-height: 32px; padding: 5px 8px; font: inherit; font-size: 13px; color: var(--ink); background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); }
+.a2-me-content :is(input, select, textarea):focus-visible { outline: 2px solid var(--ink); outline-offset: 0; }
+.a2-me-content input[type="checkbox"] { accent-color: var(--accent); }
+.a2-me-content :where(button:not(.ui-btn, .ui-more, .a2-sw, .a2-slot, .t, [role="menuitem"])) { font-family: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); box-shadow: none; }
+.a2-me-content button.primary:not(.ui-btn) { color: #fff; background: var(--accent); border-color: var(--accent); }
+.a2-me-content button.danger-text:not(.ui-btn) { color: var(--accent); background: transparent; border-color: transparent; }
+.a2-me-content .a2-palette .pal button { border: 0; }
+.a2-me-content .sticky-save { bottom: -28px; gap: 12px; align-items: center; background: color-mix(in srgb, var(--bg) 92%, transparent); border-top: 1px solid var(--line); }
+.a2-me-content .warning { border-radius: var(--radius); }
+.a2-me-h > h2 + .capture-status { align-self: center; }

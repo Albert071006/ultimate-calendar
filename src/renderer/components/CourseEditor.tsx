@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Plus } from "lucide-react";
 import {
   CourseInputSchema,
   type CourseImportResult,
@@ -8,6 +9,11 @@ import {
 import { operationId } from "../calendar-layout";
 import type { PlannerUI } from "../hooks/usePlanner";
 import type { EditorTarget } from "./editor/EntityEditor";
+import { MoreMenu } from "./shell/MoreMenu";
+import { ColorPicker } from "../pages/me/ColorPicker";
+import { occupiedColors } from "../../domain/palette";
+import { dayDistance } from "../../domain/time";
+import { todayDate } from "../calendar-layout";
 const headers = [
   "课程",
   "星期",
@@ -38,7 +44,8 @@ export function CourseEditor({
     [weeks, setWeeks] = useState<Record<number, string>>({}),
     [term, setTerm] = useState(snapshot.settings.termStart ?? ""),
     [error, setError] = useState(""),
-    [text, setText] = useState("");
+    [text, setText] = useState(""),
+    [pasting, setPasting] = useState(false);
   function receive(result: CourseImportResult) {
     setPreview(result);
     setRows(result.drafts);
@@ -121,55 +128,39 @@ export function CourseEditor({
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
+  const weekdays = ["一", "二", "三", "四", "五", "六", "日"];
+  const today = todayDate();
+  const groups = [...snapshot.courses.reduce((map, course) => map.set(course.title, [...(map.get(course.title) ?? []), course]), new Map<string, typeof snapshot.courses>())]
+    .map(([title, records]) => ({ title, records: records.sort((a, b) => a.weekday - b.weekday || a.startTime.localeCompare(b.startTime)) }));
+  const used = occupiedColors(snapshot, today);
+  const termStart = snapshot.settings.termStart;
+  const week = termStart ? Math.floor(dayDistance(termStart, today) / 7) + 1 : null;
+  const termLabel = week !== null && week >= 1 && week <= snapshot.settings.termWeeks ? `第 ${week} 周 / 共 ${snapshot.settings.termWeeks} 周` : "";
+  /** A course's color follows its title, so every weekly record of it changes together. */
+  const recolor = (title: string, hex: string) => ui.mutate(snapshot.courses.filter(c => c.title === title)
+    .map(c => ({ type: "update" as const, entity: "course" as const, id: c.id, expectedVersion: c.version, scope: "all" as const, values: { color: hex as NonNullable<typeof c.color> } })));
   return (
     <div className="course-editor">
-      <div className="section-heading">
-        <div>
-          <h3>课表与教学周</h3>
-          <p>手动录入或导入，校对完成才写入日历。</p>
+      <div className="a2-me-h">
+        <h2>课程表</h2>
+        <span className="ui-hint">{[termLabel, groups.length ? `${groups.length} 门课` : ""].filter(Boolean).join(" · ")}</span>
+        {ui.host && <MoreMenu label="导入课表" trigger="导入课表" items={[
+          { label: "导入 CSV / XLSX", disabled: ui.busy, onSelect: () => void importFile() },
+          { label: "识别课表截图", disabled: ui.busy, onSelect: () => void importImage() },
+          { label: "粘贴 CSV 文本", onSelect: () => setPasting(true) },
+          { label: "下载空白模板", onSelect: download },
+        ]} />}
+        <button className="ui-btn" onClick={() => edit({ entity: "course" })}><Plus aria-hidden="true" />添加课程</button>
+      </div>
+      {pasting && ui.host && <div className="a2-me-paste">
+        <label>粘贴模板 CSV 文本（星期用 1–7，时间为 HH:mm）
+          <textarea aria-label="课表 CSV 文本" rows={4} value={text} onChange={(e) => setText(e.target.value)} />
+        </label>
+        <div className="actions">
+          <button className="ui-btn" disabled={!text.trim() || ui.busy} onClick={() => void ui.run(() => ui.host!.importCourses({ kind: "text", operationId: operationId(), text }), receive)}>生成校对预览</button>
+          <button className="ui-btn ghost" onClick={() => setPasting(false)}>收起</button>
         </div>
-        <button className="primary" onClick={() => edit({ entity: "course" })}>
-          ＋ 新建课程
-        </button>
-      </div>
-      <div className="toolbar wrap">
-        <button onClick={() => void importFile()} disabled={ui.busy}>
-          导入 CSV / XLSX
-        </button>
-        <button onClick={() => void importImage()} disabled={ui.busy}>
-          识别课表截图
-        </button>
-        <button onClick={download}>下载空白模板</button>
-      </div>
-      <p className="hint">
-        星期使用 1–7；时间必须为
-        HH:mm。只有节次的截图，请在设置中填写节次时间并逐格校对。
-      </p>
-      <details>
-        <summary>粘贴模板 CSV 文本</summary>
-        <textarea
-          aria-label="课表 CSV 文本"
-          rows={4}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-        />
-        <button
-          disabled={!text.trim() || ui.busy}
-          onClick={() =>
-            void ui.run(
-              () =>
-                ui.host!.importCourses({
-                  kind: "text",
-                  operationId: operationId(),
-                  text,
-                }),
-              receive,
-            )
-          }
-        >
-          生成校对预览
-        </button>
-      </details>
+      </div>}
       {preview && (
         <section className="course-preview">
           <h3>尚未导入 · 校对课程</h3>
@@ -297,36 +288,28 @@ export function CourseEditor({
           </footer>
         </section>
       )}
-      <div className="course-list">
-        {snapshot.courses.map((c) => (
-          <button
-            className="course-row"
-            key={c.id}
-            onClick={() => edit({ entity: "course", id: c.id })}
-          >
-            <span className="course-badge">
-              周{["一", "二", "三", "四", "五", "六", "日"][c.weekday - 1]}
-            </span>
-            <div>
-              <strong>{c.title}</strong>
-              <small>
-                {c.startTime}–{c.endTime} · 第 {c.firstWeek}–{c.lastWeek} 周 ·{" "}
-                {c.weeks
-                  ? `指定 ${c.weeks.join("、")} 周`
-                  : { all: "每周", odd: "单周", even: "双周" }[c.parity]}{" "}
-                · {c.location || "地点未填"}
-              </small>
-            </div>
-            <span>编辑系列 →</span>
-          </button>
-        ))}
-        {!snapshot.courses.length && !preview && (
-          <div className="empty-state">
-            <h3>课表还是空的</h3>
-            <p>导入模板、截图，或者手动填写第一门课。</p>
-          </div>
-        )}
-      </div>
+      {groups.length > 0 && <table className="a2-course-table">
+        <thead><tr><th>颜色</th><th>课程</th><th>上课时间</th><th>地点</th><th>周次</th></tr></thead>
+        <tbody>{groups.map(({ title, records }) => {
+          const first = records[0]!, color = first.color;
+          const others = [...used];
+          if (color) others.splice(others.indexOf(color), 1);
+          return <tr key={title}>
+            <td><ColorPicker name={title} color={color} used={others} busy={ui.busy} pick={hex => void recolor(title, hex)} /></td>
+            <td className="t"><button className="t" onClick={() => edit({ entity: "course", id: first.id })} title="编辑这门课">{title}</button></td>
+            <td className="n">{records.map(c => <button key={c.id} className="a2-slot" onClick={() => edit({ entity: "course", id: c.id })} title="编辑这一节的系列">
+              周{weekdays[c.weekday - 1]} {c.startTime}–{c.endTime}</button>)}</td>
+            <td>{[...new Set(records.map(c => c.location).filter(Boolean))].join("、") || "—"}</td>
+            <td className="n">{[...new Set(records.map(c => `${c.weeks ? `第 ${c.weeks.join("、")} 周` : `${c.firstWeek}–${c.lastWeek} 周`}${c.weeks ? "" : { all: "", odd: " · 单周", even: " · 双周" }[c.parity]}`))].join("；")}</td>
+          </tr>;
+        })}</tbody>
+      </table>}
+      {!snapshot.courses.length && !preview && (
+        <div className="ui-empty">
+          <h4>课表还是空的</h4>
+          <p>{ui.host ? "从「导入课表」导入表格或截图，或者手动添加第一门课。" : "手动添加第一门课。"}</p>
+        </div>
+      )}
       {ui.error && (
         <p className="error" role="alert">
           {ui.error}

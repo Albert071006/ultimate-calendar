@@ -4,10 +4,10 @@ import type { AppUpdates } from "../../hooks/useAppUpdates";
 import type { Selection } from "../../components/Calendar";
 import type { EditorTarget } from "../../components/editor/EntityEditor";
 import { PageToolbar } from "../../components/shell/PageToolbar";
-import { Goals } from "../../components/Goals";
+import { Goals } from "./Goals";
 import { CourseEditor } from "../../components/CourseEditor";
 import { CapturePage } from "../../components/CapturePage";
-import { Settings } from "../../components/Settings";
+import { Settings, type SettingsSection } from "../../components/Settings";
 import { LedgerRulesSettings } from "../../components/ledger/Rules";
 import "./MePage.css";
 
@@ -17,6 +17,8 @@ const groups: { title: string; host?: boolean; items: [MeSection, string][] }[] 
   { title: "采集", host: true, items: [["capture", "QQ 采集"]] },
   { title: "设置", host: true, items: [["ai", "AI 与费用"], ["term", "学期与节次"], ["reminders", "提醒与启动"], ["ledger", "记账"], ["data", "数据与备份"], ["update", "软件更新"]] },
 ];
+
+const settingsSections: MeSection[] = ["ai", "term", "reminders", "data", "update"];
 
 export function MePage({ snapshot, ui, section, setSection, updates, select, edit, openSource, coursePreview, captureReference }: {
   snapshot: Snapshot;
@@ -48,12 +50,12 @@ export function MePage({ snapshot, ui, section, setSection, updates, select, edi
           ))}
         </nav>
         <section className="a2-me-content" aria-label={label}>
-          {current === "goals" && <Goals snapshot={snapshot} select={select} create={() => edit({ entity: "goal" })} />}
+          {current === "goals" && <Goals snapshot={snapshot} ui={ui} select={select} create={() => edit({ entity: "goal" })} />}
           {current === "courses" && <CourseEditor key={coursePreview?.sourceId ?? "courses"} snapshot={snapshot} ui={ui} edit={edit} initial={coursePreview} openSource={openSource} />}
           {current === "capture" && <CapturePage ui={ui} initialReference={captureReference} />}
           {current === "ledger" && ui.client && <LedgerRulesSettings api={ui.client} />}
-          {["ai", "term", "reminders", "data", "update"].includes(current) && (
-            <Settings snapshot={snapshot} ui={ui} courses={() => setSection("courses")} updates={updates} />
+          {settingsSections.includes(current) && (
+            <Settings snapshot={snapshot} ui={ui} courses={() => setSection("courses")} updates={updates} section={current as SettingsSection} onSection={setSection} />
           )}
         </section>
       </div>
