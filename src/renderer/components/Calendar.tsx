@@ -18,6 +18,7 @@ import { CurrentTimeIndicator, currentTimePosition } from './CurrentTimeIndicato
 import { MonthView } from './calendar/MonthView';
 import { DaySidebar } from './calendar/DaySidebar';
 import { calendarAttention } from '../calendar-attention';
+import { workFill } from '../work-fill';
 import './CalendarTimeline.css';
 import './calendar-attention.css';
 import './calendar/Calendar.css';
@@ -104,8 +105,9 @@ export function Calendar({
   const itemAttention = new Map(items.map(item => [item.id, calendarAttention(item, snapshot, now)]));
   const attentionClass = (item: CalendarItem) => `calendar-${itemAttention.get(item.id)!.tone}`;
   const attentionLabel = (item: CalendarItem) => itemAttention.get(item.id)!.label;
-  const statusLabel = (item: CalendarItem) => attentionLabel(item)
-    ? <span className="calendar-item-status">{attentionLabel(item)}</span> : null;
+  /** `quiet` keeps the status for screen readers when the block has no room to show it. */
+  const statusLabel = (item: CalendarItem, quiet = false) => attentionLabel(item)
+    ? <span className={`calendar-item-status${quiet ? " a2-visually-hidden" : ""}`}>{attentionLabel(item)}</span> : null;
   const weekOf = (day: string) => snapshot.settings.termStart ? Math.floor(dayDistance(snapshot.settings.termStart, day) / 7) + 1 : null;
   const inTerm = (week: number | null): week is number => week !== null && week >= 1 && week <= snapshot.settings.termWeeks;
   // The month view names the span of teaching weeks it covers; the other views name the current one.
@@ -250,7 +252,7 @@ export function Calendar({
       : item.refKind === "task" ? snapshot.tasks.find(value => value.id === item.refId) : undefined;
     const course = item.refKind === "course" ? snapshot.courses.find(value => value.id === item.refId) : undefined;
     const color = course?.color ?? (task ? belongingColor(task, snapshot) : null);
-    return color ? { "--c": color, "--wf": `color-mix(in srgb, ${color} 82%, #111)` } as CSSProperties : {};
+    return color ? { "--c": color, "--wf": workFill(color) } as CSSProperties : {};
   };
   const kindClass = (item: CalendarItem) => item.category === "candidate" ? "pending" : item.category;
   const markerClass = (item: CalendarItem, day: string) => item.category === "candidate" ? "pending"
@@ -353,6 +355,8 @@ export function Calendar({
                     const startsHere = Date.parse(item.start!) >= dayStart(day), endsHere = Date.parse(item.end!) <= dayStart(day) + 86400_000;
                     const label = `${item.title} ${item.start!.slice(11, 16)}–${item.end!.slice(11, 16)}${item.end!.slice(0, 10) !== item.start!.slice(0, 10) ? '（跨日）' : ''}${attentionLabel(item) ? ` · ${attentionLabel(item)}` : ''}`;
                     const short = endMinute - startMinute < 34;
+                    // Title and time take about 46px; under 80 minutes the place shares the time line instead of adding a third.
+                    const inline = !short && endMinute - startMinute < 80;
                     return <div key={item.id} data-timeline-item={item.id}
                       className={`timeline-event ${kindClass(item)} ${attentionClass(item)} ${item.pending ? 'pending' : ''} ${short ? 'compact' : ''} ${preview?.itemId === item.id ? 'is-moving' : ''}`}
                       style={{ ...colorStyle(item), top: minutePosition(startMinute), height: minutePosition(endMinute - startMinute), left: `calc(${column / count * 100}% + 4px)`, width: `calc(${100 / count}% - 8px)` }}>
@@ -361,10 +365,10 @@ export function Calendar({
                         onKeyDown={e => keyboardBlock(e, item, 'move')}
                         onClick={e => { if (suppressClick.current === item.id && e.detail !== 0) { suppressClick.current = null; return; } open(item, day); }}
                         onDoubleClick={() => { if (!suppressClick.current) editItem(item, day); }}>
-                        <strong>{item.title}</strong><small>{short ? item.start!.slice(11, 16) : `${item.start!.slice(11, 16)}–${item.end!.slice(11, 16)}`}{item.end!.slice(0, 10) !== item.start!.slice(0, 10) ? ' · 跨日' : ''}</small>
-                        {/* Short blocks rely on their color; the status stays in the title tooltip. */}
-                        {endMinute - startMinute >= 55 && statusLabel(item)}
-                        {item.location && <small>{item.location}</small>}
+                        <strong>{item.title}</strong><small className={inline ? 'one-line' : undefined}>{short ? item.start!.slice(11, 16) : `${item.start!.slice(11, 16)}–${item.end!.slice(11, 16)}`}{item.end!.slice(0, 10) !== item.start!.slice(0, 10) ? ' · 跨日' : ''}{inline && item.location ? ` · ${item.location}` : ''}</small>
+                        {/* A status line needs about 64px; shorter blocks show it through their color and keep the text for screen readers. */}
+                        {statusLabel(item, endMinute - startMinute < 70)}
+                        {!inline && item.location && <small>{item.location}</small>}
                       </button>
                       {movable && startsHere && <button className="timeline-resize start" aria-label={`调整 ${item.title} 开始时间`} title="拖动调整开始；上下方向键微调 1 分钟"
                         onPointerDown={e => begin(e, day, 'resize-start', item)} onKeyDown={e => keyboardBlock(e, item, 'resize-start')} onClick={e => e.stopPropagation()} />}

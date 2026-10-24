@@ -4,7 +4,7 @@
   border-color: #d9a257;
 }
 .calendar-panel .calendar-completed {
-  color: #7d8a86;
+  color: #65706d;
   background-color: #f0f3ef;
   border-color: #c5cfc7;
 }
@@ -17,7 +17,6 @@
   white-space: nowrap;
 }
 .calendar-panel .calendar-completed .calendar-item-status { font-weight: 400; }
-.calendar-panel .timeline-event.compact .calendar-item-status { display: none; }
 .calendar-panel .month-item .calendar-item-status,
 .calendar-panel .marker .calendar-item-status,
 .calendar-panel .timeline-point .calendar-item-status {

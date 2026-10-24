@@ -22,11 +22,11 @@
 .a2-tl-item .bt:hover { text-decoration: underline; text-underline-offset: 3px; }
 .a2-tl-item .bm { font-size: 12.5px; color: var(--ink-2); margin-top: 3px; }
 .a2-tl-item .acts { display: flex; gap: 6px; margin-top: 8px; }
-.a2-tl-item .soon { display: inline-block; margin-left: 8px; font-family: var(--font-ui); font-size: 12px; font-weight: 600; color: #f3b8a8; }
-.a2-tl-item.course .box { background: color-mix(in srgb, var(--c, #3b5b9a) 22%, var(--surface)); border-left: 3px solid var(--c, #3b5b9a); color: color-mix(in srgb, var(--c, #3b5b9a) 75%, #000); }
-.a2-tl-item.course .bm { color: color-mix(in srgb, var(--c, #3b5b9a) 55%, var(--ink-2)); }
+.a2-tl-item .soon { display: inline-block; margin-left: 8px; font-family: var(--font-ui); font-size: 12px; font-weight: 600; color: var(--accent); }
+.a2-tl-item.course .box { background: color-mix(in srgb, var(--c, #3b5b9a) 22%, var(--surface)); border-left: 3px solid var(--c, #3b5b9a); color: color-mix(in srgb, var(--c, #3b5b9a) 65%, #000); }
+.a2-tl-item.course .bm { color: color-mix(in srgb, var(--c, #3b5b9a) 45%, var(--ink)); }
 .a2-tl-item.work .box { background: var(--wf, var(--work-fill)); color: var(--on-dark); }
-.a2-tl-item.work .bm { color: rgba(245, 240, 230, 0.75); }
+.a2-tl-item.work .bm, .a2-tl-item.work .soon { color: var(--on-dark); }
 .a2-tl-item.event .box { background: repeating-linear-gradient(135deg, var(--surface) 0 6px, var(--hatch) 6px 9px); border: 1.5px solid var(--ink); }
 .a2-tl-item.pend::before { border-style: dashed; }
 .a2-tl-item.pend .box { border: 1.5px dashed var(--accent); }

@@ -12,6 +12,7 @@ import { taskAttention } from "../../task-rail";
 import { effectiveActivityEnd } from "../../../domain/activity-duration";
 import { belongingColor } from "../../../domain/belonging";
 import { entityNames, findRecord } from "./records";
+import { workFill } from "../../work-fill";
 import "./DetailPopover.css";
 
 export interface DetailActions {
@@ -111,7 +112,7 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
     const block = value as Block, task = block.taskId ? snapshot.tasks.find(t => t.id === block.taskId) : undefined;
     const color = task ? belongingColor(task, snapshot) : null;
     kind = block.kind === "work" ? "执行时段" : "固定活动";
-    swatch = color ? { "--wf": `color-mix(in srgb, ${color} 82%, #111)`, "--c": color } as CSSProperties : undefined;
+    swatch = color ? { "--wf": workFill(color), "--c": color } as CSSProperties : undefined;
     const end = block.kind === "event" ? effectiveActivityEnd(block.start, block.end) : block.end;
     body = <dl>
       <dt>时间</dt><dd>{end ? spanLabel(block.start, end, block.kind === "event" && !block.end) : <b>{block.start.slice(11, 16)}</b>}</dd>

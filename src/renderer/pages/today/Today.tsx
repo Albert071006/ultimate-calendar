@@ -13,6 +13,7 @@ import { todayDate } from "../../calendar-layout";
 import { PageToolbar } from "../../components/shell/PageToolbar";
 import { useCurrentTime } from "../../hooks/useCurrentTime";
 import { TaskRow, type TaskActions } from "../../components/tasks/TaskRow";
+import { workFill } from "../../work-fill";
 import "./Today.css";
 
 type Filter = "open" | "done" | "all";
@@ -78,7 +79,7 @@ export function Today({ snapshot, ui, pendingCount, create, openInbox, openCandi
     const past = endOf(item) <= now;
     const kind = item.category === "candidate" ? "pend" : item.category === "deadline" ? "ddl" : item.category;
     const minutes = item === next && item.start ? Math.round((Date.parse(item.start) - now) / 60_000) : null;
-    const style = { ...(color ? { "--c": color } : {}), ...(color && kind === "work" ? { "--wf": `color-mix(in srgb, ${color} 82%, #111)` } : {}) } as CSSProperties;
+    const style = { ...(color ? { "--c": color } : {}), ...(color && kind === "work" ? { "--wf": workFill(color) } : {}) } as CSSProperties;
     const meta = item.category === "deadline" ? "截止" : item.category === "candidate" ? `待决定${item.location ? ` · ${item.location}` : ""}`
       : item.category === "work" ? `执行时段${task ? ` · ${task.title}` : ""}` : item.location;
     return (

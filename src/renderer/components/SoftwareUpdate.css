@@ -1,11 +1,11 @@
 .software-update-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap; }
 .software-update-heading > div:first-child { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
 .software-update h3 { font-size: 16px; margin: 0; }
-.software-version { color: #788c77; font-size: 12px; }
+.software-version { color: var(--ink-3); font-size: 12px; }
 .software-update-heading button, .update-shortcut { display: inline-flex; align-items: center; gap: 6px; }
 .software-update-heading button { padding: 8px 12px; font-size: 12px; }
 .software-update-status { margin: 12px 0 8px; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
-.software-update-meta { display: flex; gap: 16px; flex-wrap: wrap; color: #788c77; font-size: 11px; line-height: 1.7; }
+.software-update-meta { display: flex; gap: 16px; flex-wrap: wrap; color: var(--ink-3); font-size: 11px; line-height: 1.7; }
 .software-update-progress { display: flex; align-items: center; gap: 12px; margin: 10px 0; color: #39796c; font-size: 12px; }
 .software-update-progress progress { flex: 1; min-width: 0; height: 7px; accent-color: #267f70; }
 .software-release-notes { border-top: 1px solid #e1e7da; margin-top: 12px; padding-top: 12px; font-size: 12px; }

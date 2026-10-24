@@ -101,7 +101,7 @@ p {
 small {
   font-size: 11px;
   line-height: 1.7;
-  color: #7b8791;
+  color: #5c656d;
 }
 .primary {
   background: #267e70;
@@ -137,7 +137,7 @@ small {
 }
 .hint,
 .fine-print {
-  color: #7b8791;
+  color: #5c656d;
   font-size: 12px;
   line-height: 1.8;
 }
@@ -646,7 +646,7 @@ td {
 }
 th {
   font-weight: 500;
-  color: #83917d;
+  color: var(--ink-3);
   background: #f4f6ef;
 }
 td {
@@ -801,7 +801,7 @@ td {
 }
 .settings-card summary {
   cursor: pointer;
-  color: #788c77;
+  color: var(--ink-3);
 }
 .api-usage > summary {
   color: inherit;
@@ -816,7 +816,7 @@ td {
 .api-usage .usage-total {
   margin-left: 14px;
   font-size: 11px;
-  color: #788c77;
+  color: var(--ink-3);
 }
 .api-usage > .table-scroll {
   margin-top: 16px;

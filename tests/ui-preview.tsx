@@ -17,8 +17,10 @@ const later = (days: number) => iso(new Date(Date.now() + days * 864e5));
 const termStart = day(-7 * 7);
 const at = (offset: number, time: string) => `${day(offset)}T${time}:00+08:00`;
 const meta = { version: 1, createdAt: at(0, "08:00"), updatedAt: at(0, "08:00") };
+// Colors mirror what the app assigns when it opens a profile; the preview never opens one.
+const colors: Record<string, string> = { 高等数学: "#3b5b9a", 大学物理: "#b8611f", 线性代数: "#5d8a2e", 程序设计: "#7a5230", 大学英语: "#23807a" };
 const course = (id: string, title: string, location: string, weekday: number, startTime: string, endTime: string) =>
-  ({ ...meta, id, title, location, weekday, startTime, endTime, firstWeek: 1, lastWeek: 18, termStart });
+  ({ ...meta, id, title, location, weekday, startTime, endTime, firstWeek: 1, lastWeek: 18, termStart, color: colors[title] });
 
 const snapshot = SnapshotSchema.parse({
   schemaVersion: 1,
@@ -48,7 +50,7 @@ const snapshot = SnapshotSchema.parse({
     { ...meta, id: "b3", title: "健身", kind: "event", start: at(4, "16:30"), end: at(4, "17:30") },
     { ...meta, id: "b4", title: "背单词", kind: "work", start: at(0, "07:30"), end: at(0, "08:00"), completed: true },
   ],
-  goals: [{ ...meta, id: "g1", title: "合成示例：通过英语考试", priority: "high", targetDate: day(50) }],
+  goals: [{ ...meta, id: "g1", title: "合成示例：通过英语考试", priority: "high", targetDate: day(50), color: "#9b3f8c" }],
   courses: [
     course("k1", "高等数学", "合成教室 101", 1, "08:00", "09:35"),
     course("k2", "大学物理", "合成教室 305", 1, "10:05", "11:40"),
