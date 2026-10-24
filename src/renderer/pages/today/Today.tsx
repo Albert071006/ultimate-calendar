@@ -1,8 +1,8 @@
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useState, type CSSProperties } from "react";
 import { ArrowRight, Plus } from "lucide-react";
 import type { CalendarItem, Snapshot, Task } from "../../../shared/contracts";
 import type { PlannerUI } from "../../hooks/usePlanner";
-import type { EditorTarget } from "../../components/DetailPanel";
+import type { EditorTarget } from "../../components/editor/EntityEditor";
 import { buildCalendar } from "../../../domain/calendar";
 import { belongingColor } from "../../../domain/belonging";
 import { taskDeadlineEnd } from "../../../domain/unscheduled";
@@ -39,12 +39,11 @@ function groupOf(task: Task, today: string, now: number): "over" | "today" | "we
 }
 const groupNames = { over: "已逾期", today: "今天", week: "本周", later: "以后", none: "无截止", done: "已完成" } as const;
 
-export function Today({ snapshot, ui, pendingCount, create, openInbox, openCandidate, openRecord, goCalendar, detail, ...actions }: TaskActions & {
+export function Today({ snapshot, ui, pendingCount, create, openInbox, openCandidate, openRecord, goCalendar, ...actions }: TaskActions & {
   snapshot: Snapshot; ui: PlannerUI; pendingCount: number;
   create: () => void; openInbox: () => void; openCandidate: (id: string) => void;
   openRecord: (target: EditorTarget) => void; goCalendar: () => void;
   /** Details of the selected task, shown beside the lists. */
-  detail?: ReactNode;
 }) {
   const now = useCurrentTime();
   const [filter, setFilter] = useState<Filter>("open");
@@ -91,7 +90,7 @@ export function Today({ snapshot, ui, pendingCount, create, openInbox, openCandi
             <button className="bt" onClick={() => item.category === "candidate" ? openCandidate(item.refId)
               : openRecord({ entity: item.refKind as EditorTarget["entity"], id: item.refId })}>
               {item.title}
-              {minutes !== null && minutes <= 180 && <span className="soon">{minutes} 分钟后</span>}
+              {minutes !== null && minutes <= 180 && <span className="soon">{minutes < 1 ? "即将开始" : `${minutes} 分钟后`}</span>}
             </button>
             {meta && <div className="bm">{meta}</div>}
             {item.category === "candidate" && !past && (
@@ -112,7 +111,7 @@ export function Today({ snapshot, ui, pendingCount, create, openInbox, openCandi
       <PageToolbar title={longDate(today)} sub={week ? `第 ${week} 周` : undefined} ui={ui}>
         <button className="ui-btn" onClick={create}><Plus aria-hidden="true" />新任务</button>
       </PageToolbar>
-      <div className={`a2-today-frame${detail ? " with-detail" : ""}`}>
+      <div className="a2-today-frame">
       <div className="a2-today">
         {pendingCount > 0 && (
           <button className="a2-banner" onClick={openInbox}>
@@ -154,7 +153,6 @@ export function Today({ snapshot, ui, pendingCount, create, openInbox, openCandi
           </section>
         </div>
       </div>
-      {detail}
       </div>
     </div>
   );

@@ -55,6 +55,7 @@ export function Calendar({
   date,
   setDate,
   select,
+  edit,
   schedule,
   courses,
   ui,
@@ -67,6 +68,8 @@ export function Calendar({
   date: string;
   setDate: (value: string) => void;
   select: (item: Selection) => void;
+  /** Double-click: open the edit panel directly. */
+  edit?: (item: Selection) => void;
   schedule: (draft: ScheduleDraft) => void;
   courses: () => void;
   /** Supplies the save notice and undo in the toolbar. */
@@ -100,8 +103,10 @@ export function Calendar({
     if (scroll.current && !focusCurrentTime(scroll.current, date, view)) scroll.current.scrollTop = 7 * HOUR_HEIGHT;
     // Only entering a date/view focuses the clock; ticks and refreshed records must not take over scrolling.
   }, [date, view]);
-  const open = (item: CalendarItem, occurrenceDate = item.date) =>
-    select({ entity: item.refKind, id: item.refId, occurrenceDate: item.occurrenceDate ?? occurrenceDate });
+  const target = (item: CalendarItem, occurrenceDate = item.date): Selection =>
+    ({ entity: item.refKind, id: item.refId, occurrenceDate: item.occurrenceDate ?? occurrenceDate });
+  const open = (item: CalendarItem, occurrenceDate = item.date) => select(target(item, occurrenceDate));
+  const editItem = (item: CalendarItem, occurrenceDate = item.date) => edit?.(target(item, occurrenceDate));
   const inDay = (item: CalendarItem, day: string) =>
     item.start && item.end
       ? !!clipInterval(item.start, item.end, day)
@@ -273,7 +278,7 @@ export function Calendar({
                   {Number(day.slice(8))}
                 </button>
                 {items.filter((i) => inDay(i, day)).map((i) => (
-                  <button key={i.id} className={`month-item ${i.category} ${attentionClass(i)}`} onClick={() => open(i, day)}
+                  <button key={i.id} className={`month-item ${i.category} ${attentionClass(i)}`} onClick={() => open(i, day)} onDoubleClick={() => editItem(i, day)}
                     title={`${i.title}${attentionLabel(i) ? ` · ${attentionLabel(i)}` : ''}`}>
                     {i.start ? i.start.slice(11, 16) : "截止"} {i.title}
                     {statusLabel(i)}
@@ -300,7 +305,7 @@ export function Calendar({
             {days.map((day) => (
               <div key={day}>
                 {items.filter((i) => (i.category === "deadline" || i.category === "candidate" || !i.start) && !i.end && i.date === day).map((i) => (
-                  <button className={`marker ui-chip ${markerClass(i, day)} ${attentionClass(i)}`} key={i.id} style={colorStyle(i)} onClick={() => open(i)}
+                  <button className={`marker ui-chip ${markerClass(i, day)} ${attentionClass(i)}`} key={i.id} style={colorStyle(i)} onClick={() => open(i)} onDoubleClick={() => editItem(i)}
                     title={`${i.category === "candidate" ? "待定 · " : ""}${i.title}${i.start ? ` ${i.start.slice(11, 16)}` : ""}${attentionLabel(i) ? ` · ${attentionLabel(i)}` : ''}`}>
                     {i.category === "candidate" ? "待定 · " : !i.start && i.category !== "deadline" ? "时间点 · " : ""}{i.title}
                     {i.start && <b>{i.start.slice(11, 16)}</b>}
@@ -352,7 +357,8 @@ export function Calendar({
                       <button className={`timeline-event-button ${movable ? 'can-move' : ''}`} title={`${label}\n${item.start!.slice(0, 10)} 至 ${item.end!.slice(0, 10)}${movable ? '\n拖动移动；Alt + 上下方向键微调 1 分钟' : ''}`}
                         onPointerDown={e => { if (movable) begin(e, day, 'move', item); else e.stopPropagation(); }}
                         onKeyDown={e => keyboardBlock(e, item, 'move')}
-                        onClick={e => { if (suppressClick.current === item.id && e.detail !== 0) { suppressClick.current = null; return; } open(item, day); }}>
+                        onClick={e => { if (suppressClick.current === item.id && e.detail !== 0) { suppressClick.current = null; return; } open(item, day); }}
+                        onDoubleClick={() => { if (!suppressClick.current) editItem(item, day); }}>
                         <strong>{item.title}</strong><small>{short ? item.start!.slice(11, 16) : `${item.start!.slice(11, 16)}–${item.end!.slice(11, 16)}`}{item.end!.slice(0, 10) !== item.start!.slice(0, 10) ? ' · 跨日' : ''}</small>
                         {/* Short blocks rely on their color; the status stays in the title tooltip. */}
                         {endMinute - startMinute >= 55 && statusLabel(item)}
@@ -367,7 +373,7 @@ export function Calendar({
                   {items.filter(item => item.start && !item.end && item.date === day && item.category !== "deadline" && item.category !== "candidate").map(item => <button key={item.id} className={`timeline-point ${kindClass(item)} ${attentionClass(item)}`}
                     title={`${item.title} · ${item.start!.slice(11, 16)}（不占用时间）${attentionLabel(item) ? ` · ${attentionLabel(item)}` : ''}`}
                     style={{ ...colorStyle(item), top: minutePosition(Math.max(0, Math.min(1439, (Date.parse(item.start!) - dayStart(day)) / 60000))) }}
-                    onPointerDown={e => e.stopPropagation()} onClick={() => open(item, day)}>
+                    onPointerDown={e => e.stopPropagation()} onClick={() => open(item, day)} onDoubleClick={() => editItem(item, day)}>
                     ◆ {item.start!.slice(11, 16)} {item.title}
                     {statusLabel(item)}
                   </button>)}

@@ -2,7 +2,7 @@ import type { CourseImportResult, Snapshot, Source } from "../../../shared/contr
 import type { PlannerUI } from "../../hooks/usePlanner";
 import type { AppUpdates } from "../../hooks/useAppUpdates";
 import type { Selection } from "../../components/Calendar";
-import type { EditorTarget } from "../../components/DetailPanel";
+import type { EditorTarget } from "../../components/editor/EntityEditor";
 import { PageToolbar } from "../../components/shell/PageToolbar";
 import { Goals } from "../../components/Goals";
 import { CourseEditor } from "../../components/CourseEditor";

@@ -8,8 +8,6 @@ import {
   TaskInputSchema,
   addCalendarDays,
   mondayWeekday,
-  type Entity,
-  type EntityKind,
   type MutationInput,
   type Snapshot,
   type Task,
@@ -18,253 +16,16 @@ import {
   type Course,
   type Candidate,
   type ReminderConfig,
-} from "../../shared/contracts";
-import { displayInstant, todayDate } from "../calendar-layout";
-import type { PlannerUI } from "../hooks/usePlanner";
-import type { Selection, ScheduleDraft } from "./Calendar";
-import { candidateExpiry } from '../../domain/candidate-eligibility';
-import { useCurrentTime } from '../hooks/useCurrentTime';
-import { CandidateTiming } from './CandidateTiming';
-import { candidateDisplay } from '../candidate-display';
-import { taskArrangements, taskArrangementSummary, eventTimeLabel, taskNoticeTiming, taskNoticeSummary } from '../task-schedule';
-import { selectRailTasks, taskAttention } from '../task-rail';
-import { effectiveActivityEnd, DEFAULT_ACTIVITY_MINUTES } from '../../domain/activity-duration';
-import { recurringEventTargets } from '../../domain/recurring-events';
-export const entityNames: Record<EntityKind, string> = {
-  task: "任务",
-  block: "时段",
-  goal: "目标",
-  candidate: "候选事项",
-  course: "课程",
-  courseException: "课程例外",
-  source: "原始来源",
-  preference: "偏好",
-  feedback: "反馈",
-};
-export function findRecord(
-  snapshot: Snapshot,
-  selection: Selection,
-): Entity | undefined {
-  const keys = {
-    task: "tasks",
-    block: "blocks",
-    goal: "goals",
-    candidate: "candidates",
-    course: "courses",
-    courseException: "courseExceptions",
-    source: "sources",
-    preference: "preferences",
-    feedback: "feedback",
-  } as const;
-  return snapshot[keys[selection.entity]].find(
-    (value) => value.id === selection.id,
-  );
-}
-export function DetailPanel({
-  snapshot,
-  selection,
-  edit,
-  editTask,
-  close,
-  schedule,
-  scheduleRecurring,
-  removeTask,
-  ui,
-}: {
-  snapshot: Snapshot;
-  selection: Selection | null;
-  edit: () => void;
-  editTask: (id: string) => void;
-  close: () => void;
-  schedule: (id: string, blockId?: string) => void;
-  scheduleRecurring?: (id: string) => void;
-  removeTask: (id: string) => void;
-  ui: PlannerUI;
-}) {
-  const now = useCurrentTime();
-  const value = selection ? findRecord(snapshot, selection) : undefined;
-  const arrangements = selection?.entity === 'task' && value ? taskArrangements(snapshot, value.id) : [];
-  const timing = selection?.entity === 'task' && value && !arrangements.length ? taskNoticeTiming(snapshot, value.id) : null;
-  const attention = selection?.entity === 'task' && value ? taskAttention(snapshot, value as Task, now) : null;
-  const railTasks = selectRailTasks(snapshot, now);
-  return (
-    <aside className={`detail-panel${!value ? ' task-rail-panel' : ''}`}>
-      <div className="detail-title">
-        <h3>{value && selection ? entityNames[selection.entity] : "待办任务"}</h3>
-        {selection && <button onClick={close}>收起</button>}
-      </div>
-      {!value ? (
-        <section className="rail-tasks" aria-label="待办任务列表">
-            {!railTasks.length && <p className="fine-print">暂无待办任务</p>}
-            {railTasks.map((t) => {
-                const taskActivities = taskArrangements(snapshot, t.id);
-                const taskTiming = !taskActivities.length ? taskNoticeTiming(snapshot, t.id) : null;
-                const taskStatus = taskAttention(snapshot, t, now);
-                return (
-                  <div
-                    className={`rail-task${taskStatus ? ' task-needs-attention' : ''}`}
-                    data-task-id={t.id}
-                    data-attention={taskStatus?.kind}
-                    key={t.id}
-                    draggable
-                    onDragStart={(e) =>
-                      e.dataTransfer.setData(
-                        "application/x-planner",
-                        JSON.stringify({ kind: "task", id: t.id }),
-                      )
-                    }
-                  >
-                    <span>{t.title}
-                      {t.deadline && <small className="rail-task-deadline">截止 · {t.deadline.date} {t.deadline.time ?? '当天结束'}</small>}
-                      {taskActivities.length > 0 && <small>{taskArrangementSummary(taskActivities, now)}</small>}
-                      {taskTiming && <small>{taskNoticeSummary(taskTiming, now)}</small>}
-                      {taskStatus && <small className="task-attention-label">{taskStatus.label}</small>}
-                    </span>
-                    <div className="rail-task-actions">
-                      {taskStatus && <button className="task-attention-action" disabled={ui.busy} onClick={() => taskStatus.kind === 'overdue' ? editTask(t.id) : schedule(t.id, taskStatus.blockId)}>{taskStatus.actionLabel}</button>}
-                      <button onClick={() => schedule(t.id)}>{taskActivities.length ? '查看安排' : '安排'}</button>
-                      {scheduleRecurring && <button onClick={() => scheduleRecurring(t.id)}>重复安排</button>}
-                      {taskStatus && <button disabled={ui.busy} aria-label={`完成任务 ${t.title}`} onClick={() => void ui.mutate([{ type: 'finishTask', id: t.id, expectedVersion: t.version, completed: true }])}>完成</button>}
-                      <button className="danger-text" disabled={ui.busy} aria-label={`移除 ${t.title}`} onClick={() => removeTask(t.id)}>移除</button>
-                    </div>
-                  </div>
-                );
-              })}
-        </section>
-      ) : (
-        <>
-          <h2>
-            {"title" in value
-              ? value.title
-              : "text" in value
-                ? value.text
-                : "详情"}
-          </h2>
-          {"description" in value && (
-            <p className="prewrap">{value.description}</p>
-          )}
-          {attention && <section className="task-attention-notice" aria-label="任务待处理">
-            <strong className="task-attention-label">{attention.label}</strong>
-            <p>可修改截止时间、调整安排、标记完成或移除；时间已过不会自动完成任务。</p>
-            <button className="task-attention-action" disabled={ui.busy} onClick={() => attention.kind === 'overdue' ? editTask(value.id) : schedule(value.id, attention.blockId)}>{attention.actionLabel}</button>
-          </section>}
-          {arrangements.length > 0 && <section className="task-event-details" aria-label="已安排活动">
-            <h3>{arrangements.some(event => event.cancelled || event.completed) ? '日历安排与历史' : '已加入日历'}</h3>
-            {arrangements.map(event => <div className="detail-field" key={event.id}>
-              <small>{event.kind === 'work' ? '执行时段' : '固定活动'}{arrangements.length > 1 ? ` · ${event.title}` : ''}</small>
-              <strong>{event.cancelled ? '已取消 · ' : event.completed ? '已完成 · ' : ''}{eventTimeLabel(event)}</strong>
-              {event.location && <p>地点 · {event.location}</p>}
-              {!event.cancelled && <button onClick={() => schedule(value.id, event.id)}>调整时间</button>}
-            </div>)}
-          </section>}
-          {"action" in value && <><CandidateTiming candidate={value} />{value.status === 'pending' && candidateExpiry(value, now).expired && <p className="candidate-expiry">已过期 · {candidateExpiry(value, now).reason}</p>}</>}
-          {timing && <div className="detail-field"><small>原通知时间 · 尚未入历</small><strong>{taskNoticeSummary(timing, now)}</strong></div>}
-          {"deadline" in value && !("action" in value) && (
-            <div className="detail-field">
-              <small>独立截止</small>
-              <strong>
-                {value.deadline
-                  ? `${value.deadline.date} ${value.deadline.time ?? "具体时刻未提供"}`
-                  : "未设定"}
-              </strong>
-            </div>
-          )}
-          {"start" in value && (
-            <div className="detail-field">
-              <small>开始 / 结束</small>
-              <strong>
-                {displayInstant(value.start)}
-                <br />
-                {displayInstant(value.kind === 'event' ? effectiveActivityEnd(value.start, value.end) : value.end)}
-                {value.kind === 'event' && !value.end && '（默认30分钟）'}
-              </strong>
-            </div>
-          )}
-          {"startTime" in value && (
-            <div className="detail-field">
-              <small>
-                每周
-                {
-                  ["一", "二", "三", "四", "五", "六", "日"][value.weekday - 1]
-                }{" "}
-                · {value.firstWeek}–{value.lastWeek} 周
-              </small>
-              <strong>
-                {value.startTime}–{value.endTime}
-              </strong>
-              <p>
-                {value.weeks
-                  ? `指定周：${value.weeks.join("、")}`
-                  : { all: "每周", odd: "单周", even: "双周" }[value.parity]}
-              </p>
-              <small>第一周 {value.termStart}</small>
-            </div>
-          )}
-          {"location" in value && value.location && (
-            <p>地点 · {value.location}</p>
-          )}
-          {"action" in value && (
-            <>
-              <div className="detail-field">
-                <small>行动</small>
-                <p>{value.action || "需校对"}</p>
-              </div>
-              <div className="detail-field">
-                <small>原文收益</small>
-                <p>
-                  {value.benefitKind === "stated"
-                    ? value.benefit || "未说明"
-                    : "未说明"}
-                </p>
-              </div>
-              {value.potentialBenefit && (
-                <p>潜在收益（推测）· {value.potentialBenefit}</p>
-              )}
-              {candidateDisplay(value, snapshot.settings).conditions.length > 0 && <div className="detail-field"><small>参加资格与准备</small><p>{candidateDisplay(value, snapshot.settings).conditions.join('；')}</p></div>}
-              {candidateDisplay(value, snapshot.settings).uncertainties.map((u, i) => (
-                <p className="warning" key={i}>
-                  {u}
-                </p>
-              ))}
-            </>
-          )}
-          <div className="detail-actions">
-            <button className="primary" onClick={edit}>
-              编辑{entityNames[selection!.entity]}
-            </button>
-            {selection!.entity === "task" && !arrangements.length && (
-              <button onClick={() => schedule(value.id)}>{timing ? '安排活动' : '安排执行时段'}</button>
-            )}
-            {selection!.entity === 'task' && <button className="danger-text" disabled={ui.busy} aria-label={`移除 ${(value as Task).title}`} onClick={() => removeTask(value.id)}>移除任务</button>}
-            {selection!.entity === 'task' && (value as Task).status !== 'done' && <button disabled={ui.busy} onClick={() => void ui.mutate([{ type: 'finishTask', id: value.id, expectedVersion: value.version, completed: true }])}>完成任务</button>}
-            {selection!.entity === 'task' && (value as Task).status !== 'done' && scheduleRecurring && <button onClick={() => scheduleRecurring(value.id)}>重复安排</button>}
-            {selection!.entity === "block" && (
-              <button
-                onClick={() =>
-                  void ui.mutate([
-                    {
-                      type: "finishBlock",
-                      id: value.id,
-                      expectedVersion: value.version,
-                      completed: !("completed" in value && value.completed),
-                    },
-                  ])
-                }
-              >
-                {"completed" in value && value.completed
-                  ? "恢复时段"
-                  : "完成此时段"}
-              </button>
-            )}
-          </div>
-          <p className="fine-print">
-            修改于 {displayInstant(value.updatedAt)} · 版本 {value.version}
-          </p>
-        </>
-      )}
-    </aside>
-  );
-}
+} from "../../../shared/contracts";
+import { displayInstant, todayDate } from "../../calendar-layout";
+import type { PlannerUI } from "../../hooks/usePlanner";
+import type { ScheduleDraft } from "../Calendar";
+import { useCurrentTime } from '../../hooks/useCurrentTime';
+import { selectRailTasks } from '../../task-rail';
+import { DEFAULT_ACTIVITY_MINUTES } from '../../../domain/activity-duration';
+import { recurringEventTargets } from '../../../domain/recurring-events';
+import { courseIsCurrent } from '../../../domain/palette';
+import { findRecord } from '../detail/records';
 function Reminders({ value }: { value?: ReminderConfig }) {
   return (
     <fieldset>
@@ -296,6 +57,18 @@ function Reminders({ value }: { value?: ReminderConfig }) {
       </div>
     </fieldset>
   );
+}
+/**
+ * One choice per course title: a timetable keeps a record per weekday, but a task belongs to the course.
+ * The task's own record represents its title so an unchanged form keeps the saved id.
+ */
+function courseChoices(snapshot: Snapshot, currentId: string | null): Course[] {
+  const today = todayDate();
+  const ranked = [...snapshot.courses].sort((a, b) =>
+    Number(b.id === currentId) - Number(a.id === currentId) || Number(courseIsCurrent(b, snapshot.settings, today)) - Number(courseIsCurrent(a, snapshot.settings, today)));
+  const seen = new Set<string>();
+  return ranked.filter(course => !seen.has(course.title) && seen.add(course.title))
+    .sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'));
 }
 export interface EditorTarget {
   entity: "task" | "block" | "goal" | "course" | "candidate";
@@ -443,7 +216,7 @@ export function EntityEditor({
           goalId: s("goalId") || null,
           candidateId: task?.candidateId ?? null,
           reminders: reminders(data),
-          courseId: task?.courseId ?? null,
+          courseId: s("courseId") || null,
         });
       if (entity === "block")
         values = BlockInputSchema.parse({
@@ -684,6 +457,17 @@ export function EntityEditor({
               {snapshot.goals.map((g) => (
                 <option value={g.id} key={g.id}>
                   {g.title}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            所属课程
+            <select name="courseId" defaultValue={task?.courseId ?? ""}>
+              <option value="">无</option>
+              {courseChoices(snapshot, task?.courseId ?? null).map((c) => (
+                <option value={c.id} key={c.id}>
+                  {c.title}
                 </option>
               ))}
             </select>

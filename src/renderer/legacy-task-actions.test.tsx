@@ -157,7 +157,7 @@ describe('removing an unwanted task from each visible entry point', () => {
       if (entry === 'row') container = row;
       else {
         fireEvent.click(within(row).getByRole('button', { name: title }));
-        container = screen.getByRole('heading', { name: '任务', level: 3 }).closest('aside')!;
+        container = screen.getByRole('complementary', { name: '任务详情' });
       }
     }
     rowAction(container, `移除 ${title}`);

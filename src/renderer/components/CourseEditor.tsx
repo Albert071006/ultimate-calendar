@@ -7,7 +7,7 @@ import {
 } from "../../shared/contracts";
 import { operationId } from "../calendar-layout";
 import type { PlannerUI } from "../hooks/usePlanner";
-import type { EditorTarget } from "./DetailPanel";
+import type { EditorTarget } from "./editor/EntityEditor";
 const headers = [
   "课程",
   "星期",

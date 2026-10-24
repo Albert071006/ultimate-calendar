@@ -1,8 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, within } from '@testing-library/react';
 import { BlockSchema, CandidateSchema, SnapshotSchema, SourceSchema, TaskSchema, type Snapshot } from '../shared/contracts';
-import { DetailPanel } from './components/DetailPanel';
 import { Today } from './pages/today/Today';
 import type { PlannerUI } from './hooks/usePlanner';
 
@@ -14,11 +13,9 @@ function fixture(): Snapshot {
 function lists(snapshot: Snapshot) {
   const mutate = vi.fn(), schedule = vi.fn(), editTask = vi.fn(), removeTask = vi.fn();
   const ui = { busy: false, mutate, snapshot, error: '', notice: '', undo: vi.fn() } as unknown as PlannerUI;
-  render(<DetailPanel snapshot={snapshot} selection={null} ui={ui} schedule={schedule} editTask={editTask} removeTask={removeTask} edit={vi.fn()} close={vi.fn()} />);
-  const rail = screen.getByRole('region', { name: '待办任务列表' });
-  // Today's to-do list replaced the separate task page.
+  // Today's to-do list replaced both the separate task page and the calendar's side task list.
   const page = render(<Today snapshot={snapshot} ui={ui} pendingCount={0} create={vi.fn()} openInbox={vi.fn()} openCandidate={vi.fn()} openRecord={vi.fn()} goCalendar={vi.fn()} editTask={editTask} schedule={schedule} removeTask={removeTask} />).container;
-  return { containers: [rail, page], rail, page, mutate, schedule, editTask, removeTask };
+  return { containers: [page], page, mutate, schedule, editTask, removeTask };
 }
 function titles(container: HTMLElement) {
   return [...container.querySelectorAll<HTMLElement>('[data-task-id]')].map(row => (row.querySelector('.a2-task-title') ?? row.querySelector('span')!.firstChild)!.textContent!.trim());
@@ -97,8 +94,8 @@ describe('unfinished task attention', () => {
       expect(item(container, 'meeting').dataset.attention).toBe('ended');
       const work = item(container, 'work');
       expect(work.dataset.attention).toBe('ended');
-      if (container === view.page) fireEvent.click(within(work).getByRole('button', { name: '继续写报告 的更多操作' }));
-      expect(within(work).getByRole(container === view.page ? 'menuitem' : 'button', { name: '查看安排' })).toBeTruthy();
+      fireEvent.click(within(work).getByRole('button', { name: '继续写报告 的更多操作' }));
+      expect(within(work).getByRole('menuitem', { name: '查看安排' })).toBeTruthy();
       fireEvent.click(within(work).getByRole('button', { name: '重新安排' }));
       expect(view.schedule).toHaveBeenLastCalledWith('work', 'past-work');
     }
@@ -125,7 +122,7 @@ describe('unfinished task attention', () => {
       expect(view.schedule).toHaveBeenLastCalledWith('recurring', 'past');
       expect(item(container, 'work').dataset.attention).toBeUndefined();
     }
-    fireEvent.click(within(item(view.rail, 'recurring')).getByRole('button', { name: '完成任务 活动室值班' }));
+    fireEvent.click(within(item(view.page, 'recurring')).getByRole('checkbox', { name: '完成 活动室值班' }));
     expect(view.mutate).toHaveBeenLastCalledWith([{ type: 'finishTask', id: 'recurring', expectedVersion: 1, completed: true }]);
     fireEvent.click(within(view.page).getByRole('button', { name: '全部' }));
     expect([...titles(view.page)].sort()).toEqual(snapshot.tasks.map(task => task.title).sort());

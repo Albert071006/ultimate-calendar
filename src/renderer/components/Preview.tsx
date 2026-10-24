@@ -1,7 +1,7 @@
 import type { Block, Entity, MutationResult } from "../../shared/contracts";
 import { effectiveActivityEnd } from '../../domain/activity-duration';
 import { displayInstant } from "../calendar-layout";
-import { entityNames } from "./DetailPanel";
+import { entityNames } from "./detail/records";
 const labels: Record<string, string> = {
   title: "名称",
   description: "说明",

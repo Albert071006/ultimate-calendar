@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { BlockSchema, MutationRequestSchema, SnapshotSchema, TaskSchema, type DesktopAPI, type MutationInput, type Snapshot } from '../shared/contracts';
 import { createRepository, type Repository } from '../storage/repository';
 import { createPlanner } from '../domain/planner';
-import { EntityEditor, type EditorTarget } from './components/DetailPanel';
+import { EntityEditor, type EditorTarget } from './components/editor/EntityEditor';
 import { Preview } from './components/Preview';
 import type { PlannerUI } from './hooks/usePlanner';
 import { nextTaskEvent, taskEventSummary, taskEvents } from './task-schedule';

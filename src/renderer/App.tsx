@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 import type { CourseImportResult, DesktopAPI, Source } from "../shared/contracts";
 import type { HostCapabilities, PlannerClient } from "../shared/client";
@@ -15,7 +15,10 @@ import { Assistant } from "./components/shell/Assistant";
 import { Calendar, type Selection, type ScheduleDraft } from "./components/Calendar";
 import { Inbox } from "./components/Inbox";
 import { LedgerPage } from "./components/LedgerPage";
-import { DetailPanel, EntityEditor, type EditorTarget, entityNames } from "./components/DetailPanel";
+import { EntityEditor, type EditorTarget } from "./components/editor/EntityEditor";
+import { EditPanel } from "./components/editor/EditPanel";
+import { DetailPopover } from "./components/detail/DetailPopover";
+import { entityNames } from "./components/detail/records";
 import { ImportDialog, SourceViewer } from "./components/ImportDialog";
 import { Modal } from "./components/Modal";
 import { Preview } from "./components/Preview";
@@ -47,7 +50,21 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
     [importing, setImporting] = useState(false),
     [coursePreview, setCoursePreview] = useState<CourseImportResult | undefined>(),
     [sourceId, setSourceId] = useState<string | null>(null),
-    [drawerOpen, setDrawerOpen] = useState(true);
+    [drawerOpen, setDrawerOpen] = useState(true),
+    [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const pointer = useRef<{ target: Element; at: number } | null>(null);
+  useEffect(() => {
+    const down = (event: PointerEvent) => { pointer.current = { target: event.target as Element, at: Date.now() }; };
+    document.addEventListener("pointerdown", down, true);
+    return () => document.removeEventListener("pointerdown", down, true);
+  }, []);
+  /** The item a selection came from, so the detail card opens beside it; keyboard selections use the focused control. */
+  const anchorRect = () => {
+    const recent = pointer.current && Date.now() - pointer.current.at < 1000 ? pointer.current.target : null;
+    const active = document.activeElement !== document.body ? document.activeElement : null;
+    const node = (recent ?? active)?.closest(".timeline-event, .timeline-point, .marker, .month-item, .a2-task-row, .a2-card, button, [role=button]");
+    return node && !node.closest(".a2-pop") ? node.getBoundingClientRect() : null;
+  };
   const openMe = (section: MeSection) => { setMeSection(section); setPage("me"); };
   useEffect(
     () =>
@@ -57,6 +74,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
           return;
         }
         setSelected(event);
+        setAnchor(null);
         if (event.entity === "goal") openMe("goals");
         else if (event.entity === "preference" || event.entity === "feedback") openMe("ai");
         else setPage(event.entity === "candidate" ? "inbox" : event.entity === "task" ? "today" : "calendar");
@@ -69,16 +87,21 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
       setSourceId(s.id);
       return;
     }
+    setAnchor(anchorRect());
     setSelected(s);
   };
+  const editRecord = (target: EditorTarget) => {
+    setSelected(null);
+    setEditor(target);
+  };
   const schedule = (draft: ScheduleDraft) =>
-    setEditor({ entity: "block", id: draft.blockId, draft });
+    editRecord({ entity: "block", id: draft.blockId, draft });
   const scheduleTask = (taskId: string, blockId?: string) => {
     if (!snapshot) return;
     const arrangements = taskArrangements(snapshot, taskId);
     const event = blockId ? arrangements.find(block => block.id === blockId && !block.cancelled) : nextTaskArrangement(arrangements, Date.now());
     if (event) {
-      setEditor({ entity: 'block', id: event.id });
+      editRecord({ entity: 'block', id: event.id });
     } else if (arrangements.length || blockId) {
       setSelected({ entity: 'task', id: taskId });
     } else {
@@ -95,7 +118,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
     if (!snapshot) return;
     const event = taskEvents(snapshot, taskId).find(value => !value.cancelled && Date.parse(effectiveActivityEnd(value.start, value.end)) > Date.now());
     const timing = event ?? taskNoticeTiming(snapshot, taskId);
-    setEditor({ entity: 'block', recurring: true, draft: {
+    editRecord({ entity: 'block', recurring: true, draft: {
       taskId, date: timing?.start.slice(0, 10) ?? todayDate(), time: timing?.start.slice(11, 16) ?? '09:00',
       kind: 'event', location: timing?.location ?? '',
     } });
@@ -106,17 +129,22 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
   };
   const editSelected = () => {
     if (selected && ["task", "block", "goal", "course", "candidate"].includes(selected.entity))
-      setEditor({ ...selected, entity: selected.entity as EditorTarget["entity"] });
+      editRecord({ ...selected, entity: selected.entity as EditorTarget["entity"] });
   };
   const keySettings = () => {
     setImporting(false);
     setSourceId(null);
     openMe("ai");
   };
-  const taskActions = { select, editTask: (id: string) => setEditor({ entity: 'task', id }), schedule: scheduleTask, scheduleRecurring: scheduleRecurringTask, removeTask };
-  const detail = snapshot && (
-    <DetailPanel snapshot={snapshot} selection={selected} edit={editSelected} editTask={taskActions.editTask}
-      close={() => setSelected(null)} schedule={scheduleTask} scheduleRecurring={scheduleRecurringTask} removeTask={removeTask} ui={ui} />
+  const taskActions = { select, editTask: (id: string) => editRecord({ entity: 'task', id }), schedule: scheduleTask, scheduleRecurring: scheduleRecurringTask, removeTask };
+  const detail = (docked: boolean) => snapshot && selected && (
+    <DetailPopover key={`${selected.entity}:${selected.id}:${selected.occurrenceDate ?? ''}`} snapshot={snapshot} selection={selected} anchor={anchor} docked={docked} ui={ui}
+      close={() => setSelected(null)} actions={{ ...taskActions, edit: editSelected }} />
+  );
+  const editPanel = (overlay: boolean) => snapshot && editor && (
+    <EditPanel overlay={overlay} title={editor.recurring ? '重复安排' : `${editor.id ? "编辑" : "新建"}${entityNames[editor.entity]}`} onClose={() => setEditor(null)}>
+      <EntityEditor key={`${editor.entity}:${editor.id ?? "new"}:${editor.recurring ? 'recurring' : ''}:${editor.draft ? JSON.stringify(editor.draft) : ''}`} target={editor} snapshot={snapshot} ui={ui} onClose={() => setEditor(null)} />
+    </EditPanel>
   );
   const source = snapshot?.sources.find((s) => s.id === sourceId);
   return (
@@ -144,26 +172,26 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
             )}
             <div className="a2-page-slot">
               {page === "today" && (
-                <Today snapshot={snapshot} ui={ui} pendingCount={pending} create={() => setEditor({ entity: "task" })} openInbox={() => setPage("inbox")}
+                <Today snapshot={snapshot} ui={ui} pendingCount={pending} create={() => editRecord({ entity: "task" })} openInbox={() => setPage("inbox")}
                   openCandidate={(id) => { setSelected({ entity: "candidate", id }); setPage("inbox"); }}
-                  openRecord={(target) => setEditor(target)} goCalendar={() => setPage("calendar")} {...taskActions}
-                  detail={selected ? detail : undefined} />
+                  openRecord={editRecord} goCalendar={() => setPage("calendar")} {...taskActions} />
               )}
               {page === "calendar" && (
                 <Calendar snapshot={snapshot} date={date} setDate={setDate} select={select} schedule={schedule} ui={ui}
+                  edit={(s) => { if (["task", "block", "course", "candidate"].includes(s.entity)) editRecord({ ...s, entity: s.entity as EditorTarget["entity"] }); }}
                   courses={() => { setCoursePreview(undefined); openMe("courses"); }}
                   drawerOpen={drawerOpen} toggleDrawer={() => setDrawerOpen(open => !open)} unscheduledCount={unscheduledTasks(snapshot, now).length}
-                  side={selected ? detail : drawerOpen ? <UnscheduledDrawer snapshot={snapshot} ui={ui} now={now} collapse={() => setDrawerOpen(false)} actions={taskActions} /> : null} />
+                  side={editor ? editPanel(false) : drawerOpen ? <UnscheduledDrawer snapshot={snapshot} ui={ui} now={now} collapse={() => setDrawerOpen(false)} actions={taskActions} /> : null} />
               )}
               {page === "inbox" && (
                 <div className="a2-page">
                   <PageToolbar title="待判断" ui={ui} />
                   <div className="a2-legacy-body">
                     <div className="main-content">
-                      <Inbox snapshot={snapshot} ui={ui} select={select} edit={(id) => setEditor({ entity: "candidate", id })}
+                      <Inbox snapshot={snapshot} ui={ui} select={select} edit={(id) => editRecord({ entity: "candidate", id })}
                         importMessage={() => setImporting(true)} openSource={setSourceId} />
                     </div>
-                    {detail}
+                    {detail(true)}
                   </div>
                 </div>
               )}
@@ -177,9 +205,11 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
               )}
               {page === "me" && (
                 <MePage snapshot={snapshot} ui={ui} section={meSection} setSection={setMeSection} updates={updates} select={select}
-                  edit={setEditor} openSource={setSourceId} coursePreview={coursePreview} captureReference={captureReference} />
+                  edit={editRecord} openSource={setSourceId} coursePreview={coursePreview} captureReference={captureReference} />
               )}
+              {page !== "calendar" && editPanel(true)}
             </div>
+            {page !== "inbox" && !editor && detail(false)}
             <Assistant ui={ui} selected={selected} date={date} domain={page === "ledger" ? "ledger" : undefined} />
           </>
         )}
@@ -190,14 +220,6 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
           {importing && (
             <Modal title="导入消息" onClose={() => setImporting(false)}>
               <ImportDialog ui={ui} onClose={() => setImporting(false)} settings={keySettings} />
-            </Modal>
-          )}
-          {editor && (
-            <Modal
-              title={editor.recurring ? '重复安排' : `${editor.id ? "编辑" : "新建"}${entityNames[editor.entity]}`}
-              onClose={() => setEditor(null)}
-            >
-              <EntityEditor key={`${editor.entity}:${editor.id ?? "new"}`} target={editor} snapshot={snapshot} ui={ui} onClose={() => setEditor(null)} />
             </Modal>
           )}
           {source && (

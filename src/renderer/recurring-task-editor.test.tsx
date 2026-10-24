@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { BlockSchema, SnapshotSchema, TaskSchema, type DesktopAPI, type Snapshot } from '../shared/contracts';
-import { EntityEditor } from './components/DetailPanel';
+import { EntityEditor } from './components/editor/EntityEditor';
 import type { PlannerUI } from './hooks/usePlanner';
 import { nextTaskEvent, taskEventSummary } from './task-schedule';
 import { App } from './App';

@@ -1,0 +1,34 @@
+/* Side edit panel: takes the drawer's place beside the calendar, or slides over other pages. */
+.a2-edit { width: 380px; min-height: 0; display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--line); }
+.a2-edit.overlay { position: absolute; z-index: 30; top: 0; right: 0; bottom: 0; border-left-color: var(--ink); box-shadow: var(--overlay-shadow); }
+.a2-edit-h { display: flex; align-items: center; gap: 8px; padding: 14px 12px 12px 18px; border-bottom: 1px solid var(--line); }
+.a2-edit-h h2 { flex: 1; margin: 0; font-family: var(--font-display); font-size: 16px; font-weight: 600; }
+.a2-edit-b { flex: 1; min-height: 0; overflow: auto; padding: 16px 18px 18px; }
+
+.a2-edit .editor-form { gap: 14px; font-size: 13px; }
+.a2-edit .editor-form label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--ink-2); }
+.a2-edit .editor-form label.check { flex-direction: row; align-items: center; gap: 7px; color: var(--ink); }
+.a2-edit .editor-form input:not([type="checkbox"]), .a2-edit .editor-form select, .a2-edit .editor-form textarea {
+  width: 100%; min-height: 32px; padding: 5px 8px; font: inherit; font-size: 13px; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius);
+}
+.a2-edit .editor-form textarea { min-height: 64px; resize: vertical; }
+.a2-edit .editor-form input[readonly] { background: var(--surface-2); color: var(--ink-2); }
+.a2-edit .editor-form :is(input, select, textarea):focus-visible { outline: 2px solid var(--ink); outline-offset: 0; border-color: var(--ink); }
+.a2-edit .editor-form input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+.a2-edit .form-grid { gap: 12px; }
+.a2-edit fieldset { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; gap: 10px; }
+.a2-edit legend { font-size: 11.5px; color: var(--ink-3); padding: 0 4px; }
+.a2-edit .hint { font-size: 11.5px; line-height: 1.6; color: var(--ink-3); margin: 0; }
+.a2-edit .warning { margin: 0; padding: 8px 10px; font-size: 12.5px; line-height: 1.6; color: var(--warn-ink); background: color-mix(in srgb, var(--warn-fill) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--warn-fill) 45%, var(--surface)); border-radius: var(--radius); }
+.a2-edit .warning button { margin-top: 8px; }
+.a2-edit .linked-tasks p { margin: 4px 0 0; color: var(--ink); }
+.a2-edit .exception-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; }
+
+.a2-edit .form-footer { position: sticky; bottom: -18px; margin: 4px -18px -18px; padding: 12px 18px; background: var(--surface); border-top: 1px solid var(--line); }
+.a2-edit .editor-form button { height: 30px; padding: 0 12px; font: inherit; font-size: 12.5px; color: var(--ink); background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); cursor: pointer; }
+.a2-edit .editor-form button:hover { background: var(--surface-2); }
+.a2-edit .editor-form button.primary { color: #fff; background: var(--accent); border-color: var(--accent); }
+.a2-edit .editor-form button.danger { color: #fff; background: var(--warn-fill); border-color: var(--warn-fill); }
+.a2-edit .editor-form button.danger-text { color: var(--accent); border-color: transparent; background: transparent; }
+.a2-edit .editor-form button:disabled { opacity: 0.45; cursor: default; }

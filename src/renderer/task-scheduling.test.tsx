@@ -119,7 +119,7 @@ describe('scheduling accepted tasks with existing activity times', () => {
     render(<App api={api} />);
     const row = await taskRow();
     fireEvent.click(within(row).getByRole('button', { name: '参加学院讲座' }));
-    const details = screen.getByRole('heading', { name: '任务', level: 3 }).closest('aside')!;
+    const details = screen.getByRole('complementary', { name: '任务详情' });
     fireEvent.click(within(details).getByRole('button', { name: '调整时间' }));
     const dialog = await screen.findByRole('dialog', { name: '编辑时段' });
     expect(field(dialog, '开始').value).toBe('2026-11-06T15:35');
@@ -159,7 +159,7 @@ describe('scheduling accepted tasks with existing activity times', () => {
     expect(field(dialog, '开始').value).toBe('2026-11-06T15:35');
     fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
     fireEvent.click(within(row).getByRole('button', { name: '参加学院讲座' }));
-    const details = screen.getByRole('heading', { name: '任务', level: 3 }).closest('aside')!;
+    const details = screen.getByRole('complementary', { name: '任务详情' });
     const choices = within(details).getAllByRole('button', { name: '调整时间' });
     expect(choices).toHaveLength(2);
     expect(within(details).getByText(/执行时段 · 学院讲座答疑/)).toBeTruthy();
