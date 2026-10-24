@@ -1,6 +1,7 @@
 import type { AppUpdater } from 'electron-updater';
 import type { ApiError, ApiResult } from '../shared/contracts';
 import { UpdateStateSchema, type UpdateState } from '../shared/update';
+import { updateError, updateFailure } from './update-errors';
 
 export const OFFICIAL_UPDATE_SOURCE = Object.freeze({ provider: 'github' as const, owner: 'Albert071006', repo: 'ultimate-calendar', private: false, channel: 'latest' });
 export type UpdateDriver = Pick<AppUpdater, 'autoDownload' | 'autoInstallOnAppQuit' | 'autoRunAppAfterInstall' | 'allowDowngrade' | 'allowPrerelease' | 'disableWebInstaller' | 'forceDevUpdateConfig' | 'netSession' | 'setFeedURL' | 'checkForUpdates' | 'downloadUpdate' | 'on' | 'removeListener'> & {
@@ -52,6 +53,11 @@ export function createUpdateService(options: UpdateOptions) {
   let recovering: Promise<void> | null = null;
   let driverGeneration = 0;
   let abortNetwork: (() => void) | null = null, downloadAdvanced: (() => void) | null = null;
+  let abortBackoff: (() => void) | null = null;
+  let connectionReset: Promise<void> = Promise.resolve();
+  let readyVersion: string | null = null, recheckedVersion: string | null = null;
+  let recheckingDriver: UpdateDriver | null = null;
+  let downloadToken: Parameters<UpdateDriver['downloadUpdate']>[0];
   const now = options.now ?? (() => new Date());
   const snapshot = (): UpdateState => ({ ...state });
   const success = (): ApiResult<UpdateState> => ({ ok: true, data: snapshot() });
@@ -63,25 +69,61 @@ export function createUpdateService(options: UpdateOptions) {
   function discardNetworkDriver() {
     driverGeneration++;
     const previous = updater; updater = null;
+    readyVersion = null;
+    const token = downloadToken; downloadToken = undefined;
+    token?.cancel();
     // This is electron-updater's dedicated session, not the app/AI/QQ network session.
-    try { void previous?.netSession.closeAllConnections().catch(() => {}); } catch { /* Keep the failed driver detached. */ }
+    // Wait for the reset before starting another request on this shared partition.
+    if (previous) connectionReset = connectionReset.then(() => previous.netSession.closeAllConnections()).catch(() => {});
   }
-  function boundedNetwork<T>(work: () => Promise<T>, idleMilliseconds: number, isDownload = false): Promise<T> {
+  function boundedNetwork<T>(work: (active: () => boolean) => Promise<T>, idleMilliseconds: number, isDownload = false): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       let idle: ReturnType<typeof setTimeout>, total: ReturnType<typeof setTimeout> | undefined, ended = false;
       const cleanup = () => { clearTimeout(idle); if (total) clearTimeout(total); abortNetwork = null; downloadAdvanced = null; };
       const abort = () => {
         if (ended) return; ended = true; cleanup(); discardNetworkDriver();
-        downloaded = false; update({ latestVersion: null, releaseNotes: '', progressPercent: null });
-        reject(Error('update network timeout'));
+        downloaded = false;
+        reject(updateError(stopped ? 'UPDATE_CANCELLED' : 'UPDATE_NETWORK_TIMEOUT'));
       };
       const resetIdle = () => { clearTimeout(idle); idle = setTimeout(abort, idleMilliseconds); };
       resetIdle(); abortNetwork = abort;
       if (isDownload) { downloadAdvanced = resetIdle; total = setTimeout(abort, 2 * 60 * 60 * 1000); }
-      Promise.resolve().then(work).then(value => {
+      Promise.resolve().then(() => work(() => !ended && !stopped)).then(value => {
         if (ended) return; ended = true; cleanup(); resolve(value);
       }, error => { if (ended) return; ended = true; cleanup(); reject(error); });
     });
+  }
+  async function prepareNetwork(driver: UpdateDriver, active: () => boolean) {
+    await connectionReset;
+    if (!active()) throw updateError('UPDATE_CANCELLED');
+    // Refresh only the updater's system-proxy settings, including changes since launch.
+    await driver.netSession.setProxy({ mode: 'system' });
+    if (!active()) throw updateError('UPDATE_CANCELLED');
+    await driver.netSession.forceReloadProxyConfig();
+    if (!active()) throw updateError('UPDATE_CANCELLED');
+  }
+  function backoff(milliseconds: number) {
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => { abortBackoff = null; resolve(); }, milliseconds);
+      abortBackoff = () => { clearTimeout(timer); abortBackoff = null; reject(updateError('UPDATE_CANCELLED')); };
+      if (stopped) abortBackoff();
+    });
+  }
+  async function retryNetwork(work: () => Promise<void>, downloading: boolean) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (stopped) throw updateError('UPDATE_CANCELLED');
+      try { await work(); return; }
+      catch (error) {
+        // Detach the failed generation before any late result can make it installable.
+        if (updater) discardNetworkDriver();
+        downloaded = false;
+        const problem = updateFailure(error);
+        if (stopped || !problem.retryable || attempt === 3) throw error;
+        update({ status: downloading ? 'downloading' : 'checking', progressPercent: downloading ? 0 : null,
+          message: `${problem.message.replace(/，请.*$/, '')}，正在自动重试（${attempt + 1}/3）…` });
+        await backoff(attempt * 1000);
+      }
+    }
   }
   function recoverInstall(message: string): Promise<void> {
     if (recovering) return recovering;
@@ -108,25 +150,30 @@ export function createUpdateService(options: UpdateOptions) {
     driver.disableWebInstaller = true;
     driver.setFeedURL(OFFICIAL_UPDATE_SOURCE);
     driver.on('update-available', info => {
-      if (!current() || operation !== 'check') return;
+      if (!current()) return;
+      if (operation === 'download' && recheckingDriver === driver) { recheckedVersion = info.version; return; }
+      if (operation !== 'check') return;
       if (!newerStable(info.version, options.currentVersion)) {
         update({ status: 'idle', latestVersion: null, releaseNotes: '', progressPercent: null, checkedAt: now().toISOString(), message: '当前已是最新正式版本。' }); return;
       }
       downloaded = false;
+      readyVersion = info.version;
       update({ status: 'available', latestVersion: info.version, releaseNotes: notes(info.releaseNotes), progressPercent: null, checkedAt: now().toISOString(), message: `发现新版本 ${info.version}，可以下载更新。` });
     });
-    driver.on('update-not-available', () => {
-      if (!current() || operation !== 'check') return;
+    driver.on('update-not-available', info => {
+      if (!current()) return;
+      if (operation === 'download' && recheckingDriver === driver) { recheckedVersion = info.version; return; }
+      if (operation !== 'check') return;
       downloaded = false;
       update({ status: 'idle', latestVersion: null, releaseNotes: '', progressPercent: null, checkedAt: now().toISOString(), message: '当前已是最新正式版本。' });
     });
     driver.on('download-progress', info => {
-      if (!current() || operation !== 'download' || !Number.isFinite(info.percent)) return;
+      if (!current() || operation !== 'download' || recheckingDriver === driver || !Number.isFinite(info.percent)) return;
       if (info.percent > (state.progressPercent ?? 0)) downloadAdvanced?.();
       update({ status: 'downloading', progressPercent: Math.min(100, Math.max(0, info.percent)), message: '正在下载更新，可以继续使用日历。' });
     });
     driver.on('update-downloaded', info => {
-      if (!current() || operation !== 'download' || info.version !== state.latestVersion || !newerStable(info.version, options.currentVersion)) return;
+      if (!current() || operation !== 'download' || recheckingDriver === driver || readyVersion !== info.version || info.version !== state.latestVersion || !newerStable(info.version, options.currentVersion)) return;
       // electron-updater emits this only after download and checksum/signature checks finish.
       downloaded = true;
       update({ status: 'downloaded', progressPercent: 100, message: '更新已下载并通过校验。点击“重启安装”前会先备份本地数据。' });
@@ -135,9 +182,8 @@ export function createUpdateService(options: UpdateOptions) {
       if (!current()) return;
       if (operation === 'install' && !preparing) {
         void recoverInstall('安装程序未能启动，应用保持运行，请重试。');
-      } else if (operation === 'check' || operation === 'download') {
-        update({ status: 'error', message: operation === 'download' ? '更新下载或校验失败，请检查网络后重试下载。' : '暂时无法检查 GitHub 更新，请检查网络后重试。' });
       }
+      // Network errors are handled by the rejected operation promise, including retries.
     });
     updater = driver; return driver;
   }
@@ -145,11 +191,18 @@ export function createUpdateService(options: UpdateOptions) {
     if (!enabled || stopped) return success();
     if (operation || downloaded) return success();
     operation = 'check';
-    update({ status: 'checking', progressPercent: null, message: '正在检查 GitHub 正式发行版…' });
+    update({ status: 'checking', latestVersion: null, releaseNotes: '', progressPercent: null, message: '正在检查 GitHub 正式发行版…' });
     try {
-      await boundedNetwork(() => ensureUpdater().checkForUpdates(), 30_000);
-      if (state.status === 'checking') update({ status: 'error', message: '更新检查未返回完整结果，请稍后重试。' });
-    } catch { update({ status: 'error', checkedAt: now().toISOString(), message: '暂时无法检查 GitHub 更新，请检查网络后重试。' }); }
+      await retryNetwork(async () => {
+        update({ status: 'checking', latestVersion: null, releaseNotes: '' });
+        await boundedNetwork(async active => {
+          const driver = ensureUpdater(); await prepareNetwork(driver, active);
+          const result = await driver.checkForUpdates();
+          if (active()) downloadToken = result?.cancellationToken;
+          if (active() && state.status === 'checking') throw updateError('UPDATE_INCOMPLETE');
+        }, 30_000);
+      }, false);
+    } catch (error) { update({ status: 'error', latestVersion: null, releaseNotes: '', checkedAt: now().toISOString(), message: updateFailure(error).message }); }
     finally { operation = null; }
     return success();
   }
@@ -157,13 +210,33 @@ export function createUpdateService(options: UpdateOptions) {
     if (!enabled || stopped) return failure('VALIDATION', state.message);
     if (operation || downloaded) return success();
     if (!state.latestVersion || !newerStable(state.latestVersion, options.currentVersion)) return failure('VALIDATION', '请先检查是否有可用的新版本。');
+    const expectedVersion = state.latestVersion;
     operation = 'download';
     update({ status: 'downloading', progressPercent: 0, message: '正在下载更新，可以继续使用日历。' });
     try {
-      await boundedNetwork(() => ensureUpdater().downloadUpdate(), 120_000, true);
-      if (!downloaded) update({ status: 'error', message: '下载未完成或未通过校验，请重新下载。' });
-    } catch { downloaded = false; update({ status: 'error', progressPercent: null, message: state.latestVersion ? '更新下载或校验失败，请检查网络后重试下载。' : '更新下载长时间没有进展，请检查网络后重新检查更新。' }); }
-    finally { operation = null; }
+      await retryNetwork(async () => {
+        await boundedNetwork(async active => {
+          const driver = ensureUpdater(); await prepareNetwork(driver, active);
+          if (readyVersion !== expectedVersion) {
+            recheckedVersion = null; recheckingDriver = driver;
+            try {
+              const result = await driver.checkForUpdates();
+              if (active()) downloadToken = result?.cancellationToken;
+            } finally { if (recheckingDriver === driver) recheckingDriver = null; }
+            if (!active()) throw updateError('UPDATE_CANCELLED');
+            if (recheckedVersion !== expectedVersion) {
+              update({ latestVersion: null, releaseNotes: '' });
+              throw updateError(recheckedVersion === null ? 'UPDATE_INCOMPLETE' : 'UPDATE_RELEASE_CHANGED');
+            }
+            readyVersion = expectedVersion;
+          }
+          if (!active()) throw updateError('UPDATE_CANCELLED');
+          await driver.downloadUpdate(downloadToken);
+          if (active() && !downloaded) throw updateError('UPDATE_INCOMPLETE');
+        }, 120_000, true);
+      }, true);
+    } catch (error) { downloaded = false; update({ status: 'error', progressPercent: null, message: updateFailure(error).message }); }
+    finally { recheckingDriver = null; operation = null; }
     return success();
   }
   async function installUpdate(): Promise<ApiResult<UpdateState>> {
@@ -211,6 +284,7 @@ export function createUpdateService(options: UpdateOptions) {
       if (poll) clearInterval(poll);
       if (installWatchdog) clearTimeout(installWatchdog);
       abortNetwork?.();
+      abortBackoff?.();
       // Keep the guarded error listener: a late request failure must not become an unhandled EventEmitter error during shutdown.
     },
   };
