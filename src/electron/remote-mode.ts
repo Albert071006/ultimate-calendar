@@ -33,7 +33,9 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
     }
     const journal = createWriteJournal(client, join(directory, 'remote-write.json'));
     const sourceCache = createRemoteSourceCache(directory);
+    // Same frame as the local window: the paper page runs to the top, with only the system caption buttons overlaid.
     const window = new BrowserWindow({ width: 1440, height: 940, minWidth: 980, minHeight: 680, show: false, title: '终极日历 · 云端资料', backgroundColor: '#f5f0e6', icon: join(__dirname, '../assets/app-icon.png'),
+      titleBarStyle: 'hidden', titleBarOverlay: { color: '#f5f0e6', symbolColor: '#1f1c18', height: 32 },
       webPreferences: { preload: join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, spellcheck: false, devTools: !app.isPackaged } });
     const changed = () => { if (!window.isDestroyed()) window.webContents.send('planner:changed', { reason: 'mutation' }); };
     let activeRequests = 0;
@@ -147,7 +149,8 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
       } catch (error) { await dialog.showMessageBox(window, { type: 'error', message: error instanceof RemoteClientError ? error.message : '核对未完成，原操作保护仍然保留' }); }
       finally { inspecting = false; }
     };
-    Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: '终极日历', submenu: [ { label: '刷新共用资料', click: changed }, { label: '核对云端操作', click: () => { void inspect(); } }, { type: 'separator' }, { role: 'quit' } ] }]));
+    Menu.setApplicationMenu(null);
+    shell.setTrayItems([{ label: '刷新共用资料', click: changed }, { label: '核对云端操作', click: () => { void inspect(); } }]);
     // Canonical snapshots are fetched by the existing client on this event. No local DB or QQ socket is opened.
     const poll = setInterval(() => { if (window.isVisible() && !window.isMinimized()) { changed(); void collector?.invoke('captureSnapshot').then(result => { if (result.ok && !window.isDestroyed()) window.webContents.send('planner:capture-changed', result.data); }).catch(() => {}); } }, 30_000);
     window.on('focus', changed);

@@ -15,7 +15,7 @@ vi.mock('electron',async()=>{
 });
 vi.mock('../remote/node-client',async importOriginal=>({...await importOriginal<typeof import('../remote/node-client')>(),createNodeRemoteClient:mock.createClient}));
 vi.mock('../remote/write-journal',()=>({createWriteJournal:()=>mock.journal}));
-vi.mock('./remote-desktop-shell',()=>({createRemoteDesktopShell:()=>({handle:async()=>null,snapshot:(value:unknown)=>value,saveDeviceSettings:vi.fn(),isInstalling:()=>false,close:vi.fn()})}));
+vi.mock('./remote-desktop-shell',()=>({createRemoteDesktopShell:()=>({handle:async()=>null,snapshot:(value:unknown)=>value,saveDeviceSettings:vi.fn(),isInstalling:()=>false,close:vi.fn(),setTrayItems:(items:typeof mock.menu)=>{mock.menu=items;}})}));
 import { startNativeRemote } from './remote-mode';
 import { RemoteClientError } from '../remote/node-client';
 
@@ -34,7 +34,7 @@ describe('native cloud-mode boundary',()=>{
     expect(await mock.handlers.get('planner:selectImage')!(event,undefined)).toEqual({ok:true,data:null});expect(mock.openImage).toHaveBeenCalledTimes(1);
   });
   it('keeps the menu recovery guard unless the user explicitly confirms the acknowledgement',async()=>{
-    const f=fixture(),runtime=await startNativeRemote(f.config,f.directory,f.document);closers.push(runtime.close);const inspect=mock.menu[0]!.submenu!.find(item=>item.label==='核对云端操作')!.click!;
+    const f=fixture(),runtime=await startNativeRemote(f.config,f.directory,f.document);closers.push(runtime.close);const inspect=(mock.menu as {label?:string;click?:()=>void}[]).find(item=>item.label==='核对云端操作')!.click!;
     inspect();await vi.waitFor(()=>expect(mock.message).toHaveBeenCalledTimes(1));expect(mock.message.mock.calls[0]![1]).toMatchObject({defaultId:0,cancelId:0,buttons:['保留保护','已核对资料，解除保护']});expect(mock.journal.acknowledge).not.toHaveBeenCalled();
     mock.message.mockResolvedValue({response:1});inspect();await vi.waitFor(()=>expect(mock.journal.acknowledge).toHaveBeenCalledWith('synthetic-unresolved'));
   });

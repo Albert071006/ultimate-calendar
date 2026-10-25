@@ -1,4 +1,4 @@
-import { app, Menu, nativeImage, Notification, powerMonitor, Tray, type BrowserWindow } from 'electron';
+import { app, Menu, nativeImage, Notification, powerMonitor, Tray, type BrowserWindow, type MenuItemConstructorOptions } from 'electron';
 import { NsisUpdater } from 'electron-updater';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -155,11 +155,13 @@ export function createRemoteDesktopShell(options: Options) {
     app.removeListener('before-quit', beforeQuit); powerMonitor.removeListener('resume', onResume);
   }
   // Isolated smoke profiles neither alter Windows startup nor create background processes or OS notifications.
+  // The window has no menu bar, so cloud commands (refresh, operation review) live in the tray menu instead.
+  const trayMenu = (extra: MenuItemConstructorOptions[] = []) => Menu.buildFromTemplate([{ label: '打开终极日历', click: show }, { label: '刷新提醒', click: onResume },
+    ...extra, { type: 'separator' }, { label: '退出日历（QQ 采集继续运行）', click: () => { quitting = true; app.quit(); } }]);
   if (production) {
     tray = new Tray(nativeImage.createFromPath(join(__dirname, '../assets/app-icon.ico')));
     tray.setToolTip('终极日历 · 云端资料');
-    tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开终极日历', click: show }, { label: '刷新提醒', click: onResume }, { type: 'separator' },
-      { label: '退出日历（QQ 采集继续运行）', click: () => { quitting = true; app.quit(); } }]));
+    tray.setContextMenu(trayMenu());
     tray.on('double-click', show); applyAutoLaunch();
     window.on('close', onClose); window.on('focus', onResume); app.on('before-quit', beforeQuit); powerMonitor.on('resume', onResume);
     timer = setInterval(onResume, 30_000); timer.unref(); updates.start();
@@ -169,6 +171,7 @@ export function createRemoteDesktopShell(options: Options) {
   window.once('closed', close);
   return {
     snapshot, saveDeviceSettings, close, isInstalling: updates.isInstalling,
+    setTrayItems(items: MenuItemConstructorOptions[]) { tray?.setContextMenu(trayMenu(items)); },
     async handle(method: string): Promise<ApiResult<unknown> | null> {
       if (method === 'updateSnapshot') return { ok: true, data: updates.snapshot() };
       if (method === 'checkForUpdates') return updates.checkForUpdates();

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AiApiKeySchema, type AiConfigurationStatus } from '../../shared/ai-configuration';
 import type { PlannerUI } from '../hooks/usePlanner';
+import './CloudApiKeySettings.css';
 
 /** The value is submitted once, never kept in component state or read back from the service. */
 export function CloudApiKeySettings({ ui }: { ui: PlannerUI }) {
@@ -91,31 +92,31 @@ export function CloudApiKeySettings({ ui }: { ui: PlannerUI }) {
     }
   }
   const disabled = busy || ui.busy || !status?.editable || needsReview;
+  const state = !status ? 'loading' : status.configured ? 'on' : 'off';
   return <div className="settings-page">
-    <section className="settings-card settings-group" aria-labelledby="cloud-ai-title">
+    <section className="settings-card settings-group cloud-key" aria-labelledby="cloud-ai-title">
       <div className="settings-group-heading"><h3 id="cloud-ai-title">生活助手 API Key</h3><span>DeepSeek · 云端共用</span></div>
-      <p>手机、电脑生活助手和 QQ 提炼共用这份密钥。在任一端修改一次，其他端会自动更新；电脑离线时会在重新连接后补同步。</p>
-      <p className={status?.configured ? 'success' : 'hint'}>
-        {status ? status.configured ? '云端已配置 · 不显示完整密钥' : '云端尚未配置 API Key' : '正在读取云端配置…'}
-      </p>
+      <p className="ck-lead">手机、电脑的生活助手和 QQ 提炼共用这一份密钥，任一端修改后其他端自动更新。</p>
+      <div className="ck-status">
+        <i className={`ck-dot ${state}`} aria-hidden="true" />
+        <strong>{status ? status.configured ? '云端已配置 · 不显示完整密钥' : '云端尚未配置 API Key' : '正在读取云端配置…'}</strong>
+        {message && <span role="status" className="ck-note">{message}</span>}
+        <button type="button" className="ui-btn sm ghost" aria-label="重新读取云端配置" disabled={busy || ui.busy} onClick={() => void refresh()}>重新读取</button>
+      </div>
       {status && !status.editable && <p className="warning">密钥由服务器配置管理，当前不能在设备上修改。</p>}
       {error && <p role="alert" className="warning">{error}</p>}
-      {message && <p role="status" className="hint">{message}</p>}
-      <form onSubmit={event => { event.preventDefault(); void save(); }}>
-        <label>API Key<input ref={input} type="password" autoComplete="off" spellCheck={false}
-          disabled={disabled} maxLength={512} placeholder={status?.configured ? '填写新的 Key 可替换云端配置' : '输入 DeepSeek API Key'} /></label>
-        <div className="toolbar">
-          <button className="primary" type="submit" disabled={disabled}>保存云端密钥</button>
-          <button type="button" disabled={busy || ui.busy} onClick={() => void refresh()}>重新读取云端配置</button>
-          <button type="button" disabled={disabled || !status?.configured} onClick={() => setConfirmClear(true)}>清除云端密钥</button>
-        </div>
+      <form className="ck-form" onSubmit={event => { event.preventDefault(); void save(); }}>
+        <input ref={input} type="password" aria-label="API Key" autoComplete="off" spellCheck={false}
+          disabled={disabled} maxLength={512} placeholder={status?.configured ? '填写新的 Key 可替换云端配置' : '输入 DeepSeek API Key'} />
+        <button className="ui-btn primary" type="submit" aria-label="保存云端密钥" disabled={disabled}>保存</button>
+        <button type="button" className="ui-btn ghost ck-clear" disabled={disabled || !status?.configured} onClick={() => setConfirmClear(true)}>清除云端密钥</button>
       </form>
-      {confirmClear && <div role="group" aria-label="确认清除云端密钥" className="warning">
-        <p>清除后，手机和电脑的生活助手都需要重新配置密钥才能使用；本机 QQ 提炼密钥也会同步清除。</p>
-        <div className="toolbar"><button type="button" disabled={disabled} onClick={() => void save(true)}>确认清除两端共用密钥</button>
-          <button type="button" disabled={busy} onClick={() => setConfirmClear(false)}>取消</button></div>
+      {confirmClear && <div role="group" aria-label="确认清除云端密钥" className="ck-confirm">
+        <p>清除后，手机和电脑的生活助手都要重新填写密钥才能使用，这台电脑上 QQ 提炼用的密钥也会一起清除。</p>
+        <div className="ck-buttons"><button type="button" className="ui-btn sm" disabled={busy} onClick={() => setConfirmClear(false)}>取消</button>
+          <button type="button" className="ui-btn sm primary" disabled={disabled} onClick={() => void save(true)}>确认清除两端共用密钥</button></div>
       </div>}
-      <p className="fine-print">密钥不回填、不进入日历备份或操作历史。QQ 提炼只在这台已授权的采集电脑接收并加密保存密钥；QQ 原文和附件仍留在本机。</p>
+      <p className="ck-fine">密钥保存后不会再显示，也不会进入日历备份或操作历史；QQ 原文和附件仍只留在这台电脑。</p>
     </section>
   </div>;
 }
