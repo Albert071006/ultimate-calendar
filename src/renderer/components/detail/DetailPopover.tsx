@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Check, Pencil, Trash2, X } from "lucide-react";
+import { Check, FileOutput, Pencil, Trash2, X } from "lucide-react";
 import { mondayWeekday, type Block, type Candidate, type Course, type Goal, type ReminderConfig, type Snapshot, type Task } from "../../../shared/contracts";
 import type { PlannerUI } from "../../hooks/usePlanner";
 import type { Selection } from "../Calendar";
@@ -24,6 +24,7 @@ export interface DetailActions {
   schedule: (id: string, blockId?: string) => void;
   scheduleRecurring?: (id: string) => void;
   removeTask: (id: string) => void;
+  exportGoal?: (id: string) => void;
 }
 
 const weekdays = ["一", "二", "三", "四", "五", "六", "日"];
@@ -228,7 +229,7 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
         <dt>任务</dt><dd>{linked.length ? `${linked.filter(task => task.status === "done").length} / ${linked.length} 已完成` : "暂无关联任务"}</dd>
       </dl>
     </>;
-    footer = editButton;
+    footer = <>{editButton}{!mobile && actions.exportGoal && <button className="ui-btn sm" onClick={() => actions.exportGoal!(goal.id)}><FileOutput aria-hidden="true" />导出给外部智能体</button>}</>;
   } else {
     body = "description" in value && value.description ? <p className="a2-pop-desc">{value.description}</p> : null;
   }

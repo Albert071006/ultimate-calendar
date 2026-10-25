@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { GoalInputSchema, TaskInputSchema, InstantSchema, ReminderConfigSchema, TitleSchema, IdSchema, type ApiResult } from './contracts';
 import { ResourceReferenceSchema } from './resources';
+import { PlanBasisSchema } from './plan-context';
 
 export const MAX_PLAN_FILE_BYTES = 1024 * 1024;
 const localId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/, '编号须为 1–80 位字母、数字、点、下划线或短横线');
@@ -18,11 +19,13 @@ const block = z.strictObject({ id: localId, title: TitleSchema, start: InstantSc
 
 /** A file is an immutable creation plan. It never updates/deletes existing user records. */
 export const PlanFileSchema = z.strictObject({
-  format: z.literal('ultimate-calendar-plan'), version: z.literal(1), timezone: z.literal('Asia/Shanghai'),
+  format: z.literal('ultimate-calendar-plan'), version: z.union([z.literal(1), z.literal(2)]), timezone: z.literal('Asia/Shanghai'),
+  basis: PlanBasisSchema.optional(),
   planId: localId, title: TitleSchema,
   resources: z.array(ResourceReferenceSchema).max(500).default([]),
   goals: z.array(goal).max(500).default([]), tasks: z.array(task).max(500).default([]), blocks: z.array(block).max(500).default([]),
 }).superRefine((plan, ctx) => {
+  if ((plan.version === 2) !== Boolean(plan.basis)) ctx.addIssue({ code: 'custom', message: 'v2 必须原样携带上下文 basis；v1 不接受 basis', path: ['basis'] });
   const total = plan.goals.length + plan.tasks.length + plan.blocks.length;
   if (!total || total > 500) ctx.addIssue({ code: 'custom', message: '每份计划需有 1–500 条目标、任务或时段', path: ['tasks'] });
   for (const key of ['goals', 'tasks', 'blocks', 'resources'] as const) {
@@ -42,6 +45,9 @@ export const PlanFileSchema = z.strictObject({
 });
 export type PlanFile = z.infer<typeof PlanFileSchema>;
 export type PlanFileInput = z.input<typeof PlanFileSchema>;
+/** Version-specific schemas for external agents; both pass the same runtime checks. */
+export const PlanFileV1Schema = PlanFileSchema.safeExtend({ version: z.literal(1), basis: z.never().optional() });
+export const PlanFileV2Schema = PlanFileSchema.safeExtend({ version: z.literal(2), basis: PlanBasisSchema });
 
 export const PlanImportRowSchema = z.strictObject({
   kind: z.enum(['goal', 'task', 'block']), localId: localId, title: z.string(),
@@ -52,6 +58,7 @@ export const PlanImportPreviewSchema = z.strictObject({
   token: z.string(), planId: localId, title: z.string(), expiresAt: z.string(),
   rows: z.array(PlanImportRowSchema), conflicts: z.array(z.string()), warnings: z.array(z.string()),
   resources: z.array(ResourceReferenceSchema),
+  canVerifyPending: z.boolean().optional(),
 });
 export type PlanImportPreview = z.infer<typeof PlanImportPreviewSchema>;
 export type PlanImportRow = z.infer<typeof PlanImportRowSchema>;

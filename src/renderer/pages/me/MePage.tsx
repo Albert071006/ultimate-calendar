@@ -22,7 +22,7 @@ const groups: { title: string; host?: boolean; items: [MeSection, string][] }[] 
 
 const settingsSections: MeSection[] = ["ai", "term", "reminders", "data", "update"];
 
-export function MePage({ snapshot, ui, section, setSection, updates, select, edit, openSource, coursePreview, captureReference, remoteSettings }: {
+export function MePage({ snapshot, ui, section, setSection, updates, select, edit, openSource, coursePreview, captureReference, remoteSettings, exportGoal }: {
   snapshot: Snapshot;
   ui: PlannerUI;
   section: MeSection;
@@ -34,6 +34,7 @@ export function MePage({ snapshot, ui, section, setSection, updates, select, edi
   coursePreview?: CourseImportResult;
   captureReference?: NonNullable<Source["captureRef"]>;
   remoteSettings?: ReactNode;
+  exportGoal?: (id: string) => void;
 }) {
   const mobile = useMobile();
   const [showSection, setShowSection] = useState(false);
@@ -59,7 +60,7 @@ export function MePage({ snapshot, ui, section, setSection, updates, select, edi
         </nav>}
         {(!mobile || showSection) && <section className="a2-me-content" aria-label={label}>
           {mobile && <button className="ui-btn ghost mobile-back" onClick={() => setShowSection(false)}>‹ 返回我的</button>}
-          {current === "goals" && <Goals snapshot={snapshot} ui={ui} select={select} create={() => edit({ entity: "goal" })} />}
+          {current === "goals" && <Goals snapshot={snapshot} ui={ui} select={select} create={() => edit({ entity: "goal" })} exportGoal={exportGoal} />}
           {current === "courses" && <CourseEditor key={coursePreview?.sourceId ?? "courses"} snapshot={snapshot} ui={ui} edit={edit} initial={coursePreview} openSource={openSource} />}
           {current === "capture" && <CapturePage ui={ui} initialReference={captureReference} />}
           {current === "ledger" && ui.client && <LedgerRulesSettings api={ui.client} />}

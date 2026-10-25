@@ -9,6 +9,7 @@ import { NsisUpdater } from 'electron-updater';
 import { createRepository, type Repository } from '../storage/repository';
 import { createPlanner } from '../domain/planner';
 import { createNativePlanImport } from './plan-import';
+import { createNativePlanExport, localPlanSource } from './plan-export';
 import { createController } from '../application/controller';
 import { createBackup, automaticBackup, inspectBackupFile } from '../storage/backups';
 import { createSpaceManager } from '../storage/space-management';
@@ -234,12 +235,15 @@ async function start() {
   });
   stopSpace = space.stop;
   const resources = createNativeResourceHost(data, () => window!);
+  const planSource = async () => localPlanSource(data);
+  const planExport = createNativePlanExport({ window: () => window!, snapshot: async () => planner.snapshot(), source: planSource });
   const planImport = createNativePlanImport({ directory: join(data, 'plan-import'), resourceDirectory: data, window: () => window!,
+    source: planSource,
     changed: () => changed({ reason: 'mutation' }), scope: async () => `local:${repo.path}`,
     snapshot: async () => planner.snapshot(), mutate: async input => planner.mutate(MutationRequestSchema.parse(input)),
   });
   const api: Omit<DesktopAPI, 'onChanged' | 'onNavigate' | 'onAccountChanged' | 'onCaptureChanged' | 'onUpdateChanged'> = {
-    ...planImport,
+    ...planImport, ...planExport,
     localSourceEvidence: async request => { const source = repo.snapshot().sources.find(item => item.id === request.sourceId); return source ? { ok: true, data: { sourceId: request.sourceId, match: 'legacy-id', sources: [source] } } : { ok: false, error: { code: 'VALIDATION', message: '本机未找到这份来源', retryable: false } }; },
     spaceSnapshot: async () => ({ ok: true, data: space.snapshot() }),
     spaceConfigure: async policy => ({ ok: true, data: space.configure(policy) }),

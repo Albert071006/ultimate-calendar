@@ -9,6 +9,8 @@ import { PLAN_FILE_EXAMPLE, type PlanFileInput } from '../shared/plan-import';
 import { createPlanImportService } from './service';
 import { createWriteJournal } from '../remote/write-journal';
 import type { NodeRemoteClient } from '../remote/node-client';
+import { buildPlanContext } from './context';
+import { PlanExportRequestSchema, type PlanSource } from '../shared/plan-context';
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); vi.restoreAllMocks(); });
@@ -160,5 +162,118 @@ describe('JSON plan creation coordinator', () => {
     const preview = await f.service.preview(f.plan);
     const results = await Promise.allSettled([f.service.confirm({ token: preview.token }), f.service.confirm({ token: preview.token })]);
     expect(results.map(result => result.status)).toEqual(['fulfilled', 'rejected']); expect(f.planner.snapshot().tasks).toHaveLength(1);
+  });
+});
+
+const contextSource: PlanSource = { kind: 'cloud', dataInstanceId: '33333333-3333-4333-8333-333333333333', generation: 1 };
+function incrementalFixture() {
+  const f = fixture();
+  const goalId = insert(f, [{ type: 'create', entity: 'goal', values: { title: '合成六项学习目标' } }]).changes[0]!.id;
+  const taskIds = Array.from({ length: 6 }, (_, index) => insert(f, [{ type: 'create', entity: 'task', values: { title: `合成任务 ${index + 1}`, goalId } }]).changes[0]!.id);
+  for (let index = 0; index < 2; index++) insert(f, [{ type: 'create', entity: 'block', values: { title: `已有学习 ${index + 1}`, taskId: taskIds[index]!, kind: 'work', start: `2026-11-0${index + 2}T19:00:00+08:00`, end: `2026-11-0${index + 2}T20:00:00+08:00` } }]);
+  const context = buildPlanContext(f.planner.snapshot(), PlanExportRequestSchema.parse({ goalId, fromDate: '2026-11-02', toDate: '2026-11-08' }), contextSource);
+  const plan: PlanFileInput = { format: 'ultimate-calendar-plan', version: 2, timezone: 'Asia/Shanghai', planId: 'synthetic-incremental-v2', title: '补齐后四项任务安排', basis: context.basis,
+    blocks: taskIds.slice(2).map((taskId, index) => ({ id: `extra-${index}`, title: `新增学习 ${index + 3}`, taskId, kind: 'work', start: `2026-11-0${index + 4}T19:00:00+08:00`, end: `2026-11-0${index + 4}T20:00:00+08:00` })) };
+  const source = vi.fn(async (): Promise<PlanSource> => contextSource);
+  const options = { ...f.options, source };
+  return { ...f, options, source, plan, goalId, taskIds, context, service: createPlanImportService(options) };
+}
+
+describe('context-based v2 incremental plans', () => {
+  it('adds four study blocks to six existing tasks without copying the goal/tasks or invalidating its own basis', async () => {
+    const f = incrementalFixture(), preview = await f.service.preview(f.plan);
+    expect(preview.rows.map(row => row.state)).toEqual(['new', 'new', 'new', 'new']);
+    expect(await f.service.confirm({ token: preview.token })).toMatchObject({ status: 'complete', applied: 4, remaining: 0 });
+    const snapshot = f.planner.snapshot(); expect(snapshot.goals).toHaveLength(1); expect(snapshot.tasks).toHaveLength(6); expect(snapshot.blocks).toHaveLength(6);
+    expect(await run(f)).toMatchObject({ status: 'complete', applied: 0 });
+  });
+
+  it.each(['complete-task', 'move-block', 'new-busy-course', 'different-source'] as const)('blocks a stale or foreign basis: %s', async change => {
+    const f = incrementalFixture();
+    if (change === 'complete-task') insert(f, [{ type: 'update', entity: 'task', id: f.taskIds[2]!, expectedVersion: 1, values: { status: 'done' } }]);
+    if (change === 'move-block') {
+      const block = f.planner.snapshot().blocks[0]!;
+      insert(f, [{ type: 'update', entity: 'block', id: block.id, expectedVersion: block.version, values: { start: '2026-11-02T20:00:00+08:00', end: '2026-11-02T21:00:00+08:00' } }]);
+    }
+    if (change === 'new-busy-course') insert(f, [{ type: 'create', entity: 'course', values: { title: '新确认课程', weekday: 1, startTime: '09:00', endTime: '10:00', firstWeek: 1, lastWeek: 1, termStart: '2026-11-02' } }]);
+    if (change === 'different-source') f.source.mockResolvedValue({ ...contextSource, kind: 'cloud', generation: 2 });
+    const preview = await f.service.preview(f.plan); expect(preview.rows.every(row => row.state === 'blocked')).toBe(true);
+    expect(await f.service.confirm({ token: preview.token, allowConflicts: true })).toMatchObject({ status: 'partial', applied: 0 });
+    expect(f.mutate).not.toHaveBeenCalled(); expect(f.planner.snapshot().blocks).toHaveLength(2);
+  });
+
+  it('resumes a lost incremental response and excludes saved or recovered additions from the basis', async () => {
+    const f = incrementalFixture(); let attempts = 0;
+    f.mutate.mockImplementation(async input => { const result = f.planner.mutate(MutationRequestSchema.parse(input)); if (++attempts === 2) throw Error('synthetic v2 response lost'); return result; });
+    expect(await run(f)).toMatchObject({ status: 'partial', applied: 1 }); expect(f.planner.snapshot().blocks).toHaveLength(4);
+    f.service = createPlanImportService(f.options);
+    const preview = await f.service.preview(f.plan); expect(preview.rows.some(row => row.state === 'blocked')).toBe(false);
+    expect(await f.service.confirm({ token: preview.token })).toMatchObject({ status: 'complete' });
+    expect(f.planner.snapshot().goals).toHaveLength(1); expect(f.planner.snapshot().tasks).toHaveLength(6); expect(f.planner.snapshot().blocks).toHaveLength(6);
+  });
+
+  it('permits only this goal and its unfinished tasks, including when a fresh context contains a completed task', async () => {
+    const f = incrementalFixture(); insert(f, [{ type: 'update', entity: 'task', id: f.taskIds[2]!, expectedVersion: 1, values: { status: 'done' } }]);
+    f.plan.basis = buildPlanContext(f.planner.snapshot(), PlanExportRequestSchema.parse({ goalId: f.goalId, fromDate: '2026-11-02', toDate: '2026-11-08' }), contextSource).basis;
+    const done = await f.service.preview(f.plan); expect(done.rows[0]!.state).toBe('blocked'); expect(done.rows[0]!.detail).toContain('已完成');
+    const copied = { ...f.plan, goals: [{ id: 'copy-goal', title: '复制已有目标' }] };
+    expect((await f.service.preview(copied)).rows.find(row => row.kind === 'goal')!.state).toBe('blocked');
+    const unrelatedId = insert(f, [{ type: 'create', entity: 'task', values: { title: '其它目标外的任务' } }]).changes[0]!.id;
+    const wrongTask = { ...f.plan, blocks: [{ ...f.plan.blocks![0]!, taskId: unrelatedId }] };
+    expect((await f.service.preview(wrongTask)).rows[0]!.detail).toContain('范围外');
+    const noTask = { ...f.plan, blocks: [{ ...f.plan.blocks![0]!, taskId: undefined }] };
+    expect((await f.service.preview(noTask)).rows[0]!.detail).toContain('必须关联');
+  });
+
+  it('allows new tasks under the original goal and the inclusive final date, but blocks out-of-range times', async () => {
+    const f = incrementalFixture();
+    const plan: PlanFileInput = { ...f.plan, tasks: [{ id: 'new-task', title: '目标下的新任务', goalId: f.goalId }], blocks: [{ id: 'new-task-block', title: '末日晚间学习', taskRef: 'new-task', start: '2026-11-08T23:00:00+08:00', end: '2026-11-09T00:00:00+08:00' }] };
+    expect(await run(f, plan)).toMatchObject({ status: 'complete', applied: 2 });
+    expect(f.planner.snapshot().tasks).toHaveLength(7);
+    const fresh = incrementalFixture(), outside = { ...fresh.plan, blocks: [{ ...fresh.plan.blocks![0]!, start: '2026-11-08T23:00:00+08:00', end: '2026-11-09T00:01:00+08:00' }] };
+    expect((await fresh.service.preview(outside)).rows[0]!.detail).toContain('规划日期内');
+  });
+
+  it('blocks v2 when source verification is unavailable, without affecting v1 imports', async () => {
+    const f = incrementalFixture(); f.service = createPlanImportService({ directory: f.options.directory, snapshot: f.options.snapshot, mutate: f.options.mutate, scope: f.options.scope });
+    const preview = await f.service.preview(f.plan); expect(preview.rows.every(row => row.state === 'blocked')).toBe(true); expect(preview.warnings.join(' ')).toContain('无法核对');
+    expect(await run(f, structuredClone(PLAN_FILE_EXAMPLE), true)).toMatchObject({ status: 'complete' });
+  });
+
+  it('only verifies a proven saved pending request after the context expires, without importing the remaining steps', async () => {
+    const f = incrementalFixture(); let lose = true;
+    f.mutate.mockImplementation(async input => { const result = f.planner.mutate(MutationRequestSchema.parse(input)); if (lose) { lose = false; throw Error('synthetic pending response lost'); } return result; });
+    expect(await run(f)).toMatchObject({ status: 'partial' }); expect(f.planner.snapshot().blocks).toHaveLength(3);
+    insert(f, [{ type: 'update', entity: 'task', id: f.taskIds[2]!, expectedVersion: 1, values: { status: 'done' } }]);
+    const preview = await f.service.preview(f.plan); expect(preview.canVerifyPending).toBe(true); expect(preview.rows.every(row => row.state === 'blocked')).toBe(true);
+    const calls = f.mutate.mock.calls.length;
+    const result = await f.service.confirm({ token: preview.token }); expect(result).toMatchObject({ status: 'partial', applied: 0 });
+    expect(f.mutate).toHaveBeenCalledTimes(calls + 1); expect(f.planner.snapshot().blocks).toHaveLength(3);
+    expect(JSON.parse(readFileSync(join(f.directory, 'plan-import-receipts.json'), 'utf8')).pending).toBeNull();
+    expect(result.preview?.canVerifyPending).not.toBe(true);
+  });
+
+  it('clears a proven applied pending request even when its created record was deleted, preserving a blocked receipt', async () => {
+    const f = incrementalFixture(); let lose = true;
+    f.mutate.mockImplementation(async input => { const result = f.planner.mutate(MutationRequestSchema.parse(input)); if (lose) { lose = false; throw Error('synthetic pending response lost'); } return result; });
+    await run(f); const created = f.planner.snapshot().blocks.find(block => block.title === '新增学习 3')!;
+    f.repository.transact(state => { state.entities.block = state.entities.block.filter(value => value.id !== created.id); });
+    const preview = await f.service.preview(f.plan); expect(preview.canVerifyPending).toBe(true);
+    expect(await f.service.confirm({ token: preview.token })).toMatchObject({ status: 'partial', applied: 0 });
+    const store = JSON.parse(readFileSync(join(f.directory, 'plan-import-receipts.json'), 'utf8'));
+    expect(store.pending).toBeNull(); expect(store.plans[0].entries[0].fingerprint).toBeNull(); expect(f.planner.snapshot().blocks).toHaveLength(2);
+  });
+
+  it.each(['source', 'journal'] as const)('rechecks %s evidence before verifying stale pending writes', async change => {
+    const f = incrementalFixture(); let lose = true;
+    f.mutate.mockImplementation(async input => { const result = f.planner.mutate(MutationRequestSchema.parse(input)); if (lose) { lose = false; throw Error('synthetic pending response lost'); } return result; });
+    await run(f); insert(f, [{ type: 'update', entity: 'task', id: f.taskIds[2]!, expectedVersion: 1, values: { status: 'done' } }]);
+    const preview = await f.service.preview(f.plan); expect(preview.canVerifyPending).toBe(true);
+    if (change === 'source') f.source.mockResolvedValue({ kind: 'cloud', dataInstanceId: contextSource.dataInstanceId, generation: 2 });
+    else f.repository.transact(state => { state.journal = []; });
+    const calls = f.mutate.mock.calls.length;
+    expect(await f.service.confirm({ token: preview.token })).toMatchObject({ status: 'partial', applied: 0 });
+    expect(f.mutate).toHaveBeenCalledTimes(calls);
+    expect(JSON.parse(readFileSync(join(f.directory, 'plan-import-receipts.json'), 'utf8')).pending).not.toBeNull();
   });
 });

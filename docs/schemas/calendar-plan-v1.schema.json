@@ -14,6 +14,9 @@
       "type": "string",
       "const": "Asia/Shanghai"
     },
+    "basis": {
+      "not": {}
+    },
     "planId": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
@@ -483,6 +486,6 @@
     "title"
   ],
   "additionalProperties": false,
-  "title": "Ultimate Calendar Plan v1",
-  "description": "UTF-8 creation plan, max 1 MiB and 500 total goals/tasks/blocks. The app also validates unique IDs, reference targets, real dates, interval order and current calendar conflicts. See ../plan-file-format.md."
+  "title": "Ultimate Calendar calendar-plan-v1",
+  "description": "See ../plan-file-format.md. Runtime also validates real dates, references, interval order, source identity, planning-state fingerprints and current calendar conflicts. Context files are read-only planning handoffs, never import requests."
 }

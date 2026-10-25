@@ -19,6 +19,7 @@ import { DetailPopover } from "./components/detail/DetailPopover";
 import { entityNames } from "./components/detail/records";
 import { ImportDialog, SourceViewer } from "./components/ImportDialog";
 import { hasPlanImport, PlanImportDialog } from './components/PlanImportDialog';
+import { hasPlanExport, PlanExportDialog } from './components/PlanExportDialog';
 import { Modal } from "./components/Modal";
 import { Preview } from "./components/Preview";
 import { Today } from "./pages/today/Today";
@@ -41,6 +42,8 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
   const [updateOpen, setUpdateOpen] = useState(false);
   const [planImportOpen, setPlanImportOpen] = useState(false);
   const planImportHost = hasPlanImport(host) ? host : undefined;
+  const [planExportGoal, setPlanExportGoal] = useState<{ id: string; title: string } | null>(null);
+  const planExportHost = hasPlanExport(host) ? host : undefined;
   const [captureReference, setCaptureReference] = useState<NonNullable<Source['captureRef']>>();
   const [ledgerView, setLedgerView] = useState<LedgerViewContext>();
   const [page, setPage] = useState<Page>("calendar"),
@@ -106,9 +109,13 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
     openMe("ai");
   };
   const taskActions = { select, editTask: (id: string) => editRecord({ entity: 'task', id }), schedule: scheduleTask, scheduleRecurring: scheduleRecurringTask, removeTask };
+  const exportGoal = planExportHost ? (id: string) => {
+    const goal = snapshot?.goals.find(value => value.id === id);
+    if (goal) { setSelected(null); setPlanExportGoal({ id: goal.id, title: goal.title }); }
+  } : undefined;
   const detail = () => snapshot && selected && (
     <DetailPopover key={`${selected.entity}:${selected.id}:${selected.occurrenceDate ?? ''}`} snapshot={snapshot} selection={selected} anchor={anchor} ui={ui}
-      close={() => setSelected(null)} actions={{ ...taskActions, edit: editSelected }} />
+      close={() => setSelected(null)} actions={{ ...taskActions, edit: editSelected, exportGoal }} />
   );
   const editPanel = (overlay: boolean) => snapshot && editor && (
     <EditPanel overlay={overlay} title={editor.recurring ? '重复安排' : `${editor.id ? "编辑" : "新建"}${entityNames[editor.entity]}`} onClose={() => setEditor(null)}>
@@ -162,7 +169,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
               )}
               {page === "me" && (
                 <MePage snapshot={snapshot} ui={ui} section={meSection} setSection={setMeSection} updates={updates} select={select}
-                  edit={editRecord} openSource={setSourceId} coursePreview={coursePreview} captureReference={captureReference} />
+                  edit={editRecord} openSource={setSourceId} coursePreview={coursePreview} captureReference={captureReference} exportGoal={exportGoal} />
               )}
               {page !== "calendar" && editPanel(true)}
             </div>
@@ -173,6 +180,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
       </main>
       {updateOpen && <Modal title="软件更新" onClose={() => setUpdateOpen(false)}><SoftwareUpdate updates={updates} plannerBusy={ui.busy} /></Modal>}
       {planImportOpen && planImportHost && <PlanImportDialog host={planImportHost} ui={ui} onClose={() => setPlanImportOpen(false)} />}
+      {planExportGoal && planExportHost && <PlanExportDialog key={planExportGoal.id} host={planExportHost} goal={planExportGoal} onClose={() => setPlanExportGoal(null)} onSaved={ui.setNotice} />}
       {snapshot && (
         <>
           {importing && (

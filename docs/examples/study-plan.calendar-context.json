@@ -1,0 +1,375 @@
+{
+  "format": "ultimate-calendar-context",
+  "version": 1,
+  "timezone": "Asia/Shanghai",
+  "basis": {
+    "source": {
+      "kind": "cloud",
+      "dataInstanceId": "11111111-1111-4111-8111-111111111111",
+      "generation": 1
+    },
+    "goalId": "00000000-0000-4000-8000-000000000100",
+    "fromDate": "2030-04-15",
+    "toDate": "2030-04-21",
+    "exportedAt": "2030-04-15T08:00:00+08:00",
+    "fingerprint": "84c19d15335f48228ff8d3646184e4b16181b711964b80a90ce8b21c01d79c09"
+  },
+  "request": "保留已有两段，为其余四项任务各补一个 45 分钟学习时段。",
+  "instructions": [
+    "这是规划上下文文件，不能直接导入日历。请返回 format 为 ultimate-calendar-plan、version 为 2、timezone 为 Asia/Shanghai 的 JSON 计划文件。",
+    "完整复制 basis，不能修改其中的来源、目标、日期范围或指纹。给本次增量计划分配独立且稳定的 planId；同一计划重复导入时保持文件内容不变。",
+    "本次仅为所选目标补充任务和学习时段，goals 必须为空。不要复制已有目标、任务、时段，不要输出更新或删除操作。",
+    "新增任务的 goalId 必须等于 basis.goalId；为已有任务补时段用 blocks[].taskId，为本文件新任务排时段用 taskRef。不能引用其它目标下的事项，不能创建未关联任务的时段。",
+    "新增时段必须完整位于 basis.fromDate 至 basis.toDate 的上海日期范围内；末日次日 00:00 可作为结束时间。",
+    "已完成任务默认不再安排；为未安排的未完成任务补充学习时段。保留用户已经完成、移动或取消的安排，不重建它们。",
+    "busyIntervals 是指定日期内已确认的占用，已裁剪到日期范围。selectedPlan=true 的时段也已列入 blocks，只计算一次；其它占用不应覆盖。截止时间和待判断事项不是忙碌时段。",
+    "resourceLinks 包含直接及继承资料。需要关联时将所需 resource 原样放入 resources，用 resourceRefs 引用其 id；不要制造本机文件路径或上传原文件。"
+  ],
+  "goal": {
+    "title": "示例英语学习目标",
+    "description": "合成资料，用于展示续排流程",
+    "priority": "medium",
+    "targetDate": "2030-04-21",
+    "status": "active",
+    "color": null,
+    "resources": [
+      {
+        "id": "example-notes",
+        "name": "示例讲义",
+        "kind": "web",
+        "url": "https://example.com/notes"
+      }
+    ],
+    "id": "00000000-0000-4000-8000-000000000100",
+    "version": 1,
+    "createdAt": "2030-04-15T08:00:00+08:00",
+    "updatedAt": "2030-04-15T08:00:00+08:00"
+  },
+  "tasks": [
+    {
+      "title": "示例任务 1",
+      "description": "",
+      "status": "open",
+      "deadline": null,
+      "goalId": "00000000-0000-4000-8000-000000000100",
+      "reminders": {
+        "enabled": true,
+        "leadMinutes": null,
+        "dateOnlyTime": null
+      },
+      "courseId": null,
+      "id": "00000000-0000-4000-8000-000000000001",
+      "version": 1,
+      "createdAt": "2030-04-15T08:00:00+08:00",
+      "updatedAt": "2030-04-15T08:00:00+08:00"
+    },
+    {
+      "title": "示例任务 2",
+      "description": "",
+      "status": "open",
+      "deadline": null,
+      "goalId": "00000000-0000-4000-8000-000000000100",
+      "reminders": {
+        "enabled": true,
+        "leadMinutes": null,
+        "dateOnlyTime": null
+      },
+      "courseId": null,
+      "id": "00000000-0000-4000-8000-000000000002",
+      "version": 1,
+      "createdAt": "2030-04-15T08:00:00+08:00",
+      "updatedAt": "2030-04-15T08:00:00+08:00"
+    },
+    {
+      "title": "示例任务 3",
+      "description": "",
+      "status": "open",
+      "deadline": null,
+      "goalId": "00000000-0000-4000-8000-000000000100",
+      "reminders": {
+        "enabled": true,
+        "leadMinutes": null,
+        "dateOnlyTime": null
+      },
+      "courseId": null,
+      "id": "00000000-0000-4000-8000-000000000003",
+      "version": 1,
+      "createdAt": "2030-04-15T08:00:00+08:00",
+      "updatedAt": "2030-04-15T08:00:00+08:00"
+    },
+    {
+      "title": "示例任务 4",
+      "description": "",
+      "status": "open",
+      "deadline": null,
+      "goalId": "00000000-0000-4000-8000-000000000100",
+      "reminders": {
+        "enabled": true,
+        "leadMinutes": null,
+        "dateOnlyTime": null
+      },
+      "courseId": null,
+      "id": "00000000-0000-4000-8000-000000000004",
+      "version": 1,
+      "createdAt": "2030-04-15T08:00:00+08:00",
+      "updatedAt": "2030-04-15T08:00:00+08:00"
+    },
+    {
+      "title": "示例任务 5",
+      "description": "",
+      "status": "open",
+      "deadline": null,
+      "goalId": "00000000-0000-4000-8000-000000000100",
+      "reminders": {
+        "enabled": true,
+        "leadMinutes": null,
+        "dateOnlyTime": null
+      },
+      "courseId": null,
+      "id": "00000000-0000-4000-8000-000000000005",
+      "version": 1,
+      "createdAt": "2030-04-15T08:00:00+08:00",
+      "updatedAt": "2030-04-15T08:00:00+08:00"
+    },
+    {
+      "title": "示例任务 6",
+      "description": "",
+      "status": "open",
+      "deadline": null,
+      "goalId": "00000000-0000-4000-8000-000000000100",
+      "reminders": {
+        "enabled": true,
+        "leadMinutes": null,
+        "dateOnlyTime": null
+      },
+      "courseId": null,
+      "id": "00000000-0000-4000-8000-000000000006",
+      "version": 1,
+      "createdAt": "2030-04-15T08:00:00+08:00",
+      "updatedAt": "2030-04-15T08:00:00+08:00"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "00000000-0000-4000-8000-000000000101",
+      "version": 1,
+      "createdAt": "2030-04-15T08:00:00+08:00",
+      "updatedAt": "2030-04-15T08:00:00+08:00",
+      "title": "已安排：示例任务 1",
+      "kind": "work",
+      "start": "2030-04-15T19:00:00+08:00",
+      "end": "2030-04-15T19:45:00+08:00",
+      "taskId": "00000000-0000-4000-8000-000000000001",
+      "location": "",
+      "completed": false,
+      "cancelled": false,
+      "recurrence": null,
+      "reminders": {
+        "enabled": true,
+        "leadMinutes": null,
+        "dateOnlyTime": null
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000102",
+      "version": 1,
+      "createdAt": "2030-04-15T08:00:00+08:00",
+      "updatedAt": "2030-04-15T08:00:00+08:00",
+      "title": "已安排：示例任务 2",
+      "kind": "work",
+      "start": "2030-04-16T19:00:00+08:00",
+      "end": "2030-04-16T19:45:00+08:00",
+      "taskId": "00000000-0000-4000-8000-000000000002",
+      "location": "",
+      "completed": false,
+      "cancelled": false,
+      "recurrence": null,
+      "reminders": {
+        "enabled": true,
+        "leadMinutes": null,
+        "dateOnlyTime": null
+      }
+    }
+  ],
+  "resourceLinks": [
+    {
+      "target": {
+        "entity": "block",
+        "id": "00000000-0000-4000-8000-000000000101"
+      },
+      "owner": {
+        "entity": "goal",
+        "id": "00000000-0000-4000-8000-000000000100"
+      },
+      "ownerTitle": "示例英语学习目标",
+      "resource": {
+        "id": "example-notes",
+        "name": "示例讲义",
+        "kind": "web",
+        "url": "https://example.com/notes"
+      },
+      "inherited": true
+    },
+    {
+      "target": {
+        "entity": "block",
+        "id": "00000000-0000-4000-8000-000000000102"
+      },
+      "owner": {
+        "entity": "goal",
+        "id": "00000000-0000-4000-8000-000000000100"
+      },
+      "ownerTitle": "示例英语学习目标",
+      "resource": {
+        "id": "example-notes",
+        "name": "示例讲义",
+        "kind": "web",
+        "url": "https://example.com/notes"
+      },
+      "inherited": true
+    },
+    {
+      "target": {
+        "entity": "goal",
+        "id": "00000000-0000-4000-8000-000000000100"
+      },
+      "owner": {
+        "entity": "goal",
+        "id": "00000000-0000-4000-8000-000000000100"
+      },
+      "ownerTitle": "示例英语学习目标",
+      "resource": {
+        "id": "example-notes",
+        "name": "示例讲义",
+        "kind": "web",
+        "url": "https://example.com/notes"
+      },
+      "inherited": false
+    },
+    {
+      "target": {
+        "entity": "task",
+        "id": "00000000-0000-4000-8000-000000000001"
+      },
+      "owner": {
+        "entity": "goal",
+        "id": "00000000-0000-4000-8000-000000000100"
+      },
+      "ownerTitle": "示例英语学习目标",
+      "resource": {
+        "id": "example-notes",
+        "name": "示例讲义",
+        "kind": "web",
+        "url": "https://example.com/notes"
+      },
+      "inherited": true
+    },
+    {
+      "target": {
+        "entity": "task",
+        "id": "00000000-0000-4000-8000-000000000002"
+      },
+      "owner": {
+        "entity": "goal",
+        "id": "00000000-0000-4000-8000-000000000100"
+      },
+      "ownerTitle": "示例英语学习目标",
+      "resource": {
+        "id": "example-notes",
+        "name": "示例讲义",
+        "kind": "web",
+        "url": "https://example.com/notes"
+      },
+      "inherited": true
+    },
+    {
+      "target": {
+        "entity": "task",
+        "id": "00000000-0000-4000-8000-000000000003"
+      },
+      "owner": {
+        "entity": "goal",
+        "id": "00000000-0000-4000-8000-000000000100"
+      },
+      "ownerTitle": "示例英语学习目标",
+      "resource": {
+        "id": "example-notes",
+        "name": "示例讲义",
+        "kind": "web",
+        "url": "https://example.com/notes"
+      },
+      "inherited": true
+    },
+    {
+      "target": {
+        "entity": "task",
+        "id": "00000000-0000-4000-8000-000000000004"
+      },
+      "owner": {
+        "entity": "goal",
+        "id": "00000000-0000-4000-8000-000000000100"
+      },
+      "ownerTitle": "示例英语学习目标",
+      "resource": {
+        "id": "example-notes",
+        "name": "示例讲义",
+        "kind": "web",
+        "url": "https://example.com/notes"
+      },
+      "inherited": true
+    },
+    {
+      "target": {
+        "entity": "task",
+        "id": "00000000-0000-4000-8000-000000000005"
+      },
+      "owner": {
+        "entity": "goal",
+        "id": "00000000-0000-4000-8000-000000000100"
+      },
+      "ownerTitle": "示例英语学习目标",
+      "resource": {
+        "id": "example-notes",
+        "name": "示例讲义",
+        "kind": "web",
+        "url": "https://example.com/notes"
+      },
+      "inherited": true
+    },
+    {
+      "target": {
+        "entity": "task",
+        "id": "00000000-0000-4000-8000-000000000006"
+      },
+      "owner": {
+        "entity": "goal",
+        "id": "00000000-0000-4000-8000-000000000100"
+      },
+      "ownerTitle": "示例英语学习目标",
+      "resource": {
+        "id": "example-notes",
+        "name": "示例讲义",
+        "kind": "web",
+        "url": "https://example.com/notes"
+      },
+      "inherited": true
+    }
+  ],
+  "busyIntervals": [
+    {
+      "start": "2030-04-15T19:00:00+08:00",
+      "end": "2030-04-15T19:45:00+08:00",
+      "category": "work",
+      "title": "已安排：示例任务 1",
+      "selectedPlan": true
+    },
+    {
+      "start": "2030-04-16T19:00:00+08:00",
+      "end": "2030-04-16T19:45:00+08:00",
+      "category": "work",
+      "title": "已安排：示例任务 2",
+      "selectedPlan": true
+    }
+  ],
+  "coverage": "目标、关联任务及其全部已有时段均已包含；忙碌信息仅覆盖 2030-04-15 至 2030-04-21（上海时间，含首尾日期）。跨界时段已裁剪；事件未填结束时间按应用默认时长计算。未包含 QQ 原文、来源记录、账本或其它目标的任务详情。"
+}

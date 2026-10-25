@@ -1,0 +1,17 @@
+.a2 .plan-export { display: grid; gap: 14px; }
+.a2 .plan-export p { margin: 0; line-height: 1.7; }
+.a2 .plan-export h3 { margin: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.a2 .plan-export-intro { color: var(--ink-2); }
+.a2 .plan-export-range { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.a2 .plan-export-summary { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); border-left: 3px solid var(--accent); background: var(--surface); }
+.a2 .plan-export-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.a2 .plan-export-counts > div { display: grid; gap: 4px; }
+.a2 .plan-export-counts dt { font-size: 12px; color: var(--ink-3); }
+.a2 .plan-export-counts dd { margin: 0; font-family: var(--font-num); font-size: 20px; color: var(--ink); }
+.a2 .plan-export-meta { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; margin: 0; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12px; }
+.a2 .plan-export-meta dt { color: var(--ink-3); }
+.a2 .plan-export-meta dd { margin: 0; overflow-wrap: anywhere; }
+.a2 .plan-export .warning ul { margin: 0; padding-left: 18px; }
+.a2 .plan-export-feedback { padding: 10px 12px; color: var(--ink); border: 1px solid var(--line); background: var(--surface); }
+.a2 .plan-export .form-footer { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 0; padding-top: 14px; }
+.a2-goal-list .main .goal-export-entry { margin-top: 6px; padding-left: 0; font-size: 12px; }

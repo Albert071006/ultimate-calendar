@@ -96,6 +96,42 @@ describe('JSON plan import', () => {
     expect(f.host.planImportConfirm).not.toHaveBeenCalled();
   });
 
+  it('verifies a previously saved operation despite blocked rows and conflicts without authorizing new conflict writes', async () => {
+    const f = fixture(preview({ token: 'pending-operation-preview', canVerifyPending: true,
+      rows: [{ kind: 'block', localId: 'block-1', title: '第一章学习时段', state: 'blocked', detail: '后续资料已变化，先核对上次保存结果' }],
+      conflicts: ['学习时段与已有课程重叠'] }));
+    const request = deferred<ApiResult<PlanImportResult>>(); f.host.planImportConfirm.mockReturnValueOnce(request.promise);
+    f.show(); fireEvent.click(button('选择 JSON 文件')); await screen.findByText('一周学习计划');
+    expect(screen.getByText('只核对上次已保存的结果，不继续新增；之后重新导出最新计划。')).toBeTruthy();
+    expect(screen.queryByText(/暂时无法导入/)).toBeNull();
+    const acknowledgement = screen.getByRole('checkbox') as HTMLInputElement;
+    expect(acknowledgement.disabled).toBe(true); expect(acknowledgement.checked).toBe(false);
+    expect(button('仅核对已保存操作').disabled).toBe(false);
+    fireEvent.click(acknowledgement); fireEvent.click(button('仅核对已保存操作'));
+    expect(f.host.planImportConfirm).toHaveBeenCalledExactlyOnceWith({ token: 'pending-operation-preview', allowConflicts: false });
+    expect(button('正在核对，请稍候…').disabled).toBe(true);
+    await act(async () => request.resolve({ ok: true, data: { status: 'partial', message: '已核对，请重新导出最新计划', applied: 1, remaining: 1,
+      preview: preview({ canVerifyPending: false, rows: [{ kind: 'block', localId: 'block-2', title: '后续学习时段', state: 'blocked', detail: '请重新导出' }] }) } }));
+    expect(screen.queryByRole('button', { name: '仅核对已保存操作' })).toBeNull();
+    expect(button('继续导入未完成条目').disabled).toBe(true);
+    expect(f.ui.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('presents partial verification as verification instead of continuing new imports', async () => {
+    const f = fixture(preview({ conflicts: ['学习时段与已有课程重叠'] }));
+    f.host.planImportConfirm.mockResolvedValueOnce({ ok: true, data: { status: 'partial', message: '上次保存结果待核对', applied: 1, remaining: 1,
+      preview: preview({ token: 'verify-partial', canVerifyPending: true, rows: [{ kind: 'task', localId: 'task-1', title: '阅读第一章', state: 'existing', detail: '已保存，待核对' }], conflicts: ['资料已变化'] }) } });
+    f.show(); fireEvent.click(button('选择 JSON 文件')); await screen.findByText('一周学习计划');
+    fireEvent.click(screen.getByRole('checkbox')); fireEvent.click(button('确认批量导入'));
+    await screen.findByText('请先核对上次已保存的结果。');
+    expect(screen.queryByText('请核对最新预览，再继续导入未完成的条目。')).toBeNull();
+    expect(screen.queryByText('这些条目已全部存在，无需再次导入。')).toBeNull();
+    await waitFor(() => expect(button('仅核对已保存操作').disabled).toBe(false));
+    fireEvent.click(button('仅核对已保存操作'));
+    expect(f.host.planImportConfirm).toHaveBeenLastCalledWith({ token: 'verify-partial', allowConflicts: false });
+    await waitFor(() => expect(f.onClose).toHaveBeenCalledTimes(1));
+  });
+
   it('uses a new partial-result preview for continuation and requires renewed conflict acknowledgement', async () => {
     const initial = preview({ conflicts: ['学习时段与已有课程重叠'] });
     const f = fixture(initial);

@@ -31,7 +31,8 @@ export function PlanImportDialog({ host, ui, onClose }: {
   const working = useRef(false);
   const counts = { new: 0, existing: 0, blocked: 0 };
   preview?.rows.forEach(row => { counts[row.state] += 1; });
-  const confirmable = Boolean(preview && counts.new > 0 && counts.blocked === 0 && (!preview.conflicts.length || allowConflicts));
+  const verifyPending = preview?.canVerifyPending === true;
+  const confirmable = Boolean(preview && (verifyPending || (counts.new > 0 && counts.blocked === 0 && (!preview.conflicts.length || allowConflicts))));
   const close = () => { if (!working.current) onClose(); };
 
   async function run(action: NonNullable<typeof busy>, job: () => Promise<void>) {
@@ -56,7 +57,7 @@ export function PlanImportDialog({ host, ui, onClose }: {
   const confirm = () => {
     if (!preview || !confirmable) return;
     return run('confirm', async () => {
-      const result = await host.planImportConfirm({ token: preview.token, allowConflicts });
+      const result = await host.planImportConfirm({ token: preview.token, allowConflicts: verifyPending ? false : allowConflicts });
       if (!result.ok) { setError(result.error.message); return; }
       const receipt = result.data;
       setReport(receipt); setPreview(receipt.preview ?? null); setAllowConflicts(false);
@@ -80,7 +81,7 @@ export function PlanImportDialog({ host, ui, onClose }: {
       {report?.status === 'partial' && <section className="warning plan-import-receipt" role="status" aria-label="导入进度">
         <strong>已保存 {report.applied} 条 · 未完成 {report.remaining} 条</strong>
         <p>{report.message}</p>
-        <p>{preview ? '请核对最新预览，再继续导入未完成的条目。' : '请重新选择同一份原始 JSON 文件，核对预览后继续。'}</p>
+        <p>{verifyPending ? '请先核对上次已保存的结果。' : preview ? '请核对最新预览，再继续导入未完成的条目。' : '请重新选择同一份原始 JSON 文件，核对预览后继续。'}</p>
       </section>}
       {preview ? <>
         <section className="plan-import-summary" aria-label="计划预览">
@@ -107,17 +108,18 @@ export function PlanImportDialog({ host, ui, onClose }: {
           <p className="hint">导入保存资料引用，本地文件仍由所属设备管理。</p>
         </section>}
         {preview.warnings.length > 0 && <section className="warning" aria-label="导入提醒"><ul>{preview.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></section>}
-        {counts.blocked > 0 && <p className="warning" role="alert">有 {counts.blocked} 条需要处理，暂时无法导入。请核对上方原因后重新选择文件。</p>}
+        {verifyPending && <p className="warning" role="status">只核对上次已保存的结果，不继续新增；之后重新导出最新计划。</p>}
+        {counts.blocked > 0 && !verifyPending && <p className="warning" role="alert">有 {counts.blocked} 条需要处理，暂时无法导入。请核对上方原因后重新选择文件。</p>}
         {preview.conflicts.length > 0 && <section className="warning plan-import-conflicts" aria-label="时间冲突">
           <h3>时间冲突 · {preview.conflicts.length}</h3>
           <ul>{preview.conflicts.map((conflict, index) => <li key={index}>{conflict}</li>)}</ul>
-          <label className="check"><input type="checkbox" disabled={Boolean(busy)} checked={allowConflicts} onChange={event => setAllowConflicts(event.target.checked)} />我已核对以上时间冲突，仍按文件导入</label>
+          <label className="check"><input type="checkbox" disabled={Boolean(busy) || verifyPending} checked={!verifyPending && allowConflicts} onChange={event => setAllowConflicts(event.target.checked)} />我已核对以上时间冲突，仍按文件导入</label>
         </section>}
-        {counts.new === 0 && counts.blocked === 0 && <p role="status">这些条目已全部存在，无需再次导入。</p>}
+        {counts.new === 0 && counts.blocked === 0 && !verifyPending && <p role="status">这些条目已全部存在，无需再次导入。</p>}
       </> : !report && <div className="plan-import-empty"><p>还未选择计划文件</p><p className="hint">支持 JSON 格式，单个文件不超过 1 MB、最多 500 条目标、任务和时段。</p></div>}
       <footer className="form-footer">
         <button disabled={Boolean(busy)} onClick={close}>取消</button>
-        <button className="primary" disabled={Boolean(busy) || !confirmable} onClick={() => void confirm()}>{busy === 'confirm' ? '正在导入，请稍候…' : report?.status === 'partial' && preview ? '继续导入未完成条目' : '确认批量导入'}</button>
+        <button className="primary" disabled={Boolean(busy) || !confirmable} onClick={() => void confirm()}>{busy === 'confirm' ? verifyPending ? '正在核对，请稍候…' : '正在导入，请稍候…' : verifyPending ? '仅核对已保存操作' : report?.status === 'partial' && preview ? '继续导入未完成条目' : '确认批量导入'}</button>
       </footer>
     </div>
   </Modal>;

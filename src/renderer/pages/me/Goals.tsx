@@ -1,21 +1,24 @@
-import { Plus } from "lucide-react";
+import { FileOutput, Plus } from "lucide-react";
 import type { Snapshot } from "../../../shared/contracts";
 import type { PlannerUI } from "../../hooks/usePlanner";
 import type { Selection } from "../../components/Calendar";
 import { occupiedColors } from "../../../domain/palette";
 import { todayDate } from "../../calendar-layout";
 import { ColorPicker } from "./ColorPicker";
+import { useMobile } from '../../mobile/layout';
 
 const priority = { high: "高优先", medium: "普通", low: "低优先" } as const;
 const status = { active: "进行中", paused: "暂停", completed: "已完成" } as const;
 
 /** Goals with their color, progress across linked tasks and target date. */
-export function Goals({ snapshot, ui, select, create }: {
+export function Goals({ snapshot, ui, select, create, exportGoal }: {
   snapshot: Snapshot;
   ui: PlannerUI;
   select: (s: Selection) => void;
   create: () => void;
+  exportGoal?: (id: string) => void;
 }) {
+  const mobile = useMobile();
   const used = occupiedColors(snapshot, todayDate());
   const active = snapshot.goals.filter(goal => goal.status === "active").length;
   return (
@@ -39,6 +42,7 @@ export function Goals({ snapshot, ui, select, create }: {
                   <button className="t" onClick={() => select({ entity: "goal", id: goal.id })}>{goal.title}</button>
                   <span className="meta">{[status[goal.status], priority[goal.priority], goal.targetDate && `目标日期 ${goal.targetDate}`].filter(Boolean).join(" · ")}</span>
                   {goal.description && <p>{goal.description}</p>}
+                  {!mobile && exportGoal && <button className="ui-btn sm ghost goal-export-entry" onClick={() => exportGoal(goal.id)}><FileOutput aria-hidden="true" />导出给外部智能体</button>}
                 </div>
                 <div className="a2-goal-progress" title={`${done} / ${linked.length} 项任务完成`}>
                   <span className="bar"><i style={{ width: `${linked.length ? done / linked.length * 100 : 0}%`, background: goal.color ?? undefined }} /></span>

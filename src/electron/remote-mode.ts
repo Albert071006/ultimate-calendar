@@ -17,6 +17,8 @@ import { createRemoteSourceCache } from './remote-source-cache';
 import { remoteOutputs } from '../server/protocol';
 import { createNativeResourceHost } from './resources-native';
 import { createNativePlanImport } from './plan-import';
+import { createNativePlanExport } from './plan-export';
+import type { PlanSource } from '../shared/plan-context';
 
 /** Uses bundled trusted UI and main-process networking, never a remote page with Electron privileges. */
 export async function startNativeRemote(config: NativeRemoteConfig, directory: string, documentUrl: string) {
@@ -44,9 +46,13 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
     const shell = createRemoteDesktopShell({ window, directory, config, collector, changed, rpc: journal.rpc, getIdentity: async () => (await client.getSession()).identity, isBusy: () => activeRequests > 0 });
     const resourceDirectory = config.localDataDirectory ?? directory;
     const resources = createNativeResourceHost(resourceDirectory, () => window);
+    const planSource = async (): Promise<PlanSource> => { const { identity } = await client.getSession(); return { kind: 'cloud', dataInstanceId: identity.dataInstanceId, generation: identity.generation }; };
+    const planSnapshot = async () => { const result = remoteOutputs.snapshot.parse(await journal.rpc('snapshot')); if (!result.ok) throw new Error(result.error.message); return result.data; };
+    const planExport = createNativePlanExport({ window: () => window, snapshot: planSnapshot, source: planSource });
     const planImport = createNativePlanImport({ directory: join(directory, 'plan-import'), resourceDirectory, window: () => window, changed,
+      source: planSource,
       scope: async () => { const current = await client.getSession(); return JSON.stringify({ origin: client.origin, identity: current.identity, deviceId: current.deviceId }); },
-      snapshot: async () => { const result = remoteOutputs.snapshot.parse(await journal.rpc('snapshot')); if (!result.ok) throw new Error(result.error.message); return result.data; },
+      snapshot: planSnapshot,
       mutate: async input => {
         const pending = await journal.inspect();
         if (pending.status !== 'none' && (pending.method !== 'mutate' || pending.operationId !== input.operationId))
@@ -75,6 +81,8 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
           if (!updating && shell.isInstalling()) return failure('CONFLICT', '正在备份并准备更新，请稍候再操作', false);
           if (!updating) activeRequests++;
           try {
+            if (method === 'planExportPreview') return await planExport.planExportPreview(value as Parameters<typeof planExport.planExportPreview>[0]);
+            if (method === 'planExportSave') return await planExport.planExportSave(value as Parameters<typeof planExport.planExportSave>[0]);
             if (method === 'planImportOpen') return await planImport.planImportOpen();
             if (method === 'planImportConfirm') return await planImport.planImportConfirm(value as Parameters<typeof planImport.planImportConfirm>[0]);
             if (method === 'planImportTemplate') return await planImport.planImportTemplate();

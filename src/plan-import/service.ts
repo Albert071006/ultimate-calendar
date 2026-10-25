@@ -5,6 +5,8 @@ import { buildCalendar } from '../domain/calendar';
 import { readPrivate, writePrivate } from '../remote/private-file';
 import { BlockInputSchema, GoalInputSchema, MutationRequestSchema, SnapshotSchema, TaskInputSchema, type Entity, type MutationRequestInput, type MutationResult, type Snapshot } from '../shared/contracts';
 import { PlanFileSchema, PlanImportConfirmSchema, type PlanFile, type PlanImportPreview, type PlanImportResult, type PlanImportRow } from '../shared/plan-import';
+import { PlanSourceSchema, type PlanSource } from '../shared/plan-context';
+import { planContextFingerprint } from './context';
 
 type Kind = PlanImportRow['kind'];
 type Item = { kind: Kind; id: string; title: string };
@@ -15,7 +17,7 @@ const StoreSchema = z.strictObject({ version: z.literal(1), plans: z.array(Recei
 type Entry = z.infer<typeof EntrySchema>;
 type Store = z.infer<typeof StoreSchema>;
 type Receipt = z.infer<typeof ReceiptSchema>;
-type Options = { directory: string; snapshot(): Promise<Snapshot>; mutate(request: MutationRequestInput): Promise<MutationResult>; scope(): Promise<string> };
+type Options = { directory: string; snapshot(): Promise<Snapshot>; mutate(request: MutationRequestInput): Promise<MutationResult>; scope(): Promise<string>; source?(): Promise<PlanSource> };
 type Fact = { key: string; message: string; participants: string[] };
 type Preview = { plan: PlanFile; scope: string; signature: string; expires: number; facts: Fact[]; view: PlanImportPreview; recovered: Entry[] };
 const keyOf = (item: Item) => `${item.kind}:${item.id}`;
@@ -84,6 +86,41 @@ function conflicts(snapshot: Snapshot, plan: PlanFile, rows: PlanImportRow[], en
   return facts;
 }
 
+/** Remove only records identified by this plan's durable/recovered receipts before checking its original context. */
+function basisIssues(plan: PlanFile, snapshot: Snapshot, entries: Entry[], source: PlanSource | null): { reason: string | null; rows: Map<string, string> } {
+  const issues = { reason: null as string | null, rows: new Map<string, string>() };
+  if (plan.version !== 2) return issues;
+  const basis = plan.basis!;
+  const baseline = structuredClone(snapshot);
+  const owned = (kind: Kind, id: string) => entries.some(entry => entry.key.startsWith(`${kind}:`) && entry.entityId === id);
+  baseline.goals = baseline.goals.filter(value => !owned('goal', value.id));
+  baseline.tasks = baseline.tasks.filter(value => !owned('task', value.id));
+  baseline.blocks = baseline.blocks.filter(value => !owned('block', value.id));
+  if (!source) issues.reason = '无法核对上下文的资料来源，请重新连接后预览；未新增任何事项';
+  else if (hash(source) !== hash(basis.source)) issues.reason = '计划来自另一份资料或恢复前的资料版本，请重新导出当前目标上下文后规划';
+  else {
+    try { if (planContextFingerprint(baseline, basis.goalId, basis.fromDate, basis.toDate) !== basis.fingerprint) issues.reason = '导出后目标、任务、时段或忙碌安排已改变，请重新导出上下文后规划'; }
+    catch { issues.reason = '上下文中的目标已不存在，请重新选择目标导出'; }
+  }
+  const tasks = baseline.tasks.filter(task => task.goalId === basis.goalId), taskIds = new Set(tasks.map(task => task.id)), courseIds = new Set(tasks.flatMap(task => task.courseId ? [task.courseId] : []));
+  for (const goal of plan.goals) issues.rows.set(`goal:${goal.id}`, '增量计划应沿用导出的目标，不能复制或新建目标');
+  for (const task of plan.tasks) {
+    if (task.goalRef || task.goalId !== basis.goalId) issues.rows.set(`task:${task.id}`, '新增任务必须关联上下文中的原目标');
+    else if (task.courseId && !courseIds.has(task.courseId)) issues.rows.set(`task:${task.id}`, '不能关联上下文目标范围外的课程');
+  }
+  const lower = Date.parse(`${basis.fromDate}T00:00:00+08:00`), upper = Date.parse(`${basis.toDate}T00:00:00+08:00`) + 86_400_000;
+  for (const block of plan.blocks) {
+    let issue = '';
+    if (!block.taskId && !block.taskRef) issue = '增量学习时段必须关联一个任务';
+    else if (block.taskId && !taskIds.has(block.taskId)) issue = '不能安排上下文目标范围外的任务';
+    else if (block.taskId && tasks.find(task => task.id === block.taskId)?.status === 'done' || block.taskRef && plan.tasks.find(task => task.id === block.taskRef)?.status === 'done') issue = '已完成任务不能新增学习安排，请先核对任务状态';
+    else if (block.taskRef && issues.rows.has(`task:${block.taskRef}`)) issue = '关联的新任务不属于本次目标范围，未安排';
+    else if (Date.parse(block.start) < lower || Date.parse(block.end) > upper) issue = '新增时段必须完整位于导出上下文的规划日期内';
+    if (issue) issues.rows.set(`block:${block.id}`, issue);
+  }
+  return issues;
+}
+
 /** Creation-only coordinator over existing local/cloud APIs. Receipts never replace the authoritative data. */
 export function createPlanImportService(options: Options) {
   const file = join(options.directory, 'plan-import-receipts.json');
@@ -105,7 +142,21 @@ export function createPlanImportService(options: Options) {
     if (await options.scope() !== scope) throw Error('读取期间资料身份已改变，未继续导入');
     return result;
   }
-  function build(plan: PlanFile, scope: string, snapshot: Snapshot, store: Store): Preview {
+  async function currentSource(plan: PlanFile): Promise<PlanSource | null> {
+    if (plan.version !== 2 || !options.source) return null;
+    try { return PlanSourceSchema.parse(await options.source()); } catch { return null; }
+  }
+  function pendingProof(plan: PlanFile, scope: string, snapshot: Snapshot, store: Store, source: PlanSource | null) {
+    const pending = store.pending;
+    if (!pending || pending.planId !== plan.planId || pending.scope !== scope || plan.version === 2 && (!source || hash(source) !== hash(plan.basis!.source))) return null;
+    const item = items(plan).find(value => keyOf(value) === pending.key);
+    if (!item || pending.request.operationId !== operationId(plan, item)) return null;
+    const journal = snapshot.journal.find(value => value.operationId === pending.request.operationId);
+    const change = journal?.changes[0];
+    if (!journal || journal.changes.length !== 1 || change?.entity !== item.kind || change.action !== 'create') return null;
+    return { pending, item, journal, entityId: change.id };
+  }
+  function build(plan: PlanFile, scope: string, snapshot: Snapshot, store: Store, source: PlanSource | null): Preview {
     const saved = receipt(store, plan, scope), entries = structuredClone(saved.entries), recovered: Entry[] = [], rows: PlanImportRow[] = [];
     for (const item of items(plan)) {
       let entry = entries.find(value => value.key === keyOf(item));
@@ -121,7 +172,10 @@ export function createPlanImportService(options: Options) {
       const record = entry && entity(snapshot, item.kind, entry.entityId);
       let state: PlanImportRow['state'] = entry ? record && entry.fingerprint === hash(record) ? 'existing' : 'blocked' : 'new';
       let reason = state === 'existing' ? '已导入，跳过' : state === 'blocked' ? '已导入记录被编辑、删除或撤销；保留现状，不覆盖或重建' : store.pending?.key === keyOf(item) ? '上次写入待核对，将先核对原请求' : '新增';
-      if (store.pending?.key === keyOf(item) && prior) { state = 'new'; reason = '上次操作已记入日志，仍须核对原请求回执；不会重复创建'; }
+      if (store.pending?.key === keyOf(item) && prior) {
+        state = entry?.fingerprint && record && entry.fingerprint === hash(record) ? 'new' : 'blocked';
+        reason = state === 'new' ? '上次操作已记入日志，仍须核对原请求回执；不会重复创建' : '原操作已保存，但事项后来已改变、删除或撤销；只能核对原回执，不重建事项';
+      }
       if (state === 'new') {
         const source = item.kind === 'task' ? plan.tasks.find(value => value.id === item.id)! : item.kind === 'block' ? plan.blocks.find(value => value.id === item.id)! : null;
         const dependency = source && ('goalRef' in source && source.goalRef ? `goal:${source.goalRef}` : 'taskRef' in source && source.taskRef ? `task:${source.taskRef}` : null);
@@ -132,15 +186,21 @@ export function createPlanImportService(options: Options) {
       const block = item.kind === 'block' ? plan.blocks.find(value => value.id === item.id)! : null;
       rows.push({ kind: item.kind, localId: item.id, title: item.title, state, detail: [reason, detail(plan, item, snapshot)].filter(Boolean).join('；'), ...(entry ? { existingId: entry.entityId } : {}), ...(block ? { start: block.start, end: block.end } : {}) });
     }
+    const basis = basisIssues(plan, snapshot, entries, source);
+    for (const row of rows) if (row.state === 'new') {
+      const reason = basis.reason ?? basis.rows.get(`${row.kind}:${row.localId}`);
+      if (reason) { row.state = 'blocked'; row.detail = `${reason}；${row.detail}`; }
+    }
+    const canVerifyPending = rows.some(row => row.state === 'blocked') && !!pendingProof(plan, scope, snapshot, store, source);
     const facts = conflicts(snapshot, plan, rows, entries), token = randomUUID(), expires = Date.now() + 10 * 60_000;
-    const view: PlanImportPreview = { token, planId: plan.planId, title: plan.title, expiresAt: new Date(expires).toISOString(), rows, conflicts: facts.map(value => value.message), resources: plan.resources,
-      warnings: ['文件只新增记录。同名事项不会自动合并；如需沿用已有目标、任务或课程，请在计划文件中引用该事项。', ...(store.pending ? ['上次保存结果尚未核对，确认后会先核对原操作，不重复创建。'] : []), ...(rows.some(row => row.state === 'blocked') ? ['存在被阻止的记录，本次不会继续写入；请先核对已编辑、删除或失效的关联。'] : [])] };
+    const view: PlanImportPreview = { token, planId: plan.planId, title: plan.title, expiresAt: new Date(expires).toISOString(), rows, conflicts: facts.map(value => value.message), resources: plan.resources, ...(canVerifyPending ? { canVerifyPending: true } : {}),
+      warnings: ['文件只新增记录。同名事项不会自动合并；如需沿用已有目标、任务或课程，请在计划文件中引用该事项。', ...(basis.reason ? [basis.reason] : []), ...(store.pending ? [canVerifyPending ? '操作日志已确认上次保存成功，可仅核对原操作解除待确认保护；不会执行任何其它新增步骤。' : basis.reason ? '上次保存请求仍受保护，当前上下文不匹配，未重放原请求。请回原资料连接核对原云端操作，勿删除回执或用新计划重复创建。' : '上次保存结果尚未核对，确认后会先核对原操作，不重复创建。'] : []), ...(rows.some(row => row.state === 'blocked') ? ['存在被阻止的记录，本次不会继续写入；请先核对已编辑、删除或失效的关联。'] : [])] };
     const preview = { plan, scope, signature: signature(snapshot), expires, facts, view, recovered };
     for (const [key, value] of previews) if (value.expires <= Date.now()) previews.delete(key);
     if (previews.size >= 20) previews.delete(previews.keys().next().value!);
     previews.set(token, preview); return preview;
   }
-  async function fresh(plan: PlanFile, scope: string) { return build(plan, scope, await readSnapshot(scope), load()); }
+  async function fresh(plan: PlanFile, scope: string) { return build(plan, scope, await readSnapshot(scope), load(), await currentSource(plan)); }
   return {
     preview(input: unknown): Promise<PlanImportPreview> { return locked(async () => { const plan = canonical(input), scope = await options.scope(); return (await fresh(plan, scope)).view; }); },
     confirm(input: z.input<typeof PlanImportConfirmSchema>): Promise<PlanImportResult> { return locked(async () => {
@@ -158,9 +218,26 @@ export function createPlanImportService(options: Options) {
       };
       let snapshot = await readSnapshot(scope);
       if (signature(snapshot) !== approved.signature) return partial('预览后资料已改变，请核对最新预览后再次确认');
+      if (approved.view.canVerifyPending) {
+        const store = load(), saved = receipt(store, plan, scope), proof = pendingProof(plan, scope, snapshot, store, await currentSource(plan));
+        if (!proof) return partial('原操作的成功证据或资料来源已改变，保留待核对请求，未重放');
+        try {
+          const result = await options.mutate(proof.pending.request);
+          if (result.status !== 'applied' || result.transactionId !== proof.journal.id || result.changes.length !== 1 || result.changes[0]?.entity !== proof.item.kind || result.changes[0]?.action !== 'create' || result.changes[0]?.id !== proof.entityId) return partial('原操作回执与成功记录不一致，保留待核对请求，未继续导入');
+          const after = await readSnapshot(scope);
+          if (plan.version === 2 && hash(await currentSource(plan)) !== hash(plan.basis!.source)) return partial('核对期间资料来源已改变，保留原请求，未继续导入');
+          const record = entity(after, proof.item.kind, proof.entityId), desired = values(plan, proof.item, saved.entries);
+          saved.entries = saved.entries.filter(entry => entry.key !== keyOf(proof.item));
+          saved.entries.push({ key: keyOf(proof.item), entityId: proof.entityId, fingerprint: record?.version === 1 && matches(record, desired) ? hash(record) : null });
+          store.pending = null; save(store);
+          return partial('已核对原保存操作并解除待确认保护，未执行任何新增步骤。请重新导出当前目标上下文后规划');
+        } catch (error) { return partial(`${error instanceof Error ? error.message : '原操作核对中断'}；保留原请求，未执行新增步骤`); }
+      }
       if (approved.view.rows.some(row => row.state === 'blocked')) return partial('存在被阻止的记录，未继续写入，请先核对');
       if (approved.facts.length && !allowConflicts) return partial('存在时间冲突，请明确勾选允许这些冲突后再确认');
       let store = load(), saved = receipt(store, plan, scope);
+      const latest = build(plan, scope, snapshot, store, await currentSource(plan));
+      if (latest.view.rows.some(row => row.state === 'blocked')) return partial('当前资料来源或上下文已改变，未继续写入，请先核对');
       if (!store.plans.some(value => value.planId === plan.planId)) store.plans.push(saved);
       for (const entry of approved.recovered) if (!saved.entries.some(value => value.key === entry.key) && store.pending?.key !== entry.key) saved.entries.push(entry);
       save(store);
@@ -171,7 +248,8 @@ export function createPlanImportService(options: Options) {
         for (const item of ordered) {
           snapshot = await readSnapshot(scope);
           if (signature(snapshot) !== expected) return partial('导入期间资料已改变，已保存的部分保留；请核对最新预览后继续');
-          const current = build(plan, scope, snapshot, store), row = current.view.rows.find(value => value.kind === item.kind && value.localId === item.id)!;
+          const current = build(plan, scope, snapshot, store, await currentSource(plan)), row = current.view.rows.find(value => value.kind === item.kind && value.localId === item.id)!;
+          if (current.view.rows.some(value => value.state === 'blocked')) return partial('当前资料来源、上下文或关联事项已改变，未继续写入');
           if (row.state !== 'new' && store.pending?.key !== keyOf(item)) continue;
           if (row.state === 'blocked' && store.pending?.key === keyOf(item)) return partial('待核对事项或其依赖已改变，未继续重放；请先核对原操作');
           const desired = values(plan, item, saved.entries);
