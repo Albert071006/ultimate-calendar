@@ -142,7 +142,7 @@ async function start() {
         tray?.setToolTip(`终极日历 · QQ ${!state.enabled ? '采集未启用' : state.error ? '采集异常' : state.connection === 'online' ? '已连接' : '连接待恢复'} · ${state.analysisEnabled ? '自动提炼启用' : '自动提炼未启用'}`);
       };
       const openCalendar = () => {
-        const child = spawn(process.execPath, [], { windowsHide: true, detached: true, stdio: 'ignore' });
+        const child = spawn(process.execPath, [], { windowsHide: false, detached: true, stdio: 'ignore' });
         child.on('error', () => { dialog.showErrorBox('日历未能打开', '请从桌面快捷方式重新打开终极日历。采集继续运行。'); }); child.unref();
       };
       const setTrayVisible = (visible: boolean) => {
