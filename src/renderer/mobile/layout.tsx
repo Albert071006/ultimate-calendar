@@ -1,24 +1,21 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, type ReactNode } from 'react';
 
 const MobileContext = createContext(false);
 export const MobileProvider = ({ mobile, children }: { mobile: boolean; children: ReactNode }) => <MobileContext.Provider value={mobile}>{children}</MobileContext.Provider>;
 export const useMobile = () => useContext(MobileContext);
 
-export function useMobileLayout(override?: boolean) {
-  const [matches, setMatches] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 760px)').matches);
+/**
+ * Pins the phone shell to the visible part of the screen. When the iOS keyboard opens, Safari shrinks the
+ * visual viewport and may scroll it down; `--mobile-top` / `--mobile-height` let fixed layers follow it
+ * instead of sliding off the top of the screen.
+ */
+export function useVisualViewport() {
   useEffect(() => {
-    if (override !== undefined || typeof window.matchMedia !== 'function') return;
-    const media = window.matchMedia('(max-width: 760px)');
-    const change = () => setMatches(media.matches);
-    media.addEventListener('change', change);
-    change();
-    return () => media.removeEventListener('change', change);
-  }, [override]);
-  const mobile = override ?? matches;
-  useEffect(() => {
-    if (!mobile) return;
-    const viewport = window.visualViewport;
-    const update = () => document.documentElement.style.setProperty('--mobile-height', `${viewport?.height ?? window.innerHeight}px`);
+    const viewport = window.visualViewport, root = document.documentElement.style;
+    const update = () => {
+      root.setProperty('--mobile-height', `${viewport?.height ?? window.innerHeight}px`);
+      root.setProperty('--mobile-top', `${viewport?.offsetTop ?? 0}px`);
+    };
     update();
     viewport?.addEventListener('resize', update);
     viewport?.addEventListener('scroll', update);
@@ -27,8 +24,8 @@ export function useMobileLayout(override?: boolean) {
       viewport?.removeEventListener('resize', update);
       viewport?.removeEventListener('scroll', update);
       window.removeEventListener('resize', update);
-      document.documentElement.style.removeProperty('--mobile-height');
+      root.removeProperty('--mobile-height');
+      root.removeProperty('--mobile-top');
     };
-  }, [mobile]);
-  return mobile;
+  }, []);
 }

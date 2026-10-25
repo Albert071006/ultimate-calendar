@@ -1,18 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowRight, ChevronDown, ChevronUp, MessageSquare } from "lucide-react";
-import type { CommandRequest, CommandResult } from "../../../shared/contracts";
-import { operationId } from "../../calendar-layout";
+import type { CommandRequest } from "../../../shared/contracts";
 import type { PlannerUI } from "../../hooks/usePlanner";
 import type { Selection } from "../Calendar";
-import { useMobile } from '../../mobile/layout';
-type ConversationEntry = {
-  id: string;
-  role: "user" | "assistant";
-  text: string;
-  status?: "pending" | "failed";
-  request?: CommandRequest;
-  outcome?: CommandResult['conversationState'];
-};
+import { useAssistantConversation } from "./assistant-conversation";
 
 /** One-line assistant at the bottom of every page; its conversation opens upward over the page. */
 export function Assistant({ ui, selected, date, domain, ledgerView }: {
@@ -22,12 +13,8 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
   domain?: 'ledger';
   ledgerView?: CommandRequest['ledgerView'];
 }) {
-  const mobile = useMobile();
-  const [text, setText] = useState(""),
-    [history, setHistory] = useState<ConversationEntry[]>([]),
-    [expanded, setExpanded] = useState(false),
-    [running, setRunning] = useState(false);
-  const inFlight = useRef(false);
+  const [expanded, setExpanded] = useState(false);
+  const { text, setText, history, running, send, retry } = useAssistantConversation({ ui, selected, date, domain, ledgerView, onStart: () => setExpanded(true) });
   const conversation = useRef<HTMLDivElement>(null);
   const root = useRef<HTMLElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -37,12 +24,6 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
   }, [history, expanded]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (mobile && expanded && event.key === 'Tab' && Array.from(document.querySelectorAll('[role="dialog"]')).at(-1) === root.current) {
-        const nodes = Array.from(root.current?.querySelectorAll<HTMLElement>('button:not([disabled]),textarea') ?? []);
-        const first = nodes[0], last = nodes.at(-1);
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         setExpanded(true);
@@ -58,84 +39,15 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
     window.addEventListener("keydown", key);
     document.addEventListener("mousedown", outside);
     return () => { window.removeEventListener("keydown", key); document.removeEventListener("mousedown", outside); };
-  }, [mobile, expanded]);
+  }, []);
 
-  async function execute(request: CommandRequest, replyId: string) {
-    if (!ui.client || inFlight.current || ui.busy) return;
-    inFlight.current = true;
-    setRunning(true);
-    setExpanded(true);
-    setHistory(previous => previous.map(entry => entry.id === replyId
-      ? { ...entry, text: "正在处理…", status: "pending", request }
-      : entry));
-    const result = await ui.run(() => ui.client!.command(request));
-    inFlight.current = false;
-    setRunning(false);
-    if (!result) {
-      setHistory(previous => previous.map(entry => entry.id === replyId
-        ? { ...entry, text: "未收到处理结果，可以重试这条指令。", status: "failed", request }
-        : entry));
-      return;
-    }
-    const mutation = result.mutationResult;
-    let reply = result.reply;
-    if (mutation) {
-      ui.receive(mutation);
-      reply =
-        mutation.status === "applied"
-          ? `已执行 · ${mutation.message}\n${result.reply}`
-          : mutation.status === "preview"
-            ? `尚未执行 · 请核对预览后确认。\n${mutation.message}`
-            : `尚未执行 · ${mutation.questions.join("；")}`;
-    }
-    setHistory((previous) => previous.map(entry => entry.id === replyId ? {
-        id: replyId,
-        role: "assistant",
-        ...(result.conversationState ? { outcome: result.conversationState } : {}),
-        text:
-          reply +
-          (result.items.length
-            ? "\n" + result.items.map(i => `${i.date} ${i.start?.slice(11, 16) ?? "标记"} ${i.title}`).join("\n")
-            : ""),
-      } : entry));
-  }
-  function send() {
-    if (!ui.client || !text.trim() || inFlight.current || ui.busy) return;
-    const id = operationId();
-    const request: CommandRequest = {
-      operationId: id,
-      text,
-      ...(domain ? { domain } : {}),
-      ...(domain === 'ledger' && ledgerView ? { ledgerView } : {}),
-      selected: selected ? [{ entity: selected.entity, id: selected.id }] : [],
-      fromDate: date,
-      toDate: date,
-      // A failed request can only be resumed with its explicit retry action.
-      // Do not turn its unsatisfied instruction into context for a different request.
-      history: history.flatMap((entry, index) => {
-        const reply = history[index + 1];
-        return entry.role === "user" && reply?.role === "assistant" && !reply.status
-          ? [entry, reply].map(({ role, text: message, outcome }) => ({
-            role, text: message.slice(0, 10_000), ...(outcome ? { outcome } : {}),
-          }))
-          : [];
-      }).slice(-20),
-    };
-    const replyId = `${id}:assistant`;
-    setHistory(previous => [...previous,
-      { id: `${id}:user`, role: "user", text },
-      { id: replyId, role: "assistant", text: "正在处理…", status: "pending", request },
-    ]);
-    setText("");
-    void execute(request, replyId);
-  }
   return (
-    <section ref={root} className={`a2-assist${expanded ? " open" : ""}`} aria-label="生活助手" role={mobile && expanded ? 'dialog' : undefined} aria-modal={mobile && expanded ? true : undefined}>
+    <section ref={root} className={`a2-assist${expanded ? " open" : ""}`} aria-label="生活助手">
       {expanded && (
         <div className="a2-assist-panel ui-overlay">
           <div className="a2-assist-head">
             <strong>生活助手</strong>
-            <span className="ui-hint">{running ? "正在处理…" : selected ? "已携带选中事项" : mobile ? "点下方箭头收起" : "Esc 收起"}</span>
+            <span className="ui-hint">{running ? "正在处理…" : selected ? "已携带选中事项" : "Esc 收起"}</span>
           </div>
           <div className="conversation" aria-live="polite" ref={conversation}>
             {history.length ? (
@@ -144,7 +56,7 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
                   <small>{entry.role === "user" ? "你" : "助手"}</small>
                   {entry.text}
                   {entry.status === "failed" && entry.request && <>
-                    {" "}<button className="ui-btn sm" disabled={running || ui.busy} onClick={() => void execute(entry.request!, entry.id)}>重试这条指令</button>
+                    {" "}<button className="ui-btn sm" disabled={running || ui.busy} onClick={() => retry(entry)}>重试这条指令</button>
                   </>}
                 </p>
               ))

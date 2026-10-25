@@ -79,6 +79,25 @@ describe('phone layout', () => {
     expect(discard).toHaveBeenCalledWith('synthetic-token');
     expect(screen.queryByRole('dialog', { name:'确认更改' })).toBeNull();
   });
+  it('opens the assistant as a full page with a close button and keeps the conversation on this phone', async () => {
+    const { client } = fixture();
+    vi.mocked(client.command).mockResolvedValue({ ok:true, data:{ reply:'明天下午 14:00 后有空', mutationResult:null, items:[] } } as never);
+    localStorage.clear();
+    const first = render(<MobileApp client={client} connection={online} conversationKey="synthetic-conversation" />);
+    fireEvent.click(await screen.findByRole('button', { name:/问问生活助手/ }));
+    const page = screen.getByRole('dialog', { name:'生活助手' });
+    fireEvent.change(within(page).getByLabelText('对生活助手说'), { target:{ value:'明天下午有空吗' } });
+    fireEvent.click(within(page).getByRole('button', { name:'发送' }));
+    expect(within(page).getByText('明天下午有空吗')).toBeTruthy();
+    await within(page).findByText('明天下午 14:00 后有空');
+    fireEvent.click(within(page).getByRole('button', { name:'关闭生活助手' }));
+    expect(screen.queryByRole('dialog', { name:'生活助手' })).toBeNull();
+    first.unmount();
+    render(<MobileApp client={client} connection={online} conversationKey="synthetic-conversation" />);
+    fireEvent.click(await screen.findByRole('button', { name:/问问生活助手/ }));
+    expect(within(screen.getByRole('dialog', { name:'生活助手' })).getByText('明天下午 14:00 后有空')).toBeTruthy();
+    localStorage.clear();
+  });
   it('opens candidate details only on demand while keeping quick decisions visible', async () => {
     const {client,snapshot}=fixture(); const date=todayDate();
     snapshot.candidates.push(CandidateSchema.parse({id:'candidate',version:1,createdAt:`${date}T08:00:00+08:00`,updatedAt:`${date}T08:00:00+08:00`,title:'合成候选事项',sourceIds:['synthetic-source']}));

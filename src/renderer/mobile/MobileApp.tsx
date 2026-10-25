@@ -11,7 +11,6 @@ import { todayDate } from '../calendar-layout';
 import { taskActionHandlers } from '../task-actions';
 import type { Selection } from '../components/Calendar';
 import type { Page } from '../components/shell/Nav';
-import { Assistant } from '../components/shell/Assistant';
 import { Inbox } from '../components/Inbox';
 import { LedgerPage } from '../components/LedgerPage';
 import { EntityEditor, type EditorTarget } from '../components/editor/EntityEditor';
@@ -22,7 +21,8 @@ import { ImportDialog, SourceViewer } from '../components/ImportDialog';
 import { Preview } from '../components/Preview';
 import { MePage, type MeSection } from '../pages/me/MePage';
 import type { RemoteClientState } from '../remote/types';
-import { MobileProvider, useMobileLayout } from './layout';
+import { MobileProvider, useVisualViewport } from './layout';
+import { MobileAssistant } from './MobileAssistant';
 import { Sheet } from './Sheet';
 import { StatusBanner } from './StatusBanner';
 import { UnscheduledSheet } from './UnscheduledSheet';
@@ -42,8 +42,10 @@ const tabs: [Page, string, typeof Sun][] = [['today', '今天', Sun], ['calendar
  * The phone shell (ADR 0002): its own header-less pages, bottom tabs, sheets and full-screen editor, sharing
  * only the planner state, rules and record components with the desktop.
  */
-export function MobileApp({ client, connection, settings, pendingView, discardPreview }: {
+export function MobileApp({ client, connection, settings, pendingView, discardPreview, conversationKey }: {
   client: PlannerClient;
+  /** Local storage key for the assistant conversation, scoped to this pairing and data instance. */
+  conversationKey?: string;
   connection: Pick<RemoteClientState, 'status' | 'pending' | 'cachedAt' | 'storageError'>;
   /** Drops the phone's queued copy of a preview the user declined, so it does not linger as "needs handling". */
   discardPreview?: (confirmationToken: string) => void;
@@ -52,8 +54,11 @@ export function MobileApp({ client, connection, settings, pendingView, discardPr
   /** Connection details and the phone's unsent changes, opened from the status banner. */
   pendingView?: ReactNode;
 }) {
-  useMobileLayout(true);
+  useVisualViewport();
+  // iOS Safari only applies :active styles once the page listens for touches.
+  useEffect(() => { const touch = () => {}; document.addEventListener('touchstart', touch, { passive: true }); return () => document.removeEventListener('touchstart', touch); }, []);
   const now = useCurrentTime();
+  const [assistantOpen, setAssistantOpen] = useState(false);
   const ui = usePlanner(client), snapshot = ui.snapshot;
   const updates = useAppUpdates(undefined);
   const [page, setPage] = useState<Page>('today');
@@ -126,7 +131,8 @@ export function MobileApp({ client, connection, settings, pendingView, discardPr
           )}
         </main>
         {snapshot && <Toast ui={ui} />}
-        {snapshot && <Assistant ui={ui} selected={selected} date={date} domain={page === 'ledger' ? 'ledger' : undefined} ledgerView={page === 'ledger' ? ledgerView : undefined} />}
+        {snapshot && <MobileAssistant ui={ui} selected={selected} date={date} domain={page === 'ledger' ? 'ledger' : undefined}
+          ledgerView={page === 'ledger' ? ledgerView : undefined} storageKey={conversationKey} open={assistantOpen} setOpen={setAssistantOpen} />}
         <nav className="m-tabs-bar" aria-label="主导航">
           {tabs.map(([id, label, Icon]) => (
             <button key={id} aria-current={page === id ? 'page' : undefined} onClick={() => navigate(id)}>
