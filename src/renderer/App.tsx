@@ -18,6 +18,7 @@ import { EditPanel } from "./components/editor/EditPanel";
 import { DetailPopover } from "./components/detail/DetailPopover";
 import { entityNames } from "./components/detail/records";
 import { ImportDialog, SourceViewer } from "./components/ImportDialog";
+import { hasPlanImport, PlanImportDialog } from './components/PlanImportDialog';
 import { Modal } from "./components/Modal";
 import { Preview } from "./components/Preview";
 import { Today } from "./pages/today/Today";
@@ -38,6 +39,8 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
     snapshot = ui.snapshot;
   const updates = useAppUpdates(host);
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [planImportOpen, setPlanImportOpen] = useState(false);
+  const planImportHost = hasPlanImport(host) ? host : undefined;
   const [captureReference, setCaptureReference] = useState<NonNullable<Source['captureRef']>>();
   const [ledgerView, setLedgerView] = useState<LedgerViewContext>();
   const [page, setPage] = useState<Page>("calendar"),
@@ -116,7 +119,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
   return (
     <div className={`app-shell a2${host ? ' desktop-chrome' : ''}`}>
       {host && <div className="window-drag-region" aria-hidden="true" />}
-      <Nav page={page} navigate={(next) => { setEditor(null); setPage(next); }} pending={pending} />
+      <Nav page={page} navigate={(next) => { setEditor(null); setPage(next); }} pending={pending} importPlan={planImportHost ? () => setPlanImportOpen(true) : undefined} />
       {host && <div className="a2-nav-update"><UpdateShortcut updates={updates} open={() => setUpdateOpen(true)} /></div>}
       <main className="a2-main">
         {!api ? (
@@ -169,6 +172,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
         )}
       </main>
       {updateOpen && <Modal title="软件更新" onClose={() => setUpdateOpen(false)}><SoftwareUpdate updates={updates} plannerBusy={ui.busy} /></Modal>}
+      {planImportOpen && planImportHost && <PlanImportDialog host={planImportHost} ui={ui} onClose={() => setPlanImportOpen(false)} />}
       {snapshot && (
         <>
           {importing && (

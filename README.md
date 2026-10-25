@@ -17,7 +17,7 @@
 
 已发布桌面版面向 Windows x64，以北京时间处理日程和账目。当前源码新增手机网页与资料服务的本地开发入口，尚未部署、迁移个人资料或随正式安装包发布，详见下文。微信采集尚未提供。
 
-使用其他 agent 制定并导入计划，请阅读 [Agent 规划与导入规范](docs/agent-planning-guide.md)，其中包含云端／本机资料识别、交接模板、文件与网页关联、重复安排和写入回执核对。当前尚无通用计划 JSON／ICS 文件导入口；执行使用现有应用入口，或已获授权、完成配对的服务接口。
+使用其他 agent 制定计划，可按 [计划 JSON 文件标准 v1](docs/plan-file-format.md) 生成文件，在 Windows 的“导入计划”入口预览并批量导入目标、任务、学习时段与资料关联，支持去重和失败续导，无需再次调用 AI。[可导入示例](docs/examples/study-plan.calendar-plan.json) · [JSON Schema](docs/schemas/calendar-plan-v1.schema.json) · [Agent 规划与高级接口规范](docs/agent-planning-guide.md)。
 
 ## 开始使用
 

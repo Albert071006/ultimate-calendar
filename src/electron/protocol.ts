@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PlanImportConfirmSchema, PlanImportPreviewSchema, PlanImportResultSchema } from '../shared/plan-import';
 import { ResourceReferenceSchema } from '../shared/resources';
 import { ResourcePickRequestSchema, ResourceRegisterRequestSchema, ResourceOpenRequestSchema, ResourceStatusRequestSchema, ResourceStatusSchema } from '../shared/resource-host';
 import { LocalSourceEvidenceRequestSchema, LocalSourceEvidenceSchema } from '../shared/contracts';
@@ -10,6 +11,7 @@ import { CaptureConfigSchema, CaptureSnapshotSchema, CaptureGroupSchema, Capture
 import { CaptureConnectSchema, CaptureActionSchema, CaptureChunksRequestSchema, CaptureChunksSchema } from '../shared/capture-api';
 import { SnapshotSchema, MutationRequestSchema, MutationResultSchema, IdSchema, ImportSourceRequestSchema, SourceSchema, AnalyzeSourceRequestSchema, AnalysisResultSchema, CommandRequestSchema, CommandResultSchema, CourseImportRequestSchema, CourseImportResultSchema, SaveSettingsRequestSchema, SettingsSchema, SetApiKeyRequestSchema, KeyStatusSchema, BackupResultSchema, RestoreRequestSchema, RestoreResultSchema, SelectedImageSchema, apiResultSchema } from '../shared/contracts';
 export const requests = {
+  planImportOpen: z.undefined(), planImportConfirm: PlanImportConfirmSchema, planImportTemplate: z.undefined(),
   resourcePick: ResourcePickRequestSchema, resourceRegister: ResourceRegisterRequestSchema,
   resourceOpen: ResourceOpenRequestSchema, resourceRelocate: ResourceOpenRequestSchema, resourceStatus: ResourceStatusRequestSchema,
   localSourceEvidence: LocalSourceEvidenceRequestSchema,
@@ -25,6 +27,7 @@ export const requests = {
   backup: z.undefined(), restore: RestoreRequestSchema,
 } as const;
 export const responses = {
+  planImportOpen: apiResultSchema(PlanImportPreviewSchema.nullable()), planImportConfirm: apiResultSchema(PlanImportResultSchema), planImportTemplate: apiResultSchema(z.strictObject({ saved: z.boolean() })),
   resourcePick: apiResultSchema(z.array(ResourceReferenceSchema)), resourceRegister: apiResultSchema(z.array(ResourceReferenceSchema)),
   resourceOpen: apiResultSchema(z.strictObject({ opened: z.literal(true) })), resourceRelocate: apiResultSchema(ResourceReferenceSchema.nullable()), resourceStatus: apiResultSchema(z.array(ResourceStatusSchema)),
   localSourceEvidence: apiResultSchema(LocalSourceEvidenceSchema),

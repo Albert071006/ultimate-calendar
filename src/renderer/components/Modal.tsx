@@ -5,16 +5,18 @@ export function Modal({
   children,
   onClose,
   wide = false,
+  closeDisabled = false,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
+  closeDisabled?: boolean;
 }) {
   const mobile = useMobile();
   const ref = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
-  close.current = onClose;
+  close.current = () => { if (!closeDisabled) onClose(); };
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     ref.current
@@ -57,7 +59,7 @@ export function Modal({
     <div
       className="modal-backdrop"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) close.current();
       }}
     >
       <div
@@ -69,7 +71,7 @@ export function Modal({
       >
         <header>
           <h2>{title}</h2>
-          <button onClick={onClose}>关闭</button>
+          <button disabled={closeDisabled} onClick={() => close.current()}>关闭</button>
         </header>
         {children}
       </div>

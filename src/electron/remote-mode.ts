@@ -16,6 +16,7 @@ import { WorkflowError } from '../ai/deepseek';
 import { createRemoteSourceCache } from './remote-source-cache';
 import { remoteOutputs } from '../server/protocol';
 import { createNativeResourceHost } from './resources-native';
+import { createNativePlanImport } from './plan-import';
 
 /** Uses bundled trusted UI and main-process networking, never a remote page with Electron privileges. */
 export async function startNativeRemote(config: NativeRemoteConfig, directory: string, documentUrl: string) {
@@ -43,6 +44,16 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
     const shell = createRemoteDesktopShell({ window, directory, config, collector, changed, rpc: journal.rpc, getIdentity: async () => (await client.getSession()).identity, isBusy: () => activeRequests > 0 });
     const resourceDirectory = config.localDataDirectory ?? directory;
     const resources = createNativeResourceHost(resourceDirectory, () => window);
+    const planImport = createNativePlanImport({ directory: join(directory, 'plan-import'), resourceDirectory, window: () => window, changed,
+      scope: async () => { const current = await client.getSession(); return JSON.stringify({ origin: client.origin, identity: current.identity, deviceId: current.deviceId }); },
+      snapshot: async () => { const result = remoteOutputs.snapshot.parse(await journal.rpc('snapshot')); if (!result.ok) throw new Error(result.error.message); return result.data; },
+      mutate: async input => {
+        const pending = await journal.inspect();
+        if (pending.status !== 'none' && (pending.method !== 'mutate' || pending.operationId !== input.operationId))
+          throw new Error('另一项云端操作结果尚未核对。请先重试原操作，或从托盘菜单选择“核对云端操作”，然后重选原计划文件继续');
+        const result = remoteOutputs.mutate.parse(await journal.rpc('mutate', input)); if (!result.ok) throw new Error(result.error.message); return result.data;
+      },
+    });
     const files = createRemoteFiles({ window, resourceDirectory, rpc: journal.rpc, client, canRestore: async () => (await journal.inspect()).status === 'none' });
     session.defaultSession.setPermissionRequestHandler((_c, _p, callback) => callback(false));
     session.defaultSession.setPermissionCheckHandler(() => false);
@@ -64,6 +75,9 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
           if (!updating && shell.isInstalling()) return failure('CONFLICT', '正在备份并准备更新，请稍候再操作', false);
           if (!updating) activeRequests++;
           try {
+            if (method === 'planImportOpen') return await planImport.planImportOpen();
+            if (method === 'planImportConfirm') return await planImport.planImportConfirm(value as Parameters<typeof planImport.planImportConfirm>[0]);
+            if (method === 'planImportTemplate') return await planImport.planImportTemplate();
             const resourceResult = await resources.handle(method, value); if (resourceResult) return resourceResult;
             if (method === 'localSourceEvidence') {
               const { sourceId } = LocalSourceEvidenceRequestSchema.parse(value), source = sourceCache.read(sourceId);

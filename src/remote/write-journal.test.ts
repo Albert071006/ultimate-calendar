@@ -37,5 +37,10 @@ describe('native durable write guard',()=>{
     const f=fixture();vi.mocked(f.client.rpc).mockRejectedValueOnce(Error('Synthetic drop'));await expect(createWriteJournal(f.client,f.file).rpc('mutate',input('business'))).rejects.toThrow();vi.mocked(f.client.getSession).mockResolvedValue({identity:{...identity,generation:2},deviceId,aiConfigured:false});
     await expect(createWriteJournal(f.client,f.file).rpc('mutate',input('new-business'))).rejects.toMatchObject({status:409});expect(f.client.rpc).toHaveBeenCalledTimes(1);expect(f.client.operation).not.toHaveBeenCalled();
   });
+  it('exposes the pending business ID so file imports cannot adopt an unrelated identical write',async()=>{
+    const f=fixture();vi.mocked(f.client.rpc).mockRejectedValueOnce(Error('Synthetic drop'));
+    const journal=createWriteJournal(f.client,f.file);await expect(journal.rpc('mutate',input('original-manual-id'))).rejects.toThrow();
+    expect(await journal.inspect()).toMatchObject({status:'unknown',method:'mutate',operationId:'original-manual-id'});
+  });
   it('fails closed on an unreadable persisted journal instead of silently starting a new write',()=>{const f=fixture();writePrivate(f.file,'{broken');expect(()=>createWriteJournal(f.client,f.file)).toThrow();expect(f.client.rpc).not.toHaveBeenCalled();});
 });

@@ -55,7 +55,7 @@ export function createWriteJournal(client: NodeRemoteClient, file: string) {
         save(null); return result;
       });
     },
-    inspect() { return locked(async () => { if (!pending) return { status: 'none' as const }; await verify(); return { ...await client.operation(pending.requestId), requestId: pending.requestId, method: pending.method }; }); },
+    inspect() { return locked(async () => { if (!pending) return { status: 'none' as const }; await verify(); return { ...await client.operation(pending.requestId), requestId: pending.requestId, method: pending.method, operationId: pending.operationId }; }); },
     acknowledge(requestId: string) { return locked(async () => {
       if (!pending || pending.requestId !== requestId) throw new RemoteClientError(409, '待核对操作已经变化');
       await verify(); const receipt = await client.operation(requestId);
