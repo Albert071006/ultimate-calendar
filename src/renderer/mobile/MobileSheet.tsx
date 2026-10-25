@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
-import { Modal } from '../components/Modal';
+import { Sheet } from './Sheet';
 
-/** Uses the shared dialog's focus handling; the mobile stylesheet places it above the safe area. */
-export function MobileSheet({ title, children, close }: { title: string; children: ReactNode; close: () => void }) {
-  return <div className="mobile-sheet"><Modal title={title} onClose={close}>{children}</Modal></div>;
+/** Opens shared detail content in a phone sheet; `bare` when the content already shows its own title and close button. */
+export function MobileSheet({ title, children, close, bare = false }: { title: string; children: ReactNode; close: () => void; bare?: boolean }) {
+  return <Sheet title={title} onClose={close} bare={bare}>{children}</Sheet>;
 }

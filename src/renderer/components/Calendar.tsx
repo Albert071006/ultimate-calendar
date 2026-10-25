@@ -23,7 +23,6 @@ import { workFill } from '../work-fill';
 import './CalendarTimeline.css';
 import './calendar-attention.css';
 import './calendar/Calendar.css';
-import { useMobile } from '../mobile/layout';
 export interface Selection {
   entity: CalendarItem["refKind"];
   id: string;
@@ -91,8 +90,7 @@ export function Calendar({
   toggleDrawer?: () => void;
   unscheduledCount?: number;
 }) {
-  const mobile = useMobile();
-  const [view, setView] = useState<CalendarView>(mobile ? "day" : "week");
+  const [view, setView] = useState<CalendarView>("week");
   const [pending, setPending] = useState(snapshot.settings.showPending);
   const now = useCurrentTime();
   const scroll = useRef<HTMLDivElement>(null);
@@ -145,7 +143,6 @@ export function Calendar({
   }
   useEffect(() => { cancelGesture(); setCursor(null); }, [view, date]);
   function begin(e: ReactPointerEvent<HTMLElement>, day: string, operation: TimelineOperation, item?: CalendarItem) {
-    if (mobile && e.pointerType === 'touch') return;
     if (e.button !== 0 || e.isPrimary === false || gesture.current) return;
     e.preventDefault(); e.stopPropagation(); e.currentTarget.focus(); suppressClick.current = null;
     const pointer = pointerInstant(day, e.clientY, operation === 'create' ? 1439 : 1440);
@@ -283,16 +280,15 @@ export function Calendar({
         <span className="ui-legend" aria-hidden="true"><i className="course" />课程<i className="work" />执行时段<i className="event" />活动<i className="pending" />待定</span>
         <label className="a2-check"><input type="checkbox" checked={pending} onChange={(e) => setPending(e.target.checked)} />待判断标记</label>
         <div className="ui-seg" role="group" aria-label="视图">
-          {(["day", mobile ? "three-day" : "week", "month"] as const).map((v, i) => (
-            <button aria-pressed={v === view} onClick={() => setView(v)} key={v}>{["日", mobile ? "3天" : "周", "月"][i]}</button>
+          {(["day", "week", "month"] as const).map((v, i) => (
+            <button aria-pressed={v === view} onClick={() => setView(v)} key={v}>{["日", "周", "月"][i]}</button>
           ))}
         </div>
         <button className="ui-btn ghost" onClick={courses}>课表</button>
-        {mobile && <button className="ui-btn" onClick={() => schedule({ date, time: '09:00' })}>新安排</button>}
         {toggleDrawer && <button className={`ui-btn${drawerOpen ? " on" : ""}`} aria-pressed={drawerOpen} onClick={toggleDrawer}><PanelRight aria-hidden="true" />未安排 {unscheduledCount}</button>}
       </PageToolbar>
       <div className={`a2-cal-body${side ? " with-side" : ""}`}>
-      <section className={`calendar-panel a2-cal view-${view}`} title={mobile ? '轻点事项查看详情，使用新安排按钮添加；上下滑动浏览' : '点击或拖选空白时间新建；拖动时段或上下边缘调整到分钟；方向键选分钟，Enter 新建；Alt + 上下键移动时段'}>
+      <section className={`calendar-panel a2-cal view-${view}`} title="点击或拖选空白时间新建；拖动时段或上下边缘调整到分钟；方向键选分钟，Enter 新建；Alt + 上下键移动时段">
       {view === "month" ? (
         <MonthView days={days} month={date.slice(0, 7)} today={today} items={items} inDay={inDay}
           tone={item => itemAttention.get(item.id)!.tone} label={attentionLabel} colorStyle={colorStyle}
@@ -301,10 +297,10 @@ export function Calendar({
         <>
           <div className="a2-days" style={columnsStyle}>
             <span className="timezone" title="北京时间">GMT+8</span>
-            {days.map((day) => (
+            {days.map((day, i) => (
               <div key={day} className={day === today ? "today" : ""}>
                 <button className="day-number dn" title="打开这一天" onClick={() => { setDate(day); setView("day"); }}>{Number(day.slice(8))}</button>
-                <span className="wd">周{weekdays[(new Date(`${day}T00:00Z`).getUTCDay() + 6) % 7]}{view === "day" && dayCounts(day) ? ` · ${dayCounts(day)}` : ""}</span>
+                <span className="wd">周{view === "day" ? weekdays[(new Date(`${day}T00:00Z`).getUTCDay() + 6) % 7] : weekdays[i]}{view === "day" && dayCounts(day) ? ` · ${dayCounts(day)}` : ""}</span>
               </div>
             ))}
           </div>
@@ -365,7 +361,7 @@ export function Calendar({
                     return <div key={item.id} data-timeline-item={item.id}
                       className={`timeline-event ${kindClass(item)} ${attentionClass(item)} ${item.pending ? 'pending' : ''} ${short ? 'compact' : ''} ${preview?.itemId === item.id ? 'is-moving' : ''}`}
                       style={{ ...colorStyle(item), top: minutePosition(startMinute), height: minutePosition(endMinute - startMinute), left: `calc(${column / count * 100}% + 4px)`, width: `calc(${100 / count}% - 8px)` }}>
-                      <button className={`timeline-event-button ${movable ? 'can-move' : ''}`} title={`${label}\n${item.start!.slice(0, 10)} 至 ${item.end!.slice(0, 10)}${mobile ? '\n轻点事项查看详情，使用新安排按钮添加；上下滑动浏览' : movable ? '\n拖动移动；Alt + 上下方向键微调 1 分钟' : ''}`}
+                      <button className={`timeline-event-button ${movable ? 'can-move' : ''}`} title={`${label}\n${item.start!.slice(0, 10)} 至 ${item.end!.slice(0, 10)}${movable ? '\n拖动移动；Alt + 上下方向键微调 1 分钟' : ''}`}
                         onPointerDown={e => { if (movable) begin(e, day, 'move', item); else e.stopPropagation(); }}
                         onKeyDown={e => keyboardBlock(e, item, 'move')}
                         onClick={e => { if (suppressClick.current === item.id && e.detail !== 0) { suppressClick.current = null; return; } open(item, day); }}
@@ -400,7 +396,7 @@ export function Calendar({
           </div>
         </>
       )}
-      <span className="a2-visually-hidden" id="calendar-minute-help">{mobile ? '轻点事项查看详情，使用新安排按钮添加；上下滑动浏览' : '点击或拖选空白时间新建；拖动时段或上下边缘可精确到分钟，松开后核对并保存；方向键选分钟，Enter 新建；Alt + 上下键移动时段'}</span>
+      <span className="a2-visually-hidden" id="calendar-minute-help">点击或拖选空白时间新建；拖动时段或上下边缘可精确到分钟，松开后核对并保存；方向键选分钟，Enter 新建；Alt + 上下键移动时段</span>
       <span className="timeline-live-status" aria-live="polite">{cursor ? `${cursor.day} ${clock(cursor.minute)}` : preview ? `${localDateTime(preview.start)} 至 ${localDateTime(preview.end)}` : ''}</span>
       </section>
       {side}

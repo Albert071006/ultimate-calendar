@@ -8,7 +8,6 @@ import { todayDate } from "../../calendar-layout";
 import { MoreMenu } from "../shell/MoreMenu";
 import type { TaskActions } from "../tasks/TaskRow";
 import "./UnscheduledDrawer.css";
-import { useMobile } from '../../mobile/layout';
 
 export type Urgency = "over" | "today" | "week" | "later" | "none";
 const weekdays = ["一", "二", "三", "四", "五", "六", "日"];
@@ -35,7 +34,6 @@ export function deadlineText(task: Task, today = todayDate()) {
 export function UnscheduledDrawer({ snapshot, ui, now, collapse, actions }: {
   snapshot: Snapshot; ui: PlannerUI; now: number; collapse: () => void; actions: TaskActions;
 }) {
-  const mobile = useMobile();
   const tasks = unscheduledTasks(snapshot, now);
   return (
     <aside className="a2-drawer" aria-label="未安排任务">
@@ -48,14 +46,13 @@ export function UnscheduledDrawer({ snapshot, ui, now, collapse, actions }: {
           {tasks.map(task => {
             const level = urgency(task, snapshot, now), attention = taskAttention(snapshot, task, now);
             return (
-              <article key={task.id} className={`a2-card lvl-${level}`} data-task-id={task.id} title={mobile ? '点击安排，选择分钟时间' : '拖到日历上安排时间'} draggable={!mobile}
+              <article key={task.id} className={`a2-card lvl-${level}`} data-task-id={task.id} title="拖到日历上安排时间" draggable
                 onDragStart={(e) => e.dataTransfer.setData("application/x-planner", JSON.stringify({ kind: "task", id: task.id }))}>
                 <span className="grip" aria-hidden="true" />
                 <div>
                   <button className="ct" onClick={() => actions.select ? actions.select({ entity: "task", id: task.id }) : actions.editTask(task.id)}>{task.title}</button>
                   <div className="cm">{deadlineText(task)}{attention?.kind === "ended" ? " · 安排已结束" : ""}</div>
                 </div>
-                {mobile && <button className="ui-btn" onClick={() => actions.schedule(task.id)}>安排</button>}
                 <MoreMenu label={`${task.title} 的更多操作`} items={[
                   { label: "安排", onSelect: () => actions.schedule(task.id) },
                   ...(actions.scheduleRecurring ? [{ label: "重复安排", onSelect: () => actions.scheduleRecurring!(task.id) }] : []),

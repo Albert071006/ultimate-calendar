@@ -20,7 +20,9 @@ export function EditPanel({ title, children, onClose, overlay = false }: {
   close.current = onClose;
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
-    ref.current?.querySelector<HTMLElement>(mobile ? 'button' : "input:not([readonly]),textarea,select")?.focus();
+    // On the phone, focusing a field would raise the keyboard over the form before the user has read it.
+    if (mobile) ref.current?.focus({ preventScroll: true });
+    else ref.current?.querySelector<HTMLElement>("input:not([readonly]),textarea,select")?.focus();
     const key = (event: KeyboardEvent) => {
       if (mobile && event.key === 'Tab' && Array.from(document.querySelectorAll('[role="dialog"]')).at(-1) === ref.current) {
         const nodes = Array.from(ref.current?.querySelectorAll<HTMLElement>('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href]') ?? []);
@@ -39,7 +41,7 @@ export function EditPanel({ title, children, onClose, overlay = false }: {
     };
   }, []);
   return (
-    <section ref={ref} className={`a2-edit${overlay ? " overlay" : ""}`} role="dialog" aria-modal={mobile} aria-label={title}>
+    <section ref={ref} className={`a2-edit${overlay ? " overlay" : ""}`} role="dialog" aria-modal={mobile} aria-label={title} tabIndex={mobile ? -1 : undefined}>
       <header className="a2-edit-h">
         <h2>{title}</h2>
         <button className="ui-btn sm ghost icon" onClick={onClose} aria-label="关闭编辑" title="关闭（Esc）"><X aria-hidden="true" /></button>

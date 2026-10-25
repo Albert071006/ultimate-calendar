@@ -1,7 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { MobileProvider, useMobileLayout } from './mobile/layout';
-import { MobileSheet } from './mobile/MobileSheet';
-import './mobile/mobile.css';
+import { useEffect, useRef, useState } from "react";
 import type { CourseImportResult, DesktopAPI, LedgerViewContext, Source } from "../shared/contracts";
 import type { HostCapabilities, PlannerClient } from "../shared/client";
 import { resolveConnection } from "./client-context";
@@ -13,7 +10,7 @@ import { useAppUpdates } from './hooks/useAppUpdates';
 import { SoftwareUpdate, UpdateShortcut } from './components/SoftwareUpdate';
 import { Nav, type Page } from "./components/shell/Nav";
 import { Assistant } from "./components/shell/Assistant";
-import { Calendar, type Selection, type ScheduleDraft } from "./components/Calendar";
+import { Calendar, type Selection } from "./components/Calendar";
 import { Inbox } from "./components/Inbox";
 import { LedgerPage } from "./components/LedgerPage";
 import { EntityEditor, type EditorTarget } from "./components/editor/EntityEditor";
@@ -27,16 +24,14 @@ import { Today } from "./pages/today/Today";
 import { UnscheduledDrawer } from "./components/calendar/UnscheduledDrawer";
 import { unscheduledTasks } from "../domain/unscheduled";
 import { MePage, type MeSection } from "./pages/me/MePage";
-import { taskEvents, taskArrangements, taskNoticeTiming, noticeTimePassed, nextTaskArrangement } from './task-schedule';
-import { effectiveActivityEnd } from '../domain/activity-duration';
+import { taskActionHandlers } from './task-actions';
 import './theme/tokens.css';
 import './theme/base.css';
 import './theme/forms.css';
 import './task-attention.css';
 import './components/shell/shell.css';
 
-export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: HostCapabilities; mobile?: boolean; remoteStatus?: ReactNode; remoteSettings?: ReactNode }) {
-  const mobile = useMobileLayout(props.mobile);
+export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: HostCapabilities }) {
   const { client: api, host } = resolveConnection(props);
   const now = useCurrentTime();
   const ui = usePlanner(api, host),
@@ -45,7 +40,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
   const [updateOpen, setUpdateOpen] = useState(false);
   const [captureReference, setCaptureReference] = useState<NonNullable<Source['captureRef']>>();
   const [ledgerView, setLedgerView] = useState<LedgerViewContext>();
-  const [page, setPage] = useState<Page>(mobile ? "today" : "calendar"),
+  const [page, setPage] = useState<Page>("calendar"),
     [meSection, setMeSection] = useState<MeSection>("goals"),
     [date, setDate] = useState(todayDate()),
     [selected, setSelected] = useState<Selection | null>(null),
@@ -53,7 +48,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
     [importing, setImporting] = useState(false),
     [coursePreview, setCoursePreview] = useState<CourseImportResult | undefined>(),
     [sourceId, setSourceId] = useState<string | null>(null),
-    [drawerOpen, setDrawerOpen] = useState(!mobile),
+    [drawerOpen, setDrawerOpen] = useState(true),
     [anchor, setAnchor] = useState<DOMRect | null>(null);
   const pointer = useRef<{ target: Element; at: number } | null>(null);
   useEffect(() => {
@@ -97,39 +92,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
     setSelected(null);
     setEditor(target);
   };
-  const schedule = (draft: ScheduleDraft) =>
-    editRecord({ entity: "block", id: draft.blockId, draft });
-  const scheduleTask = (taskId: string, blockId?: string) => {
-    if (!snapshot) return;
-    const arrangements = taskArrangements(snapshot, taskId);
-    const event = blockId ? arrangements.find(block => block.id === blockId && !block.cancelled) : nextTaskArrangement(arrangements, Date.now());
-    if (event) {
-      editRecord({ entity: 'block', id: event.id });
-    } else if (arrangements.length || blockId) {
-      setSelected({ entity: 'task', id: taskId });
-    } else {
-      const timing = taskNoticeTiming(snapshot, taskId);
-      schedule(timing ? {
-        date: timing.start.slice(0, 10), time: timing.start.slice(11, 16), taskId,
-        end: effectiveActivityEnd(timing.start, timing.end).slice(0, 16), kind: 'event', location: timing.location,
-        noticeTaskVersion: snapshot.tasks.find(task => task.id === taskId)?.version,
-        timingNote: `${timing.source === 'reminder' ? '已带入指定的提醒时间；未提供结束时间，默认30分钟，可调整。' : timing.end ? '已按原消息带入活动时间。' : '已按原消息带入开始时间；未提供结束时间，默认30分钟，可调整。'}${noticeTimePassed(timing, Date.now()) ? `原${timing.source === 'reminder' ? '提醒' : '通知'}时间已过，请核对后保存。` : ''}`,
-      } : { date: todayDate(), time: '09:00', taskId });
-    }
-  };
-  const scheduleRecurringTask = (taskId: string) => {
-    if (!snapshot) return;
-    const event = taskEvents(snapshot, taskId).find(value => !value.cancelled && Date.parse(effectiveActivityEnd(value.start, value.end)) > Date.now());
-    const timing = event ?? taskNoticeTiming(snapshot, taskId);
-    editRecord({ entity: 'block', recurring: true, draft: {
-      taskId, date: timing?.start.slice(0, 10) ?? todayDate(), time: timing?.start.slice(11, 16) ?? '09:00',
-      kind: 'event', location: timing?.location ?? '',
-    } });
-  };
-  const removeTask = (taskId: string) => {
-    const task = snapshot?.tasks.find(value => value.id === taskId);
-    if (task) void ui.mutate([{ type: 'removeTask', id: task.id, expectedVersion: task.version, includeLinkedBlocks: true }]);
-  };
+  const { schedule, scheduleTask, scheduleRecurringTask, removeTask } = taskActionHandlers({ snapshot, ui, select: setSelected, editRecord });
   const editSelected = () => {
     if (selected && ["task", "block", "goal", "course", "candidate"].includes(selected.entity))
       editRecord({ ...selected, entity: selected.entity as EditorTarget["entity"] });
@@ -151,17 +114,16 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
   );
   const source = snapshot?.sources.find((s) => s.id === sourceId);
   return (
-    <MobileProvider mobile={mobile}><div className={`app-shell a2${host && !mobile ? ' desktop-chrome' : ''}${mobile ? ' is-mobile' : ''}`}>
+    <div className={`app-shell a2${host ? ' desktop-chrome' : ''}`}>
       {host && <div className="window-drag-region" aria-hidden="true" />}
-      <Nav page={page} navigate={(next) => { setEditor(null); if (mobile) { setSelected(null); setDrawerOpen(false); } setPage(next); }} pending={pending} />
+      <Nav page={page} navigate={(next) => { setEditor(null); setPage(next); }} pending={pending} />
       {host && <div className="a2-nav-update"><UpdateShortcut updates={updates} open={() => setUpdateOpen(true)} /></div>}
       <main className="a2-main">
-        {mobile && <div className="mobile-header"><strong>终极日历</strong>{props.remoteStatus && <div className="mobile-remote-status">{props.remoteStatus}</div>}</div>}
         {!api ? (
-          <div className="a2-service"><h2>{mobile ? '尚未连接资料服务' : '请从桌面应用打开终极日历'}</h2><p>{mobile ? '请先在账户与设备中建立连接。' : '此页面未连接本地数据服务。'}</p></div>
+          <div className="a2-service"><h2>请从桌面应用打开终极日历</h2><p>此页面未连接本地数据服务。</p></div>
         ) : !snapshot ? (
           <div className="a2-service">
-            <h2>{mobile ? '正在载入资料…' : '正在载入本机数据…'}</h2>
+            <h2>正在载入本机数据…</h2>
             {ui.error && <p className="error">{ui.error}</p>}
             <button className="ui-btn" onClick={() => void ui.refresh()}>重新载入</button>
           </div>
@@ -178,15 +140,15 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
               {page === "today" && (
                 <Today snapshot={snapshot} ui={ui} pendingCount={pending} create={() => editRecord({ entity: "task" })} openInbox={() => setPage("inbox")}
                   openCandidate={(id) => { setSelected({ entity: "candidate", id }); setPage("inbox"); }}
-                  openRecord={editRecord} selectRecord={select} goCalendar={() => setPage("calendar")} {...taskActions} />
+                  openRecord={editRecord} goCalendar={() => setPage("calendar")} {...taskActions} />
               )}
               {page === "calendar" && (
                 <Calendar snapshot={snapshot} date={date} setDate={setDate} select={select} schedule={schedule} ui={ui}
                   edit={(s) => { if (["task", "block", "course", "candidate"].includes(s.entity)) editRecord({ ...s, entity: s.entity as EditorTarget["entity"] }); }}
                   courses={() => { setCoursePreview(undefined); openMe("courses"); }}
                   drawerOpen={drawerOpen} toggleDrawer={() => setDrawerOpen(open => !open)} unscheduledCount={unscheduledTasks(snapshot, now).length}
-                  panel={!mobile ? editPanel(false) || undefined : undefined} openCandidate={(id) => { setSelected({ entity: "candidate", id }); setPage("inbox"); }}
-                  drawer={!mobile && drawerOpen ? <UnscheduledDrawer snapshot={snapshot} ui={ui} now={now} collapse={() => setDrawerOpen(false)} actions={taskActions} /> : null} />
+                  panel={editPanel(false) || undefined} openCandidate={(id) => { setSelected({ entity: "candidate", id }); setPage("inbox"); }}
+                  drawer={drawerOpen ? <UnscheduledDrawer snapshot={snapshot} ui={ui} now={now} collapse={() => setDrawerOpen(false)} actions={taskActions} /> : null} />
               )}
               {page === "inbox" && (
                 <Inbox snapshot={snapshot} ui={ui} select={select} edit={(id) => editRecord({ entity: "candidate", id })} host={host}
@@ -197,10 +159,9 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
               )}
               {page === "me" && (
                 <MePage snapshot={snapshot} ui={ui} section={meSection} setSection={setMeSection} updates={updates} select={select}
-                  edit={editRecord} openSource={setSourceId} coursePreview={coursePreview} captureReference={captureReference} remoteSettings={props.remoteSettings} />
+                  edit={editRecord} openSource={setSourceId} coursePreview={coursePreview} captureReference={captureReference} />
               )}
-              {(mobile || page !== "calendar") && editPanel(true)}
-              {mobile && page === 'calendar' && drawerOpen && !editor && <MobileSheet title="未安排任务" close={() => setDrawerOpen(false)}><UnscheduledDrawer snapshot={snapshot} ui={ui} now={now} collapse={() => setDrawerOpen(false)} actions={{ ...taskActions, schedule: (id, blockId) => { setDrawerOpen(false); scheduleTask(id, blockId); } }} /></MobileSheet>}
+              {page !== "calendar" && editPanel(true)}
             </div>
             {(page !== "inbox" || selected?.entity !== "candidate") && !editor && detail()}
             <Assistant ui={ui} selected={selected} date={date} domain={page === "ledger" ? "ledger" : undefined} ledgerView={page === "ledger" ? ledgerView : undefined} />
@@ -219,7 +180,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
             <Modal wide title="原始来源" onClose={() => setSourceId(null)}>
               <SourceViewer
                 source={source}
-                onCapture={!mobile && host ? reference => { setCaptureReference(reference); setSourceId(null); openMe('capture'); } : undefined}
+                onCapture={host ? reference => { setCaptureReference(reference); setSourceId(null); openMe('capture'); } : undefined}
                 ui={ui}
                 onClose={() => setSourceId(null)}
                 settings={keySettings}
@@ -236,6 +197,6 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
           )}
         </>
       )}
-    </div></MobileProvider>
+    </div>
   );
 }

@@ -16,7 +16,8 @@ body:has(.app-shell.is-mobile) { min-width:0; overflow:hidden; overscroll-behavi
 .is-mobile .a2-nav nav button.on::before { top:0; left:20%; right:20%; bottom:auto; width:auto; height:2px; }
 .is-mobile .a2-nav nav b { position:absolute; top:3px; right:8px; min-width:18px; height:18px; padding:0 3px; font-size:10px; background:var(--bg); }
 .is-mobile .a2-nav-update,.is-mobile .window-drag-region { display:none; }
-.is-mobile :is(button,.ui-btn,.ui-btn.sm,.ui-btn.icon,.ui-btn.sm.icon,.ui-more) { min-height:44px; min-width:44px; height:auto; }
+/* Touch targets for the shared desktop components; the phone shell's own m- parts size themselves. */
+.is-mobile :is(button,.ui-btn,.ui-btn.sm,.ui-btn.icon,.ui-btn.sm.icon,.ui-more):not(:is(.m-page,.m-tabs-bar,.m-sheet-head,.m-toast,.m-error,.m-list) *):not([class^="m-"]) { min-height:44px; min-width:44px; height:auto; }
 .is-mobile :is(input,select,textarea) { font-size:16px!important; }
 .is-mobile input:not([type=checkbox],[type=radio],[type=range]),.is-mobile select { min-height:44px; }
 .is-mobile input[type=checkbox] { width:20px; height:20px; }

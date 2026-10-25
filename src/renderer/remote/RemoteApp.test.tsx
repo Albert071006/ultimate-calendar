@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import type { PendingWrite, RecoveryArchive, RemoteClientState, RemoteController } from './types';
 import { RemoteApp } from './RemoteApp';
 
-vi.mock('../App',()=>({App:({remoteStatus,remoteSettings}:{remoteStatus:ReactNode;remoteSettings:ReactNode})=><main>{remoteStatus}{remoteSettings}</main>}));
+vi.mock('../mobile/MobileApp',()=>({MobileApp:({settings,pendingView}:{settings:ReactNode;pendingView:ReactNode})=><main><aside data-testid="pending">{pendingView}</aside>{settings}</main>}));
 afterEach(()=>{cleanup();vi.unstubAllGlobals();vi.restoreAllMocks();delete (navigator as unknown as Record<string,unknown>).serviceWorker;});
 const identity={protocolVersion:1 as const,dataInstanceId:'11111111-1111-4111-8111-111111111111',generation:1};
 const session={paired:true as const,identity,device:{id:'22222222-2222-4222-8222-222222222222',name:'合成手机'},csrfToken:'synthetic',aiConfigured:true};
@@ -50,16 +50,16 @@ describe('remote browser shell',()=>{
     render(<RemoteApp controller={f.controller}/>);fireEvent.click(screen.getByLabelText('我选择将旧修改保留为本机隔离档案，不自动提交到新配对'));fireEvent.click(screen.getByRole('button',{name:'保留隔离档案并继续配对'}));await screen.findByRole('alert');
     expect((screen.getByRole('button',{name:'配对此设备'}) as HTMLButtonElement).disabled).toBe(true);expect(f.controller.pair).not.toHaveBeenCalled();expect(f.controller.resolve).not.toHaveBeenCalled();
   });
-  it('renders exact live connection/cache state and prevents discarding uncertain or sending operations',async()=>{
+  it('names the live connection state and prevents discarding uncertain or sending operations',async()=>{
     const writes=[pending('queued'),pending('uncertain'),pending('sending'),pending('conflict')];
     const f=fake({status:'offline',pending:writes});render(<RemoteApp controller={f.controller}/>);
-    expect(screen.getByText('当前离线 · 未连接资料服务',{selector:'strong'})).toBeTruthy();
-    expect(screen.getByText(/最后确认刷新：2026-10-24 14:12/)).toBeTruthy();
-    for(const status of ['uncertain','sending']){const row=screen.getByRole('heading',{name:`合成修改-${status}`}).closest('article')!;expect(within(row).queryByRole('button',{name:'放弃这条手机修改'})).toBeNull();fireEvent.click(within(row).getByRole('button',{name:'查询原操作结果'}));await waitFor(()=>expect(f.controller.resolve).toHaveBeenCalledWith(status,'retry'));}
-    const conflict=screen.getByRole('heading',{name:'合成修改-conflict'}).closest('article')!;
-    expect(within(conflict).getByText('基于版本')).toBeTruthy();
-    fireEvent.click(within(conflict).getByRole('button',{name:'按本机修改重新提交'}));await waitFor(()=>expect(f.controller.resolve).toHaveBeenCalledWith('conflict','use-local'));
-    act(()=>f.change({status:'online'}));expect(screen.getByText('资料服务已连接',{selector:'strong'})).toBeTruthy();
+    const panel=within(screen.getByTestId('pending'));
+    expect(panel.getByText(/^离线/)).toBeTruthy();
+    for(const status of ['uncertain','sending']){const row=panel.getByText(`合成修改-${status}`).closest('article')!;expect(within(row).queryByRole('button',{name:'放弃'})).toBeNull();fireEvent.click(within(row).getByRole('button',{name:'查询结果'}));await waitFor(()=>expect(f.controller.resolve).toHaveBeenCalledWith(status,'retry'));}
+    const conflict=panel.getByText('合成修改-conflict').closest('article')!;
+    expect(within(conflict).getByText('有冲突')).toBeTruthy();expect(within(conflict).getByText('基于版本')).toBeTruthy();
+    fireEvent.click(within(conflict).getByRole('button',{name:'按我的修改重新提交'}));await waitFor(()=>expect(f.controller.resolve).toHaveBeenCalledWith('conflict','use-local'));
+    act(()=>f.change({status:'online'}));expect(panel.getByText(/^云端已连接/)).toBeTruthy();
     act(()=>f.change({status:'expired'}));expect(screen.getByRole('heading',{name:'重新连接此设备'})).toBeTruthy();
   });
   it('shows controller refusal to clear pending work and supports device list/revocation',async()=>{
@@ -72,20 +72,22 @@ describe('remote browser shell',()=>{
   });
   it('lets the user abandon an unconfirmed preview and does not retry terminal failures',async()=>{
     const f=fake({pending:[pending('review'),pending('failed')]});render(<RemoteApp controller={f.controller}/>);
-    const review=screen.getByRole('heading',{name:'合成修改-review'}).closest('article')!;
-    fireEvent.click(within(review).getByRole('button',{name:'放弃预览'}));await waitFor(()=>expect(f.controller.resolve).toHaveBeenCalledWith('review','discard'));
-    const failed=screen.getByRole('heading',{name:'合成修改-failed'}).closest('article')!;
-    expect(within(failed).queryByRole('button',{name:'重试原操作'})).toBeNull();
-    expect(within(failed).getByRole('button',{name:'放弃这条手机修改'})).toBeTruthy();
+    const panel=within(screen.getByTestId('pending'));
+    const review=panel.getByText('合成修改-review').closest('article')!;
+    fireEvent.click(within(review).getByRole('button',{name:'放弃'}));await waitFor(()=>expect(f.controller.resolve).toHaveBeenCalledWith('review','discard'));
+    const failed=panel.getByText('合成修改-failed').closest('article')!;
+    expect(within(failed).queryByRole('button',{name:'重试'})).toBeNull();
+    expect(within(failed).getByRole('button',{name:'放弃'})).toBeTruthy();
   });
   it('allows discarding a blocked dependency only when it has never received wire input',async()=>{
     const unsent={...pending('blocked'),id:'blocked-unsent',label:'尚未发送的依赖修改'};
     const sent={...pending('blocked'),id:'blocked-sent',label:'已有发送内容的依赖修改',wireInput:{operationId:'synthetic-original-request'}};
     const f=fake({pending:[unsent,sent]});render(<RemoteApp controller={f.controller}/>);
-    const unsentRow=screen.getByRole('heading',{name:unsent.label}).closest('article')!;
-    const sentRow=screen.getByRole('heading',{name:sent.label}).closest('article')!;
-    expect(within(sentRow).queryByRole('button',{name:'放弃这条手机修改'})).toBeNull();
-    fireEvent.click(within(unsentRow).getByRole('button',{name:'放弃这条手机修改'}));
+    const panel=within(screen.getByTestId('pending'));
+    const unsentRow=panel.getByText(unsent.label).closest('article')!;
+    const sentRow=panel.getByText(sent.label).closest('article')!;
+    expect(within(sentRow).queryByRole('button',{name:'放弃'})).toBeNull();
+    fireEvent.click(within(unsentRow).getByRole('button',{name:'放弃'}));
     await waitFor(()=>expect(f.controller.resolve).toHaveBeenCalledWith('blocked-unsent','discard'));
   });
   it('never asks notification permission on render, and subscribes only after the explicit button click',async()=>{

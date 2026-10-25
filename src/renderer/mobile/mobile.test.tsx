@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { App } from '../App';
-import { BlockSchema, CandidateSchema, SnapshotSchema, SourceSchema } from '../../shared/contracts';
+import { MobileApp } from './MobileApp';
+import { BlockSchema, CandidateSchema, SnapshotSchema, SourceSchema, TaskSchema } from '../../shared/contracts';
+import type { PendingWrite, RemoteClientState } from '../remote/types';
 import type { PlannerClient } from '../../shared/client';
 import { todayDate } from '../calendar-layout';
 import { readBrowserImage } from './browser-image';
@@ -15,40 +16,73 @@ function fixture() {
   const client = { snapshot: vi.fn(async () => ({ ok: true, data: structuredClone(snapshot) })), onChanged: () => () => {}, mutate: vi.fn(), command: vi.fn() } as unknown as PlannerClient;
   return { snapshot, client };
 }
+const online: Pick<RemoteClientState,'status'|'pending'|'cachedAt'|'storageError'> = { status:'online', pending:[], cachedAt:'2026-10-24T14:12:00+08:00', storageError:'' };
 describe('phone layout', () => {
-  it('opens today with five navigation choices and exposes remote settings without desktop controls', async () => {
+  it('opens today with five tabs, stays quiet while connected and keeps desktop-only settings out', async () => {
     const { client } = fixture();
-    render(<App mobile client={client} remoteStatus={<span>资料服务连接状态</span>} remoteSettings={<button>配对与通知</button>} />);
+    render(<MobileApp client={client} connection={online} settings={<button>配对与通知</button>} />);
     await screen.findByRole('region', { name: '今天的安排' });
     expect(within(screen.getByRole('navigation', { name: '主导航' })).getAllByRole('button')).toHaveLength(5);
-    expect(screen.getByText('资料服务连接状态')).toBeTruthy();
-    expect(screen.queryByText('本机 · 已保存')).toBeNull();
+    expect(screen.queryByText(/云端|资料服务|待提交/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /^我的$/ }));
     expect(screen.getByRole('button', { name: '配对与通知' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'QQ 采集' })).toBeNull();
     expect(screen.queryByRole('button', { name: '数据与备份' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /^目标$/ }));
-    expect(screen.getByRole('button', { name: /返回我的/ })).toBeTruthy();
   });
-  it('uses day/three-day/month and presents a calendar selection as a dialog before editing', async () => {
+  it('names being offline and unsent changes in one banner', async () => {
+    const { client } = fixture();
+    const queued = { id:'q', requestId:'q', method:'mutate' as const, input:{}, identity:{protocolVersion:1 as const,dataInstanceId:'11111111-1111-4111-8111-111111111111',generation:1}, createdAt:'2026-10-24T14:15:00+08:00', status:'queued' as const, label:'合成修改', message:'', dependencies:[], targets:[], base:{} } satisfies PendingWrite;
+    render(<MobileApp client={client} connection={{ ...online, status:'offline', pending:[queued] }} pendingView={<p>待提交详情</p>} />);
+    const banner = await screen.findByRole('status');
+    expect(banner.textContent).toMatch(/^离线 · 显示 .* 的资料 · 1 项修改待提交/);
+    fireEvent.click(banner);
+    expect(within(screen.getByRole('dialog', { name: '连接与待提交' })).getByText('待提交详情')).toBeTruthy();
+  });
+  it('uses day/three-day/month and opens a calendar selection as a sheet before editing', async () => {
     const { client, snapshot } = fixture(); const date = todayDate();
     snapshot.blocks.push(BlockSchema.parse({ id:'block',version:1,createdAt:`${date}T08:00:00+08:00`,updatedAt:`${date}T08:00:00+08:00`,title:'合成执行时段',kind:'work',start:`${date}T15:10:00+08:00`,end:`${date}T15:55:00+08:00` }));
-    const view = render(<App mobile client={client} />);
+    const view = render(<MobileApp client={client} connection={online} />);
     await screen.findByRole('region', { name: '今天的安排' });
     fireEvent.click(screen.getByRole('button', { name:/^日历$/ }));
     expect(screen.getByRole('button', {name:'日'}).getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(screen.getByRole('button', {name:'3天'}));
     expect(view.container.querySelectorAll('.day-column')).toHaveLength(3);
     fireEvent.click(screen.getByRole('button', {name:'月'}));
-    expect(view.container.querySelectorAll('.month-item')).toHaveLength(0);
+    expect(screen.getAllByRole('gridcell').length).toBeGreaterThanOrEqual(28);
     fireEvent.click(screen.getByRole('button', {name:'日'}));
     fireEvent.click(view.container.querySelector('.timeline-event-button')!);
     expect(screen.getByRole('dialog', {name:'时段详情'})).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', {name:/编辑时段/}));
+    expect(screen.getByRole('dialog', {name:'编辑时段'})).toBeTruthy();
+  });
+  it('schedules an unscheduled task from its sheet into the minute form', async () => {
+    const { client, snapshot } = fixture(); const date = todayDate();
+    snapshot.tasks.push(TaskSchema.parse({ id:'task',version:1,createdAt:`${date}T08:00:00+08:00`,updatedAt:`${date}T08:00:00+08:00`,title:'合成未安排任务' }));
+    render(<MobileApp client={client} connection={online} />);
+    await screen.findByRole('region', { name: '今天的安排' });
+    fireEvent.click(screen.getByRole('button', { name:'未安排 1' }));
+    const sheet = screen.getByRole('dialog', { name:'未安排 · 1' });
+    fireEvent.click(within(sheet).getByRole('button', { name:'安排' }));
+    expect(screen.queryByRole('dialog', { name:'未安排 · 1' })).toBeNull();
+    expect(screen.getByRole('dialog', { name:'新建时段' })).toBeTruthy();
+  });
+  it('drops the queued copy of a preview the user declines', async () => {
+    const { client, snapshot } = fixture(); const date = todayDate();
+    snapshot.tasks.push(TaskSchema.parse({ id:'task',version:1,createdAt:`${date}T08:00:00+08:00`,updatedAt:`${date}T08:00:00+08:00`,title:'合成预览任务' }));
+    const proposedRequest = { operationId:'synthetic-operation', origin:'manual', confirmed:false, mutations:[{ type:'finishTask', id:'task', expectedVersion:1, completed:true }] };
+    vi.mocked(client.mutate).mockResolvedValue({ ok:true, data:{ status:'preview', message:'需要确认', confirmationToken:'synthetic-token', expiresAt:'2030-01-10T15:10:00+08:00', proposedRequest, details:[], changes:[], conflicts:[] } } as never);
+    const discard = vi.fn();
+    render(<MobileApp client={client} connection={online} discardPreview={discard} />);
+    fireEvent.click(await screen.findByRole('checkbox', { name:'完成 合成预览任务' }));
+    const sheet = await screen.findByRole('dialog', { name:'确认更改' });
+    fireEvent.click(within(sheet).getByRole('button', { name:'取消更改' }));
+    expect(discard).toHaveBeenCalledWith('synthetic-token');
+    expect(screen.queryByRole('dialog', { name:'确认更改' })).toBeNull();
   });
   it('opens candidate details only on demand while keeping quick decisions visible', async () => {
     const {client,snapshot}=fixture(); const date=todayDate();
     snapshot.candidates.push(CandidateSchema.parse({id:'candidate',version:1,createdAt:`${date}T08:00:00+08:00`,updatedAt:`${date}T08:00:00+08:00`,title:'合成候选事项',sourceIds:['synthetic-source']}));
-    render(<App mobile client={client} />);
+    render(<MobileApp client={client} connection={online} />);
     await screen.findByRole('region',{name:'今天的安排'});
     fireEvent.click(screen.getByRole('button',{name:/^待判断/}));
     expect(screen.queryByRole('dialog')).toBeNull();

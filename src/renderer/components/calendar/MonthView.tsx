@@ -2,7 +2,6 @@ import type { CSSProperties } from "react";
 import { Plus } from "lucide-react";
 import type { CalendarItem } from "../../../shared/contracts";
 import "./MonthView.css";
-import { useMobile } from '../../mobile/layout';
 
 const weekdays = ["一", "二", "三", "四", "五", "六", "日"];
 const LIMIT = 3;
@@ -26,7 +25,6 @@ export function MonthView({ days, month, today, items, inDay, tone, label, color
   openDay: (day: string) => void;
   schedule: (day: string) => void;
 }) {
-  const mobile = useMobile();
   const kind = (item: CalendarItem) => {
     const status = tone(item);
     if (status === "completed") return "done";
@@ -51,12 +49,12 @@ export function MonthView({ days, month, today, items, inDay, tone, label, color
             <div key={day} className={`a2-m-cell${day.slice(0, 7) !== month ? " out" : ""}${day === today ? " today" : ""}`} data-day={day}>
               <div className="a2-m-top">
                 <button className="a2-m-d" onClick={() => openDay(day)} aria-label={`打开 ${Number(day.slice(5, 7))}月${Number(day.slice(8))}日`}>{Number(day.slice(8))}</button>
-                {(mobile ? list : dots).length > 0 && <span className="a2-m-dots" title={(mobile ? list : dots).map(item => item.title).join("、")} aria-label={mobile ? `${list.length} 项事项` : `${dots.length} 门课`}>
-                  {(mobile ? list.slice(0, 3) : dots).map(item => <i key={item.id} style={colorStyle(item)} />)}
+                {dots.length > 0 && <span className="a2-m-dots" title={dots.map(item => item.title).join("、")} aria-label={`${dots.length} 门课`}>
+                  {dots.map(item => <i key={item.id} style={colorStyle(item)} />)}
                 </span>}
-                {!mobile && <button className="a2-m-add" onClick={() => schedule(day)} aria-label={`在 ${day} 安排`} title="在这天安排"><Plus aria-hidden="true" /></button>}
+                <button className="a2-m-add" onClick={() => schedule(day)} aria-label={`在 ${day} 安排`} title="在这天安排"><Plus aria-hidden="true" /></button>
               </div>
-              {!mobile && entries.slice(0, LIMIT).map(item => (
+              {entries.slice(0, LIMIT).map(item => (
                 <button key={item.id} className={`month-item a2-m-it ${kind(item)} calendar-${tone(item)}`} style={colorStyle(item)}
                   onClick={() => open(item, day)} onDoubleClick={() => edit(item, day)}
                   title={`${item.category === "candidate" ? "待定 · " : ""}${item.title}${item.start ? ` ${item.start.slice(11, 16)}` : ""}${label(item) ? ` · ${label(item)}` : ""}`}>
@@ -64,7 +62,7 @@ export function MonthView({ days, month, today, items, inDay, tone, label, color
                   {label(item) && <span className="a2-visually-hidden"> {label(item)}</span>}
                 </button>
               ))}
-              {!mobile && hidden > 0 && <button className="a2-m-more" onClick={() => openDay(day)}>还有 {hidden} 项</button>}
+              {hidden > 0 && <button className="a2-m-more" onClick={() => openDay(day)}>还有 {hidden} 项</button>}
             </div>
           );
         })}

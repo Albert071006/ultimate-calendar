@@ -245,5 +245,5 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
       {footer && <footer className="a2-pop-a">{footer}</footer>}
     </aside>
   );
-  return mobile ? <MobileSheet title={`${name}详情`} close={close}>{content}</MobileSheet> : content;
+  return mobile ? <MobileSheet title={`${name}详情`} close={close} bare>{content}</MobileSheet> : content;
 }
