@@ -1,0 +1,14 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { linkSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join, relative } from 'node:path';
+import { tmpdir } from 'node:os';
+import { remoteConfigFromArgs } from './remote-config';
+import { readPrivate, writePrivate } from '../remote/private-file';
+const roots:string[]=[];afterEach(()=>{for(const root of roots.splice(0)){const part=relative(tmpdir(),root);if(!part||part.startsWith('..')||isAbsolute(part))throw Error('Unsafe synthetic cleanup');rmSync(root,{recursive:true,force:true});}});
+function fixture(){const root=mkdtempSync(join(tmpdir(),'calendar-native-config-'));roots.push(root);const formal=join(root,'formal');mkdirSync(formal);const config=join(root,'config.json');writeFileSync(config,JSON.stringify({origin:'https://synthetic.example',deviceName:'合成Windows'}));return{root,formal,config,flag:'--planner-remote-config='+config};}
+describe('explicit native cloud profile guard',()=>{
+  it('leaves ordinary local starts unchanged and requires one explicit cloud config with a separate profile',()=>{const f=fixture();expect(remoteConfigFromArgs([],null,f.formal)).toBeNull();expect(()=>remoteConfigFromArgs([f.flag],null,f.formal)).toThrow(/独立/);expect(()=>remoteConfigFromArgs([f.flag,f.flag],join(f.root,'cloud'),f.formal)).toThrow(/独立/);expect(remoteConfigFromArgs([f.flag],join(f.root,'cloud'),f.formal)).toMatchObject({origin:'https://synthetic.example',deviceName:'合成Windows'});});
+  it('rejects the formal directory, its ancestors/children and any profile already containing a database',()=>{const f=fixture();for(const profile of [f.formal,f.root,join(f.formal,'nested')])expect(()=>remoteConfigFromArgs([f.flag],profile,f.formal)).toThrow(/隔离/);const old=join(f.root,'old-profile');mkdirSync(old);writeFileSync(join(old,'planner.sqlite'),'synthetic-existing-store');expect(()=>remoteConfigFromArgs([f.flag],old,f.formal)).toThrow(/隔离/);});
+  it('rejects relative files, insecure public origins, and unknown config keys without opening a data store',()=>{const f=fixture();expect(()=>remoteConfigFromArgs(['--planner-remote-config=relative.json'],join(f.root,'cloud'),f.formal)).toThrow(/绝对/);writeFileSync(f.config,JSON.stringify({origin:'http://public.example'}));expect(()=>remoteConfigFromArgs([f.flag],join(f.root,'cloud'),f.formal)).toThrow();writeFileSync(f.config,JSON.stringify({origin:'https://synthetic.example',database:'should-not-open'}));expect(()=>remoteConfigFromArgs([f.flag],join(f.root,'cloud'),f.formal)).toThrow();});
+  it('does not accept a second hard-link name for a private credential or journal',()=>{const f=fixture(),original=join(f.root,'private.bin'),alias=join(f.root,'alias.bin');writePrivate(original,'synthetic-secret');linkSync(original,alias);expect(()=>readPrivate(alias)).toThrow(/链接/);});
+});

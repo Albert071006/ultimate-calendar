@@ -46,7 +46,7 @@ export function LedgerPage({ api, host, createRequest = 0, onViewChange }: { api
       {([['flows', '收支'], ['accounts', '账户']] as const).map(([key, label]) => <button key={key} role="tab" aria-selected={tab === key} onClick={() => setTab(key)}>{label}</button>)}
       <p role={error ? 'alert' : 'status'} className={`a2-ledger-status${error ? ' error' : ''}`}>{error || notice}</p>
     </div>
-    {!snapshot ? <div className="a2-ledger-empty"><div className="ui-empty center"><h4>正在载入本地账本…</h4><div className="actions"><button className="ui-btn" onClick={() => void ledger.refresh()}>重新载入账本</button></div></div></div>
+    {!snapshot ? <div className="a2-ledger-empty"><div className="ui-empty center"><h4>{host ? '正在载入本地账本…' : '正在载入账本…'}</h4><div className="actions"><button className="ui-btn" onClick={() => void ledger.refresh()}>重新载入账本</button></div></div></div>
       : <section className="a2-ledger-body" role="tabpanel" aria-label={tab === 'flows' ? '收支' : '账户'}>
         {tab === 'flows' ? <Flows snapshot={snapshot} month={month} busy={busy} filter={filter} setFilter={setFilter} create={() => setEditor('new')} edit={setEditor} voidEntry={setVoidTarget} />
           : <Accounts snapshot={snapshot} checkBalance={setBalanceAccount} showAccount={id => { setFilter({ ...noFilter, account: id }); setTab('flows'); }} />}

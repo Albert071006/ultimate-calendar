@@ -14,6 +14,8 @@ import { belongingColor } from "../../../domain/belonging";
 import { entityNames, findRecord } from "./records";
 import { workFill } from "../../work-fill";
 import "./DetailPopover.css";
+import { useMobile } from '../../mobile/layout';
+import { MobileSheet } from '../../mobile/MobileSheet';
 
 export interface DetailActions {
   edit: () => void;
@@ -77,6 +79,7 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
   close: () => void;
   actions: DetailActions;
 }) {
+  const mobile = useMobile();
   const now = useCurrentTime();
   const value = findRecord(snapshot, selection);
   const { ref, place } = usePlacement(anchor);
@@ -229,10 +232,10 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
     body = "description" in value && value.description ? <p className="a2-pop-desc">{value.description}</p> : null;
   }
 
-  return (
+  const content = (
     <aside ref={ref} aria-label={`${name}详情`}
       className={`a2-pop${place ? ` ${place.side}` : ""}${place?.arrow === -1 ? " no-arrow" : ""}`}
-      style={{ left: place?.left ?? 0, top: place?.top ?? 0, visibility: place ? undefined : "hidden", "--arrow": `${place?.arrow ?? 20}px` } as CSSProperties}>
+      style={mobile ? undefined : { left: place?.left ?? 0, top: place?.top ?? 0, visibility: place ? undefined : "hidden", "--arrow": `${place?.arrow ?? 20}px` } as CSSProperties}>
       <header className="a2-pop-h">
         <div className="kind"><i className={`swatch ${selection.entity === "block" ? (value as Block).kind : selection.entity}`} style={swatch} aria-hidden="true" />{kind}</div>
         <h3>{title}</h3>
@@ -242,4 +245,5 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
       {footer && <footer className="a2-pop-a">{footer}</footer>}
     </aside>
   );
+  return mobile ? <MobileSheet title={`${name}详情`} close={close}>{content}</MobileSheet> : content;
 }

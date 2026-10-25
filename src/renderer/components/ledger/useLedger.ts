@@ -17,9 +17,9 @@ export function useLedger(api: PlannerClient, host?: HostCapabilities) {
       if (sequence !== requestSequence.current) return;
       if (result.ok) { setSnapshot(result.data); if (!preserveError) setError(''); }
       else setError(result.error.message);
-    } catch { setError('本地账本暂未读取成功，请重新载入。'); }
+    } catch { setError('账本暂未读取成功，请重新载入。'); }
   }, [api, month]);
-  useEffect(() => { void refresh(); return api.onChanged(() => void refresh()); }, [api, refresh]);
+  useEffect(() => { void refresh(); return api.onChanged(() => void refresh(true)); }, [api, refresh]);
   const save = async (changes: Change[]) => {
     if (!snapshot || busy) return false;
     const signature = JSON.stringify(changes);
@@ -28,7 +28,9 @@ export function useLedger(api: PlannerClient, host?: HostCapabilities) {
     try {
       const result = await api.ledgerMutate(request);
       if (!result.ok) { setError(result.error.message); if (result.error.code === 'CONFLICT') { pendingMutation.current = null; void refresh(true); } return false; }
-      pendingMutation.current = null; setSnapshot(result.data.snapshot); setNotice(result.data.message); return true;
+      pendingMutation.current = null;
+      if (result.data.status !== 'queued') setSnapshot(result.data.snapshot);
+      setNotice(result.data.message); return true;
     } catch { setError('尚未确认保存完成。请保留内容并重试，同一操作不会重复记账。'); return false; }
     finally { setBusy(false); }
   };

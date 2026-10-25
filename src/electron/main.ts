@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, safeStorage, session, Tray, type IpcMainInvokeEvent, type IpcMainEvent } from 'electron';
 import { join, basename, extname } from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { NsisUpdater } from 'electron-updater';
@@ -32,6 +32,9 @@ import { createModelRequestQueue } from '../ai/request-queue';
 import { createUpdateService } from './update-service';
 import { UpdateStateSchema } from '../shared/update';
 import { prepareDataDirectory, resolveDataDirectory } from './data-directory';
+import { remoteConfigFromArgs, type NativeRemoteConfig } from './remote-config';
+import { startNativeRemote } from './remote-mode';
+import { startCollectorMode } from './collector-mode';
 
 app.setName('终极日历');
 const APP_ID = 'local.ultimate-calendar.desktop'; app.setAppUserModelId(APP_ID);
@@ -48,22 +51,45 @@ const missed = createReminderSummary(); let acknowledgeReminders: (ids: string[]
 let startupNotice: { title: string; message: string } | null = null;
 const legacyDataDirectory = app.getPath('userData');
 let profile: string | null = null;
+let remoteConfig: NativeRemoteConfig | null = null;
+let stopRemote: (() => void) | undefined;
+let collectorOnly = false, collectorClosing = false, collectorStopped = false;
+let stopCollector: (() => Promise<void>) | undefined;
+let collectorStartup: ReturnType<typeof startCollectorMode> | undefined;
 try {
   profile = profileFromArgs(process.argv);
+  remoteConfig = remoteConfigFromArgs(process.argv, profile, resolveDataDirectory(app.getPath('documents'), null));
   const dataDirectory = resolveDataDirectory(app.getPath('documents'), profile);
+  const collectorFlags = process.argv.filter(value => value.startsWith('--planner-capture-only'));
+  if (collectorFlags.length) {
+    if (collectorFlags.length !== 1 || collectorFlags[0] !== '--planner-capture-only' || remoteConfig || !existsSync(join(dataDirectory, 'planner.sqlite'))) throw Error('采集专用模式需要已有本机资料，且不能同时指定云端界面模式');
+    collectorOnly = true;
+  }
   mkdirSync(dataDirectory, { recursive: true });
   app.setPath('userData', dataDirectory);
 }
-catch { dialog.showErrorBox('无法打开数据目录', '请使用 --planner-profile=本地绝对目录，并避免磁盘根目录或重复参数。'); app.exit(1); }
+catch (error) { dialog.showErrorBox('启动配置无效', error instanceof Error ? error.message : '请检查明确的本地资料目录和启动参数，避免磁盘根目录或重复参数。'); app.exit(1); }
 const locked = app.requestSingleInstanceLock();
 if (!locked) app.quit();
 else {
   app.on('second-instance', () => showWindow());
-  app.on('before-quit', () => { quitting = true; });
-  app.on('will-quit', () => { if (timer) clearInterval(timer); stopSpace?.(); disposeRestore?.(); stopUpdates?.(); stopAccount?.(); stopCapture?.(); ledger?.close(); repository?.close(); tray?.destroy(); });
+  app.on('before-quit', event => {
+    if ((stopCollector || collectorStartup) && !collectorStopped) {
+      event.preventDefault();
+      if (!collectorClosing) {
+        collectorClosing = true;
+        void (async () => { await collectorStartup?.catch(() => undefined); await stopCollector?.(); })().then(() => { collectorStopped = true; app.quit(); }).catch(() => {
+          collectorClosing = false; dialog.showErrorBox('采集服务尚未正常退出', '请等待正在处理的消息结束，再从托盘退出。未关闭 QQ，也未提前关闭资料库。');
+        });
+      }
+      return;
+    }
+    quitting = true;
+  });
+  app.on('will-quit', () => { if (timer) clearInterval(timer); stopRemote?.(); stopSpace?.(); disposeRestore?.(); stopUpdates?.(); stopAccount?.(); stopCapture?.(); ledger?.close(); repository?.close(); tray?.destroy(); });
   app.on('activate', () => showWindow());
   app.on('window-all-closed', () => { if (!tray || quitting) app.quit(); });
-  const dataPreparation = prepareDataDirectory({ directory: app.getPath('userData'), legacyDirectory: legacyDataDirectory, profile });
+  const dataPreparation = remoteConfig || collectorOnly ? Promise.resolve() : prepareDataDirectory({ directory: app.getPath('userData'), legacyDirectory: legacyDataDirectory, profile });
   void Promise.all([app.whenReady(), dataPreparation]).then(start).catch(error => {
     const detail = error instanceof Error ? error.message : '请检查目录权限与可用空间。';
     dialog.showErrorBox('日历启动失败', `无法打开本地数据或界面。${detail}\n数据目录：${app.getPath('userData')}\n不要删除已有数据库；可从备份恢复。`); app.quit();
@@ -101,6 +127,19 @@ async function showRetainedSummary(explicit = false) {
   finally { missed.finish(reminders.map(r => r.id), deferred); if (startupNotice || !deferred) void showRetainedSummary(); }
 }
 async function start() {
+  if (remoteConfig) { const remote = await startNativeRemote(remoteConfig, app.getPath('userData'), documentUrl()); window = remote.window; stopRemote = remote.close; window.once('closed', () => { window = null; }); return; }
+  if (collectorOnly) {
+    collectorStartup = startCollectorMode(app.getPath('userData')).then(collector => { stopCollector = collector.close; return collector; });
+    const collector = await collectorStartup;
+    tray = new Tray(nativeImage.createFromPath(join(__dirname, '../assets/app-icon.ico')));
+    const collectorStatus = () => {
+      const state = collector.status();
+      tray?.setToolTip(`终极日历 · QQ ${!state.enabled ? '采集未启用' : state.error ? '采集异常' : state.connection === 'online' ? '已连接' : '连接待恢复'} · ${state.analysisEnabled ? '自动提炼启用' : '自动提炼未启用'}`);
+    };
+    collectorStatus(); timer = setInterval(collectorStatus, 30_000);
+    tray.setContextMenu(Menu.buildFromTemplate([{ label: 'QQ 本机采集服务', enabled: false }, { label: '原文留在本机；提炼由发送桥上传', enabled: false }, { type: 'separator' }, { label: '退出采集服务（QQ 保持运行）', click: () => app.quit() }]));
+    return;
+  }
   const data = app.getPath('userData'); await mkdir(data, { recursive: true });
   initializeBackupDirectory(data, app.getPath('documents'), !!profile);
   repository = createRepository(join(data, 'planner.sqlite')); const repo = repository; const planner = createPlanner(repo);

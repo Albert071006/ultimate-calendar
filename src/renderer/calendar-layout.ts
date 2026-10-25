@@ -1,7 +1,8 @@
 import { addCalendarDays, mondayWeekday } from "../shared/contracts";
-export type CalendarView = "day" | "week" | "month";
+export type CalendarView = "day" | "three-day" | "week" | "month";
 export function calendarDays(date: string, view: CalendarView): string[] {
   if (view === "day") return [date];
+  if (view === "three-day") return Array.from({ length: 3 }, (_, i) => addCalendarDays(date, i));
   const first = view === "week" ? date : `${date.slice(0, 7)}-01`;
   const start = addCalendarDays(first, 1 - mondayWeekday(first));
   if (view === "week")
@@ -20,7 +21,7 @@ export function moveDate(
   direction: number,
 ): string {
   if (view !== "month")
-    return addCalendarDays(date, direction * (view === "week" ? 7 : 1));
+    return addCalendarDays(date, direction * (view === "week" ? 7 : view === "three-day" ? 3 : 1));
   const d = new Date(`${date.slice(0, 7)}-01T00:00:00Z`);
   d.setUTCMonth(d.getUTCMonth() + direction);
   const end = new Date(d);

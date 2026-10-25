@@ -4,6 +4,7 @@ import type { CommandRequest, CommandResult } from "../../../shared/contracts";
 import { operationId } from "../../calendar-layout";
 import type { PlannerUI } from "../../hooks/usePlanner";
 import type { Selection } from "../Calendar";
+import { useMobile } from '../../mobile/layout';
 type ConversationEntry = {
   id: string;
   role: "user" | "assistant";
@@ -21,6 +22,7 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
   domain?: 'ledger';
   ledgerView?: CommandRequest['ledgerView'];
 }) {
+  const mobile = useMobile();
   const [text, setText] = useState(""),
     [history, setHistory] = useState<ConversationEntry[]>([]),
     [expanded, setExpanded] = useState(false),
@@ -35,6 +37,12 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
   }, [history, expanded]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
+      if (mobile && expanded && event.key === 'Tab' && Array.from(document.querySelectorAll('[role="dialog"]')).at(-1) === root.current) {
+        const nodes = Array.from(root.current?.querySelectorAll<HTMLElement>('button:not([disabled]),textarea') ?? []);
+        const first = nodes[0], last = nodes.at(-1);
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         setExpanded(true);
@@ -50,7 +58,7 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
     window.addEventListener("keydown", key);
     document.addEventListener("mousedown", outside);
     return () => { window.removeEventListener("keydown", key); document.removeEventListener("mousedown", outside); };
-  }, []);
+  }, [mobile, expanded]);
 
   async function execute(request: CommandRequest, replyId: string) {
     if (!ui.client || inFlight.current || ui.busy) return;
@@ -122,12 +130,12 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
     void execute(request, replyId);
   }
   return (
-    <section ref={root} className={`a2-assist${expanded ? " open" : ""}`} aria-label="生活助手">
+    <section ref={root} className={`a2-assist${expanded ? " open" : ""}`} aria-label="生活助手" role={mobile && expanded ? 'dialog' : undefined} aria-modal={mobile && expanded ? true : undefined}>
       {expanded && (
         <div className="a2-assist-panel ui-overlay">
           <div className="a2-assist-head">
             <strong>生活助手</strong>
-            <span className="ui-hint">{running ? "正在处理…" : selected ? "已携带选中事项" : "Esc 收起"}</span>
+            <span className="ui-hint">{running ? "正在处理…" : selected ? "已携带选中事项" : mobile ? "点下方箭头收起" : "Esc 收起"}</span>
           </div>
           <div className="conversation" aria-live="polite" ref={conversation}>
             {history.length ? (

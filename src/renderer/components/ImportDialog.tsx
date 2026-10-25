@@ -6,6 +6,9 @@ import type {
 } from "../../shared/contracts";
 import { displayInstant, operationId } from "../calendar-layout";
 import type { PlannerUI } from "../hooks/usePlanner";
+import { readBrowserImage } from '../mobile/browser-image';
+import { useMobile } from '../mobile/layout';
+import { isClearedPhoneSource, isExtractedQQSource } from '../source-presentation';
 export function ImportDialog({
   ui,
   onClose,
@@ -15,12 +18,22 @@ export function ImportDialog({
   onClose: () => void;
   settings: () => void;
 }) {
+  const mobile = useMobile();
   const [kind, setKind] = useState<"text" | "image">("text"),
     [text, setText] = useState(""),
     [label, setLabel] = useState(""),
     [sentAt, setSentAt] = useState(""),
     [image, setImage] = useState<SelectedImage | null>(null),
     [saved, setSaved] = useState<Source | null>(null);
+  const [imageError, setImageError] = useState('');
+  const [readingImage, setReadingImage] = useState(false);
+  async function selectBrowserImage(file?: File) {
+    if (!file) return;
+    setReadingImage(true); setImageError(''); setImage(null); setSaved(null);
+    try { const selected = await readBrowserImage(file); setImage(selected); if (!label) setLabel(selected.label); }
+    catch (error) { setImageError(error instanceof Error ? error.message : '截图读取失败。'); }
+    finally { setReadingImage(false); }
+  }
   async function save(analyze: boolean) {
     if (!ui.client) return;
     const source =
@@ -40,7 +53,7 @@ export function ImportDialog({
       ));
     if (!source) return;
     setSaved(source);
-    ui.setNotice("来源已保存在本机");
+    ui.setNotice(ui.host ? "来源已保存在本机" : "来源已由资料服务确认保存");
     if (analyze) {
       const result = await ui.run(
         () =>
@@ -59,6 +72,7 @@ export function ImportDialog({
         先保存原文，再由你明确提交
         DeepSeek。缺少发送时间时，相对日期会留待确认。
       </p>
+      {(!ui.host || mobile) && <p className="hint">手机主动导入的文本和截图在分析完成后清除原文；分析失败时暂存不超过 24 小时。这与 QQ 只上传提炼结果的授权分开。</p>}
       <div className="tabs">
         <button
           className={kind === "text" ? "selected" : ""}
@@ -69,7 +83,7 @@ export function ImportDialog({
         >
           粘贴文字
         </button>
-        {ui.host && <button
+        <button
           className={kind === "image" ? "selected" : ""}
           onClick={() => {
             setKind("image");
@@ -77,7 +91,7 @@ export function ImportDialog({
           }}
         >
           消息截图
-        </button>}
+        </button>
       </div>
       <label>
         群 / 来源标签
@@ -117,7 +131,7 @@ export function ImportDialog({
         </label>
       ) : (
         <div>
-          <button
+          {ui.host && !mobile ? <button
             onClick={() =>
               void ui.run(
                 () => ui.host!.selectImage(),
@@ -132,7 +146,9 @@ export function ImportDialog({
             }
           >
             选择 PNG / JPEG 截图
-          </button>
+          </button> : <label>选择 PNG / JPEG 截图（不超过 10 MB）<input type="file" accept="image/png,image/jpeg" disabled={readingImage} onChange={event => { void selectBrowserImage(event.currentTarget.files?.[0]); event.currentTarget.value = ''; }} /></label>}
+          {readingImage && <p role="status">正在读取截图…</p>}
+          {imageError && <p role="alert" className="error">{imageError}</p>}
           {image && (
             <img
               className="source-image"
@@ -146,7 +162,7 @@ export function ImportDialog({
       {!ui.snapshot?.keyStatus.configured && (
         <div className="warning">
           DeepSeek 尚未配置。你可以先保存原文。
-          <button onClick={settings}>前往设置密钥</button>
+          {ui.host ? <button onClick={settings}>前往设置密钥</button> : <p>请在资料服务的账户设置中检查，不在手机重复填写电脑密钥。</p>}
         </div>
       )}
       {ui.error && (
@@ -158,7 +174,7 @@ export function ImportDialog({
         <button onClick={onClose}>取消</button>
         <button
           disabled={
-            ui.busy ||
+            ui.busy || readingImage ||
             (!text.trim() && kind === "text") ||
             (!image && kind === "image")
           }
@@ -169,7 +185,7 @@ export function ImportDialog({
         <button
           className="primary"
           disabled={
-            ui.busy ||
+            ui.busy || readingImage ||
             (!text.trim() && kind === "text") ||
             (!image && kind === "image")
           }
@@ -196,9 +212,10 @@ export function SourceViewer({
   settings: () => void;
   onCapture?: (reference: NonNullable<Source['captureRef']>) => void;
 }) {
+  const mobile = useMobile();
   const [ack, setAck] = useState(false);
   async function retry() {
-    if (!ui.client || source.captureRef) return;
+    if (!ui.client || source.captureRef || isExtractedQQSource(source) || isClearedPhoneSource(source)) return;
     if (source.purpose === "courses") {
       if (!ui.host) return;
       const r = await ui.run(() =>
@@ -219,6 +236,18 @@ export function SourceViewer({
         (r) => ui.setNotice(r.message),
       );
   }
+  if (isExtractedQQSource(source) || ((!ui.host || mobile) && source.captureRef)) return <div className="editor-form">
+    <p>QQ 来源 · {source.label || '无标签'}</p>
+    <p className="warning">QQ 原文和附件仅保存在采集电脑，目前无法在手机查看。手机仅接收提炼结果。</p>
+    <p className="hint">请在采集电脑上核对原始消息或附件；手机不能读取电脑本地文件。</p>
+    <button onClick={onClose}>关闭来源详情</button>
+  </div>;
+  if (isClearedPhoneSource(source)) return <div className="editor-form">
+    <p>手机导入 · 分析输入已清理</p>
+    <p className="warning">原始文本或截图已清理，提炼出的事项与独立任务仍保留。</p>
+    <p className="hint">这份输入已不能再次分析；如需补充信息，请重新导入新的内容。</p>
+    <button onClick={onClose}>关闭来源详情</button>
+  </div>;
   return (
     <div className="editor-form">
       <p>
@@ -261,7 +290,7 @@ export function SourceViewer({
       )}
       {source.text && <pre className="original-text">{source.text}</pre>}
       {source.error && <p className="error">{source.error}</p>}
-      {!ui.snapshot?.keyStatus.configured && (
+      {!ui.snapshot?.keyStatus.configured && ui.host && (
         <button onClick={settings}>配置 DeepSeek 密钥</button>
       )}
       {!source.captureRef && <button

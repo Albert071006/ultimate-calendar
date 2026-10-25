@@ -13,6 +13,14 @@ import { InboxList, type Toast } from "./inbox/InboxList";
 import { CandidateDetail, type Decision } from "./inbox/CandidateDetail";
 import { arrival, dayWord } from "./inbox/format";
 import "./inbox/Inbox.css";
+import { useMobile } from '../mobile/layout';
+import { MobileSheet } from '../mobile/MobileSheet';
+import type { ReactNode } from 'react';
+import { isClearedPhoneSource, isExtractedQQSource } from '../source-presentation';
+
+function DetailFrame({ mobile, close, children }: { mobile: boolean; close: () => void; children: ReactNode }) {
+  return mobile ? <MobileSheet title="事项详情" close={close}>{children}</MobileSheet> : <>{children}</>;
+}
 
 type Tab = "pending" | "snoozed" | "done";
 type DoneFilter = "all" | "accepted" | "ignored" | "expired";
@@ -46,6 +54,8 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
   focus?: string | null;
   host?: HostCapabilities;
 }) {
+  const mobile = useMobile();
+  const [detailOpen, setDetailOpen] = useState(Boolean(focus));
   const now = useCurrentTime();
   const today = new Date(now + 8 * 3600_000).toISOString().slice(0, 10);
   const [tab, setTab] = useState<Tab>("pending");
@@ -73,6 +83,7 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
 
   useEffect(() => {
     if (!focus) return;
+    setDetailOpen(true);
     const candidate = snapshot.candidates.find(value => value.id === focus);
     if (!candidate) return;
     const value = candidateDisposition(candidate, Date.now());
@@ -90,11 +101,12 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
     return () => clearTimeout(timer);
   }, [toast]);
 
-  const pick = (id: string) => { setSelectedId(id); setFallback(Math.max(0, items.findIndex(candidate => candidate.id === id))); };
+  const pick = (id: string) => { setSelectedId(id); setDetailOpen(true); setFallback(Math.max(0, items.findIndex(candidate => candidate.id === id))); };
   async function decide(candidate: Candidate, type: Decision) {
     const index = items.findIndex(value => value.id === candidate.id);
     const result = await ui.mutate([{ type, id: candidate.id, expectedVersion: candidate.version, reason }]);
     if (result?.status !== "applied") return;
+    setDetailOpen(false);
     setReason("");
     setFallback(Math.max(0, index));
     if (selectedId === candidate.id) setSelectedId(null);
@@ -163,7 +175,7 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
                 <small>{displayInstant(source.importedAt)} · {sourceStatus[source.status]}</small>
                 {source.error && <small className="error">{source.error}</small>}
               </span>
-              <span className="go">查看原文</span>
+              <span className="go">{isExtractedQQSource(source) || (!host && source.captureRef) ? 'QQ 来源说明' : isClearedPhoneSource(source) ? '输入已清理' : '查看原文'}</span>
             </button>
           )) : <div className="ui-empty"><h4>还没有导入记录</h4><p>粘贴群消息或导入截图后，原文会保存在这里，随时可以核对。</p></div>}
         </section>
@@ -184,7 +196,9 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
           <div className="a2-ib-body">
             <InboxList snapshot={snapshot} items={items} selectedId={current?.id} today={today} quick={quick} busy={ui.busy}
               select={pick} decide={(candidate, type) => void decide(candidate, type)} toast={toast} undo={() => void undo()} />
-            {current && <CandidateDetail key={current.id} snapshot={snapshot} candidate={current} today={today} now={now} busy={ui.busy}
+            {current && (!mobile || detailOpen) && <DetailFrame mobile={mobile} close={() => setDetailOpen(false)}><CandidateDetail key={current.id} snapshot={snapshot} candidate={current} today={today} now={now} busy={ui.busy}
+              hideQQOriginal={current.sourceIds.some(id => { const source = snapshot.sources.find(value => value.id === id); return source ? isExtractedQQSource(source) || ((mobile || !host) && Boolean(source.captureRef)) : mobile || !host; })}
+              clearedPhoneInput={current.sourceIds.some(id => { const source = snapshot.sources.find(value => value.id === id); return source ? isClearedPhoneSource(source) : false; })}
               reason={reason} setReason={setReason} decide={type => void decide(current, type)}
               snoozing={snoozing} setSnoozing={setSnoozing} snooze={until => void snooze(current, until)}
               restore={() => void ui.mutate([{ type: "restoreCandidate", id: current.id, expectedVersion: current.version, reason }])}
@@ -195,7 +209,7 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
                 setTab(value === "pending" || value === "snoozed" ? value : "done");
                 setDoneFilter("all");
                 setSelectedId(id);
-              }} />}
+              }} /></DetailFrame>}
           </div>
         ) : (
           <div className="a2-ib-empty">

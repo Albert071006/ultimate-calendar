@@ -14,3 +14,4 @@
 .a2-task-belonging { display: inline-flex; align-items: center; gap: 5px; }
 .a2-more { position: relative; }
 .a2-more .ui-menu { right: 0; top: calc(100% + 4px); }
+.a2-task-check { display:contents; }

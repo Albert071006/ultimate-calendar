@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { calendarDays, clipInterval, moveDate } from "./calendar-layout";
 describe("calendar layout", () => {
+  it('starts three-day browsing at the selected date and advances by three across month/year boundaries', () => {
+    expect(calendarDays('2026-12-31', 'three-day')).toEqual(['2026-12-31', '2027-01-01', '2027-01-02']);
+    expect(moveDate('2026-12-31', 'three-day', 1)).toBe('2027-01-03');
+    expect(moveDate('2027-01-02', 'three-day', -1)).toBe('2026-12-30');
+    expect(calendarDays('2026-10-24', 'day')).toEqual(['2026-10-24']);
+  });
   it("uses Monday weeks, full month rows, and real month navigation", () => {
     expect(calendarDays("2026-10-22", "week")).toEqual([
       "2026-10-19",

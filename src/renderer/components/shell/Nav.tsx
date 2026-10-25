@@ -25,7 +25,6 @@ export function Nav({ page, navigate, pending }: { page: Page; navigate: (page: 
           </button>
         ))}
       </nav>
-      <div className="a2-nav-foot"><i aria-hidden="true" />本机 · 已保存</div>
     </aside>
   );
 }

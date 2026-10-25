@@ -15,6 +15,8 @@ import { useCurrentTime } from "../../hooks/useCurrentTime";
 import { TaskRow, type TaskActions } from "../../components/tasks/TaskRow";
 import { workFill } from "../../work-fill";
 import "./Today.css";
+import { useMobile } from '../../mobile/layout';
+import type { Selection } from '../../components/Calendar';
 
 type Filter = "open" | "done" | "all";
 const hm = (instant: string | null) => instant?.slice(11, 16) ?? "";
@@ -40,12 +42,14 @@ function groupOf(task: Task, today: string, now: number): "over" | "today" | "we
 }
 const groupNames = { over: "已逾期", today: "今天", week: "本周", later: "以后", none: "无截止", done: "已完成" } as const;
 
-export function Today({ snapshot, ui, pendingCount, create, openInbox, openCandidate, openRecord, goCalendar, ...actions }: TaskActions & {
+export function Today({ snapshot, ui, pendingCount, create, openInbox, openCandidate, openRecord, selectRecord, goCalendar, ...actions }: TaskActions & {
   snapshot: Snapshot; ui: PlannerUI; pendingCount: number;
   create: () => void; openInbox: () => void; openCandidate: (id: string) => void;
   openRecord: (target: EditorTarget) => void; goCalendar: () => void;
+  selectRecord?: (selection: Selection) => void;
   /** Details of the selected task, shown beside the lists. */
 }) {
+  const mobile = useMobile();
   const now = useCurrentTime();
   const [filter, setFilter] = useState<Filter>("open");
   const today = todayDate();
@@ -89,7 +93,7 @@ export function Today({ snapshot, ui, pendingCount, create, openInbox, openCandi
           <div className="time">{item.start ? hm(item.start) : "当天"}{item.end && <small>{hm(item.end)}</small>}</div>
           <div className="box">
             <button className="bt" onClick={() => item.category === "candidate" ? openCandidate(item.refId)
-              : openRecord({ entity: item.refKind as EditorTarget["entity"], id: item.refId })}>
+              : mobile && selectRecord ? selectRecord({entity:item.refKind,id:item.refId}) : openRecord({ entity: item.refKind as EditorTarget["entity"], id: item.refId })}>
               {item.title}
               {minutes !== null && minutes <= 180 && <span className="soon">{minutes < 1 ? "即将开始" : `${minutes} 分钟后`}</span>}
             </button>
@@ -125,7 +129,7 @@ export function Today({ snapshot, ui, pendingCount, create, openInbox, openCandi
             {items.length ? <div className="a2-tl">{timeline}{nowIndex === -1 && <div className="a2-tl-now end"><span>{new Date(now + 8 * 3600_000).toISOString().slice(11, 16)}</span></div>}</div> : (
               <div className="ui-empty">
                 <h4>今天没有课程和安排</h4>
-                <p>可以在日历上拖出一段时间，或者对助手说"下午三点留一小时背单词"。</p>
+                <p>{mobile ? '在日历点「新安排」选择时间，也可以告诉生活助手。' : '可以在日历上拖出一段时间，或者对助手说"下午三点留一小时背单词"。'}</p>
                 <div className="actions"><button className="ui-btn" onClick={goCalendar}>去日历安排</button></div>
               </div>
             )}

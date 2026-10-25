@@ -1,0 +1,50 @@
+# Review and adapt before installation. Nothing in this repository installs this unit.
+[Unit]
+Description=Ultimate Calendar private data service
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ultimate-calendar
+Group=ultimate-calendar
+WorkingDirectory=/opt/ultimate-calendar/current
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/ultimate-calendar/server.env
+# Optional, root-owned 0600. With no key the backend still supports manual operations.
+EnvironmentFile=-/etc/ultimate-calendar/secrets.env
+# Backend only: no static-dir, frontend assets, source database migration or stored credentials.
+ExecStart=/usr/local/bin/node --max-old-space-size=512 /opt/ultimate-calendar/current/dist-server/cli.mjs serve --data-dir /var/lib/ultimate-calendar/data --backup-dir /var/lib/ultimate-calendar/backups --origin ${CALENDAR_ORIGIN} --host 127.0.0.1 --port 3210
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=60
+KillSignal=SIGTERM
+KillMode=control-group
+UMask=0077
+StateDirectory=ultimate-calendar
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/ultimate-calendar
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+TasksMax=128
+LimitNOFILE=1024
+# Example budget, not a measured production sizing result; adjust after synthetic load tests.
+MemoryHigh=768M
+MemoryMax=1024M
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

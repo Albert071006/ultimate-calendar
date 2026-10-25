@@ -1,8 +1,10 @@
 import { build as viteBuild } from 'vite';
 import { build as bundle } from 'esbuild';
 import { cp, mkdir } from 'node:fs/promises';
+import { writePwaShell } from './pwa-shell.mjs';
 
 await viteBuild();
+await writePwaShell();
 for (const entry of ['main', 'preload']) {
   const path = `src/electron/${entry}.ts`;
   await bundle({ entryPoints: [path], outfile: `dist-electron/${entry}.cjs`, platform: 'node',

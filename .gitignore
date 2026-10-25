@@ -1,6 +1,8 @@
 node_modules/
 dist/
 dist-electron/
+dist-server/
+dist-tools/
 release/
 coverage/
 .superpowers/

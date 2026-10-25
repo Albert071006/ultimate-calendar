@@ -1,6 +1,7 @@
 import { Check, X } from "lucide-react";
 import type { Candidate, Snapshot } from "../../../shared/contracts";
 import { arrival, dayWord } from "./format";
+import { useMobile } from '../../mobile/layout';
 
 export interface Toast { text: string; transactionId: string; id: string }
 
@@ -13,9 +14,9 @@ function Chips({ candidate, today }: { candidate: Candidate; today: string }) {
   return <div className="when">{chips}</div>;
 }
 
-export function sourceLine(snapshot: Snapshot, candidate: Candidate, today: string) {
+export function sourceLine(snapshot: Snapshot, candidate: Candidate, today: string, missingLabel = '原文已删除') {
   const source = candidate.sourceIds.map(id => snapshot.sources.find(value => value.id === id)).find(Boolean);
-  if (!source) return { label: "原文已删除", at: "" };
+  if (!source) return { label: missingLabel, at: "" };
   return { label: source.label || (source.kind === "image" ? "截图" : "粘贴的消息"), at: arrival(source.sentAt ?? source.importedAt, today) };
 }
 
@@ -32,10 +33,11 @@ export function InboxList({ snapshot, items, selectedId, today, quick, busy, sel
   toast: Toast | null;
   undo: () => void;
 }) {
+  const mobile = useMobile();
   return (
     <section className="a2-ib-list" aria-label="通知列表">
       {items.map(candidate => {
-        const source = sourceLine(snapshot, candidate, today), on = candidate.id === selectedId;
+        const source = sourceLine(snapshot, candidate, today, mobile ? '来源原件未提供' : undefined), on = candidate.id === selectedId;
         return (
           <article key={candidate.id} aria-current={on || undefined} className={`a2-ib-item${on ? " on" : ""}${quick ? " quick" : ""}`} data-candidate-id={candidate.id}
             onClick={() => select(candidate.id)}>

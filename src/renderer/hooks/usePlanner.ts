@@ -6,7 +6,7 @@ import type {
   MutationResult,
   Snapshot,
 } from "../../shared/contracts";
-import type { HostCapabilities, PlannerClient } from "../../shared/client";
+import type { HostCapabilities, PlannerClient, PlannerMutationResult } from "../../shared/client";
 import { operationId } from "../calendar-layout";
 export function usePlanner(api: PlannerClient | undefined, host?: HostCapabilities) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -29,12 +29,12 @@ export function usePlanner(api: PlannerClient | undefined, host?: HostCapabiliti
   }, [api]);
   useEffect(() => {
     if (!api) return;
-    void refresh().catch(() => setError("本地服务连接失败，请重试。"));
+    void refresh().catch(() => setError("资料服务连接失败，请重试。"));
     return api.onChanged(() => {
       void refresh().catch(() => setError("刷新失败，请重试。"));
     });
   }, [api, refresh]);
-  const receive = useCallback((result: MutationResult) => {
+  const receive = useCallback((result: PlannerMutationResult) => {
     if (result.status === "preview") {
       setPreview(result);
       setNotice("尚未执行 · 请确认更改");

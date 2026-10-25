@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import type { ApiResult, DesktopAPI } from '../shared/contracts';
-import { DEFAULT_LEDGER_RULES, LEDGER_ACCOUNTS, LedgerEntrySchema, LedgerSnapshotSchema, type LedgerMutationRequest, type LedgerMutationResult } from '../shared/ledger';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import type { ApiResult, ChangedEvent, DesktopAPI } from '../shared/contracts';
+import { DEFAULT_LEDGER_RULES, LEDGER_ACCOUNTS, LedgerEntrySchema, LedgerSnapshotSchema, type LedgerMutationRequest, type LedgerMutationResult, type LedgerSnapshot } from '../shared/ledger';
 import { todayDate } from './calendar-layout';
 import { LedgerPage } from './components/LedgerPage';
 import { LedgerRulesSettings } from './components/ledger/Rules';
@@ -57,6 +57,33 @@ describe('local ledger UI', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存账单' }));
     await waitFor(() => expect(f.ledgerMutate).toHaveBeenCalledTimes(2));
     expect(f.ledgerMutate.mock.calls[1]![0]).toEqual(f.ledgerMutate.mock.calls[0]![0]);
+  });
+  it('keeps a validation error in the open editor when a changed-event refresh succeeds after the failed save', async () => {
+    const f = fixture(); cleanup();
+    let changed: ((event: ChangedEvent) => void) | undefined;
+    let finishRefresh: ((result: ApiResult<LedgerSnapshot>) => void) | undefined;
+    const ledgerSnapshot = vi.fn()
+      .mockResolvedValueOnce({ ok: true, data: f.snapshot })
+      .mockImplementationOnce(() => new Promise<ApiResult<LedgerSnapshot>>(resolve => { finishRefresh = resolve; }));
+    const message = '实际支付金额不符合允许范围，请修改后重试';
+    const ledgerMutate = vi.fn(async (): Promise<ApiResult<LedgerMutationResult>> => {
+      changed?.({ reason: 'mutation' });
+      return { ok: false, error: { code: 'VALIDATION', message, retryable: false } };
+    });
+    const api = { ...f.api, ledgerSnapshot, ledgerMutate, onChanged: (listener: (event: ChangedEvent) => void) => { changed = listener; return () => { changed = undefined; }; } } as DesktopAPI;
+    const view = render(<LedgerPage api={api} />);
+    await screen.findByRole('button', { name: '查看餐饮明细 ¥12.00' });
+    view.rerender(<LedgerPage api={api} createRequest={1} />);
+    const dialog = screen.getByRole('dialog', { name: '记一笔' });
+    fireEvent.change(within(dialog).getByLabelText('项目'), { target: { value: '合成金额校验' } });
+    fireEvent.change(within(dialog).getByLabelText('实际支付（元）'), { target: { value: '18.50' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存账单' }));
+    expect(await within(dialog).findByRole('alert')).toHaveProperty('textContent', message);
+    await waitFor(() => expect(ledgerSnapshot).toHaveBeenCalledTimes(2));
+    await act(async () => { finishRefresh!({ ok: true, data: f.snapshot }); });
+    expect(within(screen.getByRole('dialog', { name: '记一笔' })).getByRole('alert')).toHaveProperty('textContent', message);
+    expect(ledgerMutate).toHaveBeenCalledTimes(1);
+    expect((within(dialog).getByLabelText('实际支付（元）') as HTMLInputElement).value).toBe('18.50');
   });
 
   it('supplements the account on the same original entry and retains personal share, source, and audit note', async () => {

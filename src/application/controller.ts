@@ -20,7 +20,7 @@ import { LedgerIntentSchema, LedgerCommandProposalSchema } from '../shared/ledge
 import { ledgerChanges, ledgerContext, ledgerMessages, ledgerQueryReply, ledgerSavedReply } from '../ai/ledger';
 import { ledgerToday } from '../shared/ledger';
 
-export interface ControllerOptions { planner: PlannerService; repository: Repository; ledger?: LedgerService; getApiKey(): Promise<string | null>; getPriceQuote?(model: string, currency: 'CNY' | 'USD'): PriceQuote | null; getModelInputModalities?(model: string): string[] | null; runModel?: ModelRequestRunner; afterModelRequest?(): void; fetch?: typeof fetch; now?(): string; selectCourseFile?(): Promise<SelectedCourseFile | null> }
+export interface ControllerOptions { automaticBackup?(repository: Repository): void; planner: PlannerService; repository: Repository; ledger?: LedgerService; getApiKey(): Promise<string | null>; getPriceQuote?(model: string, currency: 'CNY' | 'USD'): PriceQuote | null; getModelInputModalities?(model: string): string[] | null; runModel?: ModelRequestRunner; afterModelRequest?(): void; fetch?: typeof fetch; now?(): string; selectCourseFile?(): Promise<SelectedCourseFile | null> }
 const hash = (input: unknown) => createHash('sha256').update(JSON.stringify(input)).digest('hex');
 export function createController(options: ControllerOptions) {
   const { repository, planner } = options; const running = new Map<string, { fingerprint: string; promise: Promise<unknown> }>(); const analyzing = new Map<string, Promise<ApiResult<AnalysisResult>>>();
@@ -41,7 +41,7 @@ export function createController(options: ControllerOptions) {
   function execute<T>(id: string, input: unknown, work: (id: string, fingerprint: string) => Promise<T>): Promise<ApiResult<T>> {
     const fingerprint = hash(input); const current = running.get(id);
     if (current) return current.fingerprint === fingerprint ? current.promise as Promise<ApiResult<T>> : Promise.resolve({ ok: false, error: safeError(new WorkflowError('CONFLICT', 'operationId 已用于不同操作')) });
-    const promise = (async (): Promise<ApiResult<T>> => { try { return { ok: true, data: await work(`workflow:${hash(id)}`, fingerprint) }; } catch (error) { return { ok: false, error: safeError(error) }; } finally { automaticBackup(repository); } })();
+    const promise = (async (): Promise<ApiResult<T>> => { try { return { ok: true, data: await work(`workflow:${hash(id)}`, fingerprint) }; } catch (error) { return { ok: false, error: safeError(error) }; } finally { (options.automaticBackup ?? automaticBackup)(repository); } })();
     running.set(id, { fingerprint, promise }); void promise.finally(() => running.delete(id)); return promise;
   }
   async function model<T>(schema: z.ZodType<T>, messages: Parameters<typeof completeJson>[0]['messages'], operationId: string, purpose: 'source' | 'command' | 'courses') {

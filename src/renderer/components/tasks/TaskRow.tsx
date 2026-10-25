@@ -5,6 +5,7 @@ import { taskAttention } from "../../task-rail";
 import { belongingColor } from "../../../domain/belonging";
 import { MoreMenu, type MenuItem } from "../shell/MoreMenu";
 import "./TaskRow.css";
+import { useMobile } from '../../mobile/layout';
 
 export interface TaskActions {
   /** Shows the task details; falls back to editing where no details are available. */
@@ -25,6 +26,7 @@ function deadlineLabel(task: Task, today: string) {
 export function TaskRow({ task, snapshot, ui, now, today, actions }: {
   task: Task; snapshot: Snapshot; ui: PlannerUI; now: number; today: string; actions: TaskActions;
 }) {
+  const mobile = useMobile();
   const arrangements = taskArrangements(snapshot, task.id);
   const timing = !arrangements.length ? taskNoticeTiming(snapshot, task.id) : null;
   const attention = task.status === "open" ? taskAttention(snapshot, task, now) : null;
@@ -46,9 +48,9 @@ export function TaskRow({ task, snapshot, ui, now, today, actions }: {
   ].filter(Boolean).join(" · ");
   return (
     <article className={`a2-task-row${attention ? " warn" : ""}${task.status === "done" ? " done" : ""}`} data-task-id={task.id} data-attention={attention?.kind}
-      draggable onDragStart={(e) => e.dataTransfer.setData("application/x-planner", JSON.stringify({ kind: "task", id: task.id }))}>
-      <input type="checkbox" aria-label={`完成 ${task.title}`} checked={task.status === "done"} disabled={ui.busy}
-        onChange={() => void ui.mutate([{ type: "finishTask", id: task.id, expectedVersion: task.version, completed: task.status !== "done" }])} />
+      draggable={!mobile} onDragStart={(e) => e.dataTransfer.setData("application/x-planner", JSON.stringify({ kind: "task", id: task.id }))}>
+      <label className="a2-task-check"><input type="checkbox" aria-label={`完成 ${task.title}`} checked={task.status === "done"} disabled={ui.busy}
+        onChange={() => void ui.mutate([{ type: "finishTask", id: task.id, expectedVersion: task.version, completed: task.status !== "done" }])} /></label>
       <div className="a2-task-main">
         <button className="a2-task-title" onClick={() => actions.select ? actions.select({ entity: "task", id: task.id }) : actions.editTask(task.id)}>{task.title}</button>
         <div className="a2-task-meta">

@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { useMobile } from '../mobile/layout';
 export function Modal({
   title,
   children,
@@ -10,13 +11,14 @@ export function Modal({
   onClose: () => void;
   wide?: boolean;
 }) {
+  const mobile = useMobile();
   const ref = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
   close.current = onClose;
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     ref.current
-      ?.querySelector<HTMLElement>("input,textarea,select,button")
+      ?.querySelector<HTMLElement>(mobile ? 'button' : "input,textarea,select,button")
       ?.focus();
     const key = (event: KeyboardEvent) => {
       if (
