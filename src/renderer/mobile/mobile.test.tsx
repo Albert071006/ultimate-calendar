@@ -20,12 +20,16 @@ const online: Pick<RemoteClientState,'status'|'pending'|'cachedAt'|'storageError
 describe('phone layout', () => {
   it('opens today with five tabs, stays quiet while connected and keeps desktop-only settings out', async () => {
     const { client } = fixture();
-    render(<MobileApp client={client} connection={online} settings={<button>配对与通知</button>} />);
+    render(<MobileApp client={client} connection={online} settingsPages={[{ id:'device', label:'设备与连接', content:<button>配对与通知</button> }]} />);
     await screen.findByRole('region', { name: '今天的安排' });
     expect(within(screen.getByRole('navigation', { name: '主导航' })).getAllByRole('button')).toHaveLength(5);
     expect(screen.queryByText(/云端|资料服务|待提交/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /^我的$/ }));
+    expect(screen.getByRole('button', { name: /^目标/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^设备与连接/ }));
     expect(screen.getByRole('button', { name: '配对与通知' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '返回我的' }));
+    expect(screen.getByRole('button', { name: /^记账规则/ })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'QQ 采集' })).toBeNull();
     expect(screen.queryByRole('button', { name: '数据与备份' })).toBeNull();
   });

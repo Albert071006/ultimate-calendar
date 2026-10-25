@@ -4,7 +4,6 @@ import type { CourseImportResult, LedgerViewContext } from '../../shared/contrac
 import type { PlannerClient } from '../../shared/client';
 import { usePlanner } from '../hooks/usePlanner';
 import { useCurrentTime } from '../hooks/useCurrentTime';
-import { useAppUpdates } from '../hooks/useAppUpdates';
 import { isPendingCandidate } from '../../domain/candidate-eligibility';
 import { unscheduledTasks } from '../../domain/unscheduled';
 import { todayDate } from '../calendar-layout';
@@ -19,7 +18,7 @@ import { DetailPopover } from '../components/detail/DetailPopover';
 import { entityNames } from '../components/detail/records';
 import { ImportDialog, SourceViewer } from '../components/ImportDialog';
 import { Preview } from '../components/Preview';
-import { MePage, type MeSection } from '../pages/me/MePage';
+import { MePage, type SettingsPage } from './pages/MePage';
 import type { RemoteClientState } from '../remote/types';
 import { MobileProvider, useVisualViewport } from './layout';
 import { MobileAssistant } from './MobileAssistant';
@@ -42,15 +41,15 @@ const tabs: [Page, string, typeof Sun][] = [['today', '今天', Sun], ['calendar
  * The phone shell (ADR 0002): its own header-less pages, bottom tabs, sheets and full-screen editor, sharing
  * only the planner state, rules and record components with the desktop.
  */
-export function MobileApp({ client, connection, settings, pendingView, discardPreview, conversationKey }: {
+export function MobileApp({ client, connection, settingsPages = [], pendingView, discardPreview, conversationKey }: {
   client: PlannerClient;
   /** Local storage key for the assistant conversation, scoped to this pairing and data instance. */
   conversationKey?: string;
   connection: Pick<RemoteClientState, 'status' | 'pending' | 'cachedAt' | 'storageError'>;
   /** Drops the phone's queued copy of a preview the user declined, so it does not linger as "needs handling". */
   discardPreview?: (confirmationToken: string) => void;
-  /** Device, notification and recovery settings shown under 我的. */
-  settings?: ReactNode;
+  /** Key, reminder and device pages supplied by the connection, listed under 我的 → 设置. */
+  settingsPages?: SettingsPage[];
   /** Connection details and the phone's unsent changes, opened from the status banner. */
   pendingView?: ReactNode;
 }) {
@@ -60,9 +59,8 @@ export function MobileApp({ client, connection, settings, pendingView, discardPr
   const now = useCurrentTime();
   const [assistantOpen, setAssistantOpen] = useState(false);
   const ui = usePlanner(client), snapshot = ui.snapshot;
-  const updates = useAppUpdates(undefined);
   const [page, setPage] = useState<Page>('today');
-  const [meSection, setMeSection] = useState<MeSection>('goals');
+  const [meSection, setMeSection] = useState<string | null>(null);
   const [date, setDate] = useState(todayDate());
   const [calendarView, setCalendarView] = useState<PhoneView>('day');
   const [selected, setSelected] = useState<Selection | null>(null);
@@ -78,8 +76,8 @@ export function MobileApp({ client, connection, settings, pendingView, discardPr
   const editRecord = (target: EditorTarget) => { setSelected(null); setUnscheduledOpen(false); setEditor(target); };
   const { schedule, scheduleTask, scheduleRecurringTask, removeTask } = taskActionHandlers({ snapshot, ui, select: setSelected, editRecord, defaultSlot: () => ({ date: todayDate(), time: nextSlot(Date.now(), true) }) });
   const taskActions = { select, editTask: (id: string) => editRecord({ entity: 'task', id }), schedule: scheduleTask, scheduleRecurring: scheduleRecurringTask, removeTask };
-  const openMe = (section: MeSection) => { setMeSection(section); setPage('me'); };
-  const navigate = (next: Page) => { setEditor(null); setSelected(null); setUnscheduledOpen(false); setPage(next); };
+  const openMe = (section: string) => { setMeSection(section); setPage('me'); };
+  const navigate = (next: Page) => { setEditor(null); setSelected(null); setUnscheduledOpen(false); if (next === 'me') setMeSection(null); setPage(next); };
   const openCandidate = (id: string) => { setSelected({ entity: 'candidate', id }); setPage('inbox'); };
   const pending = snapshot?.candidates.filter(candidate => isPendingCandidate(candidate, now)).length ?? 0;
   const unscheduled = snapshot ? unscheduledTasks(snapshot, now).length : 0;
@@ -126,8 +124,8 @@ export function MobileApp({ client, connection, settings, pendingView, discardPr
           ) : page === 'ledger' ? (
             <LedgerPage api={client} onViewChange={setLedgerView} />
           ) : (
-            <MePage snapshot={snapshot} ui={ui} section={meSection} setSection={setMeSection} updates={updates} select={select}
-              edit={editRecord} openSource={setSourceId} coursePreview={coursePreview} remoteSettings={settings} />
+            <MePage snapshot={snapshot} ui={ui} section={meSection} setSection={setMeSection} pendingCount={connection.pending.length} openPending={() => setStatusOpen(true)}
+              settingsPages={settingsPages} select={select} edit={editRecord} openSource={setSourceId} coursePreview={coursePreview} />
           )}
         </main>
         {snapshot && <Toast ui={ui} />}

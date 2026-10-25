@@ -4,12 +4,15 @@ import { createRemoteService } from '../src/server/service';
 import { createRemoteHttpServer } from '../src/server/http';
 import { createPushStore } from '../src/server/push-store';
 import { createPushHttpExtension } from '../src/server/push-http';
+import { createManagedApiKeyConfiguration } from '../src/server/ai-configuration';
 import type { MutationRequestInput } from '../src/shared/contracts';
 
 // A separate synthetic profile. Never imports the Windows application's real data or API key.
 const root = resolve('test-results'); mkdirSync(root, { recursive: true });
 const directory = mkdtempSync(join(root, 'mobile-preview-'));
-const service = createRemoteService({ dataDirectory: join(directory, 'data'), backupDirectory: join(directory, 'backups'), getApiKey: async () => null });
+// Phone-managed key file in the throwaway profile, as on the deployed service; starts empty.
+const apiKeyConfiguration = createManagedApiKeyConfiguration(join(directory, 'data', 'ai-credentials.json'));
+const service = createRemoteService({ dataDirectory: join(directory, 'data'), backupDirectory: join(directory, 'backups'), apiKeyConfiguration, getApiKey: () => apiKeyConfiguration.getApiKey() });
 const seeder = service.state.pair(service.state.createPairingCode(), '虚构演示资料');
 async function mutate(mutations: MutationRequestInput['mutations']) {
   const input = { operationId: crypto.randomUUID(), origin: 'manual' as const, mutations, confirmed: false };
