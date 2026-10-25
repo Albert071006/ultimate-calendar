@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync, mkdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { NsisUpdater } from 'electron-updater';
 import { createRepository, type Repository } from '../storage/repository';
 import { createPlanner } from '../domain/planner';
@@ -37,6 +38,7 @@ import { createCollectorControlServer } from './collector-control';
 import { startNativeRemote } from './remote-mode';
 import { startCollectorMode } from './collector-mode';
 import { createNativeResourceHost } from './resources-native';
+import { createCollectorTrayOwnership } from './collector-tray';
 
 app.setName('终极日历');
 const APP_ID = 'local.ultimate-calendar.desktop'; app.setAppUserModelId(APP_ID);
@@ -57,6 +59,7 @@ let remoteConfig: NativeRemoteConfig | null = null;
 let stopRemote: (() => void) | undefined;
 let collectorOnly = false, collectorClosing = false, collectorStopped = false;
 let stopCollector: (() => Promise<void>) | undefined;
+let stopCollectorTray: (() => void) | undefined;
 let collectorStartup: ReturnType<typeof startCollectorMode> | undefined;
 try {
   const startupArgs = connectionArgs(process.argv, app.getPath('documents'));
@@ -89,9 +92,9 @@ else {
     }
     quitting = true;
   });
-  app.on('will-quit', () => { if (timer) clearInterval(timer); stopRemote?.(); stopSpace?.(); disposeRestore?.(); stopUpdates?.(); stopAccount?.(); stopCapture?.(); ledger?.close(); repository?.close(); tray?.destroy(); });
+  app.on('will-quit', () => { if (timer) clearInterval(timer); stopCollectorTray?.(); stopRemote?.(); stopSpace?.(); disposeRestore?.(); stopUpdates?.(); stopAccount?.(); stopCapture?.(); ledger?.close(); repository?.close(); tray?.destroy(); });
   app.on('activate', () => showWindow());
-  app.on('window-all-closed', () => { if (!tray || quitting) app.quit(); });
+  app.on('window-all-closed', () => { if ((!tray && !collectorOnly) || quitting) app.quit(); });
   const dataPreparation = remoteConfig || collectorOnly ? Promise.resolve() : prepareDataDirectory({ directory: app.getPath('userData'), legacyDirectory: legacyDataDirectory, profile });
   void Promise.all([app.whenReady(), dataPreparation]).then(start).catch(error => {
     const detail = error instanceof Error ? error.message : '请检查目录权限与可用空间。';
@@ -134,18 +137,31 @@ async function start() {
   if (collectorOnly) {
     collectorStartup = startCollectorMode(app.getPath('userData')).then(async collector => {
       stopCollector = collector.close;
-      const control = await createCollectorControlServer({ directory: app.getPath('userData'), api: collector.api, encryption: safeStorage, onShutdown: () => { app.quit(); } });
+      const status = () => {
+        const state = collector.status();
+        tray?.setToolTip(`终极日历 · QQ ${!state.enabled ? '采集未启用' : state.error ? '采集异常' : state.connection === 'online' ? '已连接' : '连接待恢复'} · ${state.analysisEnabled ? '自动提炼启用' : '自动提炼未启用'}`);
+      };
+      const openCalendar = () => {
+        const child = spawn(process.execPath, [], { windowsHide: true, detached: true, stdio: 'ignore' });
+        child.on('error', () => { dialog.showErrorBox('日历未能打开', '请从桌面快捷方式重新打开终极日历。采集继续运行。'); }); child.unref();
+      };
+      const setTrayVisible = (visible: boolean) => {
+        if (!visible) { tray?.destroy(); tray = null; return; }
+        if (tray) return;
+        tray = new Tray(nativeImage.createFromPath(join(__dirname, '../assets/app-icon.ico')));
+        tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开终极日历', click: openCalendar }, { label: 'QQ 本机采集服务', enabled: false }, { type: 'separator' }, { label: '退出采集服务（QQ 保持运行）', click: () => app.quit() }]));
+        tray.on('double-click', openCalendar); status();
+      };
+      const ownership = createCollectorTrayOwnership(setTrayVisible);
+      stopCollectorTray = ownership.close;
+      // With no cloud owner, the collector retains an entry point even after the window exits.
+      setTrayVisible(true);
+      timer = setInterval(status, 30_000);
+      const control = await createCollectorControlServer({ directory: app.getPath('userData'), api: collector.api, encryption: safeStorage, onShutdown: () => { app.quit(); }, onTrayOwner: ownership.update });
       stopCollector = async () => { await control.close(); await collector.close(); };
       return collector;
     });
-    const collector = await collectorStartup;
-    tray = new Tray(nativeImage.createFromPath(join(__dirname, '../assets/app-icon.ico')));
-    const collectorStatus = () => {
-      const state = collector.status();
-      tray?.setToolTip(`终极日历 · QQ ${!state.enabled ? '采集未启用' : state.error ? '采集异常' : state.connection === 'online' ? '已连接' : '连接待恢复'} · ${state.analysisEnabled ? '自动提炼启用' : '自动提炼未启用'}`);
-    };
-    collectorStatus(); timer = setInterval(collectorStatus, 30_000);
-    tray.setContextMenu(Menu.buildFromTemplate([{ label: 'QQ 本机采集服务', enabled: false }, { label: '原文留在本机；提炼由发送桥上传', enabled: false }, { type: 'separator' }, { label: '退出采集服务（QQ 保持运行）', click: () => app.quit() }]));
+    await collectorStartup;
     return;
   }
   const data = app.getPath('userData'); await mkdir(data, { recursive: true });

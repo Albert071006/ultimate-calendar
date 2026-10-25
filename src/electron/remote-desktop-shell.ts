@@ -1,4 +1,4 @@
-import { app, Menu, nativeImage, Notification, powerMonitor, Tray, type BrowserWindow, type MenuItemConstructorOptions } from 'electron';
+import { app, dialog, Menu, nativeImage, Notification, powerMonitor, Tray, type BrowserWindow, type MenuItemConstructorOptions } from 'electron';
 import { NsisUpdater } from 'electron-updater';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -16,6 +16,8 @@ import type { NativeRemoteConfig } from './remote-config';
 import type { createCollectorControlClient } from './collector-control';
 import { createRemoteReminderScheduler } from './remote-reminders';
 import { createUpdateService } from './update-service';
+import { CaptureSnapshotSchema } from '../shared/capture';
+import { COLLECTOR_TRAY_RENEW_MS } from './collector-tray';
 
 const DeviceSettings = z.strictObject({ version: z.literal(1), closeToTray: z.boolean(), autoLaunch: z.boolean() });
 const successfulSnapshot = apiResultSchema(SnapshotSchema), successfulBackup = apiResultSchema(BackupExportDataSchema);
@@ -41,6 +43,10 @@ export function createRemoteDesktopShell(options: Options) {
   let device = saved ? DeviceSettings.parse(JSON.parse(saved.toString('utf8'))) : DeviceSettings.parse({ version: 1, closeToTray: true, autoLaunch: false });
   let closed = false, quitting = false, ticking = false, stoppedCollector = false;
   let collectorStarting: Promise<void> | undefined;
+  const trayOwner = randomUUID();
+  let trayRenewing: Promise<void> | undefined, quitHandoff = false, collectorRunning = false, collectorAction = false;
+  let collectorLabel = 'QQ 采集服务正在连接', extraTrayItems: MenuItemConstructorOptions[] = [];
+  let ownershipTimer: ReturnType<typeof setInterval> | undefined;
   let currentIdentity = '', scheduler: ReturnType<typeof createRemoteReminderScheduler> | undefined;
   let latest: Snapshot | undefined;
   const showing = new Set<string>(), notifications = new Set<Notification>();
@@ -62,22 +68,68 @@ export function createRemoteDesktopShell(options: Options) {
     if (latest) snapshot(latest);
     applyAutoLaunch(); options.changed();
   }
+  function updateCollectorStatus(result: ApiResult<unknown>, processState: 'running' | 'stopped' | 'unknown' = 'unknown') {
+    if (closed || quitting) return;
+    collectorRunning = result.ok || processState === 'running' || processState === 'unknown' && collectorRunning;
+    const parsed = result.ok ? CaptureSnapshotSchema.safeParse(result.data) : null;
+    if (parsed?.success) {
+      const state = parsed.data;
+      collectorLabel = `QQ ${!state.config.enabled ? '采集未启用' : state.error ? '采集异常' : state.connection === 'online' ? '已连接' : '连接待恢复'} · ${state.config.analysisEnabled ? '自动提炼启用' : '自动提炼未启用'}`;
+    } else collectorLabel = result.ok ? 'QQ 采集服务运行中' : collectorRunning ? 'QQ 采集服务暂不可用' : 'QQ 采集服务未运行';
+    if (processState === 'stopped') createTray();
+    refreshTray();
+  }
+  async function renewTrayOwnership() {
+    if (!production || !collector || closed || quitting || !collectorRunning || updates.isInstalling()) return;
+    if (trayRenewing) return trayRenewing;
+    trayRenewing = (async () => {
+      const result = await collector.setTrayOwner(trayOwner, true);
+      if (closed || quitting) return;
+      if (result.ok) createTray();
+      else if (await collector.processState() === 'stopped') {
+        updateCollectorStatus(result, 'stopped');
+      } else { tray?.destroy(); tray = undefined; } // The collector regains its icon when this unrenewed lease expires.
+    })().finally(() => { trayRenewing = undefined; });
+    return trayRenewing;
+  }
+  async function refreshCollectorStatus() {
+    if (!production || !collector || closed || quitting || collectorAction || updates.isInstalling()) return;
+    const result = await collector.invoke('captureSnapshot');
+    if (collectorAction || closed || quitting) return;
+    updateCollectorStatus(result, result.ok ? 'running' : await collector.processState());
+    await renewTrayOwnership();
+  }
   async function ensureCollector() {
     if (!production || !collector || closed) return;
     if (collectorStarting) return collectorStarting;
     collectorStarting = (async () => {
-      if ((await collector.invoke('captureSnapshot')).ok || closed) return;
+      const current = await collector.invoke('captureSnapshot'), state = current.ok ? 'running' : await collector.processState(); updateCollectorStatus(current, state);
+      if (current.ok || state === 'running' || closed) { await renewTrayOwnership(); return; }
       const child = spawn(process.execPath, ['--planner-capture-only', `--planner-profile=${config.localDataDirectory!}`], { windowsHide: true, detached: true, stdio: 'ignore' });
       await new Promise<void>((done, reject) => { child.once('spawn', done); child.once('error', () => reject(new WorkflowError('STORAGE', '本机采集服务未能启动，请从采集入口重试。'))); });
       child.unref();
       const deadline = Date.now() + 30_000;
       while (!closed && Date.now() < deadline) {
-        if ((await collector.invoke('captureSnapshot')).ok) return;
+        const result = await collector.invoke('captureSnapshot'); updateCollectorStatus(result);
+        if (result.ok) { await renewTrayOwnership(); return; }
         await wait(250);
       }
       if (!closed) throw new WorkflowError('STORAGE', '本机采集服务未恢复，未操作 QQ。请重新打开日历后核对采集状态。');
     })().finally(() => { collectorStarting = undefined; });
     return collectorStarting;
+  }
+  async function toggleCollector() {
+    if (!collector || collectorAction || closed || quitting || updates.isInstalling()) return;
+    collectorAction = true; refreshTray();
+    try {
+      if (collectorRunning) {
+        await trayRenewing;
+        const result = await collector.shutdownAndWait();
+        if (!result.ok) throw new WorkflowError('CONFLICT', '采集服务尚未正常退出，请等待正在处理的消息结束后重试。');
+        updateCollectorStatus({ ok: false, error: { code: 'NETWORK', message: '', retryable: false } }, 'stopped');
+      } else await ensureCollector();
+    } catch { dialog.showErrorBox('采集服务状态未改变', '操作未能完成，请打开日历的采集页面核对状态后重试。QQ 保持运行。'); }
+    finally { collectorAction = false; refreshTray(); await renewTrayOwnership(); }
   }
   async function backupBeforeInstall() {
     const identity = JSON.stringify(RemoteIdentitySchema.parse(await options.getIdentity()));
@@ -94,14 +146,15 @@ export function createRemoteDesktopShell(options: Options) {
   const updates = createUpdateService({
     currentVersion: app.getVersion(), packaged: app.isPackaged, platform: process.platform, isolatedProfile: !production,
     getUpdater: () => new NsisUpdater(),
-    isBusy: () => ticking || !!options.isBusy?.(),
+    isBusy: () => ticking || collectorAction || !!options.isBusy?.(),
     prepareInstall: async () => {
       await backupBeforeInstall();
       await collectorStarting;
       if (collector) {
+        const wasRunning = await collector.processState() !== 'stopped';
         const stopped = await collector.shutdownAndWait();
         if (!stopped.ok) throw new WorkflowError('CONFLICT', '本机采集尚未正常退出，未安装更新，也未关闭 QQ。');
-        stoppedCollector = true;
+        stoppedCollector = wasRunning;
       }
     },
     resumeAfterFailedInstall: async () => { if (stoppedCollector) { await ensureCollector(); stoppedCollector = false; } },
@@ -143,12 +196,25 @@ export function createRemoteDesktopShell(options: Options) {
     } catch { /* Connection/identity/storage failure retains the cursor; the next successful poll can catch up. */ }
     finally { ticking = false; }
   }
-  const beforeQuit = () => { quitting = true; };
-  const onClose = (event: { preventDefault(): void }) => { if (!closed && !quitting && tray && device.closeToTray) { event.preventDefault(); window.hide(); } };
-  const onResume = () => { void tick(); };
+  const beforeQuit = (event: { preventDefault(): void }) => {
+    quitting = true;
+    if (!production || !collector || closed || quitHandoff || updates.isInstalling()) return;
+    event.preventDefault(); quitHandoff = true;
+    if (ownershipTimer) clearInterval(ownershipTimer);
+    tray?.destroy(); tray = undefined;
+    // remote-mode closes its client synchronously with the window; return the tray before allowing that close.
+    void (async () => { await trayRenewing; await collector.setTrayOwner(trayOwner, false); })().catch(() => {}).finally(() => app.quit());
+  };
+  const onClose = (event: { preventDefault(): void }) => {
+    if (closed || quitting) return;
+    if ((tray || production && collectorRunning) && device.closeToTray) { event.preventDefault(); window.hide(); }
+    else if (production && collector) { event.preventDefault(); app.quit(); }
+  };
+  const onResume = () => { void tick(); void refreshCollectorStatus(); };
   function close() {
     if (closed) return; closed = true;
     if (timer) clearInterval(timer);
+    if (ownershipTimer) clearInterval(ownershipTimer);
     updates.stop(); tray?.destroy();
     for (const notification of notifications) notification.close(); notifications.clear();
     window.removeListener('close', onClose); window.removeListener('focus', onResume); window.removeListener('closed', close);
@@ -156,22 +222,28 @@ export function createRemoteDesktopShell(options: Options) {
   }
   // Isolated smoke profiles neither alter Windows startup nor create background processes or OS notifications.
   // The window has no menu bar, so cloud commands (refresh, operation review) live in the tray menu instead.
-  const trayMenu = (extra: MenuItemConstructorOptions[] = []) => Menu.buildFromTemplate([{ label: '打开终极日历', click: show }, { label: '刷新提醒', click: onResume },
-    ...extra, { type: 'separator' }, { label: '退出日历（QQ 采集继续运行）', click: () => { quitting = true; app.quit(); } }]);
-  if (production) {
+  const trayMenu = () => Menu.buildFromTemplate([{ label: '打开终极日历', click: show }, { label: '刷新提醒', click: onResume },
+    ...extraTrayItems, { type: 'separator' }, { label: collectorLabel, enabled: false },
+    { label: collectorAction ? '采集服务处理中…' : collectorRunning ? '停止 QQ 采集（QQ 保持运行）' : '启动 QQ 采集', enabled: !collectorAction, click: () => { void toggleCollector(); } },
+    { type: 'separator' }, { label: collectorRunning ? '退出日历（QQ 采集继续运行）' : '退出日历', click: () => app.quit() }]);
+  function refreshTray() { tray?.setContextMenu(trayMenu()); tray?.setToolTip(`终极日历 · 云端资料 · ${collectorLabel}`); }
+  function createTray() {
+    if (tray || closed || quitting) return;
     tray = new Tray(nativeImage.createFromPath(join(__dirname, '../assets/app-icon.ico')));
-    tray.setToolTip('终极日历 · 云端资料');
-    tray.setContextMenu(trayMenu());
-    tray.on('double-click', show); applyAutoLaunch();
+    tray.on('double-click', show); refreshTray();
+  }
+  if (production) {
+    createTray(); applyAutoLaunch();
     window.on('close', onClose); window.on('focus', onResume); app.on('before-quit', beforeQuit); powerMonitor.on('resume', onResume);
     timer = setInterval(onResume, 30_000); timer.unref(); updates.start();
+    ownershipTimer = setInterval(() => { void renewTrayOwnership(); }, COLLECTOR_TRAY_RENEW_MS); ownershipTimer.unref();
     void ensureCollector().catch(() => { /* Capture controls show availability; no credentials or private errors are logged. */ });
     void tick();
   }
   window.once('closed', close);
   return {
     snapshot, saveDeviceSettings, close, isInstalling: updates.isInstalling,
-    setTrayItems(items: MenuItemConstructorOptions[]) { tray?.setContextMenu(trayMenu(items)); },
+    setTrayItems(items: MenuItemConstructorOptions[]) { extraTrayItems = items; refreshTray(); },
     async handle(method: string): Promise<ApiResult<unknown> | null> {
       if (method === 'updateSnapshot') return { ok: true, data: updates.snapshot() };
       if (method === 'checkForUpdates') return updates.checkForUpdates();

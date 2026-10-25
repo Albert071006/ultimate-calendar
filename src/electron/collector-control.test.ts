@@ -47,6 +47,17 @@ async function raw(pipe: string, content: string) {
 }
 
 describe('local collector named-pipe control', () => {
+  it('keeps authenticated tray leases separate from renderer operations', async () => {
+    const f = fixture(), onTrayOwner = vi.fn(), { client } = await start(f, { onTrayOwner });
+    const owner = randomUUID();
+    expect(await client.setTrayOwner(owner, true)).toEqual({ ok: true, data: { accepted: true } });
+    expect(onTrayOwner).toHaveBeenLastCalledWith({ owner, active: true });
+    expect(await client.setTrayOwner(owner, false)).toMatchObject({ ok: true });
+    expect(onTrayOwner).toHaveBeenLastCalledWith({ owner, active: false });
+    expect(await client.setTrayOwner('not-an-owner', true)).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
+    expect(await client.invoke('$tray-owner' as CollectorControlMethod, { owner, active: true })).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
+    expect(onTrayOwner).toHaveBeenCalledTimes(2); expect(f.invoke).not.toHaveBeenCalled();
+  });
   it('validates private key repair requests and never returns credentials to the caller', async () => {
     const f = fixture();
     const invoke = vi.fn(async () => ({ ok: true, data: { configured: true, sessionOnly: false } }));
@@ -63,6 +74,24 @@ describe('local collector named-pipe control', () => {
     const { server } = await start(f, { onShutdown: async () => { await stop?.(); ownerAlive = false; } }); stop = () => server.close();
     const client = createCollectorControlClient({ ...f.options, processAlive: () => ownerAlive }); cleanups.push(() => client.close());
     expect(await client.shutdownAndWait(1000)).toEqual({ ok: true, data: { stopped: true } }); expect(existsSync(f.file)).toBe(false);
+    expect(await client.processState()).toBe('stopped');
+    expect(await client.shutdownAndWait(1000)).toEqual({ ok: true, data: { stopped: true } });
+    ownerAlive = true;
+    expect(await client.shutdownAndWait(1000)).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+  });
+  it('does not mistake an absent endpoint for a stopped owner or reuse a stop after a replacement appears', async () => {
+    const f = fixture(); let ownerAlive = true; let stop: (() => Promise<void>) | undefined;
+    const { server } = await start(f, { onShutdown: async () => { await stop?.(); ownerAlive = false; } }); stop = () => server.close();
+    const client = createCollectorControlClient({ ...f.options, processAlive: () => ownerAlive }); cleanups.push(() => client.close());
+    expect(await client.processState()).toBe('running'); await server.close();
+    expect(await client.processState()).toBe('running');
+    expect(await client.shutdownAndWait(1000)).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    const next = await createCollectorControlServer({ ...f.options, onShutdown: async () => { await next.close(); ownerAlive = false; } }); cleanups.push(() => next.close());
+    expect(await client.shutdownAndWait(1000)).toMatchObject({ ok: true });
+    const replacement = await createCollectorControlServer(f.options); cleanups.push(() => replacement.close());
+    ownerAlive = true;
+    expect(await client.shutdownAndWait(1000)).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
+    expect(await client.processState()).toBe('running');
   });
   it('does not treat endpoint closure or an acknowledgement as proof of process exit', async () => {
     const f = fixture(); let stop: (() => Promise<void>) | undefined;

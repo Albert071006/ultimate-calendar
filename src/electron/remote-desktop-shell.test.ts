@@ -26,7 +26,7 @@ vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events');
   return {
     app: Object.assign(new EventEmitter(), { isPackaged: true, getVersion: () => '0.4.7', setLoginItemSettings: vi.fn(), quit: vi.fn() }),
-    powerMonitor: new EventEmitter(), Menu: { buildFromTemplate: (value: unknown) => value }, nativeImage: { createFromPath: vi.fn(() => ({})) },
+    powerMonitor: new EventEmitter(), dialog: { showErrorBox: vi.fn() }, Menu: { buildFromTemplate: (value: unknown) => value }, nativeImage: { createFromPath: vi.fn(() => ({})) },
     Tray: class extends EventEmitter {
       menu?: Array<{ label?: string; click?: () => void }>;
       destroy = vi.fn(); setToolTip = vi.fn();
@@ -61,7 +61,7 @@ async function flush() { for (let i = 0; i < 24; i++) await Promise.resolve(); }
 function fixture(production = true) {
   const directory = mkdtempSync(join(tmpdir(), 'calendar-shell-unit-')); roots.push(directory);
   const window = Object.assign(new EventEmitter(), { isDestroyed: vi.fn(() => false), isMinimized: vi.fn(() => false), restore: vi.fn(), show: vi.fn(), hide: vi.fn(), focus: vi.fn(), webContents: { send: vi.fn() } });
-  const collector = { invoke: vi.fn(async () => ({ ok: true, data: {} })), shutdownAndWait: vi.fn(async () => ({ ok: true, data: { stopped: true } })), close: vi.fn() };
+  const collector = { invoke: vi.fn(async () => ({ ok: true, data: {} })), setTrayOwner: vi.fn(async (_owner: string, _active: boolean) => ({ ok: true, data: { accepted: true } })), processState: vi.fn(async (): Promise<'running' | 'stopped' | 'unknown'> => 'running'), shutdownAndWait: vi.fn(async () => ({ ok: true, data: { stopped: true } })), close: vi.fn() };
   const rpc = vi.fn(async (method: string) => method === 'snapshot' ? { ok: true, data: snapshot() } : { ok: true, data: { content: backup() } });
   const changed = vi.fn(), isBusy = vi.fn(() => false), getIdentity = vi.fn(async () => identity);
   const config = { origin: 'https://synthetic.invalid', deviceName: '合成电脑', ...(production ? { localDataDirectory: join(directory, 'capture-only-source') } : {}) };
@@ -85,11 +85,64 @@ afterEach(() => {
 });
 
 describe('cloud desktop device shell', () => {
+  it('renews the shared tray and completes its release before allowing normal quit', async () => {
+    const f = fixture(); await flush();
+    const owner = f.collector.setTrayOwner.mock.calls[0]![0];
+    expect(f.collector.setTrayOwner).toHaveBeenCalledWith(owner, true);
+    await vi.advanceTimersByTimeAsync(5000); expect(f.collector.setTrayOwner).toHaveBeenCalledTimes(2);
+    let release: (() => void) | undefined;
+    f.collector.setTrayOwner.mockImplementationOnce(async () => { await new Promise<void>(done => { release = done; }); return { ok: true, data: { accepted: true } }; });
+    const event = { preventDefault: vi.fn() }; app.emit('before-quit', event); await flush();
+    expect(event.preventDefault).toHaveBeenCalledOnce(); expect(mocks.trays[0]!.destroy).toHaveBeenCalledOnce();
+    expect(f.collector.setTrayOwner).toHaveBeenLastCalledWith(owner, false); expect(app.quit).not.toHaveBeenCalled();
+    release?.(); await flush(); expect(app.quit).toHaveBeenCalledOnce();
+    const calls = f.collector.setTrayOwner.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(20_000); expect(f.collector.setTrayOwner).toHaveBeenCalledTimes(calls);
+  });
+
+  it('leaves one collector fallback on a control outage and regains one cloud tray on recovery', async () => {
+    const f = fixture(); await flush();
+    f.collector.setTrayOwner.mockResolvedValue({ ok: false } as never);
+    f.collector.processState.mockResolvedValue('running');
+    f.collector.invoke.mockResolvedValue({ ok: false } as never);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(mocks.trays).toHaveLength(1); expect(mocks.trays[0]!.destroy).toHaveBeenCalledOnce();
+    expect(mocks.spawn).not.toHaveBeenCalled();
+    f.collector.setTrayOwner.mockResolvedValue({ ok: true, data: { accepted: true } });
+    await vi.advanceTimersByTimeAsync(5000); expect(mocks.trays).toHaveLength(2); expect(mocks.trays[1]!.destroy).not.toHaveBeenCalled();
+  });
+
+  it('keeps the cloud entry point when the collector is confirmed gone', async () => {
+    const f = fixture(); await flush();
+    f.collector.setTrayOwner.mockResolvedValue({ ok: false } as never); f.collector.processState.mockResolvedValue('stopped');
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(mocks.trays).toHaveLength(1); expect(mocks.trays[0]!.destroy).not.toHaveBeenCalled();
+    expect(mocks.trays[0]!.menu!.some(item => item.label === '启动 QQ 采集')).toBe(true);
+    expect(mocks.trays[0]!.menu!.some(item => item.label === '退出日历')).toBe(true);
+  });
+
+  it('stops and restarts collection from the same cloud tray while preserving cloud actions', async () => {
+    const f = fixture(); await flush();
+    f.shell.setTrayItems([{ label: '合成云端操作' }]);
+    mocks.trays[0]!.menu!.find(item => item.label?.startsWith('停止 QQ 采集'))!.click!(); await flush();
+    expect(f.collector.shutdownAndWait).toHaveBeenCalledOnce(); expect(mocks.trays).toHaveLength(1);
+    expect(mocks.trays[0]!.menu!.some(item => item.label === '退出日历')).toBe(true);
+    const claims = f.collector.setTrayOwner.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(10_000); expect(f.collector.setTrayOwner).toHaveBeenCalledTimes(claims);
+    f.collector.invoke.mockResolvedValueOnce({ ok: false } as never).mockResolvedValue({ ok: true, data: {} });
+    f.collector.processState.mockResolvedValue('stopped');
+    mocks.trays[0]!.menu!.find(item => item.label === '启动 QQ 采集')!.click!(); await flush();
+    expect(mocks.spawn).toHaveBeenCalledOnce(); expect(mocks.trays).toHaveLength(1);
+    expect(mocks.trays[0]!.menu!.some(item => item.label === '合成云端操作')).toBe(true);
+    expect(f.collector.setTrayOwner).toHaveBeenLastCalledWith(expect.any(String), true);
+  });
+
   it('keeps isolated smoke profiles free of OS startup, updater timers, collectors and notifications', async () => {
     const f = fixture(false); await flush();
     expect(f.hooks.isolatedProfile).toBe(true); expect(f.updates.start).not.toHaveBeenCalled();
     expect(app.setLoginItemSettings).not.toHaveBeenCalled(); expect(mocks.spawn).not.toHaveBeenCalled();
     expect(mocks.trays).toHaveLength(0); expect(f.rpc).not.toHaveBeenCalled(); expect(f.collector.invoke).not.toHaveBeenCalled();
+    expect(f.collector.setTrayOwner).not.toHaveBeenCalled();
     expect(await f.shell.handle('snapshot')).toBeNull();
     expect(await f.shell.handle('updateSnapshot')).toEqual({ ok: true, data: { status: 'idle' } });
     await f.shell.handle('checkForUpdates'); await f.shell.handle('downloadUpdate'); await f.shell.handle('installUpdate');
@@ -113,10 +166,13 @@ describe('cloud desktop device shell', () => {
     const f = fixture(); await flush(); const event = { preventDefault: vi.fn() };
     f.window.emit('close', event); expect(event.preventDefault).toHaveBeenCalledOnce(); expect(f.window.hide).toHaveBeenCalledOnce();
     f.shell.saveDeviceSettings({ closeToTray: false, autoLaunch: false });
-    f.window.emit('close', event); expect(event.preventDefault).toHaveBeenCalledOnce();
+    f.window.emit('close', event); expect(event.preventDefault).toHaveBeenCalledTimes(2); expect(app.quit).toHaveBeenCalledOnce();
     f.shell.saveDeviceSettings({ closeToTray: true, autoLaunch: false });
-    app.emit('before-quit', {}); f.window.emit('close', event); expect(event.preventDefault).toHaveBeenCalledOnce();
-    mocks.trays[0]!.menu!.find(item => item.label?.startsWith('退出日历'))!.click!(); expect(app.quit).toHaveBeenCalledOnce();
+    const beforeQuit = { preventDefault: vi.fn() }; app.emit('before-quit', beforeQuit);
+    f.window.emit('close', event); expect(event.preventDefault).toHaveBeenCalledTimes(2);
+    expect(beforeQuit.preventDefault).toHaveBeenCalledOnce();
+    await flush(); expect(app.quit).toHaveBeenCalledTimes(2);
+    expect(f.collector.setTrayOwner).toHaveBeenLastCalledWith(expect.any(String), false);
   });
 
   it('polls in the background and never advances reminders after an unsuccessful cloud read', async () => {
@@ -165,6 +221,7 @@ describe('cloud desktop device shell', () => {
     await f.hooks.prepareInstall(); expect(f.collector.shutdownAndWait).toHaveBeenCalledOnce();
     expect(mocks.spawn).not.toHaveBeenCalled();
     f.collector.invoke.mockResolvedValueOnce({ ok: false } as never).mockResolvedValue({ ok: true, data: {} });
+    f.collector.processState.mockResolvedValue('stopped');
     await f.hooks.resumeAfterFailedInstall();
     expect(mocks.spawn).toHaveBeenCalledExactlyOnceWith(process.execPath, ['--planner-capture-only', `--planner-profile=${f.config.localDataDirectory}`], { windowsHide: true, detached: true, stdio: 'ignore' });
     expect(f.hooks.isBusy()).toBe(false); f.isBusy.mockReturnValue(true); expect(f.hooks.isBusy()).toBe(true);
@@ -177,6 +234,14 @@ describe('cloud desktop device shell', () => {
     f.rpc.mockImplementation(async method => method === 'snapshot' ? { ok: true, data: snapshot() } : { ok: true, data: { content: backup() } });
     f.getIdentity.mockResolvedValueOnce(identity).mockResolvedValueOnce({ ...identity, generation: 2 });
     await expect(f.hooks.prepareInstall()).rejects.toThrow(/身份改变/); expect(f.collector.shutdownAndWait).not.toHaveBeenCalled();
+  });
+
+  it('preserves an intentionally stopped collector when installation fails', async () => {
+    const f = fixture(); await flush();
+    mocks.trays[0]!.menu!.find(item => item.label?.startsWith('停止 QQ 采集'))!.click!(); await flush();
+    f.collector.processState.mockResolvedValue('stopped');
+    await f.hooks.prepareInstall(); await f.hooks.resumeAfterFailedInstall();
+    expect(f.collector.shutdownAndWait).toHaveBeenCalledTimes(2); expect(mocks.spawn).not.toHaveBeenCalled();
   });
 
   it('blocks installation when the collector has not fully stopped and never force kills it', async () => {

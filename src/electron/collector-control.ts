@@ -18,7 +18,9 @@ const shutdownResult = apiResultSchema(z.strictObject({ accepted: z.literal(true
 const evidenceResponse = apiResultSchema(LocalSourceEvidenceSchema);
 const keyResponse = apiResultSchema(KeyStatusSchema);
 const captureResponse = apiResultSchema(CaptureSnapshotSchema);
-const requestSchema = z.strictObject({ version: z.literal(1), id: z.string().uuid(), token: z.string().regex(/^[A-Za-z0-9_-]{43}$/), method: z.union([methodSchema, z.literal('$shutdown')]), input: z.unknown().optional() });
+const trayOwnerSchema = z.strictObject({ owner: z.string().uuid(), active: z.boolean() });
+type ControlMethod = CollectorControlMethod | '$shutdown' | '$tray-owner';
+const requestSchema = z.strictObject({ version: z.literal(1), id: z.string().uuid(), token: z.string().regex(/^[A-Za-z0-9_-]{43}$/), method: z.union([methodSchema, z.literal('$shutdown'), z.literal('$tray-owner')]), input: z.unknown().optional() });
 const envelopeSchema = z.strictObject({ version: z.literal(1), id: z.string().uuid(), result: z.unknown() });
 const descriptorSchema = z.strictObject({ version: z.literal(1), pid: z.number().int().positive(), instance: z.string().uuid(), pipe: z.string(), token: z.string().regex(/^[A-Za-z0-9_-]{43}$/) });
 const helloSchema = z.strictObject({ version: z.literal(1), hello: z.string().regex(/^[A-Za-z0-9_-]{43}$/) });
@@ -68,8 +70,8 @@ function descriptorCodec(encryption: AsyncEncryption): DescriptorCodec {
 const MAX_REQUEST = 64 * 1024, MAX_RESPONSE = 64 * 1024 * 1024;
 const failure = (code: 'VALIDATION' | 'NETWORK' | 'CONFLICT' | 'STORAGE' | 'AUTH', message: string): ApiResult<never> => ({ ok: false, error: { code, message, retryable: false } });
 const unavailable = () => failure('NETWORK', '本机采集服务暂不可用；请确认采集服务已启动后重试');
-function inputSchema(method: CollectorControlMethod | '$shutdown') { return method === '$shutdown' || method === 'captureRefreshApiKey' ? z.undefined() : method === 'captureSetApiKey' ? SetApiKeyRequestSchema : method === 'localSourceEvidence' ? LocalSourceEvidenceRequestSchema : requests[method]; }
-function outputSchema(method: CollectorControlMethod | '$shutdown') { return method === '$shutdown' ? shutdownResult : method === 'captureRefreshApiKey' ? captureResponse : method === 'captureSetApiKey' ? keyResponse : method === 'localSourceEvidence' ? evidenceResponse : responses[method]; }
+function inputSchema(method: ControlMethod) { return method === '$tray-owner' ? trayOwnerSchema : method === '$shutdown' || method === 'captureRefreshApiKey' ? z.undefined() : method === 'captureSetApiKey' ? SetApiKeyRequestSchema : method === 'localSourceEvidence' ? LocalSourceEvidenceRequestSchema : requests[method]; }
+function outputSchema(method: ControlMethod) { return method === '$shutdown' || method === '$tray-owner' ? shutdownResult : method === 'captureRefreshApiKey' ? captureResponse : method === 'captureSetApiKey' ? keyResponse : method === 'localSourceEvidence' ? evidenceResponse : responses[method]; }
 function endpointFile(directory: string) {
   if (!isAbsolute(directory) || resolve(directory) === parse(resolve(directory)).root) throw Error('COLLECTOR_DIRECTORY_INVALID');
   return privatePath(join(directory, 'credentials', 'collector-control.bin'));
@@ -99,6 +101,7 @@ function reachable(pipe: string): Promise<boolean> {
 export async function createCollectorControlServer(options: {
   directory: string; api: CollectorControlAPI; encryption: AsyncEncryption;
   onShutdown?: () => void | Promise<void>; timeoutMs?: number;
+  onTrayOwner?(request: z.infer<typeof trayOwnerSchema>): void;
   /** Isolated tests only; production uses current-user Windows DPAPI or the platform key store. */
   descriptorCodec?: DescriptorCodec;
 }) {
@@ -159,6 +162,9 @@ export async function createCollectorControlServer(options: {
           wantsShutdown = !!options.onShutdown && !shutdownRequested;
           if (wantsShutdown) shutdownRequested = true;
           result = options.onShutdown ? { ok: true, data: { accepted: true } } : failure('VALIDATION', '当前采集服务未开放退出控制');
+        } else if (request.method === '$tray-owner') {
+          if (options.onTrayOwner) { options.onTrayOwner(trayOwnerSchema.parse(checked.data)); result = { ok: true, data: { accepted: true } }; }
+          else result = failure('VALIDATION', '当前采集服务未开放托盘控制');
         } else {
           try { result = await options.api.invoke(request.method, checked.data); }
           catch { result = failure('STORAGE', '本机采集操作未完成，请核对当前状态后重试'); }
@@ -221,6 +227,11 @@ export function createCollectorControlClient(options: {
   const directory = resolve(options.directory), file = endpointFile(options.directory);
   const codec = options.descriptorCodec ?? descriptorCodec(options.encryption);
   let cachedDescriptor: { bytes: Buffer; value: Descriptor } | undefined;
+  let lastStopped: Descriptor | undefined;
+  const alive = options.processAlive ?? ((pid: number) => {
+    try { process.kill(pid, 0); return true; }
+    catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
+  });
   async function decodeCurrent(bytes: Buffer) {
     if (cachedDescriptor?.bytes.equals(bytes)) return cachedDescriptor.value;
     const value = await decode(bytes, directory, codec);
@@ -228,7 +239,7 @@ export function createCollectorControlClient(options: {
   }
   const sockets = new Set<Socket>(); let closed = false;
   const timeout = Math.max(50, Math.min(options.timeoutMs ?? 30_000, 60_000));
-  async function call(method: CollectorControlMethod | '$shutdown', input?: unknown, expectedInstance?: string, expectedBytes?: Buffer): Promise<ApiResult<unknown>> {
+  async function call(method: ControlMethod, input?: unknown, expectedInstance?: string, expectedBytes?: Buffer, requestTimeout = timeout): Promise<ApiResult<unknown>> {
     const checked = inputSchema(method).safeParse(input);
     if (!checked.success) return failure('VALIDATION', '本机采集请求格式无效');
     if (closed) return unavailable();
@@ -247,9 +258,9 @@ export function createCollectorControlClient(options: {
       const socket = createConnection(descriptor.pipe); sockets.add(socket);
       let buffer = Buffer.alloc(0), settled = false, authenticatedServer = false;
       const nonce = randomBytes(32).toString('base64url');
-      const deadline = setTimeout(() => finish(unavailable()), timeout);
+      const deadline = setTimeout(() => finish(unavailable()), requestTimeout);
       const finish = (result: ApiResult<unknown>) => { if (settled) return; settled = true; clearTimeout(deadline); sockets.delete(socket); socket.destroy(); done(result); };
-      socket.setTimeout(timeout, () => finish(unavailable()));
+      socket.setTimeout(requestTimeout, () => finish(unavailable()));
       socket.once('error', () => finish(unavailable())); socket.once('close', () => finish(unavailable()));
       // Prove endpoint ownership before sending a capability or a user-supplied QQ token.
       socket.once('connect', () => socket.write(JSON.stringify({ version: 1, hello: nonce }) + '\n'));
@@ -279,6 +290,19 @@ export function createCollectorControlClient(options: {
     invokeControl(method: 'shutdown'): Promise<ApiResult<unknown>> {
       return method === 'shutdown' ? call('$shutdown') : Promise.resolve(failure('VALIDATION', '不支持的本机维护操作'));
     },
+    /** Main-process shell ownership only; deliberately excluded from renderer/preload methods. */
+    setTrayOwner(owner: string, active: boolean): Promise<ApiResult<unknown>> {
+      return call('$tray-owner', { owner, active }, undefined, undefined, 2000);
+    },
+    /** A missing pipe alone is not proof of exit: it can disappear while the owner drains its work. */
+    async processState(): Promise<'running' | 'stopped' | 'unknown'> {
+      if (closed) return 'unknown';
+      try {
+        const stored = readPrivate(file, 16_384);
+        const descriptor = stored ? await decodeCurrent(stored) : cachedDescriptor?.value;
+        return descriptor ? alive(descriptor.pid) ? 'running' : 'stopped' : 'unknown';
+      } catch { return 'unknown'; }
+    },
     /** Main-process installer coordination: acknowledgement alone is not proof that the owner released its databases. */
     async shutdownAndWait(timeoutMs = 30_000): Promise<ApiResult<{ stopped: true }>> {
       if (closed) return unavailable();
@@ -287,26 +311,23 @@ export function createCollectorControlClient(options: {
       const budget = Math.max(50, Math.min(timeoutMs, 60_000)), deadline = now() + budget;
       let expected: Buffer, descriptor: Descriptor;
       try {
-        const stored = readPrivate(file, 16_384); if (!stored) return failure('CONFLICT', '无法确认采集进程身份，未开始安装');
+        const stored = readPrivate(file, 16_384);
+        if (!stored) return lastStopped && !alive(lastStopped.pid) ? { ok: true, data: { stopped: true } } : failure('CONFLICT', '无法确认采集进程身份，未开始安装');
         expected = stored; descriptor = await decodeCurrent(stored);
       } catch { return failure('STORAGE', '无法核验采集进程身份，未开始安装'); }
       const response = await call('$shutdown', undefined, descriptor.instance, expected);
       if (!response.ok) return response;
-      const alive = options.processAlive ?? ((pid: number) => {
-        try { process.kill(pid, 0); return true; }
-        catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
-      });
       while (!closed) {
         try {
           const current = readPrivate(file, 16_384);
           if (current && !current.equals(expected)) return failure('CONFLICT', '等待退出期间采集服务发生变化，未开始安装');
-          if (!alive(descriptor.pid) && !current) return { ok: true, data: { stopped: true } };
+          if (!alive(descriptor.pid) && !current) { lastStopped = descriptor; return { ok: true, data: { stopped: true } }; }
         } catch { return failure('STORAGE', '无法确认采集进程已经退出，未开始安装'); }
         if (now() >= deadline) return failure('CONFLICT', '采集进程尚未完全退出，请等待正在处理的任务结束后重试安装');
         await wait(Math.min(100, Math.max(1, deadline - now())));
       }
       return unavailable();
     },
-    close() { closed = true; cachedDescriptor = undefined; for (const socket of sockets) socket.destroy(); sockets.clear(); },
+    close() { closed = true; cachedDescriptor = undefined; lastStopped = undefined; for (const socket of sockets) socket.destroy(); sockets.clear(); },
   };
 }
