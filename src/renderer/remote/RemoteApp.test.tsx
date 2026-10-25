@@ -90,6 +90,12 @@ describe('remote browser shell',()=>{
     fireEvent.click(within(unsentRow).getByRole('button',{name:'放弃'}));
     await waitFor(()=>expect(f.controller.resolve).toHaveBeenCalledWith('blocked-unsent','discard'));
   });
+  it('drops a definitively failed assistant request from the queue but keeps other failures for review',async()=>{
+    const command={...pending('failed'),id:'failed-command',method:'command' as const,label:'生活助手请求'};
+    const f=fake({pending:[command,pending('failed')]});render(<RemoteApp controller={f.controller}/>);
+    await waitFor(()=>expect(f.controller.resolve).toHaveBeenCalledWith('failed-command','discard'));
+    expect(f.controller.resolve).not.toHaveBeenCalledWith('failed','discard');
+  });
   it('never asks notification permission on render, and subscribes only after the explicit button click',async()=>{
     const f=fake();const order:string[]=[];
     const permission=vi.fn(async()=>{order.push('permission');return 'granted';});

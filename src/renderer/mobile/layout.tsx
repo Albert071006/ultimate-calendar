@@ -15,6 +15,8 @@ export function useVisualViewport() {
     const update = () => {
       root.setProperty('--mobile-height', `${viewport?.height ?? window.innerHeight}px`);
       root.setProperty('--mobile-top', `${viewport?.offsetTop ?? 0}px`);
+      // With the keyboard up, the home-indicator safe area is behind the keyboard and must not leave a gap.
+      document.documentElement.toggleAttribute('data-keyboard', !!viewport && window.innerHeight - viewport.height > 120);
     };
     update();
     viewport?.addEventListener('resize', update);
@@ -26,6 +28,7 @@ export function useVisualViewport() {
       window.removeEventListener('resize', update);
       root.removeProperty('--mobile-height');
       root.removeProperty('--mobile-top');
+      document.documentElement.removeAttribute('data-keyboard');
     };
   }, []);
 }

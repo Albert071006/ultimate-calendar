@@ -41,6 +41,9 @@ export function RemoteApp({controller}: {controller:RemoteController}) {
   const [code,setCode]=useState(''),[name,setName]=useState('我的 iPhone');
   const [deviceList,setDeviceList]=useState<DeviceSummary[]|null>(null),[push,setPush]=useState<PushState|null>(null);
   const [archiveList,setArchiveList]=useState<RecoveryArchive[]|null>(null),[selectedArchive,setSelectedArchive]=useState<RecoveryArchive|null>(null),[archiveAck,setArchiveAck]=useState(false);
+  // A definitively failed assistant request already shows its failure and retry in the conversation; keeping it
+  // in the queue too would hold the banner at "needs handling" for something the user has seen.
+  useEffect(()=>{for(const item of state.pending)if(item.method==='command'&&item.status==='failed')void controller.resolve(item.id,'discard').catch(()=>{});},[state.pending,controller]);
   useEffect(()=>{let live=true;void controller.initialize().catch(reason=>{if(live)setError(reason instanceof Error?reason.message:'初始化连接失败');});return()=>{live=false;};},[controller]);
   async function run(action:()=>Promise<unknown>,success?:string) { setBusy(true);setError('');setNotice('');try{await action();if(success)setNotice(success);}catch(reason){setError(reason instanceof Error?reason.message:'操作未完成，请重试。');}finally{setBusy(false);} }
   async function pair(event:FormEvent) {event.preventDefault();if(state.status==='expired'&&state.pending.length){setError('请先明确保留旧队列为本机隔离档案，再重新配对。');return;}await run(()=>controller.pair(code.trim(),name.trim()));setCode('');}
