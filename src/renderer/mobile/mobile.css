@@ -132,6 +132,7 @@ body:has(.app-shell.is-mobile) { min-width:0; overflow:hidden; overscroll-behavi
 .is-mobile .a2-course-table tbody { display:block; }
 .is-mobile .a2-course-table tr { display:flex; flex-wrap:wrap; align-items:center; gap:0 8px; padding:10px 0; border-bottom:1px solid var(--line); }
 .is-mobile .a2-course-table td { border:0; padding:4px 0; }
+.is-mobile .a2-course-table td:first-child { width:auto; flex:none; }
 .is-mobile .a2-course-table td.t { flex:1 1 70%; }
 .is-mobile .a2-course-table td.n { flex:1 1 100%; }
 .is-mobile .a2-palette { width:min(320px,calc(100vw - 48px)); }
