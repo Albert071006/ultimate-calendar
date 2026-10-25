@@ -332,3 +332,10 @@ html[data-keyboard] .m-sheet { padding-bottom: 0; }
 .m-pair button { font: inherit; cursor: pointer; }
 body:has(.m-pair) { margin: 0; min-width: 0; background: var(--bg); }
 .m-pair, .m-pair * { box-sizing: border-box; }
+
+/* iOS gives date/time inputs an intrinsic minimum width and centred text: keep them inside their column like other fields. */
+.is-mobile :is(input, select, textarea) { max-width: 100%; box-sizing: border-box; }
+.is-mobile :is(input[type=date], input[type=datetime-local], input[type=month], input[type=time]) { -webkit-appearance: none; appearance: none; display: block; width: 100%; min-width: 0; text-align: left; }
+.is-mobile :is(input[type=date], input[type=datetime-local], input[type=month], input[type=time])::-webkit-date-and-time-value { margin: 0; text-align: left; }
+/* Nothing on a phone page scrolls sideways. */
+.m-main, .m-sheet-body, .is-mobile .a2-edit-b { overflow-x: hidden; }

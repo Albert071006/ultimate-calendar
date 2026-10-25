@@ -68,11 +68,10 @@ export function ImportDialog({
   }
   return (
     <div className="editor-form">
-      <p className="hint">
+      {ui.host && !mobile ? <p className="hint">
         先保存原文，再由你明确提交
         DeepSeek。缺少发送时间时，相对日期会留待确认。
-      </p>
-      {(!ui.host || mobile) && <p className="hint">手机主动导入的文本和截图在分析完成后清除原文；分析失败时暂存不超过 24 小时。这与 QQ 只上传提炼结果的授权分开。</p>}
+      </p> : <p className="hint">原文先保存在云端，你点提交后才发给 DeepSeek 分析；分析完成后原文会清除。</p>}
       <div className="tabs">
         <button
           className={kind === "text" ? "selected" : ""}
@@ -162,7 +161,7 @@ export function ImportDialog({
       {!ui.snapshot?.keyStatus.configured && (
         <div className="warning">
           DeepSeek 尚未配置。你可以先保存原文。
-          {ui.host ? <button onClick={settings}>前往设置密钥</button> : <p>请在资料服务的账户设置中检查，不在手机重复填写电脑密钥。</p>}
+          <button onClick={settings}>{ui.host ? '前往设置密钥' : '去填写 Key'}</button>
         </div>
       )}
       {ui.error && (
