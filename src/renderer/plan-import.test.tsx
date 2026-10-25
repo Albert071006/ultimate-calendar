@@ -42,7 +42,7 @@ describe('JSON plan import', () => {
     fireEvent.click(button('选择 JSON 文件'));
     expect(await screen.findByText('一周学习计划')).toBeTruthy();
     expect(screen.getByText('目标：掌握基础知识 · 截止：2026-11-04 21:00')).toBeTruthy();
-    expect(screen.getByText(/开始：2026\/11\/02 19:00/)).toBeTruthy();
+    expect(screen.getByText('2026/11/02 19:00–20:00')).toBeTruthy();
     expect(screen.getByText('https://example.com/course')).toBeTruthy();
     expect(screen.getByLabelText('条目统计').textContent).toBe('待新增 2已存在 1需处理 0');
     expect(f.host.planImportConfirm).not.toHaveBeenCalled();

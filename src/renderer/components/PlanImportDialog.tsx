@@ -18,6 +18,12 @@ function displayTime(value: string) {
     timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
   }).format(date);
 }
+/** "2026/11/02 19:00–20:00" when both ends fall on the same day, otherwise both full stamps. */
+function displayRange(start?: string, end?: string) {
+  const from = start && displayTime(start), to = end && displayTime(end);
+  if (!from || !to) return from || `结束 ${to}`;
+  return from.slice(0, 10) === to.slice(0, 10) ? `${from}–${to.slice(11)}` : `${from} – ${to}`;
+}
 
 export function PlanImportDialog({ host, ui, onClose }: {
   host: PlanImportDesktopAPI & Partial<BusyExportDesktopAPI>;
@@ -78,12 +84,13 @@ export function PlanImportDialog({ host, ui, onClose }: {
 
   return <Modal wide title="导入计划" onClose={close} closeDisabled={locked}>
     <div className="editor-form plan-import" aria-busy={locked}>
-      <p className="plan-import-intro">首次新建可整份导入目标、任务、学习时段和资料引用，核对后一次确认保存。</p>
-      <p className="hint">已有目标续排，请从目标的“导出给外部智能体”获取上下文，避免重建。选择文件只生成预览；中断后使用原文件继续。</p>
+      <p className="plan-import-intro">首次新建可整份导入目标、任务、学习时段和资料引用，核对后一次确认保存。<span className="hint">已有目标要续排，请先在目标里“导出给外部智能体”。选择文件只生成预览，中断后用原文件继续。</span></p>
       <div className="plan-import-file-actions">
-        <button disabled={locked} onClick={() => void chooseFile()}>{busy === 'open' ? '正在读取…' : preview ? '重新选择 JSON 文件' : '选择 JSON 文件'}</button>
-        <button disabled={locked} onClick={() => void saveTemplate()}>{busy === 'template' ? '正在保存…' : '保存示例文件'}</button>
-        {busyHost && <button disabled={locked} aria-expanded={busyExportOpen} aria-controls={busyPanelId} onClick={() => { if (!working.current && !exporting.current) setBusyExportOpen(open => !open); }}>导出忙碌时间</button>}
+        <button className="plan-import-pick" disabled={locked} onClick={() => void chooseFile()}>{busy === 'open' ? '正在读取…' : preview ? '重新选择 JSON 文件' : '选择 JSON 文件'}</button>
+        <span className="plan-import-tools">
+          <button className="link" disabled={locked} onClick={() => void saveTemplate()}>{busy === 'template' ? '正在保存…' : '保存示例文件'}</button>
+          {busyHost && <button className="link" disabled={locked} aria-expanded={busyExportOpen} aria-controls={busyPanelId} onClick={() => { if (!working.current && !exporting.current) setBusyExportOpen(open => !open); }}>导出忙碌时间</button>}
+        </span>
       </div>
       {busyExportOpen && busyHost && <div id={busyPanelId}><BusyExportPanel host={busyHost} disabled={Boolean(busy)} onBusyChange={value => { exporting.current = value; setExportBusy(value); }} onSaved={ui.setNotice} /></div>}
       {feedback && <p role="status">{feedback}</p>}
@@ -95,18 +102,16 @@ export function PlanImportDialog({ host, ui, onClose }: {
       </section>}
       {preview ? <>
         <section className="plan-import-summary" aria-label="计划预览">
-          <h3>{preview.title}</h3>
-          <p className="hint">计划编号：{preview.planId}</p>
+          <div className="plan-import-title"><h3>{preview.title}</h3><span className="hint">编号 {preview.planId}</span></div>
           <div className="plan-import-counts" aria-label="条目统计">
-            <span>待新增 <b>{counts.new}</b></span><span>已存在 <b>{counts.existing}</b></span><span>需处理 <b>{counts.blocked}</b></span>
+            <span className="new">待新增 <b>{counts.new}</b></span><span>已存在 <b>{counts.existing}</b></span><span className={counts.blocked ? 'blocked' : undefined}>需处理 <b>{counts.blocked}</b></span>
           </div>
-          <p className="hint">共 {preview.rows.length} 条：目标 {preview.rows.filter(row => row.kind === 'goal').length} · 任务 {preview.rows.filter(row => row.kind === 'task').length} · 时段 {preview.rows.filter(row => row.kind === 'block').length}。所有时间按北京时间显示。</p>
+          <p className="hint">共 {preview.rows.length} 条：目标 {preview.rows.filter(row => row.kind === 'goal').length} · 任务 {preview.rows.filter(row => row.kind === 'task').length} · 时段 {preview.rows.filter(row => row.kind === 'block').length}，时间均为北京时间。</p>
         </section>
         <ol className="plan-import-rows" aria-label="导入条目">
           {preview.rows.map(row => <li key={`${row.kind}:${row.localId}`} className={`plan-import-row ${row.state}`}>
             <div className="plan-import-row-heading"><span className="plan-import-kind">{kindNames[row.kind]}</span><strong>{row.title}</strong><span className="plan-import-state">{stateNames[row.state]}</span></div>
-            <p>{row.detail}</p>
-            {(row.start || row.end) && <p className="plan-import-time">{row.start && `开始：${displayTime(row.start)}`}{row.start && row.end && ' · '}{row.end && `结束：${displayTime(row.end)}`}</p>}
+            {(row.detail || row.start || row.end) && <p>{row.detail && <span>{row.detail}</span>}{(row.start || row.end) && <span className="plan-import-time">{displayRange(row.start, row.end)}</span>}</p>}
           </li>)}
         </ol>
         {preview.resources.length > 0 && <section className="plan-import-resources" aria-label="资料引用">
@@ -115,7 +120,7 @@ export function PlanImportDialog({ host, ui, onClose }: {
             <strong>{resource.name}</strong>
             <span>{resource.kind === 'web' ? resource.url : `${resource.kind === 'file' ? '本地文件' : '本地文件夹'} · ${resource.deviceName}`}</span>
           </li>)}</ul>
-          <p className="hint">导入保存资料引用，本地文件仍由所属设备管理。</p>
+          <p className="hint">只保存引用，本地文件仍留在所属设备。</p>
         </section>}
         {preview.warnings.length > 0 && <section className="warning" aria-label="导入提醒"><ul>{preview.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></section>}
         {verifyPending && <p className="warning" role="status">只核对上次已保存的结果，不继续新增；之后重新导出最新计划。</p>}

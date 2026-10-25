@@ -57,13 +57,11 @@ export function BusyExportPanel({ host, disabled = false, onBusyChange, onSaved 
   };
 
   return <section className="busy-export" aria-label="导出忙碌时间" aria-busy={Boolean(busy)}>
-    <h3>导出忙碌时间</h3>
-    <p className="hint">交给外部智能体作为排期参考，再生成完整目标、任务和时段。</p>
+    <div className="busy-export-head"><h3>导出忙碌时间</h3><span className="hint">给外部智能体做排期参考，北京时间，含首尾两天，最多 366 天。</span></div>
     <div className="busy-export-range">
       <label>忙碌时间开始日期<input type="date" value={fromDate} disabled={locked} onChange={event => updateParameters(() => setFromDate(event.target.value))} /></label>
       <label>忙碌时间结束日期<input type="date" value={toDate} disabled={locked} onChange={event => updateParameters(() => setToDate(event.target.value))} /></label>
     </div>
-    <p className="hint">北京时间，包含首尾两天，最多 366 天。</p>
     {!request.success && <p className="error" role="alert">{request.error.issues[0]?.message}</p>}
     <label>规划要求（选填）<textarea rows={2} maxLength={10000} value={instructions} disabled={locked} placeholder="例如：请规划一个月的学习目标，每次学习 45 分钟，避开已有课程。" onChange={event => updateParameters(() => setInstructions(event.target.value))} /></label>
     <label className="check"><input type="checkbox" checked={hideTitles} disabled={locked} onChange={event => updateParameters(() => setHideTitles(event.target.checked))} />隐藏日程名称，仅保留忙碌时间</label>
@@ -79,10 +77,10 @@ export function BusyExportPanel({ host, disabled = false, onBusyChange, onSaved 
       <p className="hint">{preview.sourceKind === 'cloud' ? '云端资料' : '本机资料'} · {preview.fromDate} 至 {preview.toDate} · 日程名称{hideTitles ? '隐藏' : '包含'}</p>
       {preview.warnings.length > 0 && <div className="warning"><ul>{preview.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></div>}
     </section>}
+    <p className="hint">只在本机保存 .calendar-busy.json，不上传、不调用 AI；它不能直接导入，请导入智能体生成的计划文件。</p>
     <div className="busy-export-actions">
       <button disabled={locked || !request.success} onClick={() => void previewExport()}>{busy === 'preview' ? '正在预览忙碌时间…' : '预览忙碌时间'}</button>
       <button disabled={locked || !preview} onClick={() => void save()}>{busy === 'save' ? '正在保存忙碌时间…' : '保存忙碌时间文件'}</button>
     </div>
-    <p className="hint">仅保存 .calendar-busy.json 文件，不上传、不调用 AI。此参考文件不能直接导入；请导入智能体生成的计划文件。</p>
   </section>;
 }

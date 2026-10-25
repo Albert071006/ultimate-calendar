@@ -60,21 +60,18 @@ export function PlanExportDialog({ host, goal, onClose, onSaved }: {
 
   return <Modal title="导出给外部智能体" onClose={close} closeDisabled={Boolean(busy)}>
     <div className="editor-form plan-export" aria-busy={Boolean(busy)}>
-      <h3>{goal.title}</h3>
-      <p className="plan-export-intro">导出此目标、全部关联任务、已有时段和资料引用，供外部智能体继续规划。</p>
+      <p className="plan-export-intro"><strong>{goal.title}</strong><span className="hint">导出这个目标的全部任务、已有时段和资料引用，交给外部智能体继续规划。</span></p>
       <div className="plan-export-range">
         <label>规划开始日期<input type="date" value={fromDate} disabled={Boolean(busy)} onChange={event => updateParameters(() => setFromDate(event.target.value))} /></label>
         <label>规划结束日期<input type="date" value={toDate} disabled={Boolean(busy)} onChange={event => updateParameters(() => setToDate(event.target.value))} /></label>
       </div>
-      <p className="hint">日期范围含首尾两天，最多 366 天，时间均为北京时间。范围只限制忙碌区间；目标关联任务及已有时段会完整导出。</p>
+      <p className="hint">含首尾两天，最多 366 天，北京时间。日期只影响导出哪些忙碌时间，任务和已有时段总是完整导出。</p>
       {validationError && <p className="error" role="alert">{validationError}</p>}
       <label>续排要求（选填）<textarea rows={3} maxLength={10000} value={instructions} disabled={Boolean(busy)} placeholder="例如：保留已有安排，为尚未安排的任务补充 4 个学习时段，每次 45 分钟。" onChange={event => updateParameters(() => setInstructions(event.target.value))} /></label>
       <label className="check"><input type="checkbox" checked={hideBusyTitles} disabled={Boolean(busy)} onChange={event => updateParameters(() => setHideBusyTitles(event.target.checked))} />隐藏其他日程名称，仅提供忙碌时间</label>
-      <p className="hint">只保存本地上下文文件，不会上传给外部智能体，也不会调用 AI。文件包含目标和任务内容，请按需交给你选择的智能体。</p>
       {error && <p className="error" role="alert">{error}</p>}
       {feedback && <p className="plan-export-feedback" role="status">{feedback}</p>}
       {preview && <section className="plan-export-summary" aria-label="导出内容预览">
-        <h3>{preview.title}</h3>
         <dl className="plan-export-counts">
           <div><dt>目标</dt><dd>1</dd></div>
           <div><dt>关联任务</dt><dd>{preview.counts.tasks}</dd></div>
@@ -89,9 +86,9 @@ export function PlanExportDialog({ host, goal, onClose, onSaved }: {
           <dt>其他日程名称</dt><dd>{hideBusyTitles ? '隐藏' : '包含'}</dd>
         </dl>
         {preview.warnings.length > 0 && <div className="warning"><ul>{preview.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></div>}
-        <p className="hint">预览有效期为 10 分钟。保存前会核对资料是否变化；如有变化，请重新预览。</p>
+        <p className="hint">预览 10 分钟内有效；保存前资料若有变化，需要重新预览。</p>
       </section>}
-      <p className="hint">上下文文件供智能体读取；智能体返回的增量计划仍需到“导入计划”核对后保存。当前支持补充新增内容，已有时段请在日历中编辑。</p>
+      <p className="hint plan-export-note">只在本机保存文件，不会上传给外部智能体，也不会调用 AI。智能体返回的计划要到“导入计划”核对后保存，只能补充新内容，已有时段请在日历里改。</p>
       <footer className="form-footer">
         <button disabled={Boolean(busy)} onClick={close}>取消</button>
         <button disabled={Boolean(busy) || !request.success} onClick={() => void previewExport()}>{busy === 'preview' ? '正在预览…' : '预览导出内容'}</button>
