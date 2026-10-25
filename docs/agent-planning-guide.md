@@ -1,16 +1,32 @@
 # 终极日历 Agent 规划与导入规范
 
-适用对象：替用户制定学习、工作或生活计划，并将计划交给终极日历执行的 agent。接口依据 0.4.6 源码；使用新版本时以 [contracts.ts](../src/shared/contracts.ts)、[preload.ts](../src/electron/preload.ts) 和 [planner.ts](../src/domain/planner.ts) 为准。
+适用对象：替用户制定学习、工作或生活计划，并将计划交给终极日历执行的外部智能体（agent）。核对日期：2026-10-26，依据当前本机 0.4.7 源码，涵盖 Windows 云端资料模式、本机独立模式和已配对网页。相同版本号可能包含不同的本机修复；本文不代表 GitHub 正式安装包或任意服务器均已更新。
 
-**先区分生成计划和写入日历。** 当前没有通用计划 JSON／ICS 文件导入按钮、公开 HTTP API 或计划导入 CLI。本文 JSON 是现有内部接口的请求示例，不是可以直接拖进软件的文件格式。
+**先确认正在使用哪份资料，再区分生成计划和写入日历。** 当前仍没有通用计划 JSON／ICS 文件导入按钮或计划导入 CLI；已有受设备配对保护的 HTTPS RPC。本文 JSON 是接口请求示例，不是可以直接拖进软件的文件格式，也不是免鉴权的公共接口。
+
+权威定义：[实体与 mutation](../src/shared/contracts.ts)、[桌面内部接口](../src/electron/preload.ts)、[云端协议](../src/shared/remote.ts)、[RPC 方法](../src/server/protocol.ts)、[资料引用](../src/shared/resources.ts)、[规划服务](../src/domain/planner.ts)。云端接入细节见 [后端接口](backend-api.md)，Windows 模式见 [Windows 云端资料说明](windows-cloud-mode.md)。
 
 ## 可以直接交给其他 agent 的指令
 
 > 请按《终极日历 Agent 规划与导入规范》为我制定并落实计划。
-> 先确认当前北京时间，读取本次计划所需的已有任务、目标、课表和安排。将目标拆成有明确产出的小任务，区分真实 DDL、固定活动和可调整的执行时段，避开已有课程与活动。
+> 先确认当前北京时间、资料模式和真实可用的执行入口。云端模式以当前已配对服务的资料为准，不读旧本机采集库来代替正式计划。读取本次计划所需的已有任务、目标、课表和安排，将目标拆成有明确产出的小任务，区分真实 DDL、固定活动和可调整的执行时段，避开已有课程与活动。
 > 未指定时长时默认 30 分钟；明确指定的时长、非整点时间必须保留。相对日期以我发出指令的日期为准，不能使用当前浏览的日历日期。
-> 如果只能制定计划，输出“尚未导入”的计划清单及交接信息；如果有本机应用操作能力且我已要求导入，就使用真实可用的应用入口执行。逐步保存返回的对象 ID 与操作回执，避免重复创建；遇到应用要求确认的预览，展示变更后由我确认。
+> 如果只能制定计划，输出“尚未导入”的计划清单及交接信息；如果已有应用操作能力或获授权的已配对接口，且我已要求导入，就执行授权范围内的操作。逐步保存返回的对象 ID、version 和回执；HTTP 请求另记录 requestId 与资料 identity。返回 preview 时按实际变更和冲突完成应用确认流程，不把预览当成功，也不绕过确认令牌。
+> 网页资料使用 resources 关联；电脑文件先由 Windows 本机入口登记，再关联返回的引用，不把本机绝对路径写入云端描述。目标／课程的公共资料可由关联任务和时段继承显示，无需到处复制。
 > 没完成的内容保留为原任务，后续调整其安排；不要把过期当完成，也不要重复生成一套任务。最后简洁报告已写入、未写入和待处理的部分。
+
+## 先确认资料与执行入口
+
+| 当前环境 | 正式计划从哪里读写 | 外部 agent 的执行方式 |
+| --- | --- | --- |
+| Windows 显示“当前使用云端共用资料” | 当前已连接服务，与手机共用 | 优先现有日历界面；具备受信任页面能力时使用 `window.planner`，由主进程转发 |
+| 已配对网页／获授权的服务客户端 | 对应 HTTPS 服务的当前资料实例 | 现有网页界面，或下文的已配对同源 RPC |
+| 明确使用本机独立模式 | 该应用当前 profile 的本机资料 | 现有日历界面／该窗口的 `window.planner` |
+| 只能聊天、生成文件或看源码 | 尚未取得正式资料写入能力 | 交付计划和请求草稿，注明尚未导入 |
+
+云模式下，本机 QQ 采集服务只负责采集、原文、附件等本机能力，旧本机日历库不能当作手机和电脑当前显示的正式资料。不要通过加启动参数、换 profile、另开本机编辑器或直接操作数据库来“导入计划”。已有正常连接时无需重配对或填写 API Key；接口不可达不等于资料为空。
+
+Windows 现在使用单一托盘入口。菜单里的“打开终极日历”可回到主界面，“刷新共用资料”和“核对云端操作”用于云端刷新与结果核对。退出日历且保留采集时，托盘仍可打开日历；采集仍运行不表示云端日历窗口或提醒仍运行。
 
 ## 规划时需要的信息
 
@@ -30,7 +46,7 @@
 | `block`，`kind:"event"` | 固定活动或定时提醒，例如线上讲座、某时提醒办事 | 是；结束未知时按 30 分钟处理 |
 | `course` 课程 | 学校课表中的课程及教学周安排 | 是；不能拿课程导入冒充普通计划导入 |
 
-每个任务写清“做什么、做到什么算完成、材料在哪里、下一步是什么”。可放入 `description` 的内容包括步骤清单、资料链接或本地路径、进度说明；当前这些是文本，不是已经实现的可勾选步骤、可点击附件或自动依赖关系。
+每个任务写清“做什么、做到什么算完成、需要哪些材料、下一步是什么”。`description` 可写步骤清单、验收标准、进度和续做位置；这些步骤仍是文本，不是可勾选的子任务或自动依赖关系。文件、文件夹和网页已有独立的 `resources` 关联能力，见下文；云端描述不要包含电脑绝对路径。
 
 一个大任务可以关联多个执行时段。不同日期做不同内容时，应拆成对应任务／时段；不要为了省事套成内容完全相同的重复活动。完成一个时段不等于完成整个任务，系统不会自动替 agent 判断验收结果或推进后续任务。
 
@@ -47,6 +63,8 @@
 
 规划时按实际区间检查重叠，也留出用户要求的通勤、休息时间。边界相接的两个区间不算系统时间冲突，但仍需判断实际是否来得及。不能为了排下新计划，擅自移动课程、固定活动或真实 DDL。
 
+`snapshot.blocks` 不等于所有忙碌时间：还要按课程的教学周、`weeks`／`parity` 和 `courseExceptions` 展开课表。`cancelled:true` 的重复活动不占时；未接受的候选不算正式占时，但可能需要用户先决定；DDL 不占时。可参考 [buildCalendar](../src/domain/calendar.ts) 的统一展开规则。断网或读取失败时保留“未核对”状态，不能用空数组冒充成功读取。
+
 ## 交给用户和执行 agent 的计划模板
 
 先交付一份简洁的 Markdown 清单；复杂规划可另附机器请求，但两份内容必须一致。
@@ -56,6 +74,8 @@
 计划 ID：本次计划唯一标识；修订时保留，另增修订号
 修订号：1
 生成时间／时区：……／Asia/Shanghai
+资料模式／来源：云端共用资料或本机独立资料；已核对时间：……
+云端 identity：dataInstanceId / generation（仅在本地回执记录，不含凭据）
 计划区间：YYYY-MM-DD 至 YYYY-MM-DD
 目标与完成标准：……
 已核对的已有安排：……；未核对部分：……
@@ -81,7 +101,7 @@ P01 | 新建 | 执行时段 | …… | …… | …… | 无 | 继承 | ……
 
 界面里的“导入消息”先产生消息来源／待判断内容；课表导入只处理课程；“恢复备份”会恢复数据，不是合并计划。不要用这三个入口冒充通用计划导入。
 
-### 通过应用内部接口
+### 通过 Windows 应用内部接口
 
 只有在工具确实提供了对**本机应用受信任页面**的操作能力时，才能调用该页面中的 `window.planner`。它是 Electron preload 暴露的内部接口，不是任意网页、Node 进程或远程 agent 都能访问的服务。没有该能力就走界面或交付待执行清单，不能编造 HTTP 地址、CLI，或擅自开启生产资料的远程调试端口。
 
@@ -93,6 +113,8 @@ const snapshotResult = await window.planner.snapshot();
 const result = await window.planner.mutate(request);
 // 先检查 result.ok；成功时还要区分 result.data.status。
 ```
+
+同一个 `window.planner` 在云端模式读写的是正式云端资料，在本机独立模式才读写本机资料；无需自行改为另一份数据库。云端 Windows 已在主进程管理传输回执和待核对写入，不要绕过它另开未经授权的 HTTP 客户端。仅有 Node／文件读写权限不等于能访问这个 preload 接口；网页端也不保证存在 `window.planner` 全局对象。
 
 请求形状：
 
@@ -115,7 +137,7 @@ const result = await window.planner.mutate(request);
 
 这项操作原子创建一个任务和一个关联 `event`，结束时间落为 18:30。`createScheduledTask` **不能创建 `work` 类型**，也不能用来给已有任务再建一个同名任务。
 
-[完整请求示例](examples/agent-plan.request.json) 包含定时提醒、仅 DDL 的任务和每周重复活动。它使用虚构数据；不要直接提交示例日期。以下执行规则同样适用于该文件。
+[完整请求示例](examples/agent-plan.request.json) 包含定时提醒、带网页资料的 DDL 任务和每周重复活动。它使用虚构数据；不要直接提交示例日期。以下执行规则同样适用于该文件。
 
 ### 任务、目标与执行时段的关联
 
@@ -141,6 +163,61 @@ const result = await window.planner.mutate(request);
 
 普通 Block 请求必须给 `end`；`work` 不能为 null。Block 的提醒省略时继承全局设置，不会自动复制关联任务的提醒。`taskId:null` 为独立时段。`scheduleTaskEvent` 专用于已经接受的通知候选，不能作为普通任务排程接口。
 
+### 通过已配对的云端 RPC
+
+只有工具已获准访问用户当前资料服务，并具有合法会话时才用此方式。服务地址沿用现有已配对 origin，不能猜测公网域名、局域网端口或复制桌面加密凭据。已有服务支持此协议，不等于任意网页或远程 agent 都有访问权限；没有通用 Bearer Token 登录接口。
+
+1. 在服务自己的 origin 读取 `GET /api/v1/session`。必须为 `paired:true`，取得当前 `identity`、`device.id` 和 `csrfToken`；会话凭据只留在客户端内存／既有凭据机制，不写进计划文件。
+2. `POST /api/v1/rpc/snapshot`，JSON 包含新的 `requestId` 和完整 `identity`，省略 `input`。所有 RPC（包括读取用的 POST）都要合法 Cookie、精确同源 Origin、`Content-Type: application/json` 和 `X-CSRF-Token`。浏览器在同源请求中管理 Cookie／Origin，不把 HttpOnly Cookie 交给 agent 抄写。
+3. 写入 `POST /api/v1/rpc/mutate`，将上文 `MutationRequest` 原样作为 `input`；先处理 HTTP 错误，再检查响应 `ok` 和 `data.status`。直接结构化 `snapshot`／`mutate` 不调用 AI；`command` 会使用应用配置的模型。
+4. 预览到确认是两个不同传输请求。确认保留同一 `operationId` 和 mutations，但使用新的 `requestId`、实际预览的令牌和可信确认流程。传输 ID 不能与业务操作 ID 混用。
+
+下例只展示 HTTP 包装层；所有示例 ID、identity 与计划内容都须替换，不可直接发往正式服务：
+
+```json
+{
+  "requestId": "fictional-transport-plan-r1-01",
+  "identity": {
+    "protocolVersion": 1,
+    "dataInstanceId": "11111111-1111-4111-8111-111111111111",
+    "generation": 1
+  },
+  "input": {
+    "operationId": "fictional-plan-r1-create-task-01",
+    "origin": "ai",
+    "confirmed": false,
+    "mutations": [
+      {"type": "create", "entity": "task", "values": {"title": "完成阅读练习", "deadline": null}}
+    ]
+  }
+}
+```
+
+HTTP RPC 不提供电脑文件选择、路径登记、QQ 采集控制或任意文件读取。需要为已有任务撤销本次操作时，`POST /api/v1/rpc/undo` 的 `input` 是明确的 `transactionId` 字符串，不是“撤销最近一次”。完整鉴权与错误处理以 [后端接口](backend-api.md) 为准。
+
+## 关联网页、文件和公共资料
+
+任务、时段、课程和目标都支持 `resources`，每个实体最多 50 项，同一数组内 `id` 唯一。链接只是引用：关联电脑文件不会复制或上传文件本身，移除关联也不会删除原文件。
+
+**网页：** 使用稳定唯一的资源 ID、可读名称和 HTTP(S) 地址；不接受 `file:`、脚本或带账号密码的 URL。可直接放在 create 的 `values.resources`，例如：
+
+```json
+{
+  "id": "fictional-reading-guide",
+  "name": "阅读练习说明",
+  "kind": "web",
+  "url": "https://example.org/reading-guide"
+}
+```
+
+**电脑文件／文件夹：** 在 Windows 使用“关联资料”、拖入文件，或具备能力时调用 `window.planner.resourcePick({kind:"file"})`／`resourcePick({kind:"folder"})`。已由用户指定的现有路径可通过 `resourceRegister({paths:[...]})` 登记。先检查结果 `ok`，取消选择得到空数组；登记只保存本机位置，还没有关联到任务。将返回的完整 `{id,name,kind,deviceId,deviceName}` 引用用于下一次 mutation，不自行编造文件 ID、设备 ID 或把 `path` 加进共享对象。不要为获得路径去解密凭据或扫描无关文件。
+
+**给现有对象增加资料：** 读取最新 `resources` 和 `version`，保留原有引用，合并去重后用 `type:"update"`、`values:{resources:[...]}` 提交。普通 update 会替换整个资源数组，不能只发新增的一项而意外删掉旧关联。其他字段不修改就省略；重复活动需走 `updateRecurringEvent` 和明确范围，追加资料可使用其 `resourceMode:"append"`，不能普通 update 重复 Block。
+
+**公共资料放在上层：** 目标／课程保存公共资料，任务用 `goalId`／`courseId` 关联，时段再用 `taskId` 关联；详情会继承显示这些资料，无需给每个时段复制。单次活动特有材料才放在该 Block。现有继承规则见 [resources.ts](../src/domain/resources.ts)。
+
+Windows 可打开本机已登记且仍有效的文件／文件夹，网页由 Edge 打开；手机可打开网页，但不能打开这台电脑的本地路径。文件移动后用原电脑的重新定位功能保留关联，不能宣称手机已取得文件。关联资料本身也不代表 AI 已读取过文件内容。
+
 ## 重复活动与后续调整
 
 新任务连同重复活动使用 `createRecurringTask`，已有任务使用 `scheduleRecurringTask`，后者需最新 `id` 和 `expectedVersion`。规则字段：
@@ -160,7 +237,7 @@ const result = await window.planner.mutate(request);
 - `weekday` 周一为 1、周日为 7；日期范围包含两端，最多相差 365 天，一次最多 100 次活动。
 - `frequency` 仅支持 `weekly`、`biweekly`、`odd-weeks`、`even-weeks`。`biweekly` 从范围内第一个匹配星期开始每隔两周；教学单双周必须使用真实学期第一周的周一 `termStart`，不能用 ISO 周号代替。
 - 不支持通用 RRULE、无限期、每日或每月重复。这类需求可在明确的有限区间内生成单独时段，但要说明它们没有系列批量修改能力。
-- 系列会生成一个任务及多次 `event`；完成一次活动不应将整个系列任务标记完成。`recurrence`、`seriesId`、`occurrenceStart`、`cancelled` 由服务维护，不可塞入普通 create。
+- `createRecurringTask` 创建一个任务及多次 `event`；`scheduleRecurringTask` 复用已有任务，只安排或纳入发生次，不再新建任务。完成一次活动不应将整个系列任务标记完成。`recurrence`、`seriesId`、`occurrenceStart`、`cancelled` 由服务维护，不可塞入普通 create。
 - 修改／取消系列使用 `updateRecurringEvent`／`cancelRecurringEvent`，传入所选发生次的 Block `id`、最新 `expectedVersion`，以及 `scope:"single"` 或 `"this-and-following"`。修改值放在 `values`；取消没有 `values`。不要绕过它直接 update/delete 重复 Block。
 - 普通任务或时段修改使用 `type:"update"`、`entity`、`id`、`expectedVersion`、`values`；不是 `patch`。完成分别使用 `finishTask`／`finishBlock`，并传 `completed:true`。
 
@@ -171,13 +248,22 @@ const result = await window.planner.mutate(request);
 1. **执行前已获得用户对本次导入／修改的授权。** `confirmed:false` 不是 dry-run：单项且无冲突的写入可能直接保存；只想展示方案时不要调用 `mutate`。
 2. 每个批次使用稳定唯一的 `operationId`，请求最多 500 项。生成请求后保留原 JSON；超时重试保持相同 ID、相同内容及顺序。修改内容要生成新操作 ID。不要每重试一次就换 ID 重建对象。
 3. `result.ok:false` 表示调用失败；`ok:true` 不一定代表已保存。`data.status:"applied"` 才是已提交，记录其 `transactionId` 和 `changes`；`preview` 仍未写入；`clarification` 要按返回问题处理。
-4. 多项批量、重复安排、需核对的修改或时间冲突可能返回 `preview`。把实际 `details`、`conflicts` 给用户核对；由可信应用界面在用户确认后，使用原 `proposedRequest`、同一操作 ID 和 mutations，加上本次 `confirmationToken`、`confirmed:true`、`origin:"manual"` 提交。agent 不得伪装成用户确认；`origin:"ai"` 本身不能提交确认令牌。
-5. 预览令牌 10 分钟有效；期间日历实体／设置改变或应用重启会使预览不能继续使用。内容改变或令牌失效时重新读取并重新预览，不能强行覆盖版本冲突。
+4. 多项批量、重复安排、需核对的修改或时间冲突可能返回 `preview`。把实际 `details`、`conflicts` 给用户核对；由可信应用界面在用户确认后，使用原 `proposedRequest`、同一操作 ID 和 mutations，加上本次 `confirmationToken`、`confirmed:true`、`origin:"manual"` 提交。agent 不得自行把 AI 提案改成已确认请求；`origin:"ai"` 本身不能提交确认令牌。已有明确授权可继续按应用流程执行，不必再次询问同一个已确认决定；仍需用户选择的冲突不能擅自替选。
+5. 预览令牌 10 分钟有效；期间日历实体／设置改变，或持有预览的规划服务重启，会使其失效。本机模式是本机规划进程，云模式是资料服务，不能把两者的重启混为一谈。内容改变时使用新操作 ID；仅令牌失效且内容不变可沿用业务 ID 重新预览，HTTP 层使用新的 requestId，不能重放旧预览的传输回执。
 6. 应用只保证相同操作 ID 的幂等，不会自动按相似标题全面查重。执行前利用已有回执和快照判断“新建、修改、跳过”；同一标题的不同日期也可能是合法的不同安排。
 7. 多阶段计划不是跨阶段的一个大事务。阶段一已保存、阶段二失败时，记录部分成功，继续或撤销对应阶段，不能把整个方案重新创建一遍。每个已提交批次可按返回的 `transactionId` 撤销；不要盲目撤销用户后来做的其他操作。
 8. 保存后读取一次最新快照，核对本次产生或修改的 ID、时间、关联关系与提醒。普通计划导入不需要重新打包软件、全库备份、跑全量测试或逐表对账。
 
-回执保存在本地交接记录中，至少包含：计划 ID／修订号、每个批次的原始请求和操作 ID、执行状态、事务 ID、本地条目编号对应的实体 ID／version、仍未保存的项目。回执不属于应用 API 请求的一部分。
+回执保存在本地交接记录中，至少包含：计划 ID／修订号、资料模式、每个批次的原始请求和操作 ID、执行状态、事务 ID、本地条目编号对应的实体 ID／version、仍未保存的项目。直接 HTTP 客户端另记录 origin、device ID、完整 identity、requestId 和与之对应的业务结果；不保存 Cookie、CSRF、配对码或 API Key。回执不属于应用 API 请求的一部分。
+
+### 云端超时、断网与结果待核对
+
+- Windows 界面提示上一项云端操作未核对时，使用托盘“核对云端操作”，或按原操作重试让现有客户端核对；不要删 `remote-write.json`、换 profile 或新建一套任务来绕过保护。
+- 直接 HTTP 写入超时／连接中断后，在**同一设备、同一资料实例和 generation** 查询 `GET /api/v1/operations/{requestId}`。`completed` 要继续解析原 `result`，它可能只是 preview、clarification 或失败；`processing` 等待并核对原请求；`interrupted` 先核对最新资料和已有回执，不自动重发。
+- `unknown` 只表示当前设备／代际没有这份回执。确认仍属原设备和资料、请求内容完全相同且确需重试时，保留原 requestId、operationId 和正文。不能据此推断另一设备或旧代际从未写入。
+- 收到 401／403 或 identity／generation 冲突时，停止沿用旧授权写入并保留草稿。刷新会话和资料，重新核对；不要将旧计划改贴新 identity 后自动重放。云模式断网时没有自动写回最新云端资料的本地替代库。
+
+同一个 requestId 不能换内容，**预览转为确认时也必须换 requestId**。业务已经返回明确终局错误时，反复发送原请求不会使它成功；修正后作为新操作提出。不要把 HTTP 200、进程退出码 0、文件生成成功或 `processing` 当作计划已导入。
 
 最后回复示例：
 
@@ -189,4 +275,4 @@ const result = await window.planner.mutate(request);
 
 通过现有应用入口写入；不要直接 SQL 修改记录，不要在应用运行时替换 `planner.sqlite`，也不要把计划转换成“恢复备份”覆盖资料。不要修改 QQ 客户端或 QQ-agent。
 
-真实计划、课表、材料路径和导入回执留在本地，不进入公开仓库。只有用户明确要求上传或发布软件时才操作 GitHub。编写计划和正常导入不需要升级软件或做发布检查。
+真实计划、课表和导入回执属于用户资料，只保存到用户授权的当前应用／资料服务及私有交接位置，不进入公开源码仓库；电脑材料路径只留本机。只有用户明确要求上传或发布软件时才操作 GitHub。编写计划和正常导入不需要升级软件或做发布检查。
