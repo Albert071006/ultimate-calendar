@@ -31,10 +31,7 @@ button {
     background 0.15s,
     border-color 0.15s;
 }
-button:hover {
-  background: #f0f5f3;
-  border-color: #abc6be;
-}
+@media (hover: hover) { button:hover { background: #f0f5f3; border-color: #abc6be; } }
 button:disabled {
   opacity: 0.45;
   cursor: default;

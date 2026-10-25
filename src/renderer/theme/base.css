@@ -16,7 +16,7 @@
   white-space: nowrap;
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
-.ui-btn:hover { background: var(--surface-2); border-color: var(--ink-3); }
+@media (hover: hover) { .ui-btn:hover { background: var(--surface-2); border-color: var(--ink-3); } }
 .ui-btn:disabled { opacity: 0.45; cursor: default; }
 .ui-btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 .ui-btn svg { width: 15px; height: 15px; stroke-width: 1.8; flex-shrink: 0; }
@@ -24,11 +24,11 @@
 .ui-btn.sm { height: 28px; font-size: 12.5px; padding: 0 10px; }
 .ui-btn.sm.icon { width: 28px; padding: 0; }
 .ui-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.ui-btn.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #000); }
+@media (hover: hover) { .ui-btn.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #000); } }
 .ui-btn.dark { background: var(--ink); border-color: var(--ink); color: var(--surface); }
-.ui-btn.dark:hover { background: color-mix(in srgb, var(--ink) 85%, #fff); }
+@media (hover: hover) { .ui-btn.dark:hover { background: color-mix(in srgb, var(--ink) 85%, #fff); } }
 .ui-btn.ghost { background: transparent; border-color: transparent; color: var(--ink-2); }
-.ui-btn.ghost:hover { background: var(--surface-2); color: var(--ink); }
+@media (hover: hover) { .ui-btn.ghost:hover { background: var(--surface-2); color: var(--ink); } }
 .ui-btn.on { background: var(--accent-soft); border-color: transparent; font-weight: 600; }
 .ui-btn kbd { font-family: var(--font-time); font-size: 10.5px; color: inherit; opacity: 0.7; border: 1px solid currentColor; border-radius: 3px; padding: 0 4px; line-height: 15px; }
 
