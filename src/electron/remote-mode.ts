@@ -18,6 +18,7 @@ import { remoteOutputs } from '../server/protocol';
 import { createNativeResourceHost } from './resources-native';
 import { createNativePlanImport } from './plan-import';
 import { createNativePlanExport } from './plan-export';
+import { createNativeBusyExport } from './busy-export';
 import type { PlanSource } from '../shared/plan-context';
 
 /** Uses bundled trusted UI and main-process networking, never a remote page with Electron privileges. */
@@ -49,6 +50,7 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
     const planSource = async (): Promise<PlanSource> => { const { identity } = await client.getSession(); return { kind: 'cloud', dataInstanceId: identity.dataInstanceId, generation: identity.generation }; };
     const planSnapshot = async () => { const result = remoteOutputs.snapshot.parse(await journal.rpc('snapshot')); if (!result.ok) throw new Error(result.error.message); return result.data; };
     const planExport = createNativePlanExport({ window: () => window, snapshot: planSnapshot, source: planSource });
+    const busyExport = createNativeBusyExport({ window: () => window, snapshot: planSnapshot, source: planSource });
     const planImport = createNativePlanImport({ directory: join(directory, 'plan-import'), resourceDirectory, window: () => window, changed,
       source: planSource,
       scope: async () => { const current = await client.getSession(); return JSON.stringify({ origin: client.origin, identity: current.identity, deviceId: current.deviceId }); },
@@ -81,6 +83,8 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
           if (!updating && shell.isInstalling()) return failure('CONFLICT', '正在备份并准备更新，请稍候再操作', false);
           if (!updating) activeRequests++;
           try {
+            if (method === 'busyExportPreview') return await busyExport.busyExportPreview(value as Parameters<typeof busyExport.busyExportPreview>[0]);
+            if (method === 'busyExportSave') return await busyExport.busyExportSave(value as Parameters<typeof busyExport.busyExportSave>[0]);
             if (method === 'planExportPreview') return await planExport.planExportPreview(value as Parameters<typeof planExport.planExportPreview>[0]);
             if (method === 'planExportSave') return await planExport.planExportSave(value as Parameters<typeof planExport.planExportSave>[0]);
             if (method === 'planImportOpen') return await planImport.planImportOpen();

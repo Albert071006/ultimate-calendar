@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import type { ApiResult, DesktopAPI } from '../shared/contracts';
 import { SnapshotSchema } from '../shared/contracts';
 import type { PlanImportPreview, PlanImportResult } from '../shared/plan-import';
+import type { BusyExportDesktopAPI, BusyExportPreview } from '../shared/busy-context';
 import { PlanImportDialog } from './components/PlanImportDialog';
 import { App } from './App';
 
@@ -37,6 +38,7 @@ const button = (name: string) => screen.getByRole('button', { name }) as HTMLBut
 describe('JSON plan import', () => {
   it('opens a preview without writing, displays associations and resources, and cancels without writing', async () => {
     const f = fixture(); f.show();
+    expect(screen.queryByRole('button', { name: '导出忙碌时间' })).toBeNull();
     fireEvent.click(button('选择 JSON 文件'));
     expect(await screen.findByText('一周学习计划')).toBeTruthy();
     expect(screen.getByText('目标：掌握基础知识 · 截止：2026-11-04 21:00')).toBeTruthy();
@@ -181,6 +183,60 @@ describe('JSON plan import', () => {
     expect(screen.queryByText('一周学习计划')).toBeNull();
     expect(button('确认批量导入').disabled).toBe(true);
     expect(f.host.planImportConfirm).not.toHaveBeenCalled();
+  });
+
+  it('keeps the import preview while exporting busy time and locks importing and closing during either export step', async () => {
+    const f = fixture(), pendingPreview = deferred<ApiResult<BusyExportPreview>>(), pendingSave = deferred<Awaited<ReturnType<BusyExportDesktopAPI['busyExportSave']>>>();
+    const busyHost = {
+      busyExportPreview: vi.fn<BusyExportDesktopAPI['busyExportPreview']>(() => pendingPreview.promise),
+      busyExportSave: vi.fn<BusyExportDesktopAPI['busyExportSave']>(() => pendingSave.promise),
+    };
+    render(<PlanImportDialog host={{ ...f.host, ...busyHost }} ui={f.ui} onClose={f.onClose} />);
+    expect(screen.getByText(/首次新建可整份导入目标、任务/)).toBeTruthy();
+    fireEvent.click(button('选择 JSON 文件')); await screen.findByText('一周学习计划');
+    fireEvent.click(button('导出忙碌时间')); fireEvent.click(button('预览忙碌时间'));
+    expect(button('重新选择 JSON 文件').disabled).toBe(true);
+    expect(button('保存示例文件').disabled).toBe(true);
+    expect(button('确认批量导入').disabled).toBe(true);
+    expect(button('导出忙碌时间').disabled).toBe(true);
+    expect(button('关闭').disabled).toBe(true);
+    fireEvent.click(button('确认批量导入')); fireEvent.click(button('关闭')); fireEvent.click(button('取消'));
+    fireEvent.keyDown(document, { key: 'Escape' }); fireEvent.mouseDown(document.querySelector('.modal-backdrop')!);
+    expect(f.onClose).not.toHaveBeenCalled();
+    await act(async () => pendingPreview.resolve({ ok: true, data: { token: 'busy-token', sourceKind: 'local', fromDate: '2030-04-17', toDate: '2030-04-23', counts: { intervals: 1, courses: 1, work: 0, events: 0 }, warnings: [] } }));
+    expect(screen.getByRole('region', { name: '计划预览' })).toBeTruthy();
+    fireEvent.click(button('保存忙碌时间文件'));
+    expect(button('确认批量导入').disabled).toBe(true);
+    expect(button('关闭').disabled).toBe(true);
+    await act(async () => pendingSave.resolve({ ok: true, data: { saved: true, filename: 'synthetic.calendar-busy.json' } }));
+    expect(button('确认批量导入').disabled).toBe(false);
+    fireEvent.click(button('导出忙碌时间'));
+    expect(screen.queryByRole('region', { name: '导出忙碌时间' })).toBeNull();
+    expect(screen.getByRole('region', { name: '计划预览' })).toBeTruthy();
+    expect(f.host.planImportConfirm).not.toHaveBeenCalled();
+    expect(f.ui.refresh).not.toHaveBeenCalled();
+  });
+
+  it('locks the busy export panel while an import is in progress', async () => {
+    const f = fixture(), pendingImport = deferred<ApiResult<PlanImportResult>>();
+    f.host.planImportConfirm.mockReturnValueOnce(pendingImport.promise);
+    const busyHost = {
+      busyExportPreview: vi.fn<BusyExportDesktopAPI['busyExportPreview']>(async () => ({ ok: true, data: { token: 'busy-token', sourceKind: 'local', fromDate: '2030-04-17', toDate: '2030-04-23', counts: { intervals: 0, courses: 0, work: 0, events: 0 }, warnings: [] } })),
+      busyExportSave: vi.fn<BusyExportDesktopAPI['busyExportSave']>(async () => ({ ok: true, data: { saved: true } })),
+    };
+    render(<PlanImportDialog host={{ ...f.host, ...busyHost }} ui={f.ui} onClose={f.onClose} />);
+    fireEvent.click(button('选择 JSON 文件')); await screen.findByText('一周学习计划');
+    fireEvent.click(button('导出忙碌时间')); fireEvent.click(button('预览忙碌时间')); await screen.findByRole('region', { name: '忙碌时间预览' });
+    fireEvent.click(button('确认批量导入'));
+    expect(button('预览忙碌时间').disabled).toBe(true);
+    expect(button('保存忙碌时间文件').disabled).toBe(true);
+    expect((screen.getByLabelText('忙碌时间开始日期') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('规划要求（选填）') as HTMLTextAreaElement).disabled).toBe(true);
+    fireEvent.click(button('保存忙碌时间文件')); fireEvent.click(button('预览忙碌时间'));
+    expect(busyHost.busyExportSave).not.toHaveBeenCalled();
+    expect(busyHost.busyExportPreview).toHaveBeenCalledTimes(1);
+    await act(async () => pendingImport.resolve({ ok: true, data: { status: 'complete', message: '计划已导入', applied: 2, remaining: 0 } }));
+    expect(f.onClose).toHaveBeenCalledTimes(1);
   });
 
   it('exposes the navigation entry only with a complete desktop import bridge', async () => {

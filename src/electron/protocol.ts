@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { PlanImportConfirmSchema, PlanImportPreviewSchema, PlanImportResultSchema } from '../shared/plan-import';
 import { PlanExportRequestSchema, PlanExportPreviewSchema, PlanExportSaveRequestSchema, PlanExportSaveResultSchema } from '../shared/plan-context';
+import { BusyExportRequestSchema, BusyExportPreviewSchema } from '../shared/busy-context';
 import { ResourceReferenceSchema } from '../shared/resources';
 import { ResourcePickRequestSchema, ResourceRegisterRequestSchema, ResourceOpenRequestSchema, ResourceStatusRequestSchema, ResourceStatusSchema } from '../shared/resource-host';
 import { LocalSourceEvidenceRequestSchema, LocalSourceEvidenceSchema } from '../shared/contracts';
@@ -12,6 +13,7 @@ import { CaptureConfigSchema, CaptureSnapshotSchema, CaptureGroupSchema, Capture
 import { CaptureConnectSchema, CaptureActionSchema, CaptureChunksRequestSchema, CaptureChunksSchema } from '../shared/capture-api';
 import { SnapshotSchema, MutationRequestSchema, MutationResultSchema, IdSchema, ImportSourceRequestSchema, SourceSchema, AnalyzeSourceRequestSchema, AnalysisResultSchema, CommandRequestSchema, CommandResultSchema, CourseImportRequestSchema, CourseImportResultSchema, SaveSettingsRequestSchema, SettingsSchema, SetApiKeyRequestSchema, KeyStatusSchema, BackupResultSchema, RestoreRequestSchema, RestoreResultSchema, SelectedImageSchema, apiResultSchema } from '../shared/contracts';
 export const requests = {
+  busyExportPreview: BusyExportRequestSchema, busyExportSave: PlanExportSaveRequestSchema,
   planExportPreview: PlanExportRequestSchema, planExportSave: PlanExportSaveRequestSchema,
   planImportOpen: z.undefined(), planImportConfirm: PlanImportConfirmSchema, planImportTemplate: z.undefined(),
   resourcePick: ResourcePickRequestSchema, resourceRegister: ResourceRegisterRequestSchema,
@@ -29,6 +31,7 @@ export const requests = {
   backup: z.undefined(), restore: RestoreRequestSchema,
 } as const;
 export const responses = {
+  busyExportPreview: apiResultSchema(BusyExportPreviewSchema), busyExportSave: apiResultSchema(PlanExportSaveResultSchema),
   planExportPreview: apiResultSchema(PlanExportPreviewSchema), planExportSave: apiResultSchema(PlanExportSaveResultSchema),
   planImportOpen: apiResultSchema(PlanImportPreviewSchema.nullable()), planImportConfirm: apiResultSchema(PlanImportResultSchema), planImportTemplate: apiResultSchema(z.strictObject({ saved: z.boolean() })),
   resourcePick: apiResultSchema(z.array(ResourceReferenceSchema)), resourceRegister: apiResultSchema(z.array(ResourceReferenceSchema)),

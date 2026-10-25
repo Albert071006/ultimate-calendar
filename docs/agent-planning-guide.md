@@ -2,7 +2,7 @@
 
 适用对象：替用户制定学习、工作或生活计划，并将计划交给终极日历执行的外部智能体（agent）。核对日期：2026-10-26，依据当前本机 0.4.7 源码，涵盖 Windows 云端资料模式、本机独立模式和已配对网页。相同版本号可能包含不同的本机修复；本文不代表 GitHub 正式安装包或任意服务器均已更新。
 
-**外部 agent 可以读取目标上下文，再交付增量计划文件。** Windows 的目标行和目标详情提供“导出给外部智能体”：选择规划日期、预览并保存 `.calendar-context.json`，交给 agent 生成携带原 `basis` 的 v2 计划，再从“导入计划”核对并保存。首次新建仍兼容 v1。完整说明见 [计划 JSON 与上下文文件标准](plan-file-format.md)，以及 [上下文示例](examples/study-plan.calendar-context.json) → [v2 补录示例](examples/guarded-supplement.calendar-plan.json)。全过程无需软件 AI 再解析。下文内部 `mutate`／RPC 示例仅供已有接口能力的高级客户端使用，不能当计划文件导入；仍不支持 ICS 或计划导入 CLI。
+**外部 agent 可以整份交付新目标，也可以为已有目标增量续排。** 新目标使用 v1，一份文件包含目标、关联任务、全部时段及资料；先在 Windows“导入计划 → 导出忙碌时间”保存 `.calendar-busy.json`，便于避开现有课表与活动，无需提前创建目标。已有目标从目标行或目标详情“导出给外部智能体”保存 `.calendar-context.json`，agent 生成携带原 `basis` 的 v2 计划。两种计划都在“导入计划”核对并保存。完整说明见 [计划 JSON 与上下文文件标准](plan-file-format.md)、[完整新目标示例](examples/study-plan.calendar-plan.json)，以及 [上下文示例](examples/study-plan.calendar-context.json) → [v2 补录示例](examples/guarded-supplement.calendar-plan.json)。全过程无需软件 AI 再解析。下文内部 `mutate`／RPC 示例仅供已有接口能力的高级客户端使用，不能当计划文件导入；仍不支持 ICS 或计划导入 CLI。
 
 权威定义：[计划文件与示例](../src/shared/plan-import.ts)、[导入与续导服务](../src/plan-import/service.ts)、[实体与 mutation](../src/shared/contracts.ts)、[桌面内部接口](../src/electron/preload.ts)、[云端协议](../src/shared/remote.ts)、[RPC 方法](../src/server/protocol.ts)、[资料引用](../src/shared/resources.ts)、[规划服务](../src/domain/planner.ts)。云端接入细节见 [后端接口](backend-api.md)，Windows 模式见 [Windows 云端资料说明](windows-cloud-mode.md)。
 
@@ -12,6 +12,7 @@
 > 先确认当前北京时间、资料模式和真实可用的执行入口。云端模式以当前已配对服务的资料为准，不读旧本机采集库来代替正式计划。读取本次计划所需的已有任务、目标、课表和安排，将目标拆成有明确产出的小任务，区分真实 DDL、固定活动和可调整的执行时段，避开已有课程与活动。
 > 未指定时长时默认 30 分钟；明确指定的时长、非整点时间必须保留。相对日期以我发出指令的日期为准，不能使用当前浏览的日历日期。
 > 请优先输出符合《计划 JSON 与上下文文件标准》的 `.calendar-plan.json` 文件，使用固定 planId 和条目 id；首次建立计划用 v1。如果我提供了 `.calendar-context.json`，读取其中的 request、目标、任务、已有时段和 busyIntervals，输出 version:2 并原样复制整个 basis，不能更改来源、目标、范围或指纹。文件生成后说明“文件已生成，尚未导入”。
+> 如果我提供的是 `.calendar-busy.json`，用 busyIntervals 避开所选日期内的已有占用，按 request 和我的目标要求生成完整 v1 计划：目标、关联任务和全部执行时段一次包含，用 goalRef/taskRef 关联。不要把忙碌区间复制成待导入时段，不要把这个文件当作 v2 basis；范围外的占用仍未知，没有占用也不等于我随时可用。完整计划可一次导入，无需先手动建目标。
 > 已有部分计划时只生成增量内容，goals 保持空数组。原任务补时段使用 taskId，同一目标下新增任务使用 goalId 指向 basis.goalId，新任务的时段使用 taskRef。不能安排已完成或无关任务，时段须在导出范围内。新的补录或下周安排使用新的 planId；同批失败重试保留原文件。不要复制上下文中的旧事项，不把上下文直接导入，不用 v1 绕过失效的状态校验。
 > 网页资料使用 resources 关联；电脑文件先由 Windows 本机入口登记，再关联返回的引用，不把本机绝对路径写入云端描述。目标／课程的公共资料可由关联任务和时段继承显示，无需到处复制。
 > 没完成的内容保留为原任务，后续调整其安排；不要把过期当完成，也不要重复生成一套任务。最后简洁报告已写入、未写入和待处理的部分。

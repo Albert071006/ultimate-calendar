@@ -7,7 +7,7 @@ import { SnapshotSchema } from '../shared/contracts';
 const localControl=vi.hoisted(()=>({invoke:vi.fn(),close:vi.fn()}));
 vi.mock('./collector-control',async importOriginal=>({...await importOriginal<typeof import('./collector-control')>(),createCollectorControlClient:()=>localControl}));
 
-const mock=vi.hoisted(()=>({handlers:new Map<string,(...args:unknown[])=>unknown>(),menu:[] as {label?:string;submenu?:{label?:string;click?:()=>void}[]}[],canEncrypt:true,cleartext:'',client:{pair:vi.fn(),rpc:vi.fn(),close:vi.fn(),getAiConfiguration:vi.fn(),updateAiConfiguration:vi.fn(),clearAiConfiguration:vi.fn()},journal:{rpc:vi.fn(),inspect:vi.fn(),acknowledge:vi.fn()},createClient:vi.fn(),message:vi.fn(),openImage:vi.fn(),encrypt:vi.fn(),decrypt:vi.fn()}));
+const mock=vi.hoisted(()=>({handlers:new Map<string,(...args:unknown[])=>unknown>(),menu:[] as {label?:string;submenu?:{label?:string;click?:()=>void}[]}[],canEncrypt:true,cleartext:'',client:{pair:vi.fn(),rpc:vi.fn(),close:vi.fn(),getSession:vi.fn(),getAiConfiguration:vi.fn(),updateAiConfiguration:vi.fn(),clearAiConfiguration:vi.fn()},journal:{rpc:vi.fn(),inspect:vi.fn(),acknowledge:vi.fn()},createClient:vi.fn(),message:vi.fn(),openImage:vi.fn(),encrypt:vi.fn(),decrypt:vi.fn()}));
 vi.mock('electron',async()=>{
   const {EventEmitter}=await import('node:events');
   class Window extends EventEmitter{webContents=Object.assign(new EventEmitter(),{id:1,mainFrame:{routingId:2},send:vi.fn(),setWindowOpenHandler:vi.fn()});isDestroyed(){return false;}isVisible(){return false;}isMinimized(){return false;}loadURL=vi.fn(async()=>{});show=vi.fn();destroy=vi.fn();}
@@ -20,10 +20,22 @@ import { startNativeRemote } from './remote-mode';
 import { RemoteClientError } from '../remote/node-client';
 
 const roots:string[]=[],closers:(()=>void)[]=[];
-beforeEach(()=>{mock.handlers.clear();mock.menu=[];mock.canEncrypt=true;vi.clearAllMocks();mock.createClient.mockReturnValue(mock.client);mock.client.pair.mockResolvedValue({});mock.journal.rpc.mockResolvedValue({ok:true,data:SnapshotSchema.parse({schemaVersion:1,sources:[],candidates:[],tasks:[],blocks:[],goals:[],courses:[],courseExceptions:[],preferences:[],feedback:[],settings:{},journal:[],tokenUsage:[],keyStatus:{configured:false,sessionOnly:false}})});mock.journal.inspect.mockResolvedValue({status:'interrupted',requestId:'synthetic-unresolved',method:'mutate'});mock.message.mockResolvedValue({response:0});mock.openImage.mockResolvedValue({canceled:true,filePaths:[]});mock.encrypt.mockImplementation((value:string)=>{mock.cleartext=value;return Buffer.from('synthetic-opaque-cipher');});mock.decrypt.mockImplementation(()=>mock.cleartext);});
+beforeEach(()=>{mock.handlers.clear();mock.menu=[];mock.canEncrypt=true;vi.clearAllMocks();mock.createClient.mockReturnValue(mock.client);mock.client.pair.mockResolvedValue({});mock.client.getSession.mockResolvedValue({identity:{dataInstanceId:'11111111-1111-4111-8111-111111111111',generation:1},deviceId:'synthetic-device'});mock.journal.rpc.mockResolvedValue({ok:true,data:SnapshotSchema.parse({schemaVersion:1,sources:[],candidates:[],tasks:[],blocks:[],goals:[],courses:[],courseExceptions:[],preferences:[],feedback:[],settings:{},journal:[],tokenUsage:[],keyStatus:{configured:false,sessionOnly:false}})});mock.journal.inspect.mockResolvedValue({status:'interrupted',requestId:'synthetic-unresolved',method:'mutate'});mock.message.mockResolvedValue({response:0});mock.openImage.mockResolvedValue({canceled:true,filePaths:[]});mock.encrypt.mockImplementation((value:string)=>{mock.cleartext=value;return Buffer.from('synthetic-opaque-cipher');});mock.decrypt.mockImplementation(()=>mock.cleartext);});
 afterEach(()=>{for(const close of closers.splice(0))close();for(const root of roots.splice(0)){const part=relative(tmpdir(),root);if(!part||part.startsWith('..')||isAbsolute(part))throw Error('Unsafe test cleanup');rmSync(root,{recursive:true,force:true});}});
 function fixture(){const directory=mkdtempSync(join(tmpdir(),'calendar-native-mode-'));roots.push(directory);const code=join(directory,'pairing-code.txt');writePrivate(code,'synthetic-high-entropy-pair-code');return{directory,config:{origin:'https://synthetic.example',deviceName:'合成Windows',pairingCodeFile:code},document:'file:///synthetic/index.html'};}
 describe('native cloud-mode boundary',()=>{
+  it('exports busy preview from the paired cloud snapshot without requiring a goal or writing remotely',async()=>{
+    const f=fixture(),runtime=await startNativeRemote(f.config,f.directory,f.document);closers.push(runtime.close);
+    const event={sender:{id:1},senderFrame:{routingId:2,url:f.document}},input={fromDate:'2030-04-15',toDate:'2030-04-21'};
+    const preview=mock.handlers.get('planner:busyExportPreview')!;
+    expect(await preview({...event,sender:{id:99}},input)).toMatchObject({ok:false,error:{code:'VALIDATION'}});
+    expect(await preview(event,{...input,toDate:'2032-04-21'})).toMatchObject({ok:false,error:{code:'VALIDATION'}});
+    expect(mock.journal.rpc).not.toHaveBeenCalled();
+    expect(await preview(event,input)).toMatchObject({ok:true,data:{sourceKind:'cloud',counts:{intervals:0,courses:0,work:0,events:0}}});
+    expect(mock.journal.rpc).toHaveBeenCalledExactlyOnceWith('snapshot');
+    expect(mock.client.rpc).not.toHaveBeenCalled();
+    expect(await mock.handlers.get('planner:busyExportSave')!(event,{token:'missing'})).toMatchObject({ok:false});
+  });
   it('fails before pairing or creating a window when OS credential encryption is unavailable',async()=>{const f=fixture();mock.canEncrypt=false;await expect(startNativeRemote(f.config,f.directory,f.document)).rejects.toThrow(/加密不可用/);expect(mock.createClient).not.toHaveBeenCalled();expect(mock.client.pair).not.toHaveBeenCalled();});
   it('uses safeStorage and forwards only the remote whitelist plus explicit image selection',async()=>{
     const f=fixture(),runtime=await startNativeRemote(f.config,f.directory,f.document);closers.push(runtime.close);

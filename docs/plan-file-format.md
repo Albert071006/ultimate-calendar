@@ -2,10 +2,13 @@
 
 外部 agent 可以直接生成 `*.calendar-plan.json` 文件。用户在 Windows 终极日历点击 **导入计划 → 选择 JSON 文件 → 核对预览 → 确认导入**，一次导入目标、任务、学习时段及资料关联。应用直接解析文件，不调用 AI，不需要逐个操作任务编辑器。
 
+**可以直接导入一整个新目标。** 一份 v1 文件包含 `goals`、关联的 `tasks`、全部 `blocks` 和 `resources` 即可，无需先手动建立目标。v2 的“只追加、不新建目标”限制专用于已有目标续排，不限制首次导入。为新目标排期前，可在“导入计划 → 导出忙碌时间”取得日历占用，再交给 agent 规划。
+
 - [完整可导入示例](examples/study-plan.calendar-plan.json)
 - [给已有任务补充四个时段的示例](examples/supplement-existing-tasks.calendar-plan.json)（须替换为真实任务 ID 与实际日期）
 - [上下文示例](examples/study-plan.calendar-context.json) → [带状态校验的 v2 补录示例](examples/guarded-supplement.calendar-plan.json)（均为合成数据，正式使用应从应用重新导出）
 - JSON Schema：[v1 新建计划](schemas/calendar-plan-v1.schema.json) · [v2 增量计划](schemas/calendar-plan-v2.schema.json) · [规划上下文](schemas/calendar-context-v1.schema.json)
+- 忙碌时间：[示例文件](examples/planning.calendar-busy.json) · [JSON Schema](schemas/calendar-busy-v1.schema.json)
 - [规划规则与高级接口](agent-planning-guide.md)
 
 这与“导入消息”“课表导入”“恢复备份”是不同入口。当前文件入口在 Windows 桌面；云模式写入现有共用资料服务，手机随后看到已保存的结果。文件生成成功时应报告“文件已生成，尚未导入”。
@@ -15,6 +18,19 @@
 > 首次建立计划时，请按本规范生成一份 UTF-8 的 `.calendar-plan.json` 文件。交付文件本身，不要只给 Markdown 或内部 mutate 请求。使用 `format:"ultimate-calendar-plan"`、`version:1`、`timezone:"Asia/Shanghai"`；为本次计划生成稳定唯一的 planId，每条目标、任务、时段也要有固定 id。用 goalRef、taskRef、resourceRefs 建立文件内关联，不要猜测日历数据库 ID。学习安排使用 kind:"work"，明确开始和结束时间；真实截止要求才写 deadline。网页资料放 resources，任务可继承目标资料。读取不到当前日历时请注明“未核对现有安排”，交给应用导入预览核对。输出只含数据，不包含 API Key、Cookie、确认令牌、脚本或数据库命令。失败重试必须使用原文件，不要更换 planId 再创建一遍。
 
 > 如果我提供了 `.calendar-context.json`，请读取其中的 request、目标、任务、已有时段、资料和 busyIntervals，返回 `version:2` 的增量计划，并将整个 basis 原样复制到计划顶层。goals 保持空数组；原任务补时段只新增 blocks，用 taskId 引用原任务；同一目标下确需新增任务时，用 goalId 引用 basis.goalId。时段必须关联原任务或本文件新任务，全部位于导出的规划日期范围内，不能为已完成任务追加时段。每个新的补录或下周安排批次使用新的 planId，同批失败重试保留原文件。不要把上下文原样当作导入文件，不要修改 basis、重新创建已有事项，或用新增替代移动／删除。
+
+## 整个新目标的导入与忙碌时间导出
+
+1. 打开 Windows **导入计划 → 导出忙碌时间**，选择计划覆盖的日期（含首尾，最多 366 天）。可填写规划要求，默认隐藏日程名称。
+2. 预览课程、任务时段及活动的忙碌数量，保存 `.calendar-busy.json`。不需要先选择或新建目标。
+3. 将忙碌文件、目标要求和本规范交给外部 agent。agent 输出一个 v1 `.calendar-plan.json`：`goals` 建新目标，`tasks[].goalRef` 指向文件内目标，`blocks[].taskRef` 指向文件内任务，`resourceRefs` 关联资料。四周等整份计划可以一次提交，仍遵守 1 MiB、合计 500 条的限制。
+4. 回到“导入计划”选择生成的计划文件。核对全部目标、任务和时段及最新冲突后批量保存；同批中断保留原文件续导。
+
+忙碌文件格式是 `format:"ultimate-calendar-busy"`、`version:1`、`timezone:"Asia/Shanghai"`。包含 `fromDate`、`toDate`、`exportedAt`、无凭据的 `source`、可选要求 `request`、使用指令 `instructions`、`coverage` 和 `busyIntervals`。每段包含 `start`、`end`、`category`（`course` / `work` / `event`）；只有用户取消“隐藏日程名称”时才包含 `title`。不导出任务详情、目标、资料引用、地点、QQ 消息或账本。
+
+忙碌区间使用应用的课程教学周、调课／停课和活动展开规则，跨出所选日期的部分会裁剪。DDL、待判断事项及取消活动不算忙碌；尚未安排时间的任务也不占时。导出是日期范围内的快照，文件没有列出的时间不等于用户一定有空，睡眠、通勤和每天投入上限仍由用户提供。成功读取且没有占用时允许导出空数组；读取失败会报错，不用空数组冒充成功。
+
+预览有效期 10 分钟，保存前重读并核对来源及范围内占用；导出只保存本地文件，不调用 AI、不上传。忙碌文件不能直接导入，不能作为目标上下文的 `basis`。新目标使用 v1，导入时按最新日历再检查冲突；它不会把忙碌文件的导出时间当作状态锁。已有目标的续排使用下节的目标上下文和 v2，不要重建同名目标。
 
 ## 已有计划的增量补录与续排
 
@@ -27,6 +43,7 @@
 | `.calendar-plan.json`，v1 | 只包含本批需要新增的目标、任务或时段 | 保持兼容；可关联已有记录，但不校验导出时的状态 |
 | `.calendar-plan.json`，v2 | 根据一个目标的上下文追加任务／时段 | 已支持；必须原样携带 `basis`，导入时核对来源及状态变化 |
 | `.calendar-context.json` | 保存当前目标、任务、安排和规划约束，交给 agent 阅读 | 在“我的 → 目标”的目标行或目标详情点击“导出给外部智能体”；上下文不能直接导入 |
+| `.calendar-busy.json` | 独立导出指定日期的课程和活动占用，供新目标规划避让 | 在“导入计划 → 导出忙碌时间”；不需要已有目标，不能直接导入 |
 | 日历备份 | 保存、恢复完整资料 | 不是计划上下文文件，也不能作为增量计划导入 |
 
 日常使用：在 Windows 选择目标并点击“导出给外部智能体”，选择规划起止日期（含首尾，最多 366 天），填写续排要求（可选），点击“预览导出内容”，核对数量后“保存上下文文件”。默认隐藏其他日程名称；目标关联任务及其时段会全部导出，日期范围限制的是忙碌信息。预览有效期为 10 分钟，保存前会重读并核对资料变化。操作只保存本地文件，不调用 AI，不自动发送给任何外部服务。

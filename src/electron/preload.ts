@@ -30,6 +30,7 @@ function accountChanged(listener: Parameters<DesktopAPI['onAccountChanged']>[0])
 }
 // Explicit fixed methods only: no ipcRenderer, event objects or arbitrary channels cross contextBridge.
 const api = {
+  busyExportPreview: (request: unknown) => invoke('busyExportPreview', request), busyExportSave: (request: unknown) => invoke('busyExportSave', request),
   planExportPreview: (request: unknown) => invoke('planExportPreview', request), planExportSave: (request: unknown) => invoke('planExportSave', request),
   planImportOpen: () => invoke('planImportOpen'), planImportConfirm: (request: unknown) => invoke('planImportConfirm', request), planImportTemplate: () => invoke('planImportTemplate'),
   resourcePick: (request: unknown) => invoke('resourcePick', request), resourceRegister: (request: unknown) => invoke('resourceRegister', request),

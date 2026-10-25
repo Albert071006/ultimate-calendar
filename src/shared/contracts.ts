@@ -3,6 +3,7 @@ import { ResourceReferencesSchema, ResourceOwnerSchema } from './resources';
 import type { ResourceDesktopAPI } from './resource-host';
 import type { PlanImportDesktopAPI } from './plan-import';
 import type { PlanExportDesktopAPI } from './plan-context';
+import type { BusyExportDesktopAPI } from './busy-context';
 import type { CaptureDesktopAPI as importCaptureAPI } from './capture-api';
 import { LedgerCommandProposalSchema } from './ledger-command';
 import { LedgerMonthSchema } from './ledger';
@@ -414,7 +415,7 @@ export const LocalSourceEvidenceSchema = z.strictObject({ sourceId: IdSchema, ma
 export const NavigateEventSchema = z.strictObject({ entity: EntityKindSchema, id: IdSchema });
 export type NavigateEvent = z.infer<typeof NavigateEventSchema>;
 /** Only this narrow asynchronous surface may cross the sandboxed renderer/preload boundary. */
-export interface DesktopAPI extends importCaptureAPI, ResourceDesktopAPI, Partial<PlanImportDesktopAPI>, Partial<PlanExportDesktopAPI> {
+export interface DesktopAPI extends importCaptureAPI, ResourceDesktopAPI, Partial<PlanImportDesktopAPI>, Partial<PlanExportDesktopAPI>, Partial<BusyExportDesktopAPI> {
   localSourceEvidence(request: z.input<typeof LocalSourceEvidenceRequestSchema>): Promise<ApiResult<z.infer<typeof LocalSourceEvidenceSchema>>>;
   spaceSnapshot(): Promise<ApiResult<import('./space').SpaceSnapshot>>;
   spaceConfigure(policy: import('./space').SpacePolicy): Promise<ApiResult<import('./space').SpaceSnapshot>>;
