@@ -22,6 +22,7 @@ import type { PlannerUI } from "../../hooks/usePlanner";
 import type { ScheduleDraft } from "../Calendar";
 import { useCurrentTime } from '../../hooks/useCurrentTime';
 import { selectRailTasks } from '../../task-rail';
+import { useMobile } from '../../mobile/layout';
 import { DEFAULT_ACTIVITY_MINUTES, effectiveActivityEnd } from '../../../domain/activity-duration';
 import { recurringEventTargets } from '../../../domain/recurring-events';
 import { courseIsCurrent } from '../../../domain/palette';
@@ -29,8 +30,9 @@ import { findRecord } from '../detail/records';
 import { ResourceFields, ResourceSection } from '../resources/ResourcePanel';
 import type { ResourceReference } from '../../../shared/resources';
 function Reminders({ value }: { value?: ReminderConfig }) {
+  const mobile = useMobile();
   return (
-    <fieldset>
+    <fieldset data-more="">
       <legend>此事项提醒</legend>
       <label className="check">
         <input
@@ -42,9 +44,10 @@ function Reminders({ value }: { value?: ReminderConfig }) {
       </label>
       <div className="form-grid">
         <label>
-          提前分钟（逗号分隔；空白继承全局；0 为准时）
+          {mobile ? '提前分钟' : '提前分钟（逗号分隔；空白继承全局；0 为准时）'}
           <input
             name="leadMinutes"
+            placeholder={mobile ? '如 10,30' : undefined}
             defaultValue={value?.leadMinutes?.join(",") ?? ""}
           />
         </label>
@@ -72,6 +75,18 @@ function courseChoices(snapshot: Snapshot, currentId: string | null): Course[] {
   return ranked.filter(course => !seen.has(course.title) && seen.add(course.title))
     .sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'));
 }
+/** The phone hides the field labels of the title, so its placeholder says what to type. */
+const titlePlaceholders: Record<EditorTarget['entity'], string> = { task: '要做什么', block: '要做什么', goal: '目标名称', course: '课程名称', candidate: '事项名称' };
+
+/** What 更多 holds on the phone, so the collapsed row says what is behind it. */
+const moreNames: Record<EditorTarget['entity'], string> = {
+  task: '说明、状态、目标、课程、提醒',
+  block: '类型、关联任务、地点、提醒',
+  goal: '说明、优先级、状态',
+  course: '周次、地点、提醒',
+  candidate: '收益、条件、活动时间、地点',
+};
+
 export interface EditorTarget {
   entity: "task" | "block" | "goal" | "course" | "candidate";
   id?: string;
@@ -92,6 +107,9 @@ export function EntityEditor({
 }) {
   const entity = target.entity;
   const now = useCurrentTime();
+  const mobile = useMobile();
+  // The phone shows the fields needed to decide first; the rest (marked data-more) open under 更多.
+  const [moreOpen, setMoreOpen] = useState(false);
   const saved = target.id
     ? findRecord(snapshot, { entity, id: target.id })
     : undefined;
@@ -406,7 +424,8 @@ export function EntityEditor({
     entity === "candidate" ? candidate?.deadline : task?.deadline;
   return (
     <form
-      className="editor-form"
+      className={`editor-form${mobile && moreOpen ? ' more-open' : ''}`}
+      onInvalidCapture={() => setMoreOpen(true)}
       onSubmit={(e) => {
         e.preventDefault();
         void save(e.currentTarget);
@@ -416,6 +435,7 @@ export function EntityEditor({
         名称
         <input
           name="title"
+          placeholder={mobile ? titlePlaceholders[entity] : undefined}
           key={entity === "course" ? courseFieldsKey : repeating ? `recurring-title:${selectedTaskId}` : "title"}
           required={!repeating}
           maxLength={500}
@@ -426,7 +446,7 @@ export function EntityEditor({
         />
       </label>
       {(entity === "task" || entity === "goal") && (
-        <label>
+        <label data-more="">
           说明
           <textarea
             name="description"
@@ -448,7 +468,7 @@ export function EntityEditor({
             />
           </label>
           <label>
-            截止时刻（可留空）
+            {mobile ? '截止时刻' : '截止时刻（可留空）'}
             <input
               name="deadlineTime"
               type="time"
@@ -458,7 +478,7 @@ export function EntityEditor({
         </div>
       )}
       {entity === "task" && (
-        <div className="form-grid">
+        <div className="form-grid" data-more="">
           <label>
             状态
             <select name="status" defaultValue={task?.status ?? "open"}>
@@ -492,7 +512,7 @@ export function EntityEditor({
       )}
       {entity === "goal" && (
         <>
-          <div className="form-grid">
+          <div className="form-grid" data-more="">
             <label>
               优先级
               <select name="priority" defaultValue={goal?.priority ?? "medium"}>
@@ -519,7 +539,7 @@ export function EntityEditor({
             />
           </label>
           {saved && (
-            <div className="linked-tasks">
+            <div className="linked-tasks" data-more="">
               关联任务：
               {snapshot.tasks
                 .filter((t) => t.goalId === saved.id)
@@ -544,7 +564,7 @@ export function EntityEditor({
             </label>
             <p className="hint" role="status">{eventScope === 'single' ? '仅影响本次活动' : '影响本次及以后尚未完成、尚未取消的活动'} · 共 {affectedEvents.length} 次{affectedEvents.length > 0 && ` · ${affectedDates[0]}${affectedEvents.length > 1 ? ` 至 ${affectedDates.at(-1)}` : ''}`}。保存或取消活动前会列出每次变化供你确认。</p>
           </fieldset>}
-          {!saved && <label>
+          {!saved && <label data-more={repeating ? undefined : ''}>
             重复
             <select value={frequency} onChange={e => setFrequency(e.target.value as typeof frequency)}>
               <option value="none">不重复</option>
@@ -584,12 +604,12 @@ export function EntityEditor({
               />
             </label>
             <label>
-              结束（留空默认30分钟）
+              {mobile ? '结束' : '结束（留空默认30分钟）'}
               <input name="end" type="datetime-local" value={seriesEnd} onChange={e => { setSeriesEnd(e.target.value); setSeriesEndEdited(true); }} />
             </label>
           </div>
           </>}
-          <div className="form-grid">
+          <div className="form-grid" data-more={repeating ? undefined : ''}>
             {!repeating && <label>
               类型
               <select name="kind" disabled={Boolean(series)} defaultValue={block?.kind ?? target.draft?.kind ?? "work"}>
@@ -626,7 +646,7 @@ export function EntityEditor({
             需要做什么
             <textarea name="action" defaultValue={candidate?.action} />
           </label>
-          <div className="form-grid">
+          <div className="form-grid" data-more="">
             <label>
               收益依据
               <select name="benefitKind" defaultValue={candidate?.benefitKind}>
@@ -640,28 +660,28 @@ export function EntityEditor({
               <input name="benefit" defaultValue={candidate?.benefit} />
             </label>
           </div>
-          <label>
+          <label data-more="">
             潜在收益（推测）
             <input
               name="potentialBenefit"
               defaultValue={candidate?.potentialBenefit}
             />
           </label>
-          <label>
+          <label data-more="">
             条件（每行一项）
             <textarea
               name="conditions"
               defaultValue={candidate?.conditions.join("\n")}
             />
           </label>
-          <label>
+          <label data-more="">
             不确定信息（每行一项）
             <textarea
               name="uncertainties"
               defaultValue={candidate?.uncertainties.join("\n")}
             />
           </label>
-          <div className="form-grid">
+          <div className="form-grid" data-more="">
             <label>
               活动开始
               <input
@@ -684,7 +704,7 @@ export function EntityEditor({
       {entity === "course" && (
         <>
           <div className="form-grid">
-            <label>
+            <label data-more="">
               第一教学周周一
               <input
                 type="date"
@@ -725,7 +745,7 @@ export function EntityEditor({
                 defaultValue={courseFields?.endTime ?? ""}
               />
             </label>
-            <label>
+            <label data-more="">
               起始周
               <input
                 name="firstWeek"
@@ -735,7 +755,7 @@ export function EntityEditor({
                 defaultValue={course?.firstWeek ?? 1}
               />
             </label>
-            <label>
+            <label data-more="">
               结束周
               <input
                 name="lastWeek"
@@ -745,7 +765,7 @@ export function EntityEditor({
                 defaultValue={course?.lastWeek ?? snapshot.settings.termWeeks}
               />
             </label>
-            <label>
+            <label data-more="">
               单双周
               <select name="parity" defaultValue={course?.parity ?? "all"}>
                 <option value="all">每周</option>
@@ -753,8 +773,8 @@ export function EntityEditor({
                 <option value="even">双周</option>
               </select>
             </label>
-            <label>
-              指定教学周（可留空）
+            <label data-more="">
+              {mobile ? '指定教学周' : '指定教学周（可留空）'}
               <input
                 name="weeks"
                 placeholder="1,3,6,8"
@@ -806,7 +826,7 @@ export function EntityEditor({
             snapshot.courseExceptions
               .filter((ex) => ex.courseId === saved.id)
               .map((ex) => (
-                <div className="exception-row" key={ex.id}>
+                <div className="exception-row" key={ex.id} data-more="">
                   <span>
                     {ex.originalDate} ·{" "}
                     {ex.cancelled
@@ -835,10 +855,11 @@ export function EntityEditor({
       {(entity === "block" ||
         entity === "course" ||
         entity === "candidate") && (
-        <label>
+        <label data-more="">
           地点
           <input
             name="location"
+            placeholder={mobile ? '未填' : undefined}
             key={entity === "course" ? courseFieldsKey : "location"}
             defaultValue={entity === "course" ? courseFields?.location ?? "" : saved && "location" in saved ? saved.location : target.draft?.location ?? ""}
           />
@@ -850,7 +871,7 @@ export function EntityEditor({
           value={saved && "reminders" in saved ? saved.reminders : repeating ? schedulingTask?.reminders : undefined}
         />
       )}
-      {entity !== 'candidate' && (entity === 'course' && saved
+      {entity !== 'candidate' && <div className="editor-resources" data-more="">{entity === 'course' && saved
         ? <ResourceSection snapshot={snapshot} target={{ entity, id: saved.id }} ui={ui} />
         : <>
           <ResourceFields value={resources} onChange={setResources} host={ui.host} disabled={ui.busy}
@@ -858,7 +879,10 @@ export function EntityEditor({
           {series && eventScope === 'this-and-following' && <p className="resource-scope">资料更改同步到本次及以后，每次独有的其他资料保留。</p>}
           {saved && <ResourceSection snapshot={snapshot} target={{ entity, id: saved.id }} ui={ui} inheritedOnly />}
           {!saved && entity === 'block' && schedulingTask && <ResourceSection snapshot={snapshot} target={{ entity: 'task', id: schedulingTask.id }} ui={ui} />}
-        </>)}
+        </>}</div>}
+      {mobile && <button type="button" className="m-more-toggle" aria-expanded={moreOpen} onClick={() => setMoreOpen(value => !value)}>
+        <span>{moreOpen ? '收起' : '更多'}</span>{!moreOpen && <small>{moreNames[entity]}</small>}
+      </button>}
       {error && (
         <p role="alert" className="error prewrap">
           {error}
@@ -887,9 +911,9 @@ export function EntityEditor({
             {series ? '取消活动' : entity === "course" ? "删除 / 停课" : "删除"}
           </button>
         )}
-        <button type="button" onClick={onClose}>
+        {!mobile && <button type="button" onClick={onClose}>
           取消
-        </button>
+        </button>}
         <button type="submit" className="primary" disabled={ui.busy || Boolean(series && !affectedEvents.length)}>
           保存{entity === "course" || repeating || series ? "并预览" : ""}
         </button>

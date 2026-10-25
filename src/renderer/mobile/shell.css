@@ -42,7 +42,7 @@ body:has(.m-app) { margin: 0; min-width: 0; overflow: hidden; overscroll-behavio
 .m-tabs-bar button[aria-current=page] { color: var(--accent); }
 .m-tabs-bar button[aria-current=page]::before { content: ''; position: absolute; top: -1px; left: 28%; right: 28%; height: 2px; background: var(--accent); }
 .m-tabs-bar b { position: absolute; top: 5px; left: calc(50% + 6px); min-width: 17px; height: 17px; padding: 0 4px; font: 600 10.5px/17px var(--font-time); color: var(--on-dark); background: var(--accent); border-radius: 9px; }
-.m-app:has(.a2-edit) :is(.m-tabs-bar, .m-assist-entry, .m-toast, .m-banner) { display: none; }
+.m-app:has(.a2-edit) :is(.m-tabs-bar, .m-toast, .m-banner) { display: none; }
 
 
 /* Sheets */
@@ -71,9 +71,6 @@ body:has(.m-app) { margin: 0; min-width: 0; overflow: hidden; overscroll-behavio
 .m-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
 .m-hero h1 { margin: 0; font: 600 30px/1.25 var(--font-display); }
 .m-hero p { margin: 4px 0 0; font-size: 13.5px; color: var(--ink-3); }
-.m-seal { flex: none; width: 48px; padding: 4px 0 2px; text-align: center; color: var(--accent); border: 1px solid var(--accent); font-family: var(--font-display); }
-.m-seal span { display: block; font-size: 10.5px; }
-.m-seal b { display: block; font: 24px/1.15 var(--font-num); }
 .m-notice-row { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 48px; margin-bottom: 14px; padding: 0 12px; font-size: 14.5px;
   text-align: left; background: var(--accent-soft); border: 0; border-left: 3px solid var(--accent); border-radius: 0; }
 .m-notice-row b { font-family: var(--font-time); color: var(--accent); margin-right: 2px; }
@@ -208,8 +205,8 @@ body:has(.m-app) { margin: 0; min-width: 0; overflow: hidden; overscroll-behavio
 .is-mobile .a2-edit.overlay { top: var(--mobile-top, 0px); }
 
 /* Touch feedback (the default iOS tap highlight is turned off on the shell). */
-.m-app :is(.m-btn, .m-chip, .m-icon, .m-link, .m-agenda-row, .m-task-main, .m-week-strip button, .m-month button, .m-seg button, .m-notice-row, .m-banner, .m-assist-entry, .m-day-heads button, .m-marker) { transition: background-color .12s, transform .12s; }
-.m-app :is(.m-btn, .m-chip, .m-icon, .m-link, .m-agenda-row, .m-task-main, .m-week-strip button:not([aria-pressed=true]), .m-month button, .m-seg button:not([aria-pressed=true]), .m-notice-row, .m-banner, .m-assist-entry, .m-day-heads button):active { background-color: var(--nav-active); }
+.m-app :is(.m-btn, .m-chip, .m-icon, .m-link, .m-agenda-row, .m-task-main, .m-week-strip button, .m-month button, .m-seg button, .m-notice-row, .m-banner, .m-day-heads button, .m-marker) { transition: background-color .12s, transform .12s; }
+.m-app :is(.m-btn, .m-chip, .m-icon, .m-link, .m-agenda-row, .m-task-main, .m-week-strip button:not([aria-pressed=true]), .m-month button, .m-seg button:not([aria-pressed=true]), .m-notice-row, .m-banner, .m-day-heads button):active { background-color: var(--nav-active); }
 .m-fab:active { transform: scale(.92); }
 .m-tabs-bar button svg { box-sizing: content-box; padding: 3px 12px; border-radius: 14px; transition: background-color .15s, transform .12s; }
 .m-tabs-bar button[aria-current=page] svg { background: var(--nav-active); }
@@ -217,9 +214,6 @@ body:has(.m-app) { margin: 0; min-width: 0; overflow: hidden; overscroll-behavio
 .m-tabs-bar button[aria-current=page]::before { display: none; }
 
 /* Assistant entry and full-screen conversation */
-.m-assist-entry { flex: none; display: flex; align-items: center; gap: 10px; margin: 6px 12px; min-height: 46px; padding: 0 14px; text-align: left; font-size: 14.5px;
-  color: var(--ink-3); background: var(--surface); border: 1px solid var(--line-2); border-radius: 23px; }
-.m-spark { font-size: 20px; line-height: 1; color: var(--accent); }
 .m-assistant { position: fixed; left: 0; right: 0; top: var(--mobile-top, 0px); height: var(--mobile-height, 100dvh); z-index: 80; display: flex; flex-direction: column;
   padding: env(safe-area-inset-top) 0 0; background: var(--bg); opacity: 0; pointer-events: none; transform: translateY(16px); transition: opacity .16s, transform .16s; }
 .m-assistant.open { opacity: 1; pointer-events: auto; transform: none; }
@@ -339,3 +333,168 @@ body:has(.m-pair) { margin: 0; min-width: 0; background: var(--bg); }
 .is-mobile :is(input[type=date], input[type=datetime-local], input[type=month], input[type=time])::-webkit-date-and-time-value { margin: 0; text-align: left; }
 /* Nothing on a phone page scrolls sideways. */
 .m-main, .m-sheet-body, .is-mobile .a2-edit-b { overflow-x: hidden; }
+
+/* Visual reduction (design plan §25): fewer lines and frames, red only for what needs attention, three text sizes
+   (17 main, 14 secondary, 28 serif page title), no outlined buttons, settings as rounded groups. */
+.m-app { --m-font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif; --hair: rgba(31, 28, 24, .09); --sunk: #ede5d4;
+  --font-ui: var(--m-font); --font-time: var(--m-font); font-family: var(--m-font); font-size: 17px; font-variant-numeric: tabular-nums; }
+.m-link { color: var(--ink-2); font-size: 15px; }
+.m-link.attn { color: var(--accent); }
+.m-link.quiet { color: var(--ink-3); }
+.m-text-btn { flex: none; min-height: 44px; padding: 0 0 0 14px; font-size: 15px; font-weight: 600; color: var(--ink-2); background: none; border: 0; white-space: nowrap; }
+.m-text-btn:disabled { opacity: .45; }
+.m-btn.primary, .m-send, .m-fab { color: var(--bg); background: var(--ink); border-color: var(--ink); }
+.m-fab { box-shadow: 0 4px 14px rgba(31, 28, 24, .25); }
+.m-toast { bottom: calc(76px + env(safe-area-inset-bottom)); border-radius: 12px; }
+
+/* Page titles: serif, with the assistant (and any page action) at the right. */
+.m-hero { align-items: flex-start; margin-bottom: 20px; }
+.m-hero h1 { font-size: 28px; }
+.m-hero p { font-size: 14px; }
+.m-hero > :last-child:not(div) { margin-right: -10px; }
+.m-assist-icon { color: var(--ink-2); }
+.m-subpage-head { margin: 0; }
+.m-subpage-head .m-hero { margin-top: 2px; }
+.m-back { font-size: 17px; color: var(--ink-2); }
+
+/* Bottom tabs: the current one in ink, no pill or rule. */
+.m-tabs-bar { border-top: 1px solid var(--hair); }
+.m-tabs-bar button[aria-current=page] { color: var(--ink); font-weight: 600; }
+.m-tabs-bar button[aria-current=page] svg { background: none; stroke-width: 2.2; }
+
+/* Sheets: no heavy top rule or dividers; sans titles. */
+.m-sheet { border-top: 0; border-radius: 16px 16px 0 0; }
+.m-sheet-head { border-bottom: 0; padding: 2px 8px 2px 20px; }
+.m-sheet-head h2 { font: 600 17px/1.4 var(--m-font); }
+.m-sheet-body { padding: 8px 16px 20px; }
+.m-sheet-foot { border-top: 0; }
+.is-mobile .m-sheet .a2-pop-h { border-bottom: 0; }
+.is-mobile .m-sheet .a2-pop-h h3 { font: 600 22px/1.35 var(--m-font); }
+.is-mobile .m-sheet .a2-pop-a { border-top: 0; }
+
+/* Today */
+.m-notice-row { min-height: 52px; padding: 0 16px; font-size: 15px; background: var(--surface); border-left: 0; border-radius: 12px; margin-bottom: 18px; }
+.m-notice-row svg { color: var(--ink-3); }
+.m-next { display: block; width: 100%; padding: 16px 18px 16px 22px; text-align: left; color: var(--ink); background: var(--surface); border: 0; border-radius: 14px; overflow: hidden; }
+.m-next::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--c, var(--ink-3)); }
+.m-next.kind-work::before { background: var(--wf, var(--work-fill)); }
+.m-next.kind-event::before { background: repeating-linear-gradient(180deg, var(--ink-3) 0 4px, transparent 4px 7px); }
+.m-next :is(small, span) { display: block; font-size: 14px; color: var(--ink-3); overflow-wrap: anywhere; }
+.m-next strong { display: block; margin: 6px 0 4px; font-size: 20px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.m-agenda { margin-top: 14px; }
+.m-agenda-row { grid-template-columns: 50px 3px minmax(0, 1fr) auto; gap: 0 12px; min-height: 48px; padding: 9px 0; border-bottom: 0; }
+.m-agenda-row time { font-size: 14px; color: var(--ink-3); }
+.m-agenda-row > i { align-self: stretch; border-radius: 2px; background: var(--c, var(--line-2)); }
+.m-agenda-row.kind-work > i { background: var(--wf, var(--work-fill)); }
+.m-agenda-row.kind-event > i { background: repeating-linear-gradient(180deg, var(--ink-3) 0 3px, transparent 3px 6px); }
+.m-agenda-row.kind-deadline > i { background: var(--accent); }
+.m-agenda-row.kind-candidate > i { background: repeating-linear-gradient(180deg, var(--accent) 0 3px, transparent 3px 6px); }
+.m-agenda-row strong { font-size: 17px; font-weight: 400; line-height: 1.45; overflow-wrap: anywhere; }
+.m-agenda-row em { font-style: normal; font-size: 14px; color: var(--accent); }
+.m-agenda-row em.quiet { color: var(--ink-3); }
+.m-agenda-row.kind-deadline strong { color: var(--ink); }
+.m-agenda-row.past { opacity: .5; }
+.m-free { padding: 4px 0 4px 62px; font-size: 14px; border-bottom: 0; }
+.m-section-head { margin-top: 30px; min-height: 44px; border-bottom: 0; }
+.m-section-head h2 { font: 600 20px/1.4 var(--m-font); }
+.m-group h3 { margin: 14px 0 0; font-size: 14px; font-weight: 400; }
+.m-group.group-over h3 { color: var(--accent); }
+.m-task { grid-template-columns: 36px minmax(0, 1fr) auto; min-height: 56px; border-bottom: 0; }
+.m-check input { appearance: none; -webkit-appearance: none; width: 22px; height: 22px; border: 1.5px solid var(--ink-3); border-radius: 50%; background: transparent; }
+.m-check input:checked { border-color: var(--ink); background: var(--ink) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f5f0e6' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E") center / 14px no-repeat; }
+.m-task-main strong { font-size: 17px; font-weight: 400; }
+.m-task-main small { font-size: 14px; }
+.m-task-main small.due, .m-task.warn small { color: var(--accent); }
+.m-more-link { display: block; margin: 8px 0 0 auto; }
+
+/* Calendar: selection in ink; red stays on deadlines and the unscheduled count. */
+.m-cal-head { border-bottom: 1px solid var(--hair); }
+.m-cal-week { margin-left: 4px; font-size: 14px; }
+.m-seg { background: var(--sunk); border: 0; border-radius: 9px; }
+.m-seg button { border-radius: 7px; font-size: 15px; }
+.m-seg button[aria-pressed=true] { color: var(--ink); font-weight: 600; background: var(--surface); box-shadow: 0 1px 3px rgba(31, 28, 24, .1); }
+.m-week-strip button { border-radius: 10px; }
+.m-week-strip button.today b { color: var(--ink); font-weight: 700; text-decoration: underline 2px; text-underline-offset: 4px; }
+.m-week-strip button[aria-pressed=true] { background: var(--ink); }
+.m-week-strip button.today[aria-pressed=true] b { color: var(--on-dark); text-decoration: none; }
+.m-day-heads .today b { color: var(--ink); font-weight: 700; }
+.m-month button.today b { color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--ink); }
+.m-month button.chosen b { background: var(--ink); }
+
+/* Rounded groups (我的, 课程表, settings) */
+.m-card-label { margin: 22px 4px 8px; font-size: 14px; font-weight: 400; color: var(--ink-3); }
+.m-card { margin: 0; padding: 0; list-style: none; background: var(--surface); border-radius: 14px; overflow: hidden; }
+.m-card + .m-card { margin-top: 22px; }
+.m-card > li { position: relative; }
+.m-card > li + li::before { content: ''; position: absolute; top: 0; left: 16px; right: 0; border-top: 1px solid var(--hair); }
+.m-card > li:has(> .m-card-row > .m-dot:first-child) + li::before { left: 40px; }
+.m-card-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 10px 16px; text-align: left; font-size: 17px; color: var(--ink); background: transparent; border: 0; border-radius: 0; }
+.m-card-main { flex: 1; min-width: 0; }
+.m-card-main b { display: block; font-weight: 400; overflow-wrap: anywhere; }
+.m-card-main small { display: block; margin-top: 2px; font-size: 14px; color: var(--ink-3); }
+.m-card-value { max-width: 62%; text-align: right; color: var(--ink-3); overflow-wrap: anywhere; }
+.m-card-value.attn { color: var(--accent); }
+.m-card-row > svg { flex: none; width: 18px; height: 18px; color: #b5ab99; transition: transform .15s; }
+.m-card-row > svg.turned { transform: rotate(90deg); }
+.m-dot { flex: none; width: 12px; height: 12px; border-radius: 50%; }
+.m-detail .m-card-label:first-child { margin-top: 4px; }
+.m-palette { display: grid; grid-template-columns: repeat(8, 1fr); gap: 10px; padding: 4px 16px 16px; }
+.m-palette button { position: relative; aspect-ratio: 1; padding: 0; background: var(--c); border: 0; border-radius: 50%; }
+.m-palette button.cur { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--ink); }
+.m-palette button.used::after { content: ''; position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: var(--surface); }
+.m-app :is(.m-card-row, .m-next, .m-text-btn):active { background-color: var(--nav-active); }
+
+/* Editor on the phone: plain rows, the fields needed to decide first, the rest under 更多 (data-more). */
+.is-mobile .a2-edit .m-edit-h { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 4px 8px; border-bottom: 0; }
+.is-mobile .a2-edit .m-edit-h h2 { margin: 0; font: 600 17px/1.4 var(--m-font); }
+.is-mobile .a2-edit .m-edit-h .m-link { justify-self: start; font-size: 17px; }
+.is-mobile .a2-edit .editor-form { display: flex; flex-direction: column; gap: 0; font-size: 17px; }
+.is-mobile .a2-edit .editor-form .form-grid { display: contents; }
+.is-mobile .a2-edit .editor-form label:not(.check) { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; padding: 4px 0;
+  font-size: 17px; color: var(--ink); border-bottom: 1px solid var(--hair); }
+.is-mobile .a2-edit .editor-form label:not(.check) > :is(input, select) { flex: 0 1 auto; width: auto; min-width: 0; max-width: 64%; min-height: 44px; padding: 0; text-align: right; text-align-last: right;
+  font-size: 17px; color: var(--ink-2); background: transparent; border: 0; -webkit-appearance: none; appearance: none; }
+.is-mobile .a2-edit .editor-form label:not(.check) > :is(input[type=date], input[type=datetime-local], input[type=time])::-webkit-date-and-time-value { text-align: right; }
+.is-mobile .a2-edit .editor-form label:not(.check) > :is(input, select):focus-visible { outline: none; color: var(--ink); }
+.is-mobile .a2-edit .editor-form label:has(> input[name=title]) { flex-direction: column; align-items: stretch; gap: 0; font-size: 0; border-bottom: 0; }
+.is-mobile .a2-edit .editor-form label > input[name=title] { max-width: none; padding: 6px 0 10px; text-align: left; text-align-last: auto; font-size: 24px; font-weight: 600; color: var(--ink); }
+.is-mobile .a2-edit .editor-form label:has(> textarea) { flex-direction: column; align-items: stretch; gap: 8px; padding: 12px 0; }
+.is-mobile .a2-edit .editor-form label > textarea { font-size: 16px; background: var(--surface); border: 0; border-radius: 10px; }
+.is-mobile .a2-edit .editor-form label.check { min-height: 52px; font-size: 17px; border-bottom: 1px solid var(--hair); }
+.is-mobile .a2-edit .editor-form fieldset { margin: 0; padding: 0; border: 0; background: none; }
+.is-mobile .a2-edit .editor-form legend { padding: 18px 0 4px; font-size: 14px; color: var(--ink-3); }
+.is-mobile .a2-edit .editor-form .hint:not([role]) { display: none; }
+.is-mobile .a2-edit .editor-form .hint[role] { margin: 8px 0; font-size: 14px; color: var(--ink-3); }
+.is-mobile .a2-edit .editor-form:not(.more-open) [data-more] { display: none; }
+.is-mobile .a2-edit .editor-form [data-more], .is-mobile .a2-edit .editor-form .form-grid[data-more] > * { order: 2; }
+.is-mobile .a2-edit .editor-form .m-more-toggle { order: 1; display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0; text-align: left; font-size: 17px;
+  color: var(--ink); background: none; border: 0; border-bottom: 1px solid var(--hair); border-radius: 0; height: auto; }
+.is-mobile .a2-edit .editor-form .m-more-toggle small { flex: 1; min-width: 0; font-size: 14px; color: var(--ink-3); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.is-mobile .a2-edit .editor-form > :is(.error, div.warning, .form-footer) { order: 3; }
+.is-mobile .a2-edit .editor-form .editor-resources { padding-top: 12px; }
+.is-mobile .a2-edit .form-footer { gap: 4px; border-top: 0; background: var(--bg); }
+.is-mobile .a2-edit .form-footer button.primary { flex: 1 1 100%; height: 50px; font-size: 17px; font-weight: 600; color: var(--bg); background: var(--ink); border: 0; border-radius: 12px; }
+.is-mobile .a2-edit .form-footer button.danger-text { order: 2; flex: 1 1 100%; height: 44px; color: var(--accent); background: none; border: 0; }
+
+/* Assistant: quieter frame, sans text. */
+.m-assistant-head { border-bottom: 1px solid var(--hair); }
+.m-assistant-head h2 { font: 600 17px/1.4 var(--m-font); }
+.m-assistant-intro li { font: 17px/1.5 var(--m-font); border-bottom: 0; padding: 6px 0; }
+.m-msg.assistant { border-left-color: var(--line-2); }
+.m-msg.user { border: 0; }
+/* Until 待判断 and 账单 get their own page titles, their assistant entry floats above the tabs. */
+.m-assist-float { position: absolute; right: 16px; bottom: calc(68px + env(safe-area-inset-bottom)); z-index: 20; width: 48px; height: 48px; color: var(--ink-2); background: var(--surface); border-radius: 50%; box-shadow: 0 3px 12px rgba(31, 28, 24, .16); }
+.m-next.kind-course, .m-next.kind-event { color: var(--ink); background: var(--surface); border: 0; }
+.is-mobile .a2-edit .editor-form label:not(.check) > input[name=title] { max-width: none; padding: 6px 0 10px; text-align: left; text-align-last: auto; font-size: 24px !important; /* beats the anti-zoom 16px floor */ font-weight: 600; color: var(--ink); }
+.is-mobile .m-sheet .a2-pop-a .ui-btn { min-height: 46px; border-radius: 12px; }
+.is-mobile .m-sheet .a2-pop-a .ui-btn:not(.dark) { background: var(--surface); border-color: transparent; }
+.is-mobile .a2-edit .editor-form input[name=title]::placeholder { color: #b5ab99; }
+/* Shared 我的 sub-pages still rendered by desktop components (目标, 记账规则): the same quiet rules. */
+.is-mobile .m-legacy .ui-btn { min-height: 40px; background: var(--surface); border-color: transparent; border-radius: 10px; }
+.is-mobile .m-legacy .a2-goal-list { border-top: 0; background: var(--surface); border-radius: 14px; padding: 0 16px; }
+.is-mobile .m-legacy .a2-goal-list li { border-bottom: 1px solid var(--hair); }
+.is-mobile .m-legacy .a2-goal-list li:last-child { border-bottom: 0; }
+.is-mobile .m-legacy .a2-goal-list .t { font: 400 17px/1.45 var(--m-font); }
+.is-mobile .m-legacy .a2-goal-list :is(.meta, p) { font-size: 14px; color: var(--ink-3); }
+.is-mobile .m-legacy .a2-sw { height: 32px; padding: 0 4px; font-size: 0; background: none; border: 0; }
+.is-mobile .m-legacy .a2-sw i { flex-basis: 14px; width: 14px; height: 14px; border-radius: 50%; box-shadow: none; }

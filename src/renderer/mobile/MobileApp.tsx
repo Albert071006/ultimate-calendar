@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { CalendarDays, Inbox as InboxIcon, Sun, UserRound, Wallet } from 'lucide-react';
 import type { CourseImportResult, LedgerViewContext } from '../../shared/contracts';
 import type { PlannerClient } from '../../shared/client';
@@ -20,7 +20,7 @@ import { ImportDialog, SourceViewer } from '../components/ImportDialog';
 import { Preview } from '../components/Preview';
 import { MePage, type SettingsPage } from './pages/MePage';
 import type { RemoteClientState } from '../remote/types';
-import { MobileProvider, useVisualViewport } from './layout';
+import { AssistantButton, AssistantProvider, MobileProvider, useVisualViewport } from './layout';
 import { MobileAssistant } from './MobileAssistant';
 import { Sheet } from './Sheet';
 import { StatusBanner } from './StatusBanner';
@@ -58,6 +58,8 @@ export function MobileApp({ client, connection, settingsPages = [], pendingView,
   useEffect(() => { const touch = () => {}; document.addEventListener('touchstart', touch, { passive: true }); return () => document.removeEventListener('touchstart', touch); }, []);
   const now = useCurrentTime();
   const [assistantOpen, setAssistantOpen] = useState(false);
+  const assistantInput = useRef<HTMLTextAreaElement>(null);
+  const openAssistant = () => { assistantInput.current?.focus({ preventScroll: true }); setAssistantOpen(true); };
   const ui = usePlanner(client), snapshot = ui.snapshot;
   const [page, setPage] = useState<Page>('today');
   const [meSection, setMeSection] = useState<string | null>(null);
@@ -97,6 +99,7 @@ export function MobileApp({ client, connection, settingsPages = [], pendingView,
 
   return (
     <MobileProvider mobile>
+      <AssistantProvider value={snapshot ? openAssistant : null}>
       <div className="a2 is-mobile m-app">
         <StatusBanner connection={banner} onOpen={() => setStatusOpen(true)} />
         {ui.error && <div className="m-error" role="alert">
@@ -130,7 +133,8 @@ export function MobileApp({ client, connection, settingsPages = [], pendingView,
         </main>
         {snapshot && <Toast ui={ui} />}
         {snapshot && <MobileAssistant ui={ui} selected={selected} date={date} domain={page === 'ledger' ? 'ledger' : undefined}
-          ledgerView={page === 'ledger' ? ledgerView : undefined} storageKey={conversationKey} open={assistantOpen} setOpen={setAssistantOpen} />}
+          ledgerView={page === 'ledger' ? ledgerView : undefined} storageKey={conversationKey} open={assistantOpen} setOpen={setAssistantOpen} inputRef={assistantInput} />}
+        {snapshot && (page === 'inbox' || page === 'ledger') && <AssistantButton floating />}
         <nav className="m-tabs-bar" aria-label="主导航">
           {tabs.map(([id, label, Icon]) => (
             <button key={id} aria-current={page === id ? 'page' : undefined} onClick={() => navigate(id)}>
@@ -166,6 +170,7 @@ export function MobileApp({ client, connection, settingsPages = [], pendingView,
         </Sheet>}
         {statusOpen && <Sheet title="连接与待提交" onClose={() => setStatusOpen(false)}>{pendingView}</Sheet>}
       </div>
+      </AssistantProvider>
     </MobileProvider>
   );
 }

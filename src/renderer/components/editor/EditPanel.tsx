@@ -42,10 +42,14 @@ export function EditPanel({ title, children, onClose, overlay = false }: {
   }, []);
   return (
     <section ref={ref} className={`a2-edit${overlay ? " overlay" : ""}`} role="dialog" aria-modal={mobile} aria-label={title} tabIndex={mobile ? -1 : undefined}>
-      <header className="a2-edit-h">
+      {mobile ? <header className="a2-edit-h m-edit-h">
+        <button className="m-link" onClick={onClose}>取消</button>
+        <h2>{title}</h2>
+        <span />
+      </header> : <header className="a2-edit-h">
         <h2>{title}</h2>
         <button className="ui-btn sm ghost icon" onClick={onClose} aria-label="关闭编辑" title="关闭（Esc）"><X aria-hidden="true" /></button>
-      </header>
+      </header>}
       <div className="a2-edit-b">{children}</div>
     </section>
   );

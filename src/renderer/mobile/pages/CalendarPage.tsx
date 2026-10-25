@@ -11,6 +11,7 @@ import { calendarAttention } from '../../calendar-attention';
 import { CurrentTimeIndicator, currentTimePosition } from '../../components/CurrentTimeIndicator';
 import { MoreMenu } from '../../components/shell/MoreMenu';
 import { clock, itemColor, shortDate, weekdayName } from '../item-style';
+import { AssistantButton } from '../layout';
 import '../../components/CalendarTimeline.css';
 import '../../components/calendar-attention.css';
 import '../../components/calendar/Calendar.css';
@@ -59,9 +60,9 @@ export function CalendarPage({ snapshot, now, date, setDate, view, setView, sele
           <button className="m-icon" aria-label="上一页" onClick={() => setDate(moveDate(date, view, -1))}><ChevronLeft aria-hidden="true" /></button>
           <h1>{title}</h1>
           <button className="m-icon" aria-label="下一页" onClick={() => setDate(moveDate(date, view, 1))}><ChevronRight aria-hidden="true" /></button>
-          {week && week >= 1 && week <= snapshot.settings.termWeeks && view !== 'month' && <span className="m-cal-week">第 {week} 周</span>}
           <span className="m-spacer" />
           {!days.includes(today) || view === 'month' && date !== today ? <button className="m-link" onClick={() => setDate(today)}>今天</button> : null}
+          <AssistantButton />
           <MoreMenu label="日历选项" items={[
             { label: pending ? '隐藏待判断标记' : '显示待判断标记', onSelect: () => setPending(value => !value) },
             { label: '课表', onSelect: openCourses },
@@ -71,8 +72,9 @@ export function CalendarPage({ snapshot, now, date, setDate, view, setView, sele
           <div className="m-seg" role="group" aria-label="视图">
             {viewNames.map(([value, label]) => <button key={value} aria-pressed={view === value} onClick={() => setView(value)}>{label}</button>)}
           </div>
+          {week && week >= 1 && week <= snapshot.settings.termWeeks && view !== 'month' && <span className="m-cal-week">第 {week} 周</span>}
           <span className="m-spacer" />
-          <button className="m-chip" onClick={openUnscheduled}>未安排 <b>{unscheduledCount}</b></button>
+          {unscheduledCount > 0 && <button className="m-link attn" onClick={openUnscheduled}>未安排 {unscheduledCount}</button>}
         </div>
         {view === 'day' && <div className="m-week-strip" role="group" aria-label="本周日期">
           {weekStrip.map(day => {

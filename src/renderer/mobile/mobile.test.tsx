@@ -7,6 +7,7 @@ import type { PendingWrite, RemoteClientState } from '../remote/types';
 import type { PlannerClient } from '../../shared/client';
 import { todayDate } from '../calendar-layout';
 import { readBrowserImage } from './browser-image';
+import { weekRanges } from './pages/CourseList';
 import { SourceViewer } from '../components/ImportDialog';
 import type { PlannerUI } from '../hooks/usePlanner';
 
@@ -17,6 +18,13 @@ function fixture() {
   return { snapshot, client };
 }
 const online: Pick<RemoteClientState,'status'|'pending'|'cachedAt'|'storageError'> = { status:'online', pending:[], cachedAt:'2026-10-24T14:12:00+08:00', storageError:'' };
+describe('course weeks on the phone', () => {
+  it('compresses consecutive teaching weeks into ranges', () => {
+    expect(weekRanges([3, 4, 5, 6, 8, 11, 12, 13, 14])).toBe('第 3–6、8、11–14 周');
+    expect(weekRanges([7])).toBe('第 7 周');
+  });
+});
+
 describe('phone layout', () => {
   it('opens today with five tabs, stays quiet while connected and keeps desktop-only settings out', async () => {
     const { client } = fixture();
@@ -88,7 +96,7 @@ describe('phone layout', () => {
     vi.mocked(client.command).mockResolvedValue({ ok:true, data:{ reply:'明天下午 14:00 后有空', mutationResult:null, items:[] } } as never);
     localStorage.clear();
     const first = render(<MobileApp client={client} connection={online} conversationKey="synthetic-conversation" />);
-    fireEvent.click(await screen.findByRole('button', { name:/问问生活助手/ }));
+    fireEvent.click(await screen.findByRole('button', { name:'生活助手' }));
     const page = screen.getByRole('dialog', { name:'生活助手' });
     fireEvent.change(within(page).getByLabelText('对生活助手说'), { target:{ value:'明天下午有空吗' } });
     fireEvent.click(within(page).getByRole('button', { name:'发送' }));
@@ -98,7 +106,7 @@ describe('phone layout', () => {
     expect(screen.queryByRole('dialog', { name:'生活助手' })).toBeNull();
     first.unmount();
     render(<MobileApp client={client} connection={online} conversationKey="synthetic-conversation" />);
-    fireEvent.click(await screen.findByRole('button', { name:/问问生活助手/ }));
+    fireEvent.click(await screen.findByRole('button', { name:'生活助手' }));
     expect(within(screen.getByRole('dialog', { name:'生活助手' })).getByText('明天下午 14:00 后有空')).toBeTruthy();
     localStorage.clear();
   });
