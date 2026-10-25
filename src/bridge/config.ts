@@ -20,6 +20,7 @@ export const BridgeConfigSchema = z.strictObject({
   version: z.literal(1), enabled: z.boolean().default(false),
   sourceDatabase: absoluteFile, outboxDatabase: absoluteFile, credentialsFile: absoluteFile,
   origin: z.string().transform(normalizeBridgeOrigin), identity: RemoteIdentitySchema, deviceId: z.string().uuid(),
+  localConnectAddress: z.literal('127.0.0.1').optional(),
   pollSeconds: z.number().int().min(5).max(3600).default(30),
   scanBatchSize: z.number().int().min(1).max(1000).default(200), maxPagesPerTick: z.number().int().min(1).max(100).default(20),
 }).refine(value => {

@@ -175,7 +175,7 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
                 <small>{displayInstant(source.importedAt)} · {sourceStatus[source.status]}</small>
                 {source.error && <small className="error">{source.error}</small>}
               </span>
-              <span className="go">{isExtractedQQSource(source) || (!host && source.captureRef) ? 'QQ 来源说明' : isClearedPhoneSource(source) ? '输入已清理' : '查看原文'}</span>
+              <span className="go">{host && !mobile ? '查看原文' : isExtractedQQSource(source) || (!host && source.captureRef) ? 'QQ 来源说明' : isClearedPhoneSource(source) ? '输入已清理' : '查看原文'}</span>
             </button>
           )) : <div className="ui-empty"><h4>还没有导入记录</h4><p>粘贴群消息或导入截图后，原文会保存在这里，随时可以核对。</p></div>}
         </section>
@@ -197,6 +197,7 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
             <InboxList snapshot={snapshot} items={items} selectedId={current?.id} today={today} quick={quick} busy={ui.busy}
               select={pick} decide={(candidate, type) => void decide(candidate, type)} toast={toast} undo={() => void undo()} />
             {current && (!mobile || detailOpen) && <DetailFrame mobile={mobile} close={() => setDetailOpen(false)}><CandidateDetail key={current.id} snapshot={snapshot} candidate={current} today={today} now={now} busy={ui.busy}
+              localSourceAccess={Boolean(host) && !mobile}
               hideQQOriginal={current.sourceIds.some(id => { const source = snapshot.sources.find(value => value.id === id); return source ? isExtractedQQSource(source) || ((mobile || !host) && Boolean(source.captureRef)) : mobile || !host; })}
               clearedPhoneInput={current.sourceIds.some(id => { const source = snapshot.sources.find(value => value.id === id); return source ? isClearedPhoneSource(source) : false; })}
               reason={reason} setReason={setReason} decide={type => void decide(current, type)}

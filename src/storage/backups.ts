@@ -12,6 +12,7 @@ import { copyCaptureBackupFile, inspectCaptureBackupFile } from '../capture/back
 import { emptyCaptureState, replaceCaptureDatabaseState } from '../capture/store';
 import { pruneManagedBackups } from './backup-retention';
 import { resolveBackupDirectory } from './space-policy';
+import { includeLocalResourcesInBackup, readLocalResourcesFromBackup, mergeLocalResources } from './local-resources';
 
 const MiB = 1024 * 1024;
 function requireDiskSpace(directory: string, bytes: number, purpose: string): void {
@@ -26,6 +27,9 @@ export function createBackup(repository: Repository, path: string): { path: stri
   mkdirSync(dirname(path), { recursive: true });
   requireDiskSpace(dirname(path), repository.estimatedBackupBytes() + 16 * MiB, '保存完整备份');
   repository.vacuumInto(path);
+  const db = openDatabase(path);
+  try { includeLocalResourcesInBackup(db, dirname(repository.path)); db.exec('PRAGMA journal_mode=DELETE'); }
+  finally { db.close(); }
   return { path, includesSources: true };
 }
 /** Small-data inspection compatibility helper. Desktop restore/update use inspectBackupFile instead. */
@@ -47,13 +51,13 @@ export function openBackupFile(path: string) {
     db.exec('BEGIN');
     if (db.prepare('PRAGMA integrity_check').get()?.['integrity_check'] !== 'ok') throw Error('备份完整性校验失败');
     if (db.prepare('PRAGMA user_version').get()?.['user_version'] !== 1) throw Error('备份版本不支持');
-    const planner = readDatabaseState(db), capture = inspectCaptureBackupFile(db), ledger = readLedgerDatabase(db);
+    const planner = readDatabaseState(db), capture = inspectCaptureBackupFile(db), ledger = readLedgerDatabase(db), localResources = readLocalResourcesFromBackup(db);
     const allocated = Number(db.prepare('PRAGMA page_count').get()!['page_count']);
     const free = Number(db.prepare('PRAGMA freelist_count').get()!['freelist_count']);
     const pageSize = Number(db.prepare('PRAGMA page_size').get()!['page_size']);
     const estimatedBytes = Math.max(0, allocated - free) * pageSize;
     let closed = false;
-    return { db, planner, capture, ledger, estimatedBytes, close() { if (!closed) { closed = true; db.close(); } } };
+    return { db, planner, capture, ledger, localResources, estimatedBytes, close() { if (!closed) { closed = true; db.close(); } } };
   } catch (error) { db.close(); throw error; }
 }
 export type OpenBackupFile = ReturnType<typeof openBackupFile>;
@@ -81,6 +85,9 @@ export function restoreOpenedBackup(repository: Repository, file: OpenBackupFile
   if (captureStore && (captureStore.path !== repository.path || captureStore.path === ':memory:')) throw Error('QQ 采集与日历必须使用同一个 SQLite 数据文件才能同时恢复');
   if (file.capture && !captureStore) throw Error('该备份含有 QQ 采集资料，需要同时初始化采集存储后恢复');
   requireRestoreSpace(repository, file, false);
+  // Add missing private references before the transaction; no existing location is overwritten.
+  // Even if the planner restore fails, this only preserves additional recoverable references.
+  mergeLocalResources(dirname(repository.path), file.localResources);
   repository.replaceState(file.planner, destination => {
     if (captureStore) {
       if (file.capture) copyCaptureBackupFile(file.db, destination, file.capture);

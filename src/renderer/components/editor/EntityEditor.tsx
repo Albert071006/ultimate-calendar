@@ -26,6 +26,8 @@ import { DEFAULT_ACTIVITY_MINUTES, effectiveActivityEnd } from '../../../domain/
 import { recurringEventTargets } from '../../../domain/recurring-events';
 import { courseIsCurrent } from '../../../domain/palette';
 import { findRecord } from '../detail/records';
+import { ResourceFields, ResourceSection } from '../resources/ResourcePanel';
+import type { ResourceReference } from '../../../shared/resources';
 function Reminders({ value }: { value?: ReminderConfig }) {
   return (
     <fieldset>
@@ -102,6 +104,8 @@ export function EntityEditor({
     ? snapshot.tasks.find((t) => t.id === target.draft?.taskId)
     : undefined;
   const [error, setError] = useState("");
+  const [resources, setResources] = useState<ResourceReference[]>(saved && 'resources' in saved ? saved.resources ?? [] : []);
+  const [resourceBaseline] = useState({ version: saved?.version, value: JSON.stringify(resources) });
   const [deleting, setDeleting] = useState(false);
   const [frequency, setFrequency] = useState<'none' | 'weekly' | 'biweekly' | 'odd-weeks' | 'even-weeks'>(target.recurring ? 'weekly' : 'none');
   const [selectedTaskId, setSelectedTaskId] = useState(block?.taskId ?? target.draft?.taskId ?? '');
@@ -169,6 +173,10 @@ export function EntityEditor({
       s = (key: string) => String(data.get(key) ?? ""),
       title = s("title");
     try {
+      const resourcesChanged = JSON.stringify(resources) !== resourceBaseline.value;
+      const resourcesToSave = !resourcesChanged && saved && 'resources' in saved ? saved.resources ?? [] : resources;
+      if (entity !== 'course' && saved && saved.version !== resourceBaseline.version && resourcesChanged)
+        throw new Error('这条记录在编辑期间已改变，请重新打开后关联资料。');
       if (series) {
         const values: Record<string, unknown> = {};
         if (title !== series.title) values.title = title;
@@ -182,6 +190,7 @@ export function EntityEditor({
         // the original choice when that input was not changed.
         if (s('leadMinutes').trim() === (series.reminders.leadMinutes?.join(',') ?? '')) reminderValue.leadMinutes = series.reminders.leadMinutes;
         if (JSON.stringify(reminderValue) !== JSON.stringify(series.reminders)) values.reminders = reminderValue;
+        if (JSON.stringify(resourcesToSave) !== JSON.stringify(series.resources ?? [])) values.resources = resourcesToSave;
         if (!Object.keys(values).length) { setError('尚未更改活动内容'); return; }
         const result = await ui.mutate([{
           type: 'updateRecurringEvent', id: series.id, expectedVersion: series.version,
@@ -199,7 +208,7 @@ export function EntityEditor({
             weekday: Number(s('recurrenceWeekday')), time: s('recurrenceTime'),
             durationMinutes: Number(s('durationMinutes')), termStart: s('recurrenceTermStart') || null,
           },
-          location: s('location'), reminders: reminders(data),
+          location: s('location'), reminders: reminders(data), ...(resources.length ? { resources } : {}),
         }]);
         if (result && result.status !== 'clarification') onClose();
         return;
@@ -217,6 +226,7 @@ export function EntityEditor({
           candidateId: task?.candidateId ?? null,
           reminders: reminders(data),
           courseId: s("courseId") || null,
+          ...(resourcesToSave.length || task?.resources ? { resources: resourcesToSave } : {}),
         });
       if (entity === "block") {
         const blockStart = instant(data.get("start"));
@@ -230,6 +240,7 @@ export function EntityEditor({
           location: s("location"),
           completed: block?.completed ?? false,
           reminders: reminders(data),
+          ...(resourcesToSave.length || block?.resources ? { resources: resourcesToSave } : {}),
         });
       }
       if (entity === "goal")
@@ -240,6 +251,7 @@ export function EntityEditor({
           status: s("status"),
           targetDate: s("targetDate") || null,
           color: goal?.color ?? null,
+          ...(resourcesToSave.length || goal?.resources ? { resources: resourcesToSave } : {}),
         });
       if (entity === "course") {
         values = CourseInputSchema.parse({
@@ -260,6 +272,7 @@ export function EntityEditor({
           termStart: s("termStart"),
           reminders: reminders(data),
           color: course?.color ?? null,
+          ...(saved ? (course?.resources ? { resources: course.resources } : {}) : resources.length ? { resources } : {}),
         });
         if (saved) {
           // Recurrence scopes act on a patch: unchanged series fields must not
@@ -837,6 +850,15 @@ export function EntityEditor({
           value={saved && "reminders" in saved ? saved.reminders : repeating ? schedulingTask?.reminders : undefined}
         />
       )}
+      {entity !== 'candidate' && (entity === 'course' && saved
+        ? <ResourceSection snapshot={snapshot} target={{ entity, id: saved.id }} ui={ui} />
+        : <>
+          <ResourceFields value={resources} onChange={setResources} host={ui.host} disabled={ui.busy}
+            title={entity === 'block' ? (repeating ? '每次活动的资料' : '本次资料') : entity === 'task' ? '任务资料' : '公共资料'} />
+          {series && eventScope === 'this-and-following' && <p className="resource-scope">资料更改同步到本次及以后，每次独有的其他资料保留。</p>}
+          {saved && <ResourceSection snapshot={snapshot} target={{ entity, id: saved.id }} ui={ui} inheritedOnly />}
+          {!saved && entity === 'block' && schedulingTask && <ResourceSection snapshot={snapshot} target={{ entity: 'task', id: schedulingTask.id }} ui={ui} />}
+        </>)}
       {error && (
         <p role="alert" className="error prewrap">
           {error}

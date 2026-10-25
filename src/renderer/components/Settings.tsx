@@ -11,6 +11,7 @@ import { AccountPanel, AccountResourceStatus, OfficialPrices } from "./AccountPa
 import type { AppUpdates } from '../hooks/useAppUpdates';
 import { SoftwareUpdate } from './SoftwareUpdate';
 import { SpaceManagement } from './SpaceManagement';
+import { CloudApiKeySettings } from './CloudApiKeySettings';
 import './Settings.css';
 export type SettingsSection = "ai" | "term" | "reminders" | "data" | "update";
 
@@ -18,7 +19,11 @@ export type SettingsSection = "ai" | "term" | "reminders" | "data" | "update";
  * Settings share one form so saving never drops a field: with a section chosen, the others stay in the form
  * but hidden. Without one (tests, older callers) every group shows.
  */
-export function Settings({
+export function Settings(props: Parameters<typeof LocalSettings>[0]) {
+  return <LocalSettings {...props} />;
+}
+
+function LocalSettings({
   snapshot,
   ui,
   courses,
@@ -37,6 +42,8 @@ export function Settings({
   const keyRef = useRef<HTMLInputElement>(null),
     s = snapshot.settings;
   const keyStatus = snapshot.keyStatus;
+  const cloud = keyStatus.scope === 'cloud';
+  const expectedSettings = useRef(s);
   const account = useAccount(ui.host);
   const [model, setModel] = useState(s.model),
     [manualModel, setManualModel] = useState(false),
@@ -113,8 +120,8 @@ export function Settings({
           : null,
       });
       await ui.run(
-        () => ui.host!.saveSettings({ settings }),
-        () => ui.setNotice("设置已保存"),
+        () => ui.host!.saveSettings({ settings, ...(cloud ? { expectedSettings: expectedSettings.current } : {}) }),
+        () => { expectedSettings.current = settings; ui.setNotice("设置已保存"); },
       );
       setError("");
     } catch (e) {
@@ -169,6 +176,7 @@ export function Settings({
   }
   return (
     <div className="settings-page">
+      {cloud && !hide('ai') && <CloudApiKeySettings ui={ui} />}
       {updates && !hide("update") && <div className="settings-card settings-group"><SoftwareUpdate updates={updates} plannerBusy={ui.busy} /></div>}
       <form onSubmit={e => { e.preventDefault(); void save(e.currentTarget); }}
         onInvalidCapture={e => {
@@ -205,7 +213,7 @@ export function Settings({
           <AccountResourceStatus resource={account.state?.models} label="模型列表" staleAfter={6 * 3_600_000} />
           <p className="fine-print">模型列表每 6 小时更新。新模型不会自动替换你的选择；修改后请保存设置。</p>
           {modelNotice && <p className="warning">{modelNotice}</p>}
-              <p className={keyStatus.configured ? "success" : keyStatus.loadError ? "warning" : "hint"}>
+              {!cloud && <><p className={keyStatus.configured ? "success" : keyStatus.loadError ? "warning" : "hint"}>
           {keyStatus.configured
             ? keyStatus.sessionOnly
               ? "密钥已配置 · 仅本次运行"
@@ -245,7 +253,7 @@ export function Settings({
         <p className="fine-print">
           密钥不进入数据快照、备份或操作历史。加密不可用时仅本次运行有效。
         </p></div>
-              </details>
+              </details></>}
             </div>
           </div>
           <details className="settings-disclosure settings-pricing">
@@ -567,26 +575,25 @@ export function Settings({
           </details>
         </section>
         <section className="settings-card settings-group" aria-labelledby="settings-data-title" data-section="data" hidden={hide("data")}>
-          <h3 id="settings-data-title">数据与历史</h3>
-          <SpaceManagement host={ui.host} active={!hide("data")} plannerBusy={ui.busy} />
+          <h3 id="settings-data-title">数据与备份</h3>
+          <p className="settings-data-mode"><strong>{cloud ? '当前使用云端共用资料' : '当前使用本机独立资料'}</strong><span>{cloud ? '手机与电脑使用同一份日历和账本' : '日历和账本保存在这台电脑，不会自动同步到手机'}</span></p>
           <details className="settings-disclosure settings-backup">
-            <summary><strong>数据备份与恢复</strong><span className="settings-summary">导出本地备份或恢复已有数据</span></summary>
-            <div className="settings-disclosure-body"><p>本地备份包含日历、账单和现存的 QQ 原文、附件。大备份按批校验和恢复，不再受 512 MB 限制；请留出备份、恢复暂存和安全备份所需的磁盘空间。</p>
-        <p>导出包含原始文字、截图和操作记录，密钥不包含在内。</p>
+            <summary><strong>{cloud ? '云端资料备份与恢复' : '本机资料备份与恢复'}</strong><span className="settings-summary">{cloud ? '下载到电脑 · 恢复影响手机和电脑' : '导出或恢复这台电脑的资料'}</span></summary>
+            <div className="settings-disclosure-body">{cloud ? <><p>下载云端日历、任务、课表、完整账本和设置。不包含 API Key、本机 QQ 原文和附件。</p><p>电脑文件的位置记录另存为同名的 .local-resources.json 文件，请与备份一起保留；关联的原文件不会复制。</p></> : <><p>本机备份包含日历、账单、操作记录和现存的 QQ 原文、附件；不含 API Key，也不复制关联的外部原文件。</p><p>大备份不再受 512 MB 限制；恢复时请预留暂存文件和安全备份所需的磁盘空间。</p></>}
         <div className="toolbar">
           <button type="button"
             onClick={() =>
               void ui.run(
                 () => ui.host!.backup(),
-                (r) => ui.setNotice(`备份已导出：${r.path}（包含来源资料）`),
+                (r) => ui.setNotice(`${cloud ? '云端资料备份已下载' : '本机资料备份已导出'}：${r.path}${r.includesSources ? '（包含来源资料）' : '（不含 QQ 原文或密钥）'}`),
               )
             }
             disabled={ui.busy}
           >
-            导出本地备份
+            {cloud ? '下载云端资料备份' : '导出本机资料备份'}
           </button>
           <button type="button" onClick={() => void restoreBackup()} disabled={ui.busy}>
-            选择备份恢复
+            {cloud ? '从备份恢复云端资料' : '从备份恢复本机资料'}
           </button>
         </div>
         {restore && (
@@ -598,7 +605,7 @@ export function Settings({
                 .map(([kind, count]) => `${kind} ${count}`)
                 .join(" · ")}
             </p>
-            <p>恢复前会另存当前数据。</p>
+            <p>{cloud ? '将恢复手机和电脑共用的资料。恢复前会另存当前云端数据；其他设备需重新连接并核对资料。本机 QQ 原文和附件保持不变。' : '恢复前会另存当前本机数据。'}</p>
             <button type="button"
               className="danger"
               disabled={ui.busy}
@@ -620,12 +627,13 @@ export function Settings({
                 )
               }
             >
-              确认恢复
+              {cloud ? '确认恢复云端共用资料' : '确认恢复本机资料'}
             </button>
             <button type="button" onClick={() => setRestore(null)}>取消</button>
           </div>
         )}</div>
           </details>
+          <SpaceManagement host={ui.host} active={!hide("data")} plannerBusy={ui.busy} cloud={cloud} />
           <details className="settings-disclosure api-usage operation-history">
         <summary><strong>持久操作历史</strong><span className="usage-total">最近 {snapshot.journal.length} 条 · 按时间倒序</span></summary>
         {snapshot.journal.length ? (

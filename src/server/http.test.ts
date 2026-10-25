@@ -53,6 +53,12 @@ describe('remote HTTP boundary', () => {
     expect((await call('/api/v1/session', { headers: { Cookie: cookie, Origin: 'https://evil.example' } })).status).toBe(403);
     expect((await call('/api/v1/logout', { method: 'POST', headers: { Cookie: cookie, Origin: 'http://localhost:3210' } })).status).toBe(403);
     expect((await call('/api/v1/rpc/setApiKey', { method: 'POST', headers, body: '{}' })).status).toBe(400);
+    for (const method of ['saveSettings', 'accountSnapshot', 'refreshAccount', 'importCourses', 'ledgerExportData', 'backupExportData', 'restorePreview', 'restoreConfirm']) {
+      const path = `/api/v1/rpc/${method}`, body = JSON.stringify({ requestId: `boundary-${method}`, identity: session.identity });
+      expect((await call(path, { method: 'POST', body, headers: { 'Content-Type': 'application/json', Origin: 'http://localhost:3210' } })).status).toBe(401);
+      expect((await call(path, { method: 'POST', body, headers: { Cookie: cookie, 'Content-Type': 'application/json', Origin: 'http://localhost:3210' } })).status).toBe(403);
+      expect((await call(path, { method: 'POST', body, headers: { ...headers, Origin: 'https://evil.example' } })).status).toBe(403);
+    }
     expect((await call('/api/v1/pair', { method: 'POST', headers, body: JSON.stringify({ code, name: '另一个虚构手机' }) })).status).toBe(429);
     const raw = JSON.stringify(await (await call('/api/v1/session', { headers: { Cookie: cookie } })).json());
     expect(raw).not.toContain('synthetic-api-key');

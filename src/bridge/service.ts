@@ -4,7 +4,8 @@ import { RemoteIdentitySchema, type RemoteIdentity } from '../shared/remote';
 import { BridgeFault, normalizeBridgeOrigin, parseBridgeConfig, type BridgeConfigInput, type BridgeIssue } from './config';
 import { createCandidateReader } from './source-reader';
 import { createBridgeOutbox, type OutboxStats } from './outbox';
-import { distilledHash } from './projection';
+import { distilledHash, legacyCandidateKey, projectDistilledFields } from './projection';
+import { createEvidenceIndex, evidenceIndexPath } from './evidence-index';
 
 export interface BridgeTransport {
   readonly origin: string;
@@ -32,6 +33,7 @@ export function createQQCloudBridge(input: BridgeConfigInput, remote: BridgeTran
   const source = createCandidateReader(config.sourceDatabase);
   let opened: ReturnType<typeof createBridgeOutbox> | undefined;
   let outbox: ReturnType<typeof createBridgeOutbox>;
+  let evidence: ReturnType<typeof createEvidenceIndex> | undefined;
   try {
     // Resolve aliases before opening any write connection to the outbox.
     if (existsSync(config.outboxDatabase)) {
@@ -40,7 +42,8 @@ export function createQQCloudBridge(input: BridgeConfigInput, remote: BridgeTran
     }
     outbox = opened = createBridgeOutbox(config.outboxDatabase);
     outbox.bind(distilledHash({ source: source.fingerprint, origin: config.origin, identity: config.identity, device: config.deviceId }));
-  } catch (error) { opened?.close(); source.close(); throw error instanceof BridgeFault ? error : new BridgeFault('storage'); }
+    evidence = createEvidenceIndex(evidenceIndexPath(config.sourceDatabase));
+  } catch (error) { evidence?.close(); opened?.close(); source.close(); throw error instanceof BridgeFault ? error : new BridgeFault('storage'); }
   let running: Promise<BridgeCycle> | undefined; let timer: ReturnType<typeof setInterval> | undefined; let stopped = false; let closed = false;
   let lifetime = new AbortController();
   function emit(value: BridgeCycle) { try { options.onStatus?.(structuredClone(value)); } catch { /* observer errors never change a durable receipt */ } }
@@ -52,6 +55,17 @@ export function createQQCloudBridge(input: BridgeConfigInput, remote: BridgeTran
       let cursor = outbox.cursor();
       for (let pageNumber = 0; pageNumber < config.maxPagesPerTick; pageNumber++) {
         const page = source.scan(cursor, config.scanBatchSize); cursor = page.done ? 0 : page.cursor;
+        // Save private source links before a summary can be sent. Only page.items reaches the transport/outbox.
+        const links = page.localLinks.flatMap((link, index) => {
+          const aliases = [...new Set([link.distilledId, ...evidence!.legacyIds(link.ancestorIds ?? [link.candidateId])])];
+          const { eventId, eventRevision, legacyCandidateKey, distilledId: _id, legacyDistilledIds: _aliases, ...fields } = page.items[index]!.item;
+          const projected = projectDistilledFields(fields, [], { eventId, eventRevision: [evidence!.generation(eventId!, link.ancestorIds ?? [link.candidateId]), eventRevision![1]], legacyDistilledIds: aliases, legacyCandidateKey });
+          if (!projected.ok) throw new BridgeFault('validation');
+          page.items[index] = projected.value;
+          // A migrated cloud card keeps its old placeholder source; supplements must remain locally traceable there too.
+          return aliases.map(distilledId => ({ ...link, distilledId }));
+        });
+        evidence!.remember(links);
         const saved = outbox.enqueue(page.items, config.identity, now(), cursor);
         result.examined += page.examined; result.privacyRejected += page.privacyRejected; result.schemaRejected += page.schemaRejected;
         result.queued += saved.inserted; result.duplicates += saved.duplicates;
@@ -65,8 +79,10 @@ export function createQQCloudBridge(input: BridgeConfigInput, remote: BridgeTran
         if (!equalIdentity(item.request.identity, config.identity)) { outbox.block(item, 'identity'); result.issue = 'identity'; break; }
         try {
           const value = DistilledResultSchema.safeParse(await remote.sendDistilled(item.request, { signal: lifetime.signal }));
-          // Never persist service-provided text or IDs. A single-item request needs exactly one opaque candidate receipt.
-          if (!value.success || value.data.candidateIds.length !== 1 || !/^distilled-candidate:[a-f0-9]{64}$/.test(value.data.candidateIds[0]!) || value.data.created > 1) throw new BridgeFault('protocol');
+          // Never persist service-provided text or IDs. A legacy UUID must match the exact hashed migration hint.
+          const candidateId = value.success && value.data.candidateIds.length === 1 ? value.data.candidateIds[0]! : '';
+          const migrated = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(candidateId) && legacyCandidateKey(candidateId) === item.request.items[0]!.legacyCandidateKey;
+          if (!value.success || !(/^distilled-candidate:[a-f0-9]{64}$/.test(candidateId) || migrated) || value.data.created > 1) throw new BridgeFault('protocol');
           if (!outbox.accepted(item, now())) throw new BridgeFault('storage'); result.accepted++;
         } catch (error) {
           const failed = failure(error); result.issue = stopped ? 'stopped' : failed.issue;
@@ -97,7 +113,7 @@ export function createQQCloudBridge(input: BridgeConfigInput, remote: BridgeTran
       check(); timer = setInterval(check, config.pollSeconds * 1000);
     },
     async stop() { stopped = true; if (timer) clearInterval(timer); timer = undefined; lifetime.abort(); await running; },
-    async close() { if (!closed) { await this.stop(); closed = true; source.close(); outbox.close(); } },
+    async close() { if (!closed) { await this.stop(); closed = true; source.close(); outbox.close(); evidence?.close(); } },
   };
 }
 export async function runBridgeOnce(config: BridgeConfigInput, remote: BridgeTransport, options?: BridgeOptions): Promise<BridgeCycle> {

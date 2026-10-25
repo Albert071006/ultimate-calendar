@@ -69,11 +69,16 @@ export const CaptureStatsSchema = z.strictObject({
 });
 export type CaptureStats = z.infer<typeof CaptureStatsSchema>;
 export const CaptureSnapshotSchema = z.strictObject({
+  cloudKeySync: z.strictObject({
+    state: z.enum(['syncing', 'ready', 'error']), revision: z.string().uuid().nullable(), configured: z.boolean(),
+    lastSyncedAt: z.string().datetime().nullable(), message: z.string().max(1000).nullable(),
+  }).optional(),
   config: CaptureConfigSchema,
   connection: z.enum(['disconnected', 'connecting', 'online', 'error', 'account-changed']),
   accountLabel: z.string().max(200).nullable(), error: z.string().max(2000).nullable(),
   accountName: z.string().max(200).nullable().default(null),
   lastReceivedAt: InstantSchema.nullable(), credentialConfigured: z.boolean(),
+  analysisWaitingForKey: z.boolean().optional(),
   stats: CaptureStatsSchema, coverage: z.array(GroupCoverageSchema).max(100),
 });
 export type CaptureSnapshot = z.infer<typeof CaptureSnapshotSchema>;

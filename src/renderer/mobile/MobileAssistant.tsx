@@ -68,6 +68,9 @@ export function MobileAssistant({ ui, selected, date, domain, ledgerView, storag
         {history.length ? history.map(entry => (
           <div key={entry.id} className={`m-msg ${entry.role}${entry.status ? ` ${entry.status}` : ''}`} aria-busy={entry.status === 'pending'}>
             <p>{entry.text}</p>
+            {entry.resources?.map(resource => resource.kind === 'web'
+              ? <a key={resource.id} href={resource.url} target="_blank" rel="noopener noreferrer">{resource.name}</a>
+              : <small key={resource.id}>{resource.name} · 需在电脑打开</small>)}
             {entry.status === 'failed' && entry.request && <button className="m-link" disabled={running || ui.busy} onClick={() => retry(entry)}>重试这条指令</button>}
           </div>
         )) : <div className="m-assistant-intro">

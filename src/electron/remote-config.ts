@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { normalizeRemoteOrigin } from '../remote/node-client';
 import { privatePath } from '../remote/private-file';
 
-export const NativeRemoteConfigSchema = z.strictObject({ origin: z.string().transform(normalizeRemoteOrigin), deviceName: z.string().trim().min(1).max(80).default('Windows 日历'), pairingCodeFile: z.string().optional() });
+export const NativeRemoteConfigSchema = z.strictObject({ origin: z.string().transform(normalizeRemoteOrigin), deviceName: z.string().trim().min(1).max(80).default('Windows 日历'), pairingCodeFile: z.string().optional(), localDataDirectory: z.string().optional(), localConnectAddress: z.literal('127.0.0.1').optional() }).refine(value => !value.localConnectAddress || value.origin.startsWith('https:'), '本机连接地址仅用于保留原域名校验的 HTTPS 服务');
 export function remoteConfigFromArgs(args: string[], profile: string | null, formalDirectory: string) {
   const flags = args.filter(value => value.startsWith('--planner-remote-config'));
   if (!flags.length) return null;
@@ -19,6 +19,22 @@ export function remoteConfigFromArgs(args: string[], profile: string | null, for
   if (!lstatSync(path).isFile() || lstatSync(path).size > 16_384) throw Error('云端配置文件无效');
   const config = NativeRemoteConfigSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
   if (config.pairingCodeFile) privatePath(config.pairingCodeFile);
+  if (config.localDataDirectory) {
+    privatePath(config.localDataDirectory);
+    if (canonical(config.localDataDirectory) !== b) throw Error('本机采集目录必须是这台电脑的正式资料目录');
+  }
   return config;
+}
+
+/** Keep the selected data authority when an installer recreates shortcuts without arguments. */
+export function connectionArgs(args: string[], documents: string): string[] {
+  if (args.some(value => value.startsWith('--planner-'))) return args;
+  const file = join(documents, '终极日历', 'desktop-connection.json');
+  if (!existsSync(file)) return args;
+  privatePath(file);
+  if (!lstatSync(file).isFile() || lstatSync(file).size > 16_384) throw Error('默认电脑连接配置无效');
+  const selected = z.strictObject({ profile: z.string(), configFile: z.string() }).parse(JSON.parse(readFileSync(file, 'utf8')));
+  if (!isAbsolute(selected.profile) || !isAbsolute(selected.configFile)) throw Error('默认电脑连接必须使用绝对路径');
+  return [...args, `--planner-profile=${selected.profile}`, `--planner-remote-config=${selected.configFile}`];
 }
 export type NativeRemoteConfig = z.infer<typeof NativeRemoteConfigSchema>;

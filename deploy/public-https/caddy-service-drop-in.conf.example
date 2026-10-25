@@ -1,0 +1,9 @@
+# Review paths against the installed official Caddy systemd unit.
+# This does not install Caddy or open a firewall/security-group rule.
+# Intended destination: /etc/systemd/system/caddy.service.d/calendar.conf
+[Service]
+EnvironmentFile=/etc/caddy/calendar.env
+# Measured budgets must replace these starting points after local load tests.
+MemoryHigh=192M
+MemoryMax=256M
+TasksMax=128

@@ -32,9 +32,11 @@ import { createModelRequestQueue } from '../ai/request-queue';
 import { createUpdateService } from './update-service';
 import { UpdateStateSchema } from '../shared/update';
 import { prepareDataDirectory, resolveDataDirectory } from './data-directory';
-import { remoteConfigFromArgs, type NativeRemoteConfig } from './remote-config';
+import { connectionArgs, remoteConfigFromArgs, type NativeRemoteConfig } from './remote-config';
+import { createCollectorControlServer } from './collector-control';
 import { startNativeRemote } from './remote-mode';
 import { startCollectorMode } from './collector-mode';
+import { createNativeResourceHost } from './resources-native';
 
 app.setName('终极日历');
 const APP_ID = 'local.ultimate-calendar.desktop'; app.setAppUserModelId(APP_ID);
@@ -57,8 +59,9 @@ let collectorOnly = false, collectorClosing = false, collectorStopped = false;
 let stopCollector: (() => Promise<void>) | undefined;
 let collectorStartup: ReturnType<typeof startCollectorMode> | undefined;
 try {
-  profile = profileFromArgs(process.argv);
-  remoteConfig = remoteConfigFromArgs(process.argv, profile, resolveDataDirectory(app.getPath('documents'), null));
+  const startupArgs = connectionArgs(process.argv, app.getPath('documents'));
+  profile = profileFromArgs(startupArgs);
+  remoteConfig = remoteConfigFromArgs(startupArgs, profile, resolveDataDirectory(app.getPath('documents'), null));
   const dataDirectory = resolveDataDirectory(app.getPath('documents'), profile);
   const collectorFlags = process.argv.filter(value => value.startsWith('--planner-capture-only'));
   if (collectorFlags.length) {
@@ -129,7 +132,12 @@ async function showRetainedSummary(explicit = false) {
 async function start() {
   if (remoteConfig) { const remote = await startNativeRemote(remoteConfig, app.getPath('userData'), documentUrl()); window = remote.window; stopRemote = remote.close; window.once('closed', () => { window = null; }); return; }
   if (collectorOnly) {
-    collectorStartup = startCollectorMode(app.getPath('userData')).then(collector => { stopCollector = collector.close; return collector; });
+    collectorStartup = startCollectorMode(app.getPath('userData')).then(async collector => {
+      stopCollector = collector.close;
+      const control = await createCollectorControlServer({ directory: app.getPath('userData'), api: collector.api, encryption: safeStorage, onShutdown: () => { app.quit(); } });
+      stopCollector = async () => { await control.close(); await collector.close(); };
+      return collector;
+    });
     const collector = await collectorStartup;
     tray = new Tray(nativeImage.createFromPath(join(__dirname, '../assets/app-icon.ico')));
     const collectorStatus = () => {
@@ -208,7 +216,9 @@ async function start() {
     attachments: capture, clearCache: () => session.defaultSession.clearCache(),
   });
   stopSpace = space.stop;
+  const resources = createNativeResourceHost(data, () => window!);
   const api: Omit<DesktopAPI, 'onChanged' | 'onNavigate' | 'onAccountChanged' | 'onCaptureChanged' | 'onUpdateChanged'> = {
+    localSourceEvidence: async request => { const source = repo.snapshot().sources.find(item => item.id === request.sourceId); return source ? { ok: true, data: { sourceId: request.sourceId, match: 'legacy-id', sources: [source] } } : { ok: false, error: { code: 'VALIDATION', message: '本机未找到这份来源', retryable: false } }; },
     spaceSnapshot: async () => ({ ok: true, data: space.snapshot() }),
     spaceConfigure: async policy => ({ ok: true, data: space.configure(policy) }),
     spaceCleanup: async request => ({ ok: true, data: await space.cleanup(request) }),
@@ -291,7 +301,7 @@ async function start() {
       // Cleanup checks other active requests; do not count its own IPC request as a conflict.
       if (method === 'spaceCleanup') return handler(request);
       activeRequests++;
-      try { return await handler(request); } finally { activeRequests--; }
+      try { return await resources.handle(method, request) ?? await handler(request); } finally { activeRequests--; }
     },
   }));
   ipcMain.on('planner:navigation-ready', event => { if (!trustedCaller(actual(event), owner())) return; navigationReady = true; void showRetainedSummary(); });

@@ -8,6 +8,7 @@ import { createPushHttpExtension } from './push-http';
 
 export interface RemoteRuntimeOptions extends RemoteServiceOptions {
   origin: string; port: number; host?: string; staticDirectory?: string; vapidSubject?: string;
+  publicOrigin?: string; trustLoopbackProxy?: boolean;
   shutdownGraceMs?: number; onPushError?(error: unknown): void;
 }
 /** Own every runtime resource, including partially initialized startup failures. */
@@ -38,7 +39,7 @@ export async function startRemoteRuntime(options: RemoteRuntimeOptions) {
       scheduler = createPushScheduler({ snapshot: service.snapshot, store, send: transport.send, onError: options.onPushError });
     }
     const pushStore = store;
-    http = createRemoteHttpServer({ service, origin: options.origin, staticDirectory: options.staticDirectory,
+    http = createRemoteHttpServer({ service, origin: options.origin, publicOrigin: options.publicOrigin, trustLoopbackProxy: options.trustLoopbackProxy, staticDirectory: options.staticDirectory,
       extension: createPushHttpExtension({ store: pushStore, publicKey: transport?.publicKey ?? null, send: transport?.send }),
       onRevokeDevice: id => pushStore.revokeDevice(id) });
     const port = await http.listen(options.port, options.host ?? '127.0.0.1'); scheduler?.start();

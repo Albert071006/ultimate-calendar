@@ -8,12 +8,12 @@ import { SourceSchema, type DesktopAPI, type Source } from '../shared/contracts'
 import { emptyAccountState } from '../shared/account';
 import type { PlannerUI } from './hooks/usePlanner';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.useRealTimers(); });
 const time = '2026-10-23T12:00:00+08:00';
 const oldMessage = { id: 'old-message', accountId: '10001', groupId: 'g1', messageId: 'raw-old', groupName: '旧账号群', senderName: '旧群成员', sentAt: time, importedAt: time, text: '旧账号原文', changed: false, deleted: false,
   attachments: [{ id: 'old-attachment', name: '旧账号附件.txt', kind: 'file' as const, status: 'ready' as const, size: 8, error: null, chunkCount: 1 }] };
 const oldPage = { items: [oldMessage], total: 1, offset: 0, limit: 30 };
-function fixture(initial?: Partial<CaptureSnapshot>, reference?: NonNullable<Source['captureRef']>, modalities?: string[] | null) {
+function fixture(initial?: Partial<CaptureSnapshot>, reference?: NonNullable<Source['captureRef']>, modalities?: string[] | null, scope: 'local' | 'cloud' = 'local') {
   let state = CaptureSnapshotSchema.parse({ config: { accountId: '10001', groupIds: [], enabled: false }, connection: 'online', accountLabel: 'QQ 1***1', accountName: '测试同学', error: null,
     lastReceivedAt: null, credentialConfigured: true,
     stats: { messages: 0, attachments: 0, attachmentBytes: 0, pendingMessages: 0, batches: 0, pendingBatches: 0, uncertainBatches: 0, failedAttachments: 0 }, coverage: [], ...initial });
@@ -29,7 +29,7 @@ function fixture(initial?: Partial<CaptureSnapshot>, reference?: NonNullable<Sou
   const account = emptyAccountState(); account.models.data = [{ id: 'test-model', ...(modalities ? { inputModalities: modalities } : {}) }];
   const api = {
     accountSnapshot: async () => ({ ok: true, data: account }), onAccountChanged: () => () => {},
-    captureSnapshot: async () => ({ ok: true, data: structuredClone(state) }),
+    captureSnapshot: vi.fn(async () => ({ ok: true, data: structuredClone(state) })),
     captureConfigure: config, captureConnect: connect, captureAction: action, captureCleanup: clear,
     captureGroups: vi.fn(async () => ({ ok: true, data: [{ id: 'g1', name: '课程群' }, { id: 'g2', name: '班级群' }] })),
     captureMessages: vi.fn(async () => ({ ok: true, data: { items: [], total: 0, offset: 0, limit: 30 } })),
@@ -37,11 +37,22 @@ function fixture(initial?: Partial<CaptureSnapshot>, reference?: NonNullable<Sou
     captureChunks: vi.fn(async () => ({ ok: true, data: { items: [], total: 0, offset: 0, limit: 5 } })),
     onCaptureChanged: (next: typeof listener) => { listener = next; return () => {}; },
   } as unknown as DesktopAPI;
-  render(<CapturePage ui={{ client: api, host: api, ...(modalities !== undefined ? { snapshot: { settings: { model: 'test-model' } } } : {}) } as unknown as PlannerUI} initialReference={reference} />);
-  return { api, config, connect, action, clear, emit(next: Partial<CaptureSnapshot>) { state = CaptureSnapshotSchema.parse({ ...state, ...next }); act(() => listener(state)); } };
+  const view = render(<CapturePage ui={{ client: api, host: api, ...(modalities !== undefined || scope === 'cloud' ? { snapshot: { settings: { model: 'test-model' }, keyStatus: { scope } } } : {}) } as unknown as PlannerUI} initialReference={reference} />);
+  const update = (next: Partial<CaptureSnapshot>) => { state = CaptureSnapshotSchema.parse({ ...state, ...next }); };
+  return { api, config, connect, action, clear, unmount: view.unmount, state: () => structuredClone(state), update,
+    push(next: CaptureSnapshot) { act(() => listener(next)); }, emit(next: Partial<CaptureSnapshot>) { update(next); act(() => listener(state)); } };
 }
 
 describe('QQ capture page', () => {
+  it('shows automatic key synchronization and allows cancelling credential recovery without stopping collection', async () => {
+    const f = fixture({ config: CaptureConfigSchema.parse({ accountId: '10001', groupIds: ['g1'], enabled: true, analysisEnabled: false }),
+      analysisWaitingForKey: true, cloudKeySync: { state: 'ready', revision: null, configured: false, lastSyncedAt: new Date(time).toISOString(), message: null } }, undefined, undefined, 'cloud');
+    expect(await screen.findByText('等待有效密钥，更新后自动继续')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '停止等待密钥' }));
+    await waitFor(() => expect(f.action).toHaveBeenCalledExactlyOnceWith({ action: 'pause-analysis' }));
+    expect(f.config).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '暂停收集' })).toBeTruthy();
+  });
   it('requires explicit selection and a separate start action before collecting', async () => {
     const f = fixture(); await screen.findByText('QQ 已在线');
     expect((screen.getByRole('button', { name: '开始收集' }) as HTMLButtonElement).disabled).toBe(true);
@@ -80,6 +91,75 @@ describe('QQ capture page', () => {
     expect(f.config.mock.calls[0]![0]).toMatchObject({ enabled: true, analysisEnabled: false });
     expect(await screen.findByText('自动分析已暂停')).toBeTruthy();
     expect(screen.getByRole('button', { name: '暂停收集' })).toBeTruthy();
+  });
+  it('explains an automatic AUTH pause beside the switch and removes the earlier enable notice', async () => {
+    const f = fixture({ config: CaptureConfigSchema.parse({ accountId: '10001', groupIds: ['g1'], enabled: true, analysisEnabled: false }) });
+    fireEvent.click(await screen.findByRole('button', { name: '开启分析' }));
+    expect(await screen.findByText('已开启自动分析。')).toBeTruthy();
+    f.emit({ config: { ...f.state().config, analysisEnabled: false }, error: 'DeepSeek 密钥无效，请检查设置' });
+    const row = screen.getByRole('button', { name: '开启分析' }).parentElement!;
+    expect(within(row).getByRole('alert').textContent).toBe('暂停原因：DeepSeek 密钥无效，请检查设置');
+    expect(screen.queryByText('已开启自动分析。')).toBeNull();
+    expect(screen.getByRole('button', { name: '暂停收集' })).toBeTruthy();
+    expect((screen.getByRole('button', { name: '立即分析' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+  it('polls a cloud collector while this page is open and shows a background pause within two seconds', async () => {
+    vi.useFakeTimers();
+    const f = fixture({ config: CaptureConfigSchema.parse({ accountId: '10001', groupIds: ['g1'], analysisEnabled: false }) }, undefined, undefined, 'cloud');
+    await act(async () => {});
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开启分析' })); });
+    expect(screen.getByText('已开启自动分析。')).toBeTruthy();
+    f.update({ config: { ...f.state().config, analysisEnabled: false }, error: 'DeepSeek 密钥无效，请检查设置' });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1999); });
+    expect(f.api.captureSnapshot).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('自动分析已开启')).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(f.api.captureSnapshot).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('暂停原因：DeepSeek 密钥无效，请检查设置')).toBeTruthy();
+    expect(screen.queryByText('已开启自动分析。')).toBeNull();
+    f.unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+    expect(f.api.captureSnapshot).toHaveBeenCalledTimes(2);
+  });
+  it('uses live events without polling in local mode', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+    expect(f.api.captureSnapshot).toHaveBeenCalledTimes(1);
+  });
+  it('discards an initial snapshot after a newer local background pause event', async () => {
+    const f = fixture();
+    f.emit({ config: { ...f.state().config, analysisEnabled: false }, error: 'DeepSeek 密钥无效，请检查设置' });
+    await act(async () => {});
+    expect(screen.getByText('自动分析已暂停')).toBeTruthy();
+    expect(screen.getByText('暂停原因：DeepSeek 密钥无效，请检查设置')).toBeTruthy();
+  });
+  it('discards a slow cloud poll after the user has enabled analysis', async () => {
+    vi.useFakeTimers();
+    const f = fixture({ config: CaptureConfigSchema.parse({ accountId: '10001', analysisEnabled: false }) }, undefined, undefined, 'cloud');
+    await act(async () => {});
+    const stale = f.state();
+    let resolveSnapshot!: (value: Awaited<ReturnType<DesktopAPI['captureSnapshot']>>) => void;
+    vi.mocked(f.api.captureSnapshot).mockImplementationOnce(() => new Promise(resolve => { resolveSnapshot = resolve; }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开启分析' })); });
+    // The remote desktop echoes snapshot responses as events before returning them.
+    f.push(stale);
+    await act(async () => { resolveSnapshot({ ok: true, data: stale }); });
+    expect(screen.getByText('自动分析已开启')).toBeTruthy();
+    expect(screen.getByText('已开启自动分析。')).toBeTruthy();
+  });
+  it('does not let a late configure response hide a newer automatic pause or announce success', async () => {
+    const f = fixture({ config: CaptureConfigSchema.parse({ accountId: '10001', analysisEnabled: false }) });
+    let resolveConfigure!: (value: { ok: true; data: CaptureSnapshot }) => void;
+    const enabled = { ...f.state(), config: { ...f.state().config, analysisEnabled: true } };
+    f.config.mockImplementationOnce(() => new Promise(resolve => { resolveConfigure = resolve; }));
+    fireEvent.click(await screen.findByRole('button', { name: '开启分析' }));
+    f.emit({ error: 'DeepSeek 密钥无效，请检查设置' });
+    await act(async () => { resolveConfigure({ ok: true, data: enabled }); });
+    expect(screen.getByText('自动分析已暂停')).toBeTruthy();
+    expect(screen.getByText('暂停原因：DeepSeek 密钥无效，请检查设置')).toBeTruthy();
+    expect(screen.queryByText('已开启自动分析。')).toBeNull();
   });
   it('reviews the cleanup date in Shanghai time before deleting originals', async () => {
     const f = fixture(); await screen.findByText('QQ 已在线');
@@ -156,7 +236,7 @@ describe('QQ capture page', () => {
     render(<SourceViewer source={source} ui={{ client: {}, host: {}, busy: false } as PlannerUI} onClose={() => {}} settings={() => {}} courses={() => {}} onCapture={open} />);
     expect(screen.getByText('AI 图片转写 · 请对照原件核对')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '提交 / 重试消息分析' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '查看 QQ 原消息与附件位置' })); expect(open).toHaveBeenCalledWith(reference);
+    fireEvent.click(screen.getByRole('button', { name: '查看本机采集记录与附件' })); expect(open).toHaveBeenCalledWith(reference);
   });
   it('shows an explicit warning for a selected model known not to support images', async () => {
     fixture(undefined, undefined, ['text']);

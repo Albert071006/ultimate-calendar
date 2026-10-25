@@ -9,8 +9,10 @@ import type { DeviceSummary, OfflinePartition, PairedSession, PendingWrite, Reco
 
 interface ClientOptions {
   origin?: string; storage?: OfflineStorage; fetch?: typeof fetch;
-  events?: (url: string) => EventSource; timeoutMs?: number;
+  events?: (url: string) => EventSource; timeoutMs?: number; now?: () => number;
 }
+const SESSION_RENEW_INTERVAL_MS = 12 * 60 * 60_000;
+const SESSION_RENEW_RETRY_MS = 5 * 60_000;
 class HttpFault extends Error { constructor(readonly status: number, message: string) { super(message); } }
 const failure = (message: string, code: 'NETWORK' | 'AUTH' | 'STORAGE' | 'CONFLICT' | 'VALIDATION' = 'NETWORK'): ApiResult<never> => ({ ok: false, error: { code, message, retryable: code === 'NETWORK' } });
 const sameIdentity = (a: PairedSession, b: PairedSession) => a.device.id === b.device.id && a.identity.dataInstanceId === b.identity.dataInstanceId && a.identity.generation === b.identity.generation;
@@ -27,6 +29,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
   const origin = options.origin ?? location.origin;
   const storage = options.storage ?? createOfflineStorage();
   const fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
+  const now = options.now ?? Date.now;
   const pointer = 'active:' + origin;
   let partition: OfflinePartition | undefined;
   let session: PairedSession | undefined;
@@ -34,6 +37,8 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
   const listeners = new Set<() => void>(), changed = new Set<(event: ChangedEvent) => void>();
   let serial: Promise<unknown> = Promise.resolve(), initialized: Promise<void> | undefined, disposed = false;
   let eventSource: EventSource | undefined, refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let renewTimer: ReturnType<typeof setTimeout> | undefined, renewAfter = 0;
+  function stopRenewTimer() { if (renewTimer) clearTimeout(renewTimer); renewTimer = undefined; }
   const clone = () => structuredClone(partition!);
   function emit(patch: Partial<RemoteClientState> = {}, dataChanged = false) {
     state = { ...state, session: session ?? (state.status === 'offline' ? partition?.session : undefined) ?? null,
@@ -66,13 +71,13 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 60_000);
     try {
-      const response = await fetcher(new URL(path, origin), { method, credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
+      const response = await fetcher(new URL(path, origin), { method, credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: controller.signal,
         headers: { ...(input === undefined ? {} : { 'Content-Type': 'application/json' }), ...(method === 'GET' ? {} : { 'X-CSRF-Token': session?.csrfToken ?? '' }) },
         ...(input === undefined ? {} : { body: JSON.stringify(input) }) });
       const value: unknown = await response.json();
       if (!response.ok) {
         const message = value && typeof value === 'object' && 'error' in value && value.error && typeof value.error === 'object' && 'message' in value.error ? String(value.error.message) : '资料服务未完成请求';
-        if (response.status === 401) { session = undefined; eventSource?.close(); emit({ status: 'expired', session: null, message: '授权已失效；手机修改仍保留，尚未提交。' }); }
+        if (response.status === 401) { session = undefined; stopRenewTimer(); eventSource?.close(); emit({ status: 'expired', session: null, message: '授权已失效；手机修改仍保留，尚未提交。' }); }
         throw new HttpFault(response.status, message);
       }
       return value as T;
@@ -129,9 +134,10 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
   }
   async function acceptSession(value: unknown) {
     const parsed = RemoteSessionSchema.parse(value);
-    if (!parsed.paired) { session = undefined; eventSource?.close(); emit({ status: partition ? 'expired' : 'unpaired', session: null, message: partition?.queue.length ? '原设备仍有待提交修改，重新配对不会自动转移或清除它们。' : '' }); return false; }
+    if (!parsed.paired) { session = undefined; stopRenewTimer(); eventSource?.close(); emit({ status: partition ? 'expired' : 'unpaired', session: null, message: partition?.queue.length ? '原设备仍有待提交修改，重新配对不会自动转移或清除它们。' : '' }); return false; }
     if (partition && !sameIdentity(partition.session, parsed) && partition.queue.length) {
       session = undefined;
+      stopRenewTimer();
       emit({ status: 'expired', session: null, message: '服务资料代际或设备授权发生变化。原修改已隔离保存；需要先在原会话核对，不能自动重放到新资料。' });
       throw new HttpFault(409, state.message);
     }
@@ -139,7 +145,39 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     const next = sameIdentity(partition?.session ?? parsed, parsed) && partition ? clone() : await storage.read<OfflinePartition>(key) ?? emptyPartition(parsed);
     next.session = { ...parsed, csrfToken: '' };
     await persist(next); await storage.write(pointer, key);
+    if (!session || !sameIdentity(session, parsed)) renewAfter = 0;
     session = parsed; emit({ status: 'online', session: parsed, message: '' }); connectEvents(); return true;
+  }
+  /** Session maintenance is independent of the business outbox and cannot replay a write. */
+  async function renewSessionIfDue() {
+    if (disposed || !session || state.status !== 'online') return false;
+    if (now() < renewAfter || typeof document !== 'undefined' && document.visibilityState === 'hidden') return true;
+    const expected = session;
+    renewAfter = now() + SESSION_RENEW_RETRY_MS;
+    try {
+      const parsed = RemoteSessionSchema.parse(await request('/api/v1/session/renew', undefined, 'POST'));
+      if (disposed || session !== expected || state.status !== 'online') return false;
+      if (!parsed.paired || !sameIdentity(expected, parsed) || parsed.csrfToken !== expected.csrfToken) {
+        session = undefined; stopRenewTimer(); eventSource?.close();
+        emit({ status: 'expired', session: null, message: '续期时设备授权或资料身份发生变化，原修改已保留，请重新核对连接。' });
+        return false;
+      }
+      session = parsed; renewAfter = now() + SESSION_RENEW_INTERVAL_MS; emit({ session: parsed });
+      return true;
+    } catch {
+      // A lost maintenance response never resends business mutations, discards drafts or restores revoked auth.
+      // Legacy services may not yet expose this endpoint; ordinary authenticated work remains available.
+      return !!session && state.status === 'online';
+    }
+  }
+  function scheduleRenewal() {
+    stopRenewTimer();
+    if (disposed || !session || state.status !== 'online') return;
+    const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+    renewTimer = setTimeout(() => {
+      renewTimer = undefined;
+      void locked(renewSessionIfDue).catch(() => {}).finally(scheduleRenewal);
+    }, Math.max(1000, hidden ? SESSION_RENEW_RETRY_MS : renewAfter - now()));
   }
   async function finish(item: PendingWrite, result: ApiResult<unknown>): Promise<void> {
     if (!partition) return;
@@ -272,8 +310,10 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     await locked(async () => {
       try {
         if (!await acceptSession(await request('/api/v1/session'))) return;
+        if (!await renewSessionIfDue()) return;
         await flush(); await refreshCanonical(); emit({}, true);
       } catch (error) { networkFailure(error); if (error instanceof HttpFault && [409, 507].includes(error.status)) throw error; }
+      finally { scheduleRenewal(); }
     });
   }
   const online = () => { if (!disposed) void reconnect().catch(() => {}); };
@@ -306,7 +346,10 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     },
     pair: (code, name) => locked(async () => {
       if (partition?.queue.length && state.status === 'expired') throw Error('原设备有未完成操作。请恢复原设备会话或先核对保留的修改，不能直接换身份提交。');
-      if (await acceptSession(await request('/api/v1/pair', { code, name }))) { await refreshCanonical(); emit({}, true); }
+      if (await acceptSession(await request('/api/v1/pair', { code, name }))) {
+        renewAfter = now() + SESSION_RENEW_INTERVAL_MS;
+        await refreshCanonical(); emit({}, true); scheduleRenewal();
+      }
     }), reconnect,
     resolve: (id, action) => locked(async () => {
       const item = partition?.queue.find(value => value.id === id); if (!item) return;
@@ -331,7 +374,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     }),
     logout: () => locked(async () => {
       if (partition?.queue.length) throw Error('还有未提交或结果未知的修改，请先处理后退出');
-      await request('/api/v1/logout', {}); await storage.remove(pointer); partition = undefined; session = undefined; eventSource?.close(); emit({ status: 'unpaired', session: null, message: '' });
+      await request('/api/v1/logout', {}); await storage.remove(pointer); partition = undefined; session = undefined; stopRenewTimer(); eventSource?.close(); emit({ status: 'unpaired', session: null, message: '' });
     }),
     async devices() { const result = await request<{ devices: DeviceSummary[] }>('/api/v1/devices'); return result.devices.map(device => ({ ...device, current: device.id === session?.device.id })); },
     async revokeDevice(id) { if (id === session?.device.id) return controller.logout(); await request('/api/v1/devices/' + encodeURIComponent(id), undefined, 'DELETE'); },
@@ -349,7 +392,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
       const index = await storage.read<string[]>(indexKey) ?? [];
       await storage.write(indexKey, [...index, archiveKey]);
       await storage.remove(pointer);
-      partition = undefined; session = undefined; eventSource?.close();
+      partition = undefined; session = undefined; stopRenewTimer(); eventSource?.close();
       emit({ status: 'unpaired', session: null, message: '旧修改已保留在此手机的隔离档案。新配对不会自动发送它们。' });
       return archive;
     }),
@@ -358,7 +401,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
       const values = await Promise.all(keys.map(key => storage.read<RecoveryArchive>(key)));
       return values.filter((value): value is RecoveryArchive => !!value);
     }),
-    dispose() { disposed = true; eventSource?.close(); if (refreshTimer) clearTimeout(refreshTimer); if (typeof window !== 'undefined') { window.removeEventListener('online', online); window.removeEventListener('offline', offlineEvent); window.removeEventListener('pageshow', online); } if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', visible); listeners.clear(); changed.clear(); },
+    dispose() { disposed = true; stopRenewTimer(); eventSource?.close(); if (refreshTimer) clearTimeout(refreshTimer); if (typeof window !== 'undefined') { window.removeEventListener('online', online); window.removeEventListener('offline', offlineEvent); window.removeEventListener('pageshow', online); } if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', visible); listeners.clear(); changed.clear(); },
   };
   return controller;
 }

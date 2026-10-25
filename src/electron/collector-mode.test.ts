@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startCollectorMode, type CollectorDependencies } from './collector-mode';
 import type { Repository } from '../storage/repository';
 import type { CaptureStore } from '../capture/store';
+import { CaptureSnapshotSchema } from '../shared/capture';
+import { SpaceSnapshotSchema } from '../shared/space';
 
 vi.mock('electron', () => ({ safeStorage: { isAsyncEncryptionAvailable: async () => true } }));
 vi.mock('../capture/documents/runtime', () => ({ createDocumentExtractor: () => { throw Error('Tests must inject document handling'); } }));
@@ -29,6 +31,101 @@ function fixture() {
   return { root, dependencies, repoClose, storeClose, dispose, start, stop, keyGet, bridgeGet, set, warnings, options: () => options!, busy: (value: boolean) => { busy = value; } };
 }
 describe('Windows collection-only backend', () => {
+  it('owns cloud synchronization independently of UI subscribers and exposes only its metadata', async () => {
+    const value = fixture(), original = value.dependencies.createCaptureService!;
+    const snapshot = CaptureSnapshotSchema.parse({ config: {}, connection: 'disconnected', accountLabel: null, error: null, lastReceivedAt: null, credentialConfigured: true,
+      stats: { messages: 0, attachments: 0, attachmentBytes: 0, pendingMessages: 0, batches: 0, pendingBatches: 0, uncertainBatches: 0, failedAttachments: 0 }, coverage: [] });
+    const credentialsChanged = vi.fn(async () => snapshot);
+    value.dependencies.createCaptureService = options => ({ ...original(options), snapshot: () => snapshot, credentialsChanged });
+    const state = { state: 'ready' as const, configured: true, revision: '33333333-3333-4333-8333-333333333333', lastSyncedAt: new Date(0).toISOString(), message: null };
+    const startSync = vi.fn(), refresh = vi.fn(async () => {}), getApiKey = vi.fn(async () => 'synthetic-cloud-exclusive-key');
+    let release: () => void = () => {};
+    const closeSync = vi.fn(() => new Promise<void>(done => { release = done; }));
+    let syncOptions: Parameters<NonNullable<CollectorDependencies['createCollectorKeySync']>>[0] | undefined;
+    value.dependencies.createCollectorKeySync = options => { syncOptions = options; return { start: startSync, refresh, getApiKey, status: () => state, close: closeSync }; };
+    try {
+      const mode = await startCollectorMode(value.root, value.dependencies); expect(startSync).toHaveBeenCalledOnce();
+      expect(await value.options().getApiKey()).toBe('synthetic-cloud-exclusive-key'); expect(value.keyGet).not.toHaveBeenCalled();
+      expect(await mode.api.invoke('captureSetApiKey', { key: 'synthetic-manual-replacement' })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } }); expect(value.set).not.toHaveBeenCalled();
+      expect(await mode.api.invoke('captureRefreshApiKey')).toMatchObject({ ok: true, data: { cloudKeySync: state } }); expect(refresh).toHaveBeenCalledOnce();
+      expect(await mode.api.invoke('captureRefreshApiKey', { key: 'synthetic-wrong-input' })).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
+      const listener = vi.fn(), unsubscribe = mode.subscribe(listener); syncOptions!.onStatusChanged!(); expect(listener).toHaveBeenCalledWith({ ...snapshot, cloudKeySync: state });
+      unsubscribe(); await syncOptions!.onChanged!({ previousRevision: undefined, revision: state.revision, configured: true, sourceId: 'a'.repeat(64) });
+      expect(credentialsChanged).toHaveBeenCalledExactlyOnceWith({ configured: true, revision: state.revision, sourceId: 'a'.repeat(64) });
+      expect(JSON.stringify(await mode.api.invoke('captureSnapshot'))).not.toContain('synthetic-cloud-exclusive-key');
+      const closing = mode.close(); expect(closeSync).toHaveBeenCalledOnce(); expect(value.repoClose).not.toHaveBeenCalled(); release(); await closing;
+      expect(value.repoClose).toHaveBeenCalledOnce(); expect(value.stop).toHaveBeenCalledOnce();
+    } finally { rmSync(value.root, { recursive: true, force: true }); }
+  });
+  it('keeps collection alive while invalid cloud configuration blocks old-key fallback', async () => {
+    const value = fixture(); mkdirSync(join(value.root, 'credentials')); writeFileSync(join(value.root, 'credentials', 'cloud-key-sync.json'), '{invalid synthetic config}', { mode: 0o600 });
+    try {
+      const mode = await startCollectorMode(value.root, value.dependencies); expect(value.start).toHaveBeenCalledOnce();
+      await expect(value.options().getApiKey()).rejects.toMatchObject({ code: 'CANCELLED' }); expect(value.keyGet).not.toHaveBeenCalled(); expect(value.set).not.toHaveBeenCalled();
+      expect(await mode.api.invoke('captureSetApiKey', { key: 'synthetic-manual-replacement' })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+      await mode.close(); expect(value.repoClose).toHaveBeenCalledOnce();
+    } finally { rmSync(value.root, { recursive: true, force: true }); }
+  });
+  it('updates only the local AI key through the existing encrypted owner without returning its value', async () => {
+    const value = fixture(); value.set.mockResolvedValue({ configured: true, sessionOnly: false });
+    try {
+      const mode = await startCollectorMode(value.root, value.dependencies);
+      const key = 'synthetic-repaired-capture-key';
+      const result = await mode.api.invoke('captureSetApiKey', { key });
+      expect(result).toEqual({ ok: true, data: { configured: true, sessionOnly: false } });
+      expect(value.set).toHaveBeenCalledExactlyOnceWith(key);
+      expect(JSON.stringify(result)).not.toContain(key);
+      expect(await mode.api.invoke('captureSetApiKey', { key: 123 })).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
+      expect(value.set).toHaveBeenCalledTimes(1); await mode.close();
+    } finally { rmSync(value.root, { recursive: true, force: true }); }
+  });
+  it('preserves the old capture key when secure persistence is unavailable', async () => {
+    const value = fixture();
+    value.dependencies.encryption = { isAsyncEncryptionAvailable: async () => false, encryptStringAsync: vi.fn(), decryptStringAsync: vi.fn() };
+    try {
+      const mode = await startCollectorMode(value.root, value.dependencies);
+      expect(await mode.api.invoke('captureSetApiKey', { key: 'synthetic-repaired-capture-key' })).toMatchObject({ ok: false, error: { code: 'STORAGE' } });
+      expect(value.set).not.toHaveBeenCalled(); await mode.close();
+    } finally { rmSync(value.root, { recursive: true, force: true }); }
+  });
+  it('runs storage management in the collector owner and drains cleanup before closing its databases', async () => {
+    const value = fixture(); let cleaning = false, release: () => void = () => {}, managerBusy: () => boolean = () => false;
+    const storage = SpaceSnapshotSchema.parse({ policy: {}, backupDirectory: value.root, databaseBytes: 0, reusableBytes: 0, cacheBytes: 0, backupBytes: 0, managedBackupBytes: 0, unmanagedBackupBytes: 0, backupCount: 0, removableBackupCount: 0, removableBackupBytes: 0, lastRunAt: null, lastResult: null, warnings: [],
+      attachments: { totalBytes: 0, eligibleBytes: 0, protectedBytes: 0, reclaimableBytes: 0, remainingBytes: 0, selectedAttachments: 0, protectedAttachments: 0, overBudgetBytes: 0 } });
+    const storageStart = vi.fn(), storageStop = vi.fn(), configure = vi.fn(() => storage);
+    value.dependencies.createSpaceManager = options => {
+      expect(options.directory).toBe(value.root); managerBusy = options.isBusy;
+      return { snapshot: () => storage, configure, isRunning: () => cleaning, start: storageStart, stop: storageStop,
+        cleanup: async () => { expect(managerBusy()).toBe(false); cleaning = true; await new Promise<void>(done => { release = done; }); cleaning = false; return storage; } };
+    };
+    try {
+      const mode = await startCollectorMode(value.root, value.dependencies); expect(storageStart).toHaveBeenCalledOnce();
+      expect(await mode.api.invoke('spaceSnapshot')).toMatchObject({ ok: true, data: storage });
+      expect(await mode.api.invoke('spaceConfigure', storage.policy)).toMatchObject({ ok: true }); expect(configure).toHaveBeenCalledOnce();
+      const cleanup = mode.api.invoke('spaceCleanup', {});
+      expect(await mode.api.invoke('captureSnapshot')).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+      const closing = mode.close(); expect(value.repoClose).not.toHaveBeenCalled(); expect(storageStop).toHaveBeenCalledOnce();
+      release(); expect(await cleanup).toMatchObject({ ok: true }); await closing; expect(value.repoClose).toHaveBeenCalledOnce();
+    } finally { rmSync(value.root, { recursive: true, force: true }); }
+  });
+  it('routes bounded capture controls through the existing owner and rejects arbitrary methods', async () => {
+    const value = fixture(); const original = value.dependencies.createCaptureService!;
+    const snapshot = CaptureSnapshotSchema.parse({ config: {}, connection: 'disconnected', accountLabel: null, error: null, lastReceivedAt: null, credentialConfigured: true,
+      stats: { messages: 0, attachments: 0, attachmentBytes: 0, pendingMessages: 0, batches: 0, pendingBatches: 0, uncertainBatches: 0, failedAttachments: 0 }, coverage: [] });
+    const configure = vi.fn(async () => snapshot), messages = vi.fn(() => ({ items: [], total: 0, offset: 0, limit: 30 }));
+    value.dependencies.createCaptureService = options => ({ ...original(options), snapshot: () => snapshot, configure, messages });
+    try {
+      const mode = await startCollectorMode(value.root, value.dependencies);
+      expect(await mode.api.invoke('captureSnapshot')).toMatchObject({ ok: true, data: snapshot });
+      expect(await mode.api.invoke('captureConfigure', snapshot.config)).toMatchObject({ ok: true }); expect(configure).toHaveBeenCalledOnce();
+      expect(await mode.api.invoke('captureMessages', {})).toMatchObject({ ok: true }); expect(messages).toHaveBeenCalledOnce();
+      expect(await mode.api.invoke('captureMessages', { limit: 1000 })).toMatchObject({ ok: false, error: { code: 'VALIDATION' } }); expect(messages).toHaveBeenCalledOnce();
+      expect(await mode.api.invoke('mutate', {})).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
+      const observer = vi.fn(); const unsubscribe = mode.subscribe(observer); value.options().onChanged!(snapshot); expect(observer).toHaveBeenCalledOnce(); unsubscribe();
+      await mode.close(); expect(await mode.api.invoke('captureSnapshot')).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+      expect(value.dependencies.createRepository).toHaveBeenCalledOnce(); expect(value.dependencies.createCaptureStore).toHaveBeenCalledOnce();
+    } finally { rmSync(value.root, { recursive: true, force: true }); }
+  });
   it('refuses a missing source without creating a database or initializing services', async () => {
     const value = fixture();
     try {

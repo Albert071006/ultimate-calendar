@@ -1,8 +1,11 @@
 import { z } from 'zod';
+import { ResourceReferencesSchema, ResourceOwnerSchema } from './resources';
+import type { ResourceDesktopAPI } from './resource-host';
 import type { CaptureDesktopAPI as importCaptureAPI } from './capture-api';
 import { LedgerCommandProposalSchema } from './ledger-command';
 import { LedgerMonthSchema } from './ledger';
 import { PALETTE_COLORS } from './palette';
+import { AiConfigurationRevisionSchema, AiConfigurationStatusSchema } from './ai-configuration-status';
 
 /** Shared transport boundary. Unknown properties are rejected, never silently stripped. */
 export const SCHEMA_VERSION = 1;
@@ -110,7 +113,7 @@ export type Candidate = z.infer<typeof CandidateSchema>;
 export type CandidateInput = z.input<typeof CandidateInputSchema>;
 const taskValue = z.strictObject({ title: TitleSchema, description: text.default(''), status: z.enum(['open', 'done']).default('open'),
   deadline: DeadlineSchema.nullable().default(null), goalId: IdSchema.nullable().default(null), candidateId: IdSchema.nullable().default(null), reminders: reminder,
-  courseId: IdSchema.nullable().default(null) });
+  courseId: IdSchema.nullable().default(null), resources: ResourceReferencesSchema.optional() });
 export const TaskInputSchema = taskValue;
 export const TaskSchema = taskValue.extend(metadata);
 export type Task = z.infer<typeof TaskSchema>;
@@ -132,7 +135,7 @@ export type RecurrenceRuleInput = z.input<typeof RecurrenceRuleSchema>;
 export const EventRecurrenceSchema = z.strictObject({ seriesId: IdSchema, occurrenceStart: InstantSchema });
 export const RecurringEventScopeSchema = z.enum(['single', 'this-and-following']);
 const blockValue = z.strictObject({ title: TitleSchema, start: InstantSchema, end: InstantSchema.nullable(), kind: z.enum(['work', 'event']),
-  taskId: IdSchema.nullable().default(null), candidateId: IdSchema.nullable().default(null), location: shortText.default(''), completed: z.boolean().default(false), reminders: reminder });
+  taskId: IdSchema.nullable().default(null), candidateId: IdSchema.nullable().default(null), location: shortText.default(''), completed: z.boolean().default(false), reminders: reminder, resources: ResourceReferencesSchema.optional() });
 const blockInterval = (value: { start: string; end: string | null; kind: string }) =>
   value.end === null ? value.kind === 'event' : Date.parse(value.end) > Date.parse(value.start);
 /** Source-event provenance is internal metadata; renderer/AI cannot forge it. */
@@ -146,7 +149,7 @@ export type BlockInput = z.input<typeof BlockInputSchema>;
 export const ColorSchema = z.enum(PALETTE_COLORS);
 const goalValue = z.strictObject({ title: TitleSchema, description: text.default(''), priority: z.enum(['low', 'medium', 'high']).default('medium'),
   targetDate: DateOnlySchema.nullable().default(null), status: z.enum(['active', 'completed', 'paused']).default('active'),
-  color: ColorSchema.nullable().default(null) });
+  color: ColorSchema.nullable().default(null), resources: ResourceReferencesSchema.optional() });
 export const GoalInputSchema = goalValue;
 export const GoalSchema = goalValue.extend(metadata);
 export type Goal = z.infer<typeof GoalSchema>;
@@ -155,7 +158,7 @@ const courseValue = z.strictObject({ title: TitleSchema, location: shortText.def
   startTime: TimeSchema, endTime: TimeSchema, firstWeek: z.number().int().min(1).max(100), lastWeek: z.number().int().min(1).max(100),
   parity: z.enum(['all', 'odd', 'even']).default('all'), termStart: monday,
   weeks: z.array(z.number().int().min(1).max(100)).min(1).max(100).nullable().default(null), reminders: reminder,
-  color: ColorSchema.nullable().default(null) });
+  color: ColorSchema.nullable().default(null), resources: ResourceReferencesSchema.optional() });
 const courseInterval = (value: { firstWeek: number; lastWeek: number; startTime: string; endTime: string; weeks: number[] | null }) =>
   value.firstWeek <= value.lastWeek && value.startTime < value.endTime &&
   (value.weeks === null || value.weeks.every(week => week >= value.firstWeek && week <= value.lastWeek));
@@ -204,6 +207,8 @@ export const DEFAULT_SETTINGS: Settings = SettingsSchema.parse({});
 export const KeyStatusSchema = z.strictObject({
   configured: z.boolean(), sessionOnly: z.boolean(),
   loadError: z.enum(['unavailable', 'read', 'decrypt', 'invalid']).optional(),
+  scope: z.enum(['local', 'cloud']).optional(),
+  cloudConfiguration: AiConfigurationStatusSchema.optional(),
 });
 export type KeyStatus = z.infer<typeof KeyStatusSchema>;
 export const EntityKindSchema = z.enum(['source', 'candidate', 'task', 'block', 'goal', 'course', 'courseException', 'preference', 'feedback']);
@@ -238,9 +243,9 @@ function entityMutations<K extends EntityKind, S extends z.ZodType, P extends z.
 }
 const candidateDecision = { id: IdSchema, expectedVersion: version, reason: shortText.optional() };
 const candidateEditable = candidateValue.omit({ status: true, taskId: true, sourceIds: true, duplicateOfId: true, revisionOfId: true, snoozedUntil: true, sourceQuote: true, temporalEvidence: true });
-const recurringEventEditable = blockEditable.pick({ title: true, start: true, end: true, location: true, reminders: true });
+const recurringEventEditable = blockEditable.pick({ title: true, start: true, end: true, location: true, reminders: true, resources: true });
 export const MutationSchema = z.union([
-  z.strictObject({ type: z.literal('updateRecurringEvent'), id: IdSchema, expectedVersion: version, scope: RecurringEventScopeSchema, values: nonemptyPatch(recurringEventEditable) }),
+  z.strictObject({ type: z.literal('updateRecurringEvent'), id: IdSchema, expectedVersion: version, scope: RecurringEventScopeSchema, values: nonemptyPatch(recurringEventEditable), resourceMode: z.literal('append').optional() }),
   z.strictObject({ type: z.literal('cancelRecurringEvent'), id: IdSchema, expectedVersion: version, scope: RecurringEventScopeSchema }),
   z.strictObject({ type: z.literal('delete'), entity: z.literal('source'), id: IdSchema, expectedVersion: version, acknowledgeProvenanceLoss: z.literal(true) }),
   z.strictObject({ type: z.literal('update'), entity: z.literal('candidate'), id: IdSchema, expectedVersion: version, values: nonemptyPatch(candidateEditable) }),
@@ -263,8 +268,8 @@ export const MutationSchema = z.union([
   // One user action creates both records; the service supplies their shared taskId.
   z.strictObject({ type: z.literal('createScheduledTask'), values: TaskInputSchema, start: InstantSchema, end: InstantSchema.nullable().default(null), location: shortText.default(''), reminders: ReminderConfigSchema.optional() })
     .refine(value => value.end === null || Date.parse(value.end) > Date.parse(value.start), '活动结束必须晚于开始'),
-  z.strictObject({ type: z.literal('scheduleRecurringTask'), id: IdSchema, expectedVersion: version, rule: RecurrenceRuleSchema, location: shortText.default(''), reminders: ReminderConfigSchema.optional() }),
-  z.strictObject({ type: z.literal('createRecurringTask'), values: TaskInputSchema, rule: RecurrenceRuleSchema, location: shortText.default(''), reminders: ReminderConfigSchema.optional() }),
+  z.strictObject({ type: z.literal('scheduleRecurringTask'), id: IdSchema, expectedVersion: version, rule: RecurrenceRuleSchema, location: shortText.default(''), reminders: ReminderConfigSchema.optional(), resources: ResourceReferencesSchema.optional() }),
+  z.strictObject({ type: z.literal('createRecurringTask'), values: TaskInputSchema, rule: RecurrenceRuleSchema, location: shortText.default(''), reminders: ReminderConfigSchema.optional(), resources: ResourceReferencesSchema.optional() }),
   z.strictObject({ type: z.literal('finishBlock'), id: IdSchema, expectedVersion: version, completed: z.boolean().default(true) }),
 ]);
 export type Mutation = z.infer<typeof MutationSchema>;
@@ -349,6 +354,7 @@ export const CommandRequestSchema = z.strictObject({ operationId: IdSchema, text
   selected: z.array(z.strictObject({ entity: EntityKindSchema, id: IdSchema })).max(100).default([]),
   domain: z.enum(['calendar', 'ledger']).optional(),
   ledgerView: LedgerViewContextSchema.optional(),
+  resources: ResourceReferencesSchema.optional(),
   fromDate: DateOnlySchema.optional(), toDate: DateOnlySchema.optional(),
   history: z.array(z.strictObject({ role: z.enum(['user', 'assistant']), text: z.string().max(10_000), outcome: ConversationStateSchema.optional() })).max(20).default([]),
 });
@@ -359,10 +365,12 @@ export const CommandIntentSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('mutate'), reply: text, mutations: z.array(MutationSchema).min(1).max(500) }),
   z.strictObject({ kind: z.literal('undo'), reply: text, transactionId: IdSchema.optional() }),
   z.strictObject({ kind: z.literal('ledger'), reply: text }),
+  z.strictObject({ kind: z.literal('resource_open'), reply: text, resourceIds: z.array(IdSchema).min(1).max(10) }),
+  z.strictObject({ kind: z.literal('resource_attach'), reply: text, target: ResourceOwnerSchema, expectedVersion: version, resourceIds: z.array(IdSchema).min(1).max(50), scope: RecurringEventScopeSchema.optional() }),
   z.strictObject({ kind: z.literal('clarification'), reply: text, questions: z.array(shortText).min(1).max(20) }),
 ]);
 export type CommandIntent = z.infer<typeof CommandIntentSchema>;
-export const CommandResultSchema = z.strictObject({ reply: text, mutationResult: MutationResultSchema.nullable(), items: z.array(CalendarItemSchema).default([]), conversationState: ConversationStateSchema.optional() });
+export const CommandResultSchema = z.strictObject({ reply: text, mutationResult: MutationResultSchema.nullable(), items: z.array(CalendarItemSchema).default([]), resourcesToOpen: ResourceReferencesSchema.optional(), conversationState: ConversationStateSchema.optional() });
 export type CommandResult = z.infer<typeof CommandResultSchema>;
 /** CSV/XLSX chooser runs in main; no arbitrary renderer filesystem path or read/write primitive. */
 export const CourseImportRequestSchema = z.discriminatedUnion('kind', [
@@ -383,9 +391,9 @@ export const WorkflowReceiptSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('courses'), sourceId: IdSchema.nullable().default(null), result: CourseImportResultSchema.nullable() }),
 ]);
 export type WorkflowReceipt = z.infer<typeof WorkflowReceiptSchema>;
-export const SaveSettingsRequestSchema = z.strictObject({ settings: SettingsSchema });
-export const SetApiKeyRequestSchema = z.strictObject({ key: z.string().trim().min(1).max(2000).nullable() });
-export const BackupResultSchema = z.strictObject({ path: z.string(), includesSources: z.literal(true) });
+export const SaveSettingsRequestSchema = z.strictObject({ settings: SettingsSchema, expectedSettings: SettingsSchema.optional() });
+export const SetApiKeyRequestSchema = z.strictObject({ key: z.string().trim().min(1).max(2000).nullable(), expectedRevision: AiConfigurationRevisionSchema.optional() });
+export const BackupResultSchema = z.strictObject({ path: z.string(), includesSources: z.boolean() });
 export type BackupResult = z.infer<typeof BackupResultSchema>;
 export const RestoreRequestSchema = z.strictObject({ confirmed: z.boolean().default(false), confirmationToken: IdSchema.optional() });
 export type RestoreRequest = z.input<typeof RestoreRequestSchema>;
@@ -399,10 +407,13 @@ export type ChangedEvent = z.infer<typeof ChangedEventSchema>;
 export const SelectedImageSchema = z.strictObject({ imageDataUrl: ImageDataUrlSchema, label: z.string().max(2000) });
 export const SelectImageResultSchema = apiResultSchema(SelectedImageSchema.nullable());
 export type SelectedImage = z.infer<typeof SelectedImageSchema>;
+export const LocalSourceEvidenceRequestSchema = z.strictObject({ sourceId: IdSchema });
+export const LocalSourceEvidenceSchema = z.strictObject({ sourceId: IdSchema, match: z.enum(['legacy-id', 'distilled-index']), sources: z.array(SourceSchema).min(1).max(100) });
 export const NavigateEventSchema = z.strictObject({ entity: EntityKindSchema, id: IdSchema });
 export type NavigateEvent = z.infer<typeof NavigateEventSchema>;
 /** Only this narrow asynchronous surface may cross the sandboxed renderer/preload boundary. */
-export interface DesktopAPI extends importCaptureAPI {
+export interface DesktopAPI extends importCaptureAPI, ResourceDesktopAPI {
+  localSourceEvidence(request: z.input<typeof LocalSourceEvidenceRequestSchema>): Promise<ApiResult<z.infer<typeof LocalSourceEvidenceSchema>>>;
   spaceSnapshot(): Promise<ApiResult<import('./space').SpaceSnapshot>>;
   spaceConfigure(policy: import('./space').SpacePolicy): Promise<ApiResult<import('./space').SpaceSnapshot>>;
   spaceCleanup(request: { clearCache: boolean }): Promise<ApiResult<import('./space').SpaceSnapshot>>;

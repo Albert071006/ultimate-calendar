@@ -12,10 +12,14 @@ export const BackupStatusSchema = z.strictObject({
 });
 export type BackupStatus = z.infer<typeof BackupStatusSchema>;
 export const EMPTY_BACKUP_STATUS: BackupStatus = { status: 'never', lastAttemptAt: null, lastSuccessAt: null, consecutiveFailures: 0, failureCode: null };
+export const RestoreStatusSchema = z.strictObject({ status: z.enum(['never', 'processing', 'completed', 'interrupted']), at: z.string().datetime().nullable(), generation: z.number().int().positive().nullable() });
+export type RestoreStatus = z.infer<typeof RestoreStatusSchema>;
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('base64url');
 type SessionRow = { hash: string; id: string; name: string; csrf: string; expires: number };
+const SESSION_LIFETIME_MS = 30 * 86400_000;
+const SESSION_RENEW_WINDOW_MS = 15 * 86400_000;
 type OpRow = { id: string; device: string; method: RemoteMethod; fingerprint: string; status: string; result: string | null; generation: number };
 export class RemoteFault extends Error { constructor(readonly status: number, message: string) { super(message); } }
 
@@ -36,6 +40,7 @@ export class RemoteState {
     if (!this.db.prepare('SELECT 1 FROM metadata').get()) this.db.prepare('INSERT INTO metadata VALUES(1,?)').run(JSON.stringify({ protocolVersion: 1, dataInstanceId: randomUUID(), generation: 1 }));
     if (recoverPending) this.db.exec("UPDATE operations SET status='interrupted' WHERE status='processing'");
     this.db.exec("DELETE FROM operations WHERE method IN ('snapshot','ledgerSnapshot')");
+    if (this.restoreStatus().status === 'processing') this.saveRestoreStatus({ ...this.restoreStatus(), status: 'interrupted' });
     if (process.platform !== 'win32') for (const suffix of ['-wal', '-shm']) if (existsSync(`${path}${suffix}`)) chmodSync(`${path}${suffix}`, 0o600);
   }
   identity(): RemoteIdentity { return RemoteIdentitySchema.parse(JSON.parse(String(this.db.prepare('SELECT identity FROM metadata WHERE id=1').get()!.identity))); }
@@ -46,27 +51,41 @@ export class RemoteState {
     catch { return { ...EMPTY_BACKUP_STATUS, status: 'failed', consecutiveFailures: 1, failureCode: 'STATUS_UNREADABLE' }; }
   }
   saveBackupStatus(status: BackupStatus): void { this.db.prepare("INSERT OR REPLACE INTO operational(key,payload) VALUES('backup',?)").run(JSON.stringify(BackupStatusSchema.parse(status))); }
+  restoreStatus(): RestoreStatus {
+    const row = this.db.prepare("SELECT payload FROM operational WHERE key='restore'").get();
+    if (!row) return { status: 'never', at: null, generation: null };
+    try { return RestoreStatusSchema.parse(JSON.parse(String(row.payload))); }
+    catch { return { status: 'interrupted', at: null, generation: null }; }
+  }
+  saveRestoreStatus(status: RestoreStatus): void { this.db.prepare("INSERT OR REPLACE INTO operational(key,payload) VALUES('restore',?)").run(JSON.stringify(RestoreStatusSchema.parse(status))); }
   /** Call after a controlled restore/replacement before accepting any old queued writes. */
-  advanceGeneration(): RemoteIdentity {
+  advanceGeneration(clearOperations = false): RemoteIdentity {
     const next = { ...this.identity(), generation: this.identity().generation + 1 };
-    this.db.prepare('UPDATE metadata SET identity=? WHERE id=1').run(JSON.stringify(next)); return next;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('UPDATE metadata SET identity=? WHERE id=1').run(JSON.stringify(next));
+      if (clearOperations) this.db.exec('DELETE FROM operations');
+      this.db.exec('COMMIT'); return next;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   createPairingCode(): string {
     const code = secret();
     this.db.prepare('INSERT OR REPLACE INTO pairing(id,hash,expires,attempts) VALUES(1,?,?,0)').run(digest(code), this.now() + 10 * 60_000);
     return code;
   }
-  pair(code: string, name: string): { token: string; csrfToken: string; device: RemoteDevice } {
+  pair(code: string, name: string, options: { countAttempt?: boolean } = {}): { token: string; csrfToken: string; device: RemoteDevice } {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const row = this.db.prepare('SELECT hash,expires,attempts FROM pairing WHERE id=1').get() as { hash: string; expires: number; attempts: number } | undefined;
       if (!row || row.expires <= this.now() || row.attempts >= 10) throw new RemoteFault(429, '配对码已失效或尝试过多，请在服务端重新生成');
-      this.db.prepare('UPDATE pairing SET attempts=attempts+1 WHERE id=1').run();
+      // A public edge rate-limits guesses per client instead of letting strangers exhaust the owner's code.
+      // A code already locked by the legacy policy remains locked on every entrance.
+      if (options.countAttempt !== false) this.db.prepare('UPDATE pairing SET attempts=attempts+1 WHERE id=1').run();
       if (!timingSafeEqual(Buffer.from(row.hash, 'hex'), Buffer.from(digest(code), 'hex'))) {
         this.db.exec('COMMIT'); throw new RemoteFault(403, '配对码不正确');
       }
       const token = secret(), csrfToken = secret(), device = { id: randomUUID(), name };
-      this.db.prepare('INSERT INTO sessions(hash,id,name,csrf,expires) VALUES(?,?,?,?,?)').run(digest(token), device.id, name, csrfToken, this.now() + 30 * 86400_000);
+      this.db.prepare('INSERT INTO sessions(hash,id,name,csrf,expires) VALUES(?,?,?,?,?)').run(digest(token), device.id, name, csrfToken, this.now() + SESSION_LIFETIME_MS);
       this.db.exec('DELETE FROM pairing'); this.db.exec('COMMIT'); return { token, csrfToken, device };
     } catch (error) { try { this.db.exec('ROLLBACK'); } catch { /* bad-code attempt already persisted */ } throw error; }
   }
@@ -74,6 +93,22 @@ export class RemoteState {
     if (!token || token.length > 200) return null;
     const row = this.db.prepare('SELECT * FROM sessions WHERE hash=? AND expires>?').get(digest(token), this.now()) as SessionRow | undefined;
     return row ? { device: { id: row.id, name: row.name }, csrfToken: row.csrf } : null;
+  }
+  /** The HTTP caller must first validate the authenticated session, exact Origin and CSRF token. */
+  renewSession(token: string | undefined): { device: RemoteDevice; csrfToken: string; renewed: boolean; expiresAt: string } | null {
+    if (!token || token.length > 200) return null;
+    const at = this.now();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const row = this.db.prepare('SELECT * FROM sessions WHERE hash=? AND expires>?').get(digest(token), at) as SessionRow | undefined;
+      if (!row) { this.db.exec('COMMIT'); return null; }
+      const renewed = row.expires - at <= SESSION_RENEW_WINDOW_MS;
+      const expires = renewed ? at + SESSION_LIFETIME_MS : row.expires;
+      if (renewed) this.db.prepare('UPDATE sessions SET expires=? WHERE hash=?').run(expires, row.hash);
+      this.db.exec('COMMIT');
+      // Keeping device and CSRF stable preserves active writes, receiver bindings and event streams.
+      return { device: { id: row.id, name: row.name }, csrfToken: row.csrf, renewed, expiresAt: new Date(expires).toISOString() };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   devices(): RemoteDevice[] { return this.db.prepare('SELECT id,name FROM sessions WHERE expires>?').all(this.now()) as RemoteDevice[]; }
   revoke(id: string): void { this.db.prepare('DELETE FROM sessions WHERE id=?').run(id); }

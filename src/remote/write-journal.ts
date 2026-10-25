@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { RemoteIdentitySchema, RemoteMethodSchema, type RemoteMethod } from '../shared/remote';
+import { REMOTE_READ_METHODS, RemoteIdentitySchema, RemoteMethodSchema, type RemoteMethod } from '../shared/remote';
 import { remoteInputs, remoteOutputs } from '../server/protocol';
 import { RemoteClientError, sameRemoteIdentity, type NodeRemoteClient } from './node-client';
 import { privatePath, readPrivate, writePrivate } from './private-file';
@@ -30,9 +30,10 @@ export function createWriteJournal(client: NodeRemoteClient, file: string) {
   }
   return {
     rpc(method: RemoteMethod, input?: unknown) {
+      if (method === 'restoreConfirm') return Promise.reject(new RemoteClientError(400, '恢复确认不能进入自动核对或重放队列'));
       // Validate before reserving a durable request: invalid input must not leave an unresolvable guard.
       try { input=remoteInputs[method].parse(input); } catch(error) { return Promise.reject(error); }
-      if (method === 'snapshot' || method === 'ledgerSnapshot') return client.rpc(method, input);
+      if ((REMOTE_READ_METHODS as readonly RemoteMethod[]).includes(method)) return client.rpc(method, input);
       return locked(async () => {
         const current = await verify(); const fingerprint = intent(input);
         if (pending) {

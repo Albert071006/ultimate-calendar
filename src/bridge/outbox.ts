@@ -83,7 +83,7 @@ export function createBridgeOutbox(path: string): BridgeOutbox {
       if (!validMs(now) || !validMs(cursor)) throw new BridgeFault('configuration');
       const parsedIdentity = RemoteIdentitySchema.safeParse(identity); if (!parsedIdentity.success) throw new BridgeFault('identity');
       const items = values.map(value => {
-        const { distilledId, ...fields } = value.item; const projected = projectDistilledFields(fields);
+        const { distilledId, eventId, eventRevision, legacyDistilledIds, legacyCandidateKey, ...fields } = value.item; const projected = projectDistilledFields(fields, [], { eventId, eventRevision, legacyDistilledIds, legacyCandidateKey });
         if (!projected.ok || projected.value.hash !== value.hash || projected.value.item.distilledId !== distilledId) throw new BridgeFault('validation');
         return projected.value;
       });
@@ -107,7 +107,7 @@ export function createBridgeOutbox(path: string): BridgeOutbox {
         if (!row) return null;
         const request = DistilledRequestSchema.parse(JSON.parse(String(row.payload))); const hash = hashSchema.parse(row.content_hash);
         if (request.items.length !== 1) throw new BridgeFault('storage');
-        const { distilledId, ...fields } = request.items[0]!; const projected = projectDistilledFields(fields);
+        const { distilledId, eventId, eventRevision, legacyDistilledIds, legacyCandidateKey, ...fields } = request.items[0]!; const projected = projectDistilledFields(fields, [], { eventId, eventRevision, legacyDistilledIds, legacyCandidateKey });
         if (!projected.ok || projected.value.hash !== hash || projected.value.item.distilledId !== distilledId) throw new BridgeFault('storage');
         const leaseToken = randomUUID(); database.prepare("UPDATE bridge_outbox SET status='sending',attempts=attempts+1,lease_token=?,lease_until=? WHERE content_hash=?").run(leaseToken, now + leaseMs, hash);
         return { request, hash, attempts: Number(row.attempts) + 1, leaseToken };

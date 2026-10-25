@@ -6,6 +6,7 @@ import type { PlannerUI } from '../hooks/usePlanner';
 import { useAccount } from '../hooks/useAccount';
 import { displayInstant } from '../calendar-layout';
 import { Modal } from './Modal';
+import { QQSearchActions } from './QQSearchActions';
 import './CapturePage.css';
 
 type Page<T> = { items: T[]; total: number; offset: number; limit: number };
@@ -15,10 +16,12 @@ const batchLabels = { pending: '等待分析', preparing: '准备资料', reques
 const attachmentLabels = { pending: '等待读取', downloading: '下载中', extracting: '提取正文', ready: '正文已提取', unsupported: '需手动查看', failed: '读取失败', 'too-large': '超过处理限额', encrypted: '文件已加密', deleted: '原附件已清理' };
 const coverageLabels = { 'not-started': '尚未补采', fetching: '正在补采', complete: '已取得目标范围', partial: '覆盖不完整', failed: '补采失败' };
 const emptyPage = <T,>(): Page<T> => ({ items: [], total: 0, offset: 0, limit: 30 });
+const analysisStartedNotice = '已开启自动分析。';
 function sizeLabel(bytes: number) { return bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
 
 export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialReference?: NonNullable<Source['captureRef']> }) {
   const api = ui.host;
+  const cloudMode = ui.snapshot?.keyStatus?.scope === 'cloud';
   const account = useAccount(api);
   const model = ui.snapshot?.settings.model;
   const modelModalities = account.state?.models.data?.find(item => item.id === model)?.inputModalities;
@@ -41,9 +44,16 @@ export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialRe
   const [cleanupGroup, setCleanupGroup] = useState(''), [cleanupBefore, setCleanupBefore] = useState(''), [confirmCleanup, setConfirmCleanup] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const accountRevision = useRef(0);
+  const snapshotRevision = useRef(0), pendingRequests = useRef(0);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const acceptSnapshot = useCallback((next: CaptureSnapshot) => {
+    snapshotRevision.current++;
+    setSnapshot(next); setRevision(n => n + 1);
+    if (!next.config.analysisEnabled) setNotice(current => current === analysisStartedNotice ? '' : current);
+  }, []);
   const request = useCallback(async <T,>(job: () => Promise<ApiResult<T>>, success?: (value: T) => void) => {
+    pendingRequests.current++;
     setBusy(true); setError(''); setNotice('');
     try {
       const result = await job();
@@ -51,19 +61,36 @@ export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialRe
       if (!result.ok) { setError(result.error.message); return; }
       success?.(result.data); return result.data;
     } catch { if (mounted.current) setError('本地采集服务暂时不可用，请重试。'); }
-    finally { if (mounted.current) setBusy(false); }
+    finally { pendingRequests.current--; if (mounted.current) setBusy(pendingRequests.current > 0); }
   }, []);
+  const requestSnapshot = useCallback((job: () => Promise<ApiResult<CaptureSnapshot>>, success?: (value: CaptureSnapshot) => void) => {
+    const started = ++snapshotRevision.current;
+    return request(job, next => {
+      if (started !== snapshotRevision.current) return;
+      acceptSnapshot(next); success?.(next);
+    });
+  }, [request, acceptSnapshot]);
   useEffect(() => {
     if (!api) return;
-    let alive = true;
-    let pushed = false;
-    void api.captureSnapshot().then(result => {
-      if (!alive || pushed) return;
-      if (result.ok) setSnapshot(result.data); else setError(result.error.message);
-    }).catch(() => { if (alive) setError('无法读取 QQ 采集状态。'); });
-    const unsubscribe = api.onCaptureChanged(value => { if (alive) { pushed = true; setSnapshot(value); setRevision(n => n + 1); } });
-    return () => { alive = false; unsubscribe(); };
-  }, [api]);
+    let alive = true, reading = false;
+    const refresh = async () => {
+      if (reading || pendingRequests.current) return;
+      reading = true;
+      const started = snapshotRevision.current;
+      try {
+        const result = await api.captureSnapshot();
+        if (!alive || started !== snapshotRevision.current) return;
+        if (result.ok) acceptSnapshot(result.data); else setError(result.error.message);
+      } catch { if (alive && started === snapshotRevision.current) setError('无法读取 QQ 采集状态。'); }
+      finally { reading = false; }
+    };
+    // Cloud events are unversioned echoes of other snapshot reads, not live collector updates.
+    // Use this page's guarded reads so a late global poll cannot undo a newer operation.
+    const unsubscribe = cloudMode ? () => {} : api.onCaptureChanged(value => { if (alive) acceptSnapshot(value); });
+    void refresh();
+    const timer = cloudMode ? window.setInterval(() => { void refresh(); }, 2000) : undefined;
+    return () => { alive = false; if (timer !== undefined) window.clearInterval(timer); unsubscribe(); };
+  }, [api, cloudMode, acceptSnapshot]);
   const configuredAccount = snapshot?.config.accountId;
   const recordAccount = focusedReference?.accountId ?? configuredAccount ?? null;
   const messageScope = recordAccount ? JSON.stringify([recordAccount, groupFilter, focusedReference?.messageId ?? null, offset]) : null;
@@ -123,38 +150,38 @@ export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialRe
     let value: CaptureConfig;
     try { value = CaptureConfigSchema.parse({ ...snapshot.config, ...change }); }
     catch { setError('请检查本机地址、账号与群选择。'); return; }
-    await request(() => api.captureConfigure(value), next => { setSnapshot(next); setNotice(message); setRevision(n => n + 1); });
+    await requestSnapshot(() => api.captureConfigure(value), next => { setNotice(message === analysisStartedNotice && !next.config.analysisEnabled ? '' : message); });
   }
   async function connect(detect: boolean) {
     if (!api || !snapshot) return;
     if (!detect && (endpoint !== snapshot.config.endpoint || flavor !== snapshot.config.flavor)) {
       try {
         const config = CaptureConfigSchema.parse({ ...snapshot.config, endpoint, flavor, enabled: false, analysisEnabled: false });
-        const saved = await request(() => api.captureConfigure(config), setSnapshot); if (!saved) return;
+        const saved = await requestSnapshot(() => api.captureConfigure(config)); if (!saved) return;
       } catch { setError('请填写有效的本机回环地址，例如 ws://127.0.0.1:43131。'); return; }
     }
     const entered = token.current?.value.trim();
     const pending = api.captureConnect({ detect, ...(!detect && entered ? { token: entered } : {}) });
     if (token.current) token.current.value = '';
-    await request(() => pending, value => { setSnapshot(value); setEndpoint(value.config.endpoint); setFlavor(value.config.flavor); setNotice(value.connection === 'online' ? '连接成功，请核对 QQ 账号、选群以及收集和自动分析开关。切换组件后需手动恢复分析。' : '已检查连接，请查看当前状态。'); });
+    await requestSnapshot(() => pending, value => { setEndpoint(value.config.endpoint); setFlavor(value.config.flavor); setNotice(value.connection === 'online' ? '连接成功，请核对 QQ 账号、选群以及收集和自动分析开关。切换组件后需手动恢复分析。' : '已检查连接，请查看当前状态。'); });
   }
-  async function action(action: 'analyze' | 'backfill' | 'retry' | 'reanalyze', batchId?: string) {
+  async function action(action: 'analyze' | 'backfill' | 'retry' | 'reanalyze' | 'pause-analysis', batchId?: string) {
     if (!api) return;
-    await request(() => api.captureAction({ action, ...(batchId ? { batchId } : {}) }), value => {
-      setSnapshot(value); setRevision(n => n + 1); setRetry(null); setReanalysis(false);
+    await requestSnapshot(() => api.captureAction({ action, ...(batchId ? { batchId } : {}) }), () => {
+      setRetry(null); setReanalysis(false);
       setNotice(action === 'backfill' ? '已安排最近 7 天的补采，请在历史覆盖中查看结果。' : action === 'retry' ? '已安排重试，将复用已经保存的分析结果。' : action === 'reanalyze' ? '已安排重新分析，已有候选仍保留。' : '已安排分析，候选整理后会进入待判断。');
     });
   }
   async function cleanupRecords() {
     if (!api || !configuredAccount || (!cleanupGroup && !cleanupBefore)) return;
-    await request(() => api.captureCleanup({ accountId: configuredAccount, ...(cleanupGroup ? { groupId: cleanupGroup } : {}), ...(cleanupBefore ? { before: `${cleanupBefore}T00:00:00+08:00` } : {}) }), value => {
-      setSnapshot(value); setConfirmCleanup(false); setRevision(n => n + 1); setNotice('原文与附件已清理。已有候选和任务仍保留。');
+    await requestSnapshot(() => api.captureCleanup({ accountId: configuredAccount, ...(cleanupGroup ? { groupId: cleanupGroup } : {}), ...(cleanupBefore ? { before: `${cleanupBefore}T00:00:00+08:00` } : {}) }), () => {
+      setConfirmCleanup(false); setNotice('原文与附件已清理。已有候选和任务仍保留。');
     });
   }
   async function disconnectAccount() {
     if (!api || !snapshot || snapshot.config.enabled) return;
-    await request(() => api.captureAction({ action: 'disconnect' }), value => {
-      setSnapshot(value); setConfirmDisconnect(false); setRevision(n => n + 1);
+    await requestSnapshot(() => api.captureAction({ action: 'disconnect' }), () => {
+      setConfirmDisconnect(false);
       setNotice('账号绑定已解除。原消息、附件与日历事项均保留；重新连接后请再次选择重要群。');
     });
   }
@@ -173,6 +200,7 @@ export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialRe
   const page = tab === 'batches' ? visibleBatches : visibleMessages;
   if (!api) return <div className="empty-state">请在 Windows 桌面应用中打开 QQ 采集。</div>;
   if (!snapshot) return <div className="capture-page"><p role="status">{error || '正在读取 QQ 采集状态…'}</p></div>;
+  const analysisPausedReason = !snapshot.config.analysisEnabled ? snapshot.error : null;
 
   return <div className="capture-page">
     <div className="a2-me-h"><h2 title="每群每 2 分钟整理一次，提取要做的事、收益和时间，进入待判断后由你决定。">QQ 采集</h2>
@@ -180,7 +208,7 @@ export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialRe
     </div>
     {error && <div className="error capture-alert" role="alert">{error}</div>}
     {notice && <div className="success capture-alert" role="status">{notice}</div>}
-    {snapshot.error && <div className="warning capture-alert" role="status">{snapshot.error}</div>}
+    {snapshot.error && !analysisPausedReason && <div className="warning capture-alert" role="status">{snapshot.error}</div>}
     <section className="settings-card capture-connection">
       <div className="capture-card-heading"><h3>日历专用 QQ 连接</h3><span className="hint">{snapshot.config.flavor === 'snowluma' ? 'SnowLuma' : 'NapCat'} · {connections[snapshot.connection]}</span></div>
       <div className="capture-account-identity"><div><span className="hint">{snapshot.connection === 'account-changed' ? '组件返回昵称' : '账号昵称'}</span><strong>{snapshot.accountName || (snapshot.connection === 'online' ? '组件未提供昵称' : '等待连接确认')}</strong></div><div><span className="hint">{snapshot.connection === 'account-changed' ? '旧绑定 QQ 号' : '已绑定 QQ 号'}</span><strong>{configuredAccount || '尚未绑定'}</strong></div></div>
@@ -203,7 +231,8 @@ export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialRe
         <h3>收集与分析</h3>
         {model && <div className="capture-model-info"><p className="hint">当前 DeepSeek 模型：{model}</p><p className={modelModalities && !modelModalities.includes('image') ? 'warning' : 'hint'}>{modelModalities ? modelModalities.includes('image') ? '模型接口标注支持图片输入，图片与扫描页会送交该模型识别。' : '当前模型不支持图片输入。图片与扫描页会保留并提示处理失败；请在设置中选择支持图片的模型后重读资料。' : '接口尚未说明图片能力。图片会保留在请求中；模型拒绝时显示错误，不会当作已读完。'}</p>{account.error && <p className="warning">{account.error}</p>}<button disabled={account.refreshing} onClick={() => void account.refresh()}>{account.refreshing ? '正在刷新模型信息…' : '刷新模型信息'}</button></div>}
         <div className="capture-switch-row"><div><strong>{snapshot.config.enabled ? '正在收集选定群' : '收集已暂停'}</strong><p className="hint">最近收到：{snapshot.lastReceivedAt ? displayInstant(snapshot.lastReceivedAt) : '尚未收到消息'}</p></div><button disabled={busy || (!snapshot.config.enabled && (snapshot.connection !== 'online' || !snapshot.config.groupIds.length))} onClick={() => void configure({ enabled: !snapshot.config.enabled }, snapshot.config.enabled ? '已暂停收集。' : '已启用选定群收集。')}>{snapshot.config.enabled ? '暂停收集' : '开始收集'}</button></div>
-        <div className="capture-switch-row"><div><strong>{snapshot.config.analysisEnabled ? '自动分析已开启' : '自动分析已暂停'}</strong><p className="hint">暂停分析后继续收集；已发出的请求会保存结果。</p></div><button disabled={busy} onClick={() => void configure({ analysisEnabled: !snapshot.config.analysisEnabled }, snapshot.config.analysisEnabled ? '已暂停新的 AI 分析请求。' : '已开启自动分析。')}>{snapshot.config.analysisEnabled ? '暂停分析' : '开启分析'}</button></div>
+        {snapshot.cloudKeySync && <p className={snapshot.cloudKeySync.state === 'error' ? 'warning' : 'hint'} role="status">{snapshot.cloudKeySync.state === 'ready' ? snapshot.cloudKeySync.configured ? '密钥已与云端同步；手机或电脑修改后会自动更新。' : '云端密钥已清除；保存新密钥后会自动同步。' : snapshot.cloudKeySync.state === 'syncing' ? '正在同步云端密钥…' : snapshot.cloudKeySync.message || '密钥暂未同步，连接恢复后会自动重试。'}</p>}
+        <div className="capture-switch-row"><div><strong>{snapshot.config.analysisEnabled ? '自动分析已开启' : snapshot.analysisWaitingForKey ? '等待有效密钥，更新后自动继续' : '自动分析已暂停'}</strong><p className="hint">暂停分析后继续收集；已发出的请求会保存结果。</p>{analysisPausedReason && <p className="warning" role="alert">暂停原因：{analysisPausedReason}</p>}</div><button disabled={busy} onClick={() => snapshot.analysisWaitingForKey ? void action('pause-analysis') : void configure({ analysisEnabled: !snapshot.config.analysisEnabled }, snapshot.config.analysisEnabled ? '已暂停新的 AI 分析请求。' : analysisStartedNotice)}>{snapshot.config.analysisEnabled ? '暂停分析' : snapshot.analysisWaitingForKey ? '停止等待密钥' : '开启分析'}</button></div>
         <div className="capture-stats"><div><strong>{snapshot.stats.messages}</strong><span>已收消息</span></div><div><strong>{snapshot.stats.pendingBatches}</strong><span>待处理批次</span></div><div><strong>{snapshot.stats.failedAttachments}</strong><span>附件待查看</span></div></div>
         <div className="toolbar"><button disabled={busy || !configuredAccount || !snapshot.config.analysisEnabled} onClick={() => void action('analyze')}>立即分析</button><button disabled={busy || snapshot.connection !== 'online' || !snapshot.config.enabled} onClick={() => void action('backfill')}>补采最近 7 天</button></div>
         <p className="fine-print">自动分析不设每日预算上限，沿用设置中的 DeepSeek 模型与真实余额。语音、视频和压缩包需手动查看。</p>
@@ -218,6 +247,7 @@ export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialRe
         <div className="capture-message-heading"><strong>{message.groupName || nameOf(message.groupId)}</strong><span>{message.senderName || '群成员'} · {displayInstant(message.sentAt)}</span></div>
         {message.changed && <p className="warning">来源已发生撤回或更正，请核对已整理的事项。</p>}
         {message.deleted ? <p className="hint">原文已清理</p> : <details><summary>{message.text.slice(0, 160) || '附件消息'}{message.text.length > 160 ? '…' : ''}</summary><pre>{message.text || '这条消息没有文字正文。'}</pre></details>}
+        <QQSearchActions evidence={{ groupId: message.groupId, groupName: message.groupName || nameOf(message.groupId), senderName: message.senderName, sentAt: message.sentAt, text: message.deleted ? '' : message.text }} />
         {!!message.attachments.length && <div className="capture-attachments">{message.attachments.map(item => <button key={item.id} disabled={item.status === 'deleted'} onClick={() => { setAttachment(item); setAttachmentAccount(recordAccount); setChunkOffset(0); }}><strong>{item.name || '未命名附件'}</strong><span>{attachmentLabels[item.status]}{item.size !== null ? ` · ${sizeLabel(item.size)}` : ''}</span>{item.error && <small className="warning">{item.error}</small>}</button>)}</div>}
       </article>)}</div> : <div className="empty-state"><p>这里还没有收录消息。</p><p>连接 QQ、保存群选择并开始收集后，原文会显示在这里。</p></div>)}
       {tab === 'batches' && (visibleBatches.items.length ? <div className="capture-batch-list">{visibleBatches.items.map(batch => <article key={batch.id} className="capture-batch"><div><strong>{nameOf(batch.groupId)}</strong><p className="hint">{batch.messageCount} 条消息 · {displayInstant(batch.createdAt)} · 已发出 {batch.attemptCount} 次请求</p><p className={['failed', 'uncertain'].includes(batch.status) ? 'warning' : 'hint'}>{batchLabels[batch.status]}{batch.error ? `：${batch.error}` : ''}</p></div>{['failed', 'uncertain'].includes(batch.status) ? <div className="toolbar"><button disabled={busy} onClick={() => { setReanalysis(false); if (batch.status === 'uncertain') setRetry(batch); else void action('retry', batch.id); }}>重试此批</button><button disabled={busy} onClick={() => { setReanalysis(true); setRetry(batch); }}>重读资料…</button></div> : batch.status === 'applied' ? <button disabled={busy} onClick={() => { setReanalysis(true); setRetry(batch); }}>重新分析…</button> : null}</article>)}</div> : <div className="empty-state">还没有分析批次。消息收下后每 2 分钟合并，或点击“立即分析”。</div>)}

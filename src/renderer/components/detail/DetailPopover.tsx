@@ -16,6 +16,7 @@ import { workFill } from "../../work-fill";
 import "./DetailPopover.css";
 import { useMobile } from '../../mobile/layout';
 import { MobileSheet } from '../../mobile/MobileSheet';
+import { ResourceSection } from '../resources/ResourcePanel';
 
 export interface DetailActions {
   edit: () => void;
@@ -241,7 +242,10 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
         <h3>{title}</h3>
         <button className="ui-btn sm ghost icon close" onClick={close} aria-label="关闭详情" title="关闭（Esc）"><X aria-hidden="true" /></button>
       </header>
-      <div className="a2-pop-b">{body}</div>
+      <div className="a2-pop-b">{body}
+        {(selection.entity === 'task' || selection.entity === 'block' || selection.entity === 'course' || selection.entity === 'goal') &&
+          <ResourceSection snapshot={snapshot} target={{ entity: selection.entity, id: selection.id }} ui={ui} />}
+      </div>
       {footer && <footer className="a2-pop-a">{footer}</footer>}
     </aside>
   );

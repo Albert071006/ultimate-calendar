@@ -6,6 +6,7 @@ import { DEFAULT_LEDGER_RULES, LedgerEntrySchema, LedgerSnapshotSchema, ledgerTo
 import { summarizeLedger } from "../src/ledger/summary";
 import { emptyAccountState } from "../src/shared/account";
 import { SpaceSnapshotSchema } from "../src/shared/space";
+import type { ResourceReference } from '../src/shared/resources';
 import "../src/renderer/styles.css";
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -18,10 +19,12 @@ const later = (days: number) => iso(new Date(Date.now() + days * 864e5));
 const termStart = day(-7 * 7);
 const at = (offset: number, time: string) => `${day(offset)}T${time}:00+08:00`;
 const meta = { version: 1, createdAt: at(0, "08:00"), updatedAt: at(0, "08:00") };
+const sampleResource: ResourceReference = { id: 'synthetic-resource', kind: 'file', name: '实验练习与参考答案.pdf', deviceId: 'synthetic-pc', deviceName: '示例电脑' };
+const sharedResource: ResourceReference = { id: 'synthetic-web', kind: 'web', name: '课程资料与听力', url: 'https://example.org/course' };
 // Colors mirror what the app assigns when it opens a profile; the preview never opens one.
 const colors: Record<string, string> = { 高等数学: "#3b5b9a", 大学物理: "#b8611f", 线性代数: "#5d8a2e", 程序设计: "#7a5230", 大学英语: "#23807a" };
 const course = (id: string, title: string, location: string, weekday: number, startTime: string, endTime: string) =>
-  ({ ...meta, id, title, location, weekday, startTime, endTime, firstWeek: 1, lastWeek: 18, termStart, color: colors[title] });
+  ({ ...meta, id, title, location, weekday, startTime, endTime, firstWeek: 1, lastWeek: 18, termStart, color: colors[title], resources: [sharedResource] });
 
 const snapshot = SnapshotSchema.parse({
   schemaVersion: 1,
@@ -41,7 +44,7 @@ const snapshot = SnapshotSchema.parse({
     { ...meta, id: "c4", title: "合成示例：跑步打卡", action: "每周打卡", sourceIds: ["s3"], snoozedUntil: `${later(2)}T09:00:00+08:00` },
   ],
   tasks: [
-    { ...meta, id: "t1", title: "合成示例：实验报告", deadline: { date: day(2), time: "23:59" }, courseId: "k2" },
+    { ...meta, id: "t1", title: "合成示例：实验报告", deadline: { date: day(2), time: "23:59" }, courseId: "k2", resources: [sampleResource] },
     { ...meta, id: "t2", title: "合成示例：英语模拟卷", deadline: { date: day(5), time: null }, goalId: "g1" },
     { ...meta, id: "t3", title: "合成示例：整理笔记", status: "done" },
   ],
@@ -96,6 +99,9 @@ const space = SpaceSnapshotSchema.parse({
 
 // Every bridge method is listed so the type checker flags new ones; reads return synthetic data and writes refuse.
 const api: DesktopAPI = {
+  resourcePick: ok([sampleResource]), resourceRegister: readOnly, resourceDrop: ok([sampleResource]), resourceOpen: readOnly, resourceRelocate: ok(null),
+  resourceStatus: async request => ({ ok: true, data: request.resources.map(resource => ({ id: resource.id, status: 'available' as const })) }),
+  localSourceEvidence: async request => ({ ok: true, data: { sourceId: request.sourceId, match: 'legacy-id', sources: [snapshot.sources[0]!] } }),
   snapshot: ok(snapshot), onChanged: quiet, onNavigate: quiet,
   spaceSnapshot: ok(space), spaceConfigure: readOnly, spaceCleanup: readOnly,
   mutate: readOnly, undo: readOnly, importSource: readOnly, analyzeSource: readOnly, command: readOnly, importCourses: readOnly,

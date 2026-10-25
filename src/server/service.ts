@@ -6,9 +6,11 @@ import { createPlanner } from '../domain/planner';
 import { createLedgerService, type LedgerService } from '../ledger/service';
 import { createController, type ControllerOptions } from '../application/controller';
 import { createModelRequestQueue } from '../ai/request-queue';
+import { createAccountService } from '../ai/account';
 import { safeError, WorkflowError } from '../ai/deepseek';
 import { type ApiResult, type ChangedEvent, type Snapshot } from '../shared/contracts';
-import { RemoteIdentitySchema, type RemoteRequest, type RemoteMethod } from '../shared/remote';
+import { RemoteIdentitySchema, REMOTE_READ_METHODS, type RemoteRequest, type RemoteMethod } from '../shared/remote';
+import { sharedSettings } from '../shared/cloud-management';
 import { remoteInputs, remoteOutputs } from './protocol';
 import { RemoteFault, RemoteState, type BackupStatus } from './state';
 import { createSafeBackup, redactEvidence, SOURCE_PLACEHOLDER } from './backup';
@@ -16,11 +18,17 @@ import { importDistilled } from './distilled';
 import { DistilledRequestSchema, type DistilledRequest } from '../shared/distilled';
 import { AiConfigurationUpdateSchema, AiConfigurationClearSchema } from '../shared/ai-configuration';
 import { createExternalApiKeyConfiguration, type ApiKeyConfiguration } from './ai-configuration';
+import { AiKeySyncRequestSchema } from '../shared/ai-key-sync';
+import { createAiKeyReceiver } from './ai-key-receiver';
+import { ledgerExportData, backupExportData } from './cloud-export';
+import { createCloudRestore } from './cloud-restore';
 
 export interface RemoteServiceOptions {
   dataDirectory: string;
   getApiKey(): Promise<string | null>;
   apiKeyConfiguration?: ApiKeyConfiguration;
+  /** Private local authorization registry; never exposed through HTTP or business backups. */
+  aiKeyReceiversFile?: string;
   controller?: Pick<ControllerOptions, 'fetch' | 'now' | 'getPriceQuote' | 'getModelInputModalities' | 'afterModelRequest'>;
   state?: RemoteState;
   backupDirectory?: string;
@@ -65,6 +73,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
   })();
   const { repository, planner, ledger, state } = initialized;
   const aiConfiguration = options.apiKeyConfiguration ?? createExternalApiKeyConfiguration(options.getApiKey);
+  const aiKeyReceiver = createAiKeyReceiver(options.aiKeyReceiversFile ?? join(options.dataDirectory, 'ai-key-receivers.json'));
   const getApiKey = () => aiConfiguration.getApiKey();
   if (process.platform !== 'win32') for (const name of ['planner.sqlite', 'remote-state.sqlite']) for (const suffix of ['', '-wal', '-shm']) {
     const path = join(options.dataDirectory, `${name}${suffix}`); if (existsSync(path)) chmodSync(path, 0o600);
@@ -83,15 +92,24 @@ export function createRemoteService(options: RemoteServiceOptions) {
       })]);
     } finally { signal.removeEventListener('abort', abort); }
   };
+  const account = createAccountService({ getApiKey, fetch: cancellableFetch, cachePath: join(options.dataDirectory, 'cache', 'deepseek-prices.json'), isVisible: () => false });
+  account.stop(); let accountStarted = false;
+  const startAccount = () => { if (!accountStarted) { accountStarted = true; account.start(); } };
   let controller: ReturnType<typeof createController>;
-  try { controller = createController({ ...options.controller, fetch: cancellableFetch, repository, planner, ledger, getApiKey, runModel: queue.run, automaticBackup: () => {} }); }
-  catch (error) { ledger.close(); repository.close(); if (!options.state) state.close(); releaseDirectory(); throw error; }
+  try { controller = createController({ ...options.controller, fetch: cancellableFetch, repository, planner, ledger, getApiKey, runModel: queue.run, automaticBackup: () => {},
+    getPriceQuote: options.controller?.getPriceQuote ?? account.quote,
+    getModelInputModalities: options.controller?.getModelInputModalities ?? (model => account.snapshot().models.data?.find(value => value.id === model)?.inputModalities ?? null),
+    afterModelRequest: () => { options.controller?.afterModelRequest?.(); if (accountStarted) void account.refresh({ force: true, balanceOnly: true }); },
+  }); }
+  catch (error) { account.stop(); ledger.close(); repository.close(); if (!options.state) state.close(); releaseDirectory(); throw error; }
+  let settingsWrites: Promise<unknown> = Promise.resolve();
   const listeners = new Set<(event: ChangedEvent) => void>();
   const running = new Map<string, { deviceId: string; fingerprint: string; promise: Promise<unknown> }>();
   let lifecycle: 'running' | 'draining' | 'closed' = 'running', closePromise: Promise<void> | undefined;
   const maxWrites = options.maxConcurrentWrites ?? 8, maxDeviceWrites = options.maxConcurrentWritesPerDevice ?? 4;
-  if (![maxWrites, maxDeviceWrites].every(value => Number.isInteger(value) && value > 0 && value <= 128)) { ledger.close(); repository.close(); if (!options.state) state.close(); releaseDirectory(); throw Error('写请求并发上限必须为1–128'); }
+  if (![maxWrites, maxDeviceWrites].every(value => Number.isInteger(value) && value > 0 && value <= 128)) { account.stop(); ledger.close(); repository.close(); if (!options.state) state.close(); releaseDirectory(); throw Error('写请求并发上限必须为1–128'); }
   let backupStatus: BackupStatus = state.backupStatus();
+  let restoreStatus = state.restoreStatus();
   let lastBackup = 0;
   function backup(force = false) {
     if (!force && Date.now() - lastBackup < 60_000) return;
@@ -119,11 +137,12 @@ export function createRemoteService(options: RemoteServiceOptions) {
       value.journal = redactEvidence(value.journal); value.operations = redactEvidence(value.operations);
     });
   }
-  try { cleanupEvidence(); } catch (error) { ledger.close(); repository.close(); if (!options.state) state.close(); releaseDirectory(); throw error; }
+  try { cleanupEvidence(); } catch (error) { account.stop(); ledger.close(); repository.close(); if (!options.state) state.close(); releaseDirectory(); throw error; }
   if (options.startupBackup !== false) backup(true);
   const maintenance = setInterval(() => { try { cleanupEvidence(); backup(); } catch (error) { options.onBackupError?.(error); } }, 60 * 60_000); maintenance.unref();
   const emit = (reason: ChangedEvent['reason']) => { for (const listener of listeners) { try { listener({ reason }); } catch { /* a disconnected observer cannot reject a committed operation */ } } };
-  async function invoke(method: RemoteMethod, input: unknown): Promise<unknown> {
+  const restore = createCloudRestore({ repository, ledger, state, backup: () => backup(true), hasPendingWrites: () => running.size > 0 });
+  async function invoke(method: RemoteMethod, input: unknown, deviceId: string): Promise<unknown> {
     switch (method) {
       case 'snapshot': return { ok: true, data: { ...planner.snapshot(), keyStatus: { configured: !!await getApiKey(), sessionOnly: false } } };
       case 'mutate': { const result = planner.mutate(remoteInputs.mutate.parse(input)); if (result.status === 'applied') emit('mutation'); return { ok: true, data: result }; }
@@ -135,6 +154,23 @@ export function createRemoteService(options: RemoteServiceOptions) {
         const result = await controller.analyzeSource(request); cleanupEvidence(); emit('analysis'); return result;
       }
       case 'command': { const result = await controller.command(remoteInputs.command.parse(input)); emit('mutation'); return result; }
+      case 'saveSettings': {
+        const request = remoteInputs.saveSettings.parse(input);
+        const pending = settingsWrites.then(async () => {
+          const current = planner.snapshot().settings;
+          if (JSON.stringify(sharedSettings(current)) !== JSON.stringify(sharedSettings(request.expectedSettings))) throw new WorkflowError('CONFLICT', '共享设置已被其他设备修改，请刷新后重新核对');
+          const result = await controller.saveSettings({ settings: { ...request.settings, closeToTray: current.closeToTray, autoLaunch: current.autoLaunch } });
+          if (result.ok) emit('settings'); return result;
+        });
+        settingsWrites = pending.catch(() => {}); return pending;
+      }
+      case 'accountSnapshot': { startAccount(); return { ok: true, data: await account.refresh() }; }
+      case 'refreshAccount': { startAccount(); return { ok: true, data: await account.refresh({ force: true }) }; }
+      case 'importCourses': { const result = await controller.importCourses(remoteInputs.importCourses.parse(input)); cleanupEvidence(); if (result.ok) emit('import'); return result; }
+      case 'ledgerExportData': { const request = remoteInputs.ledgerExportData.parse(input); return { ok: true, data: ledgerExportData(request.format === 'json' ? JSON.stringify(ledger.exportJson(), null, 2) : ledger.exportCsv(request.month), request.format) }; }
+      case 'backupExportData': { const path = backup(true); if (!path) throw new WorkflowError('STORAGE', '安全备份未完成，请检查服务状态'); return { ok: true, data: backupExportData(path) }; }
+      case 'restorePreview': return { ok: true, data: restore.preview(input, deviceId) };
+      case 'restoreConfirm': { const result = restore.confirm(input, deviceId); emit('restore'); return { ok: true, data: result }; }
       case 'ledgerSnapshot': { if (ledger.ensureMonthlyAllowance()) { backup(); emit('mutation'); } return { ok: true, data: ledger.snapshot(remoteInputs.ledgerSnapshot.parse(input)?.month) }; }
       case 'ledgerMutate': { const result = ledger.mutate(remoteInputs.ledgerMutate.parse(input)); emit('mutation'); return { ok: true, data: { ...result, message: result.message.replaceAll('本地账本', '资料服务账本') } }; }
       case 'ledgerUndo': { const result = ledger.undo(remoteInputs.ledgerUndo.parse(input)); emit('undo'); return { ok: true, data: { ...result, message: result.message.replaceAll('本地账本', '资料服务账本') } }; }
@@ -145,7 +181,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
     state,
     status() {
       const bytes = (name: string) => ['', '-wal', '-shm'].reduce((total, suffix) => { try { const file = lstatSync(join(options.dataDirectory, `${name}${suffix}`)); return total + (file.isFile() ? file.size : 0); } catch { return total; } }, 0);
-      return { lifecycle, activeWrites: running.size, backup: { ...backupStatus }, storageBytes: { planner: bytes('planner.sqlite'), receipts: bytes('remote-state.sqlite'), notifications: bytes('notifications.sqlite') } };
+      return { lifecycle, activeWrites: running.size, backup: { ...backupStatus }, restore: lifecycle === 'closed' ? restoreStatus : (restoreStatus = state.restoreStatus()), storageBytes: { planner: bytes('planner.sqlite'), receipts: bytes('remote-state.sqlite'), notifications: bytes('notifications.sqlite') } };
     },
     readiness() {
       if (lifecycle !== 'running') return { ready: false, status: lifecycle, checks: { storage: 'unavailable', backup: backupStatus.status } };
@@ -160,12 +196,26 @@ export function createRemoteService(options: RemoteServiceOptions) {
       const identity = state.identity();
       return { ok: true as const, identity, configuration: await aiConfiguration.status() };
     },
+    async syncAiKeyReceiver(input: unknown, deviceId: string) {
+      const request = AiKeySyncRequestSchema.parse(input);
+      const check = () => {
+        if (lifecycle !== 'running') throw new RemoteFault(503, '服务正在退出');
+        if (!state.devices().some(device => device.id === deviceId)) throw new RemoteFault(401, '请先配对此设备');
+        if (JSON.stringify(request.identity) !== JSON.stringify(state.identity())) throw new RemoteFault(409, '资料实例或恢复代际已改变，请重新连接');
+      };
+      check(); aiKeyReceiver.authorize(deviceId, request.keyId);
+      // This is one atomic snapshot, never separate status() and getApiKey() reads.
+      const snapshot = await aiConfiguration.readForReceiver();
+      check();
+      return aiKeyReceiver.seal(deviceId, request, snapshot);
+    },
     async setAiConfiguration(input: unknown) {
       if (lifecycle !== 'running') throw new RemoteFault(503, '服务正在退出');
       const request = AiConfigurationUpdateSchema.parse(input), identity = state.identity();
       if (JSON.stringify(request.identity) !== JSON.stringify(identity)) throw new RemoteFault(409, '资料实例或恢复代际已改变，请刷新并核对配置');
       // Dedicated credential storage: never place keys in RPC receipts or business backups.
       const configuration = await aiConfiguration.set(request.expectedRevision, request.apiKey);
+      account.resetKey();
       emit('key');
       return { ok: true as const, identity, configuration };
     },
@@ -174,6 +224,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
       const request = AiConfigurationClearSchema.parse(input), identity = state.identity();
       if (JSON.stringify(request.identity) !== JSON.stringify(identity)) throw new RemoteFault(409, '资料实例或恢复代际已改变，请刷新并核对配置');
       const configuration = await aiConfiguration.clear(request.expectedRevision);
+      account.resetKey();
       emit('key');
       return { ok: true as const, identity, configuration };
     },
@@ -192,9 +243,15 @@ export function createRemoteService(options: RemoteServiceOptions) {
       const input = remoteInputs[method].parse(request.input);
       // Refreshes must not turn the receipt database into an unbounded archive
       // of complete personal snapshots. Only writes need durable transport receipts.
-      if (method === 'snapshot' || method === 'ledgerSnapshot') {
+      // Restore confirmation fences generations itself and cannot enter replayable
+      // receipts (nor may it store an uploaded backup in a request journal).
+      if ((REMOTE_READ_METHODS as readonly RemoteMethod[]).includes(method) || method === 'restoreConfirm') {
         let result: unknown;
-        try { result = await invoke(method, input); } catch (error) { result = { ok: false, error: safeError(error) }; }
+        try { result = await invoke(method, input, deviceId); } catch (error) { result = { ok: false, error: safeError(error) }; }
+        if (method !== 'restoreConfirm') {
+          if (lifecycle !== 'running') throw new RemoteFault(503, '服务正在退出，请重新读取资料');
+          if (JSON.stringify(identity) !== JSON.stringify(state.identity())) throw new RemoteFault(409, '读取期间资料代际已改变，旧结果已丢弃，请重新连接核对');
+        }
         return remoteOutputs[method].parse(redactEvidence(result));
       }
       // requestId is the durable transport retry boundary. Domain operationId remains
@@ -212,7 +269,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
       const promise = (async () => {
         try {
           let raw: unknown;
-          try { raw = await invoke(method, input); } catch (error) { raw = { ok: false, error: safeError(error) } satisfies ApiResult<never>; }
+          try { raw = await invoke(method, input, deviceId); } catch (error) { raw = { ok: false, error: safeError(error) } satisfies ApiResult<never>; }
           const result = remoteOutputs[method].parse(redactEvidence(raw));
           state.complete(request.requestId, result);
           backup(true);
@@ -225,13 +282,13 @@ export function createRemoteService(options: RemoteServiceOptions) {
     },
     close(config: { graceMs?: number } = {}): Promise<void> {
       if (closePromise) return closePromise;
-      lifecycle = 'draining'; clearInterval(maintenance);
+      lifecycle = 'draining'; clearInterval(maintenance); account.stop();
       closePromise = (async () => {
         const timer = setTimeout(() => shutdownAbort.abort(), Math.max(0, config.graceMs ?? 25_000)); timer.unref();
         try {
           await Promise.allSettled([...running.values()].map(value => value.promise));
           if (backupStatus.status === 'failed') backup(true);
-          listeners.clear(); ledger.close(); repository.close(); if (!options.state) state.close();
+          listeners.clear(); restoreStatus = state.restoreStatus(); ledger.close(); repository.close(); if (!options.state) state.close();
         } finally { clearTimeout(timer); lifecycle = 'closed'; releaseDirectory(); }
       })();
       return closePromise;

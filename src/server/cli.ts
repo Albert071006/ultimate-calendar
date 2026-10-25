@@ -15,7 +15,7 @@ async function main() {
   for (let index = 0; index < args.length; index += 2) {
     const key = args[index], value = args[index + 1];
     if (!key?.startsWith('--') || !value || value.startsWith('--') || values.has(key)) throw Error('参数格式为 --名称 值，不允许重复');
-    if (!['--data-dir', '--origin', '--port', '--host', '--static-dir', '--api-key-file', '--device-id', '--backup-dir', '--backup-file'].includes(key)) throw Error(`未知参数 ${key}`);
+    if (!['--data-dir', '--origin', '--public-origin', '--trust-loopback-proxy', '--port', '--host', '--static-dir', '--api-key-file', '--device-id', '--backup-dir', '--backup-file'].includes(key)) throw Error(`未知参数 ${key}`);
     values.set(key, value);
   }
   const directory = values.get('--data-dir');
@@ -55,6 +55,8 @@ async function main() {
     return;
   }
   const origin = values.get('--origin'); if (!origin) throw Error('必须通过 --origin 指定外部 HTTPS 来源（仅本机开发可用 http）');
+  const publicOrigin = values.get('--public-origin'), trustProxyValue = values.get('--trust-loopback-proxy');
+  if (trustProxyValue !== undefined && !['true', 'false'].includes(trustProxyValue)) throw Error('--trust-loopback-proxy 必须为 true 或 false');
   const port = Number(values.get('--port') ?? '3210'); if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('port 必须为 1–65535');
   const keyFile = values.get('--api-key-file');
   if (keyFile && !isAbsolute(keyFile)) throw Error('--api-key-file 必须为绝对路径');
@@ -67,7 +69,7 @@ async function main() {
     if (keyFile && !key?.trim()) throw Error('显式DeepSeek密钥文件为空');
     return key?.trim() || null;
   }) : createManagedApiKeyConfiguration(join(directory, 'ai-credentials.json'));
-  const runtime = await startRemoteRuntime({ origin, port, host: values.get('--host'), staticDirectory: values.get('--static-dir'), vapidSubject: subject,
+  const runtime = await startRemoteRuntime({ origin, publicOrigin, trustLoopbackProxy: trustProxyValue === 'true', port, host: values.get('--host'), staticDirectory: values.get('--static-dir'), vapidSubject: subject,
     dataDirectory: directory, backupDirectory: values.get('--backup-dir'), apiKeyConfiguration, getApiKey: () => apiKeyConfiguration.getApiKey(),
     onBackupError: () => { process.stderr.write('BACKUP_FAILED：安全备份未完成，请检查服务磁盘与备份目录\n'); },
     onPushError: () => { process.stderr.write('PUSH_FAILED：推送任务未完成，请检查服务网络与配置\n'); } });

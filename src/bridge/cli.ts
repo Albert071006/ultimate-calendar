@@ -7,7 +7,7 @@ async function main() {
   if (!['check', 'once', 'run'].includes(command ?? '') || option !== '--config' || !file || extra.length) throw new BridgeFault('configuration');
   const config = loadBridgeConfig(file);
   if (command === 'check') { process.stdout.write(JSON.stringify({ configured: true, enabled: config.enabled }) + '\n'); return; }
-  const remote = createNodeRemoteClient({ origin: config.origin, credentialsFile: config.credentialsFile });
+  const remote = createNodeRemoteClient({ origin: config.origin, credentialsFile: config.credentialsFile, localConnectAddress: config.localConnectAddress });
   if (command === 'once') {
     try {
       const result = await runBridgeOnce(config, remote); process.stdout.write(JSON.stringify(result) + '\n');

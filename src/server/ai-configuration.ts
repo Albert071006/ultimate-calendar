@@ -4,10 +4,13 @@ import { dirname } from 'node:path';
 import { z } from 'zod';
 import { privatePath, readPrivate, writePrivate } from '../remote/private-file';
 import { AiApiKeySchema, AiConfigurationRevisionSchema, type AiConfigurationStatus } from '../shared/ai-configuration';
+import type { AiKeySyncPlaintext } from '../shared/ai-key-sync';
 import { RemoteFault } from './state';
 
 export interface ApiKeyConfiguration {
   getApiKey(): Promise<string | null>;
+  /** Atomic managed-key snapshot, exclusively for locally authorized encrypted receivers. */
+  readForReceiver(): Promise<AiKeySyncPlaintext>;
   status(): Promise<AiConfigurationStatus>;
   set(expectedRevision: string | null, apiKey: string): Promise<AiConfigurationStatus>;
   clear(expectedRevision: string | null): Promise<AiConfigurationStatus>;
@@ -61,6 +64,7 @@ export function createManagedApiKeyConfiguration(file: string): ApiKeyConfigurat
 
   return {
     async getApiKey() { return read()?.apiKey ?? null; },
+    async readForReceiver() { const value = read(); return { apiKey: value?.apiKey ?? null, revision: value?.revision ?? null }; },
     async status() { return status(read()); },
     async set(expectedRevision, apiKey) {
       const parsed = AiApiKeySchema.safeParse(apiKey);
@@ -80,6 +84,7 @@ export function createExternalApiKeyConfiguration(getApiKey: () => Promise<strin
   function readOnly(): never { throw new RemoteFault(403, 'API Key 由服务器配置管理，不能通过手机修改'); }
   return {
     getApiKey: read,
+    async readForReceiver() { throw new RemoteFault(403, '服务器外部凭据未授权分发'); },
     async status() {
       const configured = !!await read();
       return { provider: 'deepseek', configured, editable: false, source: configured ? 'external' : 'none', revision: null };

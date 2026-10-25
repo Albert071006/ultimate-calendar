@@ -65,6 +65,13 @@ const BatchSchema = z.strictObject({
   result: JsonSchema.nullable(), inputFingerprint: z.string().max(1000).nullable(),
 });
 export type CaptureBatch = z.infer<typeof BatchSchema>;
+const CredentialPauseSchema = z.strictObject({
+  reason: z.enum(['AUTH', 'NO_API_KEY']),
+  failure: z.strictObject({ batchId: IdSchema, fingerprint: z.string().regex(/^[a-f0-9]{64}$/) }).nullable(),
+});
+const CredentialChangeSchema = z.strictObject({
+  sourceId: z.string().regex(/^[a-f0-9]{64}$/), revision: z.string().uuid().nullable(), configured: z.boolean(),
+});
 export const captureBackupSchemas = { message: StoredMessageSchema, attachment: StoredAttachmentSchema, chunk: ChunkSchema, batch: BatchSchema };
 const ExportSchema = z.strictObject({
   schemaVersion: z.literal(1), config: CaptureConfigSchema,
@@ -177,6 +184,8 @@ export function createCaptureStore(path: string, internal: { database?: Database
     catch (error) { db.exec('ROLLBACK'); throw error; }
   }
   function config(): CaptureConfig { return parsePayload(db.prepare('SELECT payload FROM capture_meta WHERE id=?').get('config'), CaptureConfigSchema)!; }
+  function credentialPause() { return parsePayload(db.prepare("SELECT payload FROM capture_meta WHERE id='credentialPause'").get(), CredentialPauseSchema); }
+  function clearCredentialPause() { db.prepare("DELETE FROM capture_meta WHERE id='credentialPause'").run(); }
   function writeConfig(next: CaptureConfig) {
     db.prepare('UPDATE capture_meta SET payload=? WHERE id=?').run(json(next), 'config');
     if (next.accountId) db.prepare('INSERT INTO capture_selections(account_id,payload) VALUES(?,?) ON CONFLICT(account_id) DO UPDATE SET payload=excluded.payload').run(next.accountId, json(next.groupIds));
@@ -255,8 +264,45 @@ export function createCaptureStore(path: string, internal: { database?: Database
     });
   }
 
+  // These mutations run within the caller's transaction, including the durable sync acknowledgement.
+  function pauseForCredentials(reason: 'AUTH' | 'NO_API_KEY', failedBatchId?: string): boolean {
+    const active = config(), previous = credentialPause();
+    if (!active.analysisEnabled && !previous) return false;
+    const failed = failedBatchId ? batch(failedBatchId) : null;
+    if (failedBatchId && (!failed || failed.status !== 'failed')) throw Error('只能恢复凭据明确失败的批次');
+    const value = CredentialPauseSchema.parse({ reason, failure: failed ? { batchId: failed.id, fingerprint: digest(json(failed)) } : previous?.failure ?? null });
+    db.prepare("INSERT INTO capture_meta(id,payload) VALUES('credentialPause',?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload").run(json(value));
+    writeConfig({ ...active, analysisEnabled: false });
+    return true;
+  }
+  function resumeAfterCredentials(at: string): boolean {
+    const pause = credentialPause(); if (!pause) return false;
+    const value = pause.failure ? batch(pause.failure.batchId) : null;
+    // Exact saved failure only: manual changes, uncertain requests and cleaned sources never retry.
+    if (value?.status === 'failed' && digest(json(value)) === pause.failure!.fingerprint && !value.messageIds.some(id => !message(id) || message(id)!.deleted)) {
+      value.status = 'pending'; value.error = null; value.updatedAt = at; saveBatch(value);
+    }
+    writeConfig({ ...config(), analysisEnabled: true }); clearCredentialPause();
+    return true;
+  }
   const store = {
     path, config,
+    credentialPause, clearCredentialPause,
+    // Private local state: a user configuration or restored backup cannot grant automatic resume.
+    pauseForCredentials(reason: 'AUTH' | 'NO_API_KEY', failedBatchId?: string) { return transaction(() => pauseForCredentials(reason, failedBatchId)); },
+    resumeAfterCredentials(at = nowInstant()) { InstantSchema.parse(at); return transaction(() => resumeAfterCredentials(at)); },
+    applyCredentialChange(input: z.infer<typeof CredentialChangeSchema>, at = nowInstant()) {
+      const next = CredentialChangeSchema.parse(input); InstantSchema.parse(at);
+      return transaction(() => {
+        const previous = parsePayload(db.prepare("SELECT payload FROM capture_meta WHERE id='credentialChange'").get(), CredentialChangeSchema);
+        if (previous?.sourceId === next.sourceId && previous.revision === next.revision) return { changed: false, resumed: false, paused: false };
+        const resumed = next.configured && resumeAfterCredentials(at);
+        const paused = !next.configured && pauseForCredentials('NO_API_KEY');
+        // Commit the acknowledgement with the queue/config changes. A lost worker receipt cannot resume twice.
+        db.prepare("INSERT INTO capture_meta(id,payload) VALUES('credentialChange',?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload").run(json(next));
+        return { changed: true, resumed, paused };
+      });
+    },
     fingerprint(): string { return `capture-v1:${db.prepare("SELECT payload FROM capture_meta WHERE id='revision'").get()?.['payload'] ?? '0'}`; },
     saveConfig(value: unknown): CaptureConfig {
       const next = CaptureConfigSchema.parse(value);
@@ -345,6 +391,18 @@ export function createCaptureStore(path: string, internal: { database?: Database
       });
     },
     batch, batchMessages(id: string) { const value = batch(id); return value ? value.messageIds.map(message).filter((item): item is StoredCaptureMessage => item !== null) : []; },
+    contextMessagesBefore(id: string): StoredCaptureMessage[] {
+      const value = batch(id); if (!value) return [];
+      const dates = value.messageIds.map(message).filter((item): item is StoredCaptureMessage => item !== null && !item.deleted).map(item => Date.parse(item.sentAt));
+      if (!dates.length) return [];
+      const before = Math.min(...dates), since = before - 24 * 3600_000;
+      return db.prepare(`SELECT payload FROM capture_messages WHERE account_id=? AND group_id=? AND deleted=0
+        AND coalesce(json_extract(payload,'$.changed'),0)=0 AND length(json_extract(payload,'$.text'))>0
+        AND julianday(sent_at)>=julianday(?) AND julianday(sent_at)<julianday(?)
+        ORDER BY julianday(sent_at) DESC,id DESC LIMIT 20`)
+        .all(value.accountId, value.groupId, new Date(since).toISOString(), new Date(before).toISOString())
+        .map(row => parsePayload(row, StoredMessageSchema)!);
+    },
     listBatches(request: CapturePageRequest = {}) {
       const { query, where, args } = filters(request);
       const total = Number(db.prepare(`SELECT count(*) AS n FROM capture_batches ${where}`).get(...args)!['n']);
@@ -545,6 +603,7 @@ export function createCaptureStore(path: string, internal: { database?: Database
         if (options.expectedFingerprint && store.fingerprint() !== options.expectedFingerprint) throw Error('采集数据已变化，请重新预览恢复');
         for (const table of ['capture_batch_messages', 'capture_chunks', 'capture_attachments', 'capture_blobs', 'capture_batches', 'capture_messages', 'capture_selections', 'capture_coverage']) db.exec(`DELETE FROM ${table}`);
         const nextConfig = options.pause === false ? state.config : { ...state.config, enabled: false, analysisEnabled: false };
+        clearCredentialPause();
         writeConfig(nextConfig);
         for (const item of state.selections) db.prepare('INSERT INTO capture_selections(account_id,payload) VALUES(?,?) ON CONFLICT(account_id) DO UPDATE SET payload=excluded.payload').run(item.accountId, json(item.groupIds));
         for (const item of state.messages) saveMessage(item);

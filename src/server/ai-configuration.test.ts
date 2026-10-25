@@ -27,11 +27,13 @@ describe('managed AI credentials', () => {
     const { file, configuration } = setup();
     expect(await configuration.status()).toEqual({ provider: 'deepseek', configured: false, editable: true, source: 'none', revision: null });
     expect(await configuration.getApiKey()).toBeNull();
+    expect(await configuration.readForReceiver()).toEqual({ apiKey: null, revision: null });
     const saved = await configuration.set(null, ` \t${KEY_A}\r\n`);
     expect(saved).toEqual({ provider: 'deepseek', configured: true, editable: true, source: 'managed', revision: expect.any(String) });
     expect(AiConfigurationStatusSchema.parse(saved)).toEqual(saved);
     const restarted = createManagedApiKeyConfiguration(file);
     expect(await restarted.getApiKey()).toBe(KEY_A);
+    expect(await restarted.readForReceiver()).toEqual({ apiKey: KEY_A, revision: saved.revision });
     expect(await restarted.status()).toEqual(saved);
     expect(Object.keys(saved).sort()).toEqual(['configured', 'editable', 'provider', 'revision', 'source']);
     expect(JSON.stringify(saved)).not.toContain(KEY_A);
@@ -59,6 +61,7 @@ describe('managed AI credentials', () => {
     expect(cleared.revision).not.toBe(initial.revision);
     const restarted = createManagedApiKeyConfiguration(file);
     expect(await restarted.getApiKey()).toBeNull();
+    expect(await restarted.readForReceiver()).toEqual({ apiKey: null, revision: cleared.revision });
     expect(await restarted.status()).toEqual(cleared);
     expect(readFileSync(file, 'utf8')).not.toContain(KEY_A);
     await expect(restarted.set(null, KEY_A)).rejects.toMatchObject({ status: 409 });
@@ -131,6 +134,7 @@ describe('external AI credentials', () => {
     expect(await configuration.status()).toEqual({ provider: 'deepseek', configured: true, editable: false, source: 'external', revision: null });
     await expect(configuration.set(null, KEY_B)).rejects.toMatchObject({ status: 403 });
     await expect(configuration.clear(null)).rejects.toMatchObject({ status: 403 });
+    await expect(configuration.readForReceiver()).rejects.toMatchObject({ status: 403 });
     expect(await configuration.getApiKey()).toBe(KEY_A);
     expect(await createExternalApiKeyConfiguration(async () => null).status()).toMatchObject({ configured: false, editable: false, source: 'none' });
   });

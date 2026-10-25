@@ -3,6 +3,8 @@ import type { CommandRequest, CommandResult } from "../../../shared/contracts";
 import { operationId } from "../../calendar-layout";
 import type { PlannerUI } from "../../hooks/usePlanner";
 import type { Selection } from "../Calendar";
+import type { ResourceReference } from '../../../shared/resources';
+import { needsResourcePreparation, openCommandResources, prepareResourceCommand, redactResourcePaths } from '../../resource-command';
 
 export type ConversationEntry = {
   id: string;
@@ -11,6 +13,7 @@ export type ConversationEntry = {
   status?: "pending" | "failed";
   request?: CommandRequest;
   outcome?: CommandResult['conversationState'];
+  resources?: ResourceReference[];
 };
 
 /**
@@ -29,7 +32,8 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
 }) {
   const [text, setText] = useState(""),
     [history, setHistory] = useState<ConversationEntry[]>(initial),
-    [running, setRunning] = useState(false);
+    [running, setRunning] = useState(false),
+    [resources, setResources] = useState<ResourceReference[]>([]);
   const inFlight = useRef(false);
 
   async function execute(request: CommandRequest, replyId: string) {
@@ -40,12 +44,26 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
     setHistory(previous => previous.map(entry => entry.id === replyId
       ? { ...entry, text: "正在处理…", status: "pending", request }
       : entry));
-    const result = await ui.run(() => ui.client!.command(request));
-    inFlight.current = false;
-    setRunning(false);
-    if (!result) {
+    let prepared: CommandRequest;
+    try {
+      const safe = needsResourcePreparation(request.text)
+        ? await prepareResourceCommand(request.text, request.resources ?? [], ui.host)
+        : { text: request.text, ...(request.resources?.length ? { resources: request.resources } : {}) };
+      prepared = { ...request, ...safe, history: request.history?.map(entry => ({ ...entry, text: redactResourcePaths(entry.text) })) };
+    } catch (error) {
+      inFlight.current = false; setRunning(false);
       setHistory(previous => previous.map(entry => entry.id === replyId
-        ? { ...entry, text: "未收到处理结果，可以重试这条指令。", status: "failed", request }
+        ? { ...entry, text: error instanceof Error ? error.message : '资料位置未确认，指令尚未发送。', status: 'failed', request }
+        : entry));
+      return;
+    }
+    setHistory(previous => previous.map(entry => entry.id === replyId ? { ...entry, request: prepared } : entry));
+    const result = await ui.run(() => ui.client!.command(prepared));
+    if (!result) {
+      inFlight.current = false;
+      setRunning(false);
+      setHistory(previous => previous.map(entry => entry.id === replyId
+        ? { ...entry, text: "未收到处理结果，可以重试这条指令。", status: "failed", request: prepared }
         : entry));
       return;
     }
@@ -60,10 +78,17 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
             ? `尚未执行 · 请核对预览后确认。\n${mutation.message}`
             : `尚未执行 · ${mutation.questions.join("；")}`;
     }
+    if (result.resourcesToOpen?.length) reply = await openCommandResources(result.resourcesToOpen, ui.host);
+    inFlight.current = false;
+    setRunning(false);
+    // Keep unconsumed selections for a clarification such as “关联到哪项任务？”.
+    if (mutation?.status === 'applied' || result.resourcesToOpen?.length) setResources([]);
+    else if (prepared.resources?.length) setResources(prepared.resources);
     setHistory((previous) => previous.map(entry => entry.id === replyId ? {
         id: replyId,
         role: "assistant",
         ...(result.conversationState ? { outcome: result.conversationState } : {}),
+        ...(result.resourcesToOpen?.length ? { resources: result.resourcesToOpen } : {}),
         text:
           reply +
           (result.items.length
@@ -77,6 +102,7 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
     const request: CommandRequest = {
       operationId: id,
       text,
+      ...(resources.length ? { resources } : {}),
       ...(domain ? { domain } : {}),
       ...(domain === 'ledger' && ledgerView ? { ledgerView } : {}),
       selected: selected ? [{ entity: selected.entity, id: selected.id }] : [],
@@ -101,5 +127,5 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
     setText("");
     void execute(request, replyId);
   }
-  return { text, setText, history, running, send, retry: (entry: ConversationEntry) => entry.request && void execute(entry.request, entry.id) };
+  return { text, setText, history, running, send, resources, setResources, retry: (entry: ConversationEntry) => entry.request && void execute(entry.request, entry.id) };
 }

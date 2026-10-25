@@ -9,6 +9,8 @@ import type { PlannerUI } from "../hooks/usePlanner";
 import { readBrowserImage } from '../mobile/browser-image';
 import { useMobile } from '../mobile/layout';
 import { isClearedPhoneSource, isExtractedQQSource } from '../source-presentation';
+import { LocalSourceViewer } from './LocalSourceViewer';
+import { QQSearchActions } from './QQSearchActions';
 export function ImportDialog({
   ui,
   onClose,
@@ -235,6 +237,7 @@ export function SourceViewer({
         (r) => ui.setNotice(r.message),
       );
   }
+  if (ui.host && !mobile && ui.snapshot?.keyStatus.scope === 'cloud' && (isExtractedQQSource(source) || isClearedPhoneSource(source))) return <LocalSourceViewer sourceId={source.id} host={ui.host} onClose={onClose} onCapture={onCapture} />;
   if (isExtractedQQSource(source) || ((!ui.host || mobile) && source.captureRef)) return <div className="editor-form">
     <p>QQ 来源 · {source.label || '无标签'}</p>
     <p className="warning">QQ 原文和附件仅保存在采集电脑，目前无法在手机查看。手机仅接收提炼结果。</p>
@@ -277,7 +280,8 @@ export function SourceViewer({
       {source.captureRef && <section className="capture-source-reference">
         <dl className="source-metadata"><dt>来源群</dt><dd>{source.captureRef.groupId}</dd><dt>依据位置</dt><dd>{source.captureRef.locator}</dd><dt>资料类型</dt><dd>{source.captureRef.transcribed ? 'AI 图片转写 · 请对照原件核对' : source.captureRef.attachmentId ? '附件提取正文' : '群消息文字'}</dd></dl>
         <p className="hint">以下是形成这条候选时保留的依据。原始群消息或附件可能随后更正、撤回或被清理，请在采集记录中核对。</p>
-        {onCapture && <button onClick={() => onCapture(source.captureRef!)}>{source.captureRef.attachmentId ? '查看 QQ 原消息与附件位置' : '查看 QQ 原消息'}</button>}
+        {onCapture && <button onClick={() => onCapture(source.captureRef!)}>查看本机采集记录与附件</button>}
+        <QQSearchActions evidence={{ groupId: source.captureRef.groupId, sentAt: source.sentAt, text: source.text, attachment: Boolean(source.captureRef.attachmentId || source.captureRef.transcribed) }} />
         <p className="fine-print">需要重新分析时，请到 QQ 采集的分析批次中操作，以保留完整上下文和已完成进度。</p>
       </section>}
       {source.imageDataUrl && (

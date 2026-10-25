@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createRepository, type Repository } from '../storage/repository';
 import { createCandidateReader } from './source-reader';
 import { createBridgeOutbox } from './outbox';
-import { containsPrivateMaterial, distilledHash, projectDistilledFields } from './projection';
+import { containsPrivateMaterial, distilledHash, legacyCandidateKey, projectDistilledFields } from './projection';
 import { BridgeFault, loadBridgeConfig, parseBridgeConfig, type BridgeConfig } from './config';
 import { createQQCloudBridge, type BridgeTransport } from './service';
 
@@ -80,6 +80,17 @@ describe('durable sanitized distilled outbox', () => {
 });
 
 describe('explicit bridge lifecycle', () => {
+  it('sends only a hashed migration hint and accepts only the corresponding legacy UUID receipt', async () => {
+    const path = folder(), repo = repository(join(path, 'source.sqlite')), candidate = seed(repo), client = remote();
+    let matching = false, now = 1000;
+    client.sendDistilled = async request => {
+      expect(request.items[0]!.legacyCandidateKey).toBe(legacyCandidateKey(candidate.id)); expect(JSON.stringify(request)).not.toContain(candidate.id);
+      return { candidateIds: [matching ? candidate.id : '11111111-2222-4333-8444-555555555555'], created: 0 };
+    };
+    const bridge = createQQCloudBridge(config(path), client, { now: () => now }); cleanups.push(() => bridge.close());
+    expect(await bridge.once()).toMatchObject({ accepted: 0, issue: 'protocol', outbox: { pending: 1 } });
+    matching = true; now = 6000; expect(await bridge.once()).toMatchObject({ accepted: 1, issue: null, outbox: { accepted: 1 } });
+  });
   it('requires an explicit source and configuration and sanitizes configuration errors', () => {
     const path = folder(); const file = join(path, 'config.json'); writeFileSync(file, '{invalid RAW_PRIVATE_PATH');
     expect(() => loadBridgeConfig(file)).toThrow('配置无效'); expect(() => parseBridgeConfig({})).toThrow('配置无效');

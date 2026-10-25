@@ -5,6 +5,9 @@ import { candidateDisposition } from '../domain/candidate-eligibility';
 import { dayDistance } from '../domain/time';
 import { locationProfile } from './prompts';
 import { explicitReminderStart } from './timed-commands';
+import { resolveResources } from '../domain/resources';
+import type { ResourceOwner } from '../shared/resources';
+import { validateResourceMutationReferences } from './resource-commands';
 
 /** Bounded relevant records; raw imported sources/images never enter command context. */
 export function buildCommandContext(snapshot: Snapshot, request: CommandRequest, now: string) {
@@ -61,9 +64,19 @@ export function buildCommandContext(snapshot: Snapshot, request: CommandRequest,
     const lists = [context.tasks, context.goals, context.candidates, context.blocks, context.recurringSeries, context.courses, context.courseExceptions, context.calendar];
     const largest = lists.sort((a, b) => b.length - a.length)[0]!; if (!largest.length) break; largest.pop();
   }
-  return context;
+  const owners: ResourceOwner[] = [
+    ...context.tasks.map(record => ({ entity: 'task' as const, id: String(record.id) })),
+    ...context.blocks.map(record => ({ entity: 'block' as const, id: String(record.id) })),
+    ...context.courses.map(record => ({ entity: 'course' as const, id: String(record.id) })),
+    ...context.goals.map(record => ({ entity: 'goal' as const, id: String(record.id) })),
+  ].sort((a, b) => Number(selected.has(b.id)) - Number(selected.has(a.id)));
+  const resourceLinks = owners.flatMap(owner => resolveResources(snapshot, owner).map(link => ({ ...link, target: owner }))).slice(0, 120);
+  const result = { ...context, attachedResources: request.resources ?? [], resourceLinks };
+  while (JSON.stringify(result).length > 90_000 && result.resourceLinks.length) result.resourceLinks.pop();
+  return result;
 }
 export function validateCommandReferences(mutations: Mutation[], context: ReturnType<typeof buildCommandContext>) {
+  validateResourceMutationReferences(mutations, context);
   const lists: Record<string, { id?: unknown }[]> = { task: context.tasks, goal: context.goals, candidate: context.candidates, block: context.blocks, course: context.courses, courseException: context.courseExceptions, preference: context.preferences };
   const known = (kind: string | undefined, id: string) => !!kind && lists[kind]?.some(r => r.id === id);
   const semanticEntities: Record<string, string> = {
