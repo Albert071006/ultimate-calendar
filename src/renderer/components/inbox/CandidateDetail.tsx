@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { FileText } from "lucide-react";
 import type { Candidate, Snapshot } from "../../../shared/contracts";
 import { candidateDisplay } from "../../candidate-display";
 import { candidateExpiry } from "../../../domain/candidate-eligibility";
@@ -103,7 +104,7 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
         {!expiry.expired && expiry.reason && <p className="warning">{expiry.reason}</p>}
       </section>
       {display.conditions.length > 0 && <><p className="a2-ib-sub">参加资格与准备</p><ul className="a2-ib-plain">{display.conditions.map((item, index) => <li key={index}>{item}</li>)}</ul></>}
-      {hideQQOriginal ? <p className="a2-ib-note">{localSourceAccess ? 'QQ 原文和附件保存在这台电脑。点击下方“查看来源”核对本机原文。' : 'QQ 原文和附件仅在采集电脑保存，目前无法在手机查看。手机只显示提炼结果。'}</p> : clearedPhoneInput ? <p className="a2-ib-note">{localSourceAccess ? '可尝试通过“查看来源”查找这台电脑保留的原始输入。' : '手机导入的分析输入已清理，提炼事项仍保留。'}</p> : candidate.sourceQuote && <><p className="a2-ib-sub">原文</p><blockquote className="a2-ib-quote">{highlight(candidate.sourceQuote, candidate.temporalEvidence.map(item => item.quote))}</blockquote></>}
+      {localSourceAccess && hideRawInput ? null : hideQQOriginal ? <p className="a2-ib-note">QQ 原文和附件仅在采集电脑保存，目前无法在手机查看。手机只显示提炼结果。</p> : clearedPhoneInput ? <p className="a2-ib-note">手机导入的分析输入已清理，提炼事项仍保留。</p> : candidate.sourceQuote && <><p className="a2-ib-sub">原文</p><blockquote className="a2-ib-quote">{highlight(candidate.sourceQuote, candidate.temporalEvidence.map(item => item.quote))}</blockquote></>}
       {display.uncertainties.length > 0 && <><p className="a2-ib-sub">待确认</p><ul className="a2-ib-plain">{display.uncertainties.map((item, index) => <li key={index}>{item}</li>)}</ul></>}
       {old && <div className="a2-ib-note">
         <strong>原事项 → 本次变更</strong>
@@ -118,8 +119,9 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
       <div className="a2-ib-sources">
         {candidate.sourceIds.map(id => {
           const value = snapshot.sources.find(item => item.id === id);
-          return value ? <button className="ui-btn sm ghost" key={id} onClick={() => openSource(id)}>查看来源 · {value.label || "原文"}</button> : <span key={id}>{mobile ? '来源原件未提供；QQ 原文和附件留在采集电脑' : '原文已删除'}</span>;
+          return value ? <button className="ui-btn sm" key={id} aria-label={`查看来源 · ${value.label || "原文"}`} onClick={() => openSource(id)}><FileText aria-hidden="true" />查看来源<span className="from">{value.label || "原文"}</span></button> : <span key={id}>{mobile ? '来源原件未提供；QQ 原文和附件留在采集电脑' : '原文已删除'}</span>;
         })}
+        {localSourceAccess && hideRawInput && <span className="hint">{hideQQOriginal ? '原文和附件只存在这台电脑，不上传云端' : '可在来源里查找这台电脑保留的原始输入'}</span>}
       </div>
       <div className="a2-ib-decide">
         {open && !snoozing && <>

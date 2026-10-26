@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { qqSearchInfo, type QQSearchEvidence } from '../qq-search';
 
 /** This client has no verified exact-message navigation API. Say what copying actually does. */
-export function QQSearchActions({ evidence }: { evidence: QQSearchEvidence }) {
+export function QQSearchActions({ evidence, children }: { evidence: QQSearchEvidence; children?: ReactNode }) {
   const [notice, setNotice] = useState('');
   const [manual, setManual] = useState('');
   const search = qqSearchInfo(evidence);
@@ -16,6 +16,7 @@ export function QQSearchActions({ evidence }: { evidence: QQSearchEvidence }) {
   }
   return <div className="qq-search-actions">
     <div className="toolbar">
+      {children}
       {search.keyword && <button type="button" className="ui-btn sm" onClick={() => void copy(search.keyword, '关键词')}>复制 QQ 搜索关键词</button>}
       <button type="button" className="ui-btn sm" onClick={() => void copy(search.information, '群与时间')}>复制群与时间</button>
     </div>
