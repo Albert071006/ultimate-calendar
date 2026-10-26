@@ -11,7 +11,6 @@ import { calendarAttention } from '../../calendar-attention';
 import { CurrentTimeIndicator, currentTimePosition } from '../../components/CurrentTimeIndicator';
 import { MoreMenu } from '../../components/shell/MoreMenu';
 import { clock, itemColor, shortDate, weekdayName } from '../item-style';
-import { AssistantButton } from '../layout';
 import '../../components/CalendarTimeline.css';
 import '../../components/calendar-attention.css';
 import '../../components/calendar/Calendar.css';
@@ -62,7 +61,6 @@ export function CalendarPage({ snapshot, now, date, setDate, view, setView, sele
           <button className="m-icon" aria-label="下一页" onClick={() => setDate(moveDate(date, view, 1))}><ChevronRight aria-hidden="true" /></button>
           <span className="m-spacer" />
           {!days.includes(today) || view === 'month' && date !== today ? <button className="m-link" onClick={() => setDate(today)}>今天</button> : null}
-          <AssistantButton />
           <MoreMenu label="日历选项" items={[
             { label: pending ? '隐藏待判断标记' : '显示待判断标记', onSelect: () => setPending(value => !value) },
             { label: '课表', onSelect: openCourses },

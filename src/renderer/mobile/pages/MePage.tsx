@@ -7,7 +7,6 @@ import type { EditorTarget } from '../../components/editor/EntityEditor';
 import { Goals } from '../../pages/me/Goals';
 import { CourseEditor } from '../../components/CourseEditor';
 import { LedgerRulesSettings } from '../../components/ledger/Rules';
-import { AssistantButton } from '../layout';
 import { CourseList } from './CourseList';
 import { teachingWeek } from '../../pages/today/Today';
 import { todayDate } from '../../calendar-layout';
@@ -55,7 +54,7 @@ export function MePage({ snapshot, ui, section, setSection, pendingCount, openPe
   const planning = ['goals', 'courses'], order = ['ai', 'reminders', 'ledger-rules', 'device'];
   return (
     <div className="m-page m-me">
-      <header className="m-hero"><div><h1>我的</h1></div><AssistantButton /></header>
+      <header className="m-hero"><div><h1>我的</h1></div></header>
       {pendingCount > 0 && <button className="m-notice-row" onClick={openPending}><span><b>{pendingCount}</b> 项修改待提交</span><ChevronRight aria-hidden="true" /></button>}
       <h2 className="m-card-label">规划</h2>
       <ul className="m-card">{pages.filter(page => planning.includes(page.id)).map(row)}</ul>

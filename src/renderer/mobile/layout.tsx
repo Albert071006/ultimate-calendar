@@ -1,20 +1,8 @@
 import { createContext, useContext, useEffect, type ReactNode } from 'react';
-import { Sparkles } from 'lucide-react';
 
 const MobileContext = createContext(false);
 export const MobileProvider = ({ mobile, children }: { mobile: boolean; children: ReactNode }) => <MobileContext.Provider value={mobile}>{children}</MobileContext.Provider>;
 export const useMobile = () => useContext(MobileContext);
-
-/** Opens the full-screen assistant; it must run inside the tap so iOS raises the keyboard at once. */
-const AssistantContext = createContext<(() => void) | null>(null);
-export const AssistantProvider = AssistantContext.Provider;
-
-/** The assistant entry each phone page places at the right of its title. */
-export function AssistantButton({ floating = false }: { floating?: boolean }) {
-  const open = useContext(AssistantContext);
-  if (!open) return null;
-  return <button className={`m-icon m-assist-icon${floating ? ' m-assist-float' : ''}`} onClick={open} aria-label="生活助手"><Sparkles aria-hidden="true" /></button>;
-}
 
 /**
  * Pins the phone shell to the visible part of the screen. When the iOS keyboard opens, Safari shrinks the

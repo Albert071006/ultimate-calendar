@@ -1,6 +1,5 @@
 import { Fragment, useState } from 'react';
 import { ChevronRight, Plus } from 'lucide-react';
-import { AssistantButton } from '../layout';
 import type { CalendarItem, Snapshot, Task } from '../../../shared/contracts';
 import type { PlannerUI } from '../../hooks/usePlanner';
 import type { Selection } from '../../components/Calendar';
@@ -75,7 +74,6 @@ export function TodayPage({ snapshot, ui, now, pendingCount, unscheduledCount, s
           <h1>今天</h1>
           <p>{shortDate(today)} · 周{weekdayName(today)}{week && week <= snapshot.settings.termWeeks ? ` · 第 ${week} 周` : ''}</p>
         </div>
-        <AssistantButton />
       </header>
 
       {pendingCount > 0 && <button className="m-notice-row" onClick={openInbox}>

@@ -96,7 +96,7 @@ describe('phone layout', () => {
     vi.mocked(client.command).mockResolvedValue({ ok:true, data:{ reply:'明天下午 14:00 后有空', mutationResult:null, items:[] } } as never);
     localStorage.clear();
     const first = render(<MobileApp client={client} connection={online} conversationKey="synthetic-conversation" />);
-    fireEvent.click(await screen.findByRole('button', { name:'生活助手' }));
+    fireEvent.click(await screen.findByRole('button', { name:/问问生活助手/ }));
     const page = screen.getByRole('dialog', { name:'生活助手' });
     fireEvent.change(within(page).getByLabelText('对生活助手说'), { target:{ value:'明天下午有空吗' } });
     fireEvent.click(within(page).getByRole('button', { name:'发送' }));
@@ -106,7 +106,7 @@ describe('phone layout', () => {
     expect(screen.queryByRole('dialog', { name:'生活助手' })).toBeNull();
     first.unmount();
     render(<MobileApp client={client} connection={online} conversationKey="synthetic-conversation" />);
-    fireEvent.click(await screen.findByRole('button', { name:'生活助手' }));
+    fireEvent.click(await screen.findByRole('button', { name:/问问生活助手/ }));
     expect(within(screen.getByRole('dialog', { name:'生活助手' })).getByText('明天下午 14:00 后有空')).toBeTruthy();
     localStorage.clear();
   });

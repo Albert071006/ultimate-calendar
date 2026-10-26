@@ -1,4 +1,4 @@
-import { useEffect, useRef, type FormEvent, type RefObject } from 'react';
+import { useEffect, useRef, type FormEvent } from 'react';
 import { ArrowUp, X } from 'lucide-react';
 import type { CommandRequest } from '../../shared/contracts';
 import type { PlannerUI } from '../hooks/usePlanner';
@@ -27,16 +27,17 @@ function save(key: string | undefined, entries: ConversationEntry[]) {
 }
 
 /**
- * The phone assistant: a full-screen conversation with a close button, opened from the ✧ in each page title.
- * The page stays mounted (transparent) while closed so that tap can focus the composer (`inputRef`) in the
- * same gesture, which is what lets iOS raise the keyboard at once.
+ * The phone assistant: one resident entry line above the tabs, and a full-screen conversation with a close button.
+ * The page stays mounted (transparent) while closed so the entry tap can focus the composer in the same
+ * gesture, which is what lets iOS raise the keyboard at once.
  */
-export function MobileAssistant({ ui, selected, date, domain, ledgerView, storageKey, open, setOpen, inputRef: input }: {
+export function MobileAssistant({ ui, selected, date, domain, ledgerView, storageKey, open, setOpen }: {
   ui: PlannerUI; selected: Selection | null; date: string; domain?: 'ledger'; ledgerView?: CommandRequest['ledgerView'];
-  storageKey?: string; open: boolean; setOpen: (open: boolean) => void; inputRef: RefObject<HTMLTextAreaElement | null>;
+  storageKey?: string; open: boolean; setOpen: (open: boolean) => void;
 }) {
   const conversation = useAssistantConversation({ ui, selected, date, domain, ledgerView, initial: load(storageKey) });
   const { text, setText, history, running, send, retry } = conversation;
+  const input = useRef<HTMLTextAreaElement>(null);
   const thread = useRef<HTMLDivElement>(null);
   const layer = useRef<HTMLDivElement>(null);
   const configured = ui.snapshot?.keyStatus.configured !== false;
@@ -54,6 +55,10 @@ export function MobileAssistant({ ui, selected, date, domain, ledgerView, storag
   const close = () => { input.current?.blur(); setOpen(false); };
 
   return <>
+    <button className="m-assist-entry" onClick={() => { input.current?.focus({ preventScroll: true }); setOpen(true); }}>
+      <span className="m-spark" aria-hidden="true">✧</span>
+      <span>{configured ? '问问生活助手' : '生活助手 · 未填 Key'}</span>
+    </button>
     <div ref={layer} className={`m-assistant${open ? ' open' : ''}`} role={open ? 'dialog' : undefined} aria-modal={open || undefined} aria-label="生活助手" aria-hidden={!open || undefined}>
       <header className="m-assistant-head">
         <div><h2>生活助手</h2>{(running || selected) && <small>{running ? '正在处理…' : '已带上选中的事项'}</small>}</div>
