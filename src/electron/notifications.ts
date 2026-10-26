@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
-import { InstantSchema, ReminderSchema, type Reminder } from '../shared/contracts';
-import type { Repository } from '../storage/repository';
+import { InstantSchema, ReminderSchema, type Reminder, type Snapshot } from '../shared/contracts';
 import { collectReminders } from '../domain/reminders';
 import { nowInstant, instantAt } from '../domain/time';
 import { atomicWrite } from './key-store';
@@ -16,7 +15,12 @@ export function createReminderSummary() {
     finish(ids: string[], postpone: boolean) { if (!postpone) for (const id of ids) items.delete(id); deferred = postpone; displaying = false; },
   };
 }
-export function createReminderScheduler(repository: Repository, cursorPath: string) {
+export interface ReminderRepository {
+  read(): { receipts: string[] };
+  snapshot(): Snapshot;
+  claimReminders(reminders: Reminder[]): Reminder[];
+}
+export function createReminderScheduler(repository: ReminderRepository, cursorPath: string) {
   let previous = nowInstant(); let pending: Reminder[] = []; let queue: Promise<unknown> = Promise.resolve();
   function serialized<T>(work: () => Promise<T>): Promise<T> { const result = queue.then(work); queue = result.catch(() => {}); return result; }
   return {

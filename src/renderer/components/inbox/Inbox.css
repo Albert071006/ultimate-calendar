@@ -38,7 +38,13 @@
 .a2-ib-facts .k, .a2-ib-times .k { font-size: 12px; color: var(--ink-3); margin-bottom: 5px; }
 .a2-ib-facts .v { font-size: 14.5px; line-height: 1.6; overflow-wrap: anywhere; }
 .a2-ib-facts .v p { margin: 0; }
+.a2-ib-facts .v p + p { margin-top: 6px; }
 .a2-ib-facts .tag { display: inline-block; margin-left: 6px; padding: 0 5px; font-size: 11px; color: var(--ink-3); border: 1px solid var(--line-2); border-radius: 2px; vertical-align: 1px; }
+.a2-ib-fact-toggle { display: block; margin-top: 8px; padding: 2px 0; font: inherit; font-size: 12.5px; color: var(--ink-2); background: none; border: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.a2-ib-fact-toggle:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.a2-ib-fact-full { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13.5px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink-2); }
+.a2-ib-fact-full p { margin: 0; }
+.a2-ib-fact-full p + p { margin-top: 10px; }
 .a2-ib-times { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
 .a2-ib-times > div { min-width: 0; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); }
 .a2-ib-times .v { margin-top: 4px; font-family: var(--font-time); font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
@@ -56,8 +62,12 @@
 .a2-ib-note { margin: 0 0 16px; padding: 10px 12px; font-size: 13px; color: var(--ink-2); background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); }
 .a2-ib-note.warn { color: var(--warn-ink); background: color-mix(in srgb, var(--warn-fill) 10%, var(--surface)); border-color: color-mix(in srgb, var(--warn-fill) 45%, var(--surface)); }
 .a2-ib-note p { margin: 4px 0 0; }
-.a2-ib-sources { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; font-size: 12.5px; color: var(--ink-3); }
+.a2-ib-sources { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 4px 0 12px; font-size: 12.5px; color: var(--ink-3); }
 .a2-ib-sources > span { align-self: center; }
+.a2-ib-sources .ui-btn { height: 30px; padding: 0 12px; font-size: 13px; color: var(--ink); gap: 6px; }
+.a2-ib-sources .ui-btn .from { color: var(--ink-3); }
+.a2-ib-sources .ui-btn .from::before { content: "·"; margin: 0 5px 0 1px; }
+.a2-ib-sources > .hint { font-size: 12px; color: var(--ink-3); }
 .a2-ib-decide { position: sticky; bottom: 0; display: flex; align-items: center; gap: 8px; padding: 14px 0 18px; background: linear-gradient(transparent, var(--bg) 30%); }
 .a2-ib-decide > input { flex: 1; min-width: 0; height: 32px; padding: 0 10px; font: inherit; font-size: 13px; color: var(--ink); background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); }
 .a2-ib-decide > input:focus-visible { outline: 2px solid var(--ink); outline-offset: 0; }

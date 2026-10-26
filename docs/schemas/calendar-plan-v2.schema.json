@@ -1,0 +1,575 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "format": {
+      "type": "string",
+      "const": "ultimate-calendar-plan"
+    },
+    "version": {
+      "type": "number",
+      "const": 2
+    },
+    "timezone": {
+      "type": "string",
+      "const": "Asia/Shanghai"
+    },
+    "basis": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "cloud"
+                },
+                "dataInstanceId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                },
+                "generation": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "kind",
+                "dataInstanceId",
+                "generation"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "local"
+                },
+                "dataInstanceId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                }
+              },
+              "required": [
+                "kind",
+                "dataInstanceId"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "goalId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "fromDate": {
+          "type": "string"
+        },
+        "toDate": {
+          "type": "string"
+        },
+        "exportedAt": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "source",
+        "goalId",
+        "fromDate",
+        "toDate",
+        "exportedAt",
+        "fingerprint"
+      ],
+      "additionalProperties": false
+    },
+    "planId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "resources": {
+      "default": [],
+      "maxItems": 500,
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "kind": {
+                "type": "string",
+                "const": "file"
+              },
+              "deviceId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+              },
+              "deviceName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "kind",
+              "deviceId",
+              "deviceName"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "kind": {
+                "type": "string",
+                "const": "folder"
+              },
+              "deviceId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+              },
+              "deviceName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "kind",
+              "deviceId",
+              "deviceName"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "kind": {
+                "type": "string",
+                "const": "web"
+              },
+              "url": {
+                "type": "string",
+                "maxLength": 4000
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "kind",
+              "url"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "goals": {
+      "default": [],
+      "maxItems": 500,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "description": {
+            "default": "",
+            "type": "string",
+            "maxLength": 100000
+          },
+          "priority": {
+            "default": "medium",
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "targetDate": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "completed",
+              "paused"
+            ]
+          },
+          "color": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "#3b5b9a",
+                  "#b4416a",
+                  "#23807a",
+                  "#b8611f",
+                  "#7b4fa0",
+                  "#5d8a2e",
+                  "#9a7a12",
+                  "#2e6e8e",
+                  "#7a5230",
+                  "#55606e",
+                  "#9b3f8c",
+                  "#6b7a2a",
+                  "#3f86b8",
+                  "#c08a2a",
+                  "#3e8f5a",
+                  "#8a6bb8"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+          },
+          "resourceRefs": {
+            "default": [],
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+            }
+          }
+        },
+        "required": [
+          "title",
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "tasks": {
+      "default": [],
+      "maxItems": 500,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "description": {
+            "default": "",
+            "type": "string",
+            "maxLength": 100000
+          },
+          "status": {
+            "default": "open",
+            "type": "string",
+            "enum": [
+              "open",
+              "done"
+            ]
+          },
+          "deadline": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "date": {
+                    "type": "string"
+                  },
+                  "time": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "date",
+                  "time"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reminders": {
+            "default": {
+              "enabled": true,
+              "leadMinutes": null,
+              "dateOnlyTime": null
+            },
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              },
+              "leadMinutes": {
+                "default": null,
+                "anyOf": [
+                  {
+                    "maxItems": 20,
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 525600
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "dateOnlyTime": {
+                "default": null,
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "courseId": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+          },
+          "goalRef": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+          },
+          "goalId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "resourceRefs": {
+            "default": [],
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+            }
+          }
+        },
+        "required": [
+          "title",
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "blocks": {
+      "default": [],
+      "maxItems": 500,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "start": {
+            "type": "string"
+          },
+          "end": {
+            "type": "string"
+          },
+          "kind": {
+            "default": "work",
+            "type": "string",
+            "enum": [
+              "work",
+              "event"
+            ]
+          },
+          "taskRef": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
+          },
+          "taskId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "location": {
+            "default": "",
+            "type": "string",
+            "maxLength": 2000
+          },
+          "resourceRefs": {
+            "default": [],
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+            }
+          },
+          "reminders": {
+            "default": {
+              "enabled": true,
+              "leadMinutes": null,
+              "dateOnlyTime": null
+            },
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              },
+              "leadMinutes": {
+                "default": null,
+                "anyOf": [
+                  {
+                    "maxItems": 20,
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 525600
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "dateOnlyTime": {
+                "default": null,
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "start",
+          "end"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "updates": {
+      "not": {}
+    },
+    "deletions": {
+      "not": {}
+    }
+  },
+  "required": [
+    "format",
+    "version",
+    "timezone",
+    "basis",
+    "planId",
+    "title"
+  ],
+  "additionalProperties": false,
+  "title": "Ultimate Calendar calendar-plan-v2",
+  "description": "See ../plan-file-format.md. Runtime also validates real dates, references, interval order, source identity, planning-state fingerprints and current calendar conflicts. Context files are read-only planning handoffs, never import requests."
+}

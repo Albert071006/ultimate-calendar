@@ -30,6 +30,16 @@ function counts(path: string) {
 }
 
 describe('shared production data directory', () => {
+  it('starts an independent edition without importing old databases or credentials', async () => {
+    const x = fixture();
+    mkdirSync(x.legacyDirectory, { recursive: true });
+    writeFileSync(join(x.legacyDirectory, 'planner.sqlite'), 'private legacy data, deliberately not a database');
+    expect(await prepareDataDirectory({ ...x, migrateLegacy: false })).toBe('new');
+    expect(existsSync(join(x.directory, 'planner.sqlite'))).toBe(false);
+    expect(readFileSync(join(x.legacyDirectory, 'planner.sqlite'), 'utf8')).toBe('private legacy data, deliberately not a database');
+    writeFileSync(join(x.directory, 'planner.sqlite-wal'), 'orphan');
+    await expect(prepareDataDirectory({ ...x, migrateLegacy: false })).rejects.toThrow('未恢复');
+  });
   it('uses Documents across launchers and preserves an explicit isolated profile', () => {
     expect(resolveDataDirectory('documents', null)).toBe(join('documents', '终极日历', '数据'));
     expect(resolveDataDirectory('documents', 'isolated')).toBe('isolated');

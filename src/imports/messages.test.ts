@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CandidateSchema, SourceSchema } from '../shared/contracts';
-import { evidenceDate, evidenceTimes, normalizeCandidate, recoverCandidateTiming } from './messages';
+import { evidenceDate, evidenceTimes, normalizeCandidate, recoverCandidateTiming, supplementCandidate } from './messages';
 
 const at = '2026-10-21T10:00:00+08:00';
 function source(text: string, sentAt: string | null = at) {
@@ -11,6 +11,14 @@ function candidate(quote: string) {
     temporalEvidence: [{ field: 'eventStart', basis: 'relative', quote }] });
 }
 describe('Chinese temporal evidence', () => {
+  it('keeps an existing deadline clock when a supplement repeats only its date', () => {
+    const original = { ...candidate('原始通知'), deadline: { date: '2026-10-25', time: '18:00' }, action: '完成原活动要求' };
+    const result = supplementCandidate(original, { title: '补充说明', action: '带练习本', sourceIds: ['followup-source'], deadline: { date: '2026-10-25', time: null } });
+    expect(result.conflicts).toBe(false); expect(result.values.deadline).toEqual(original.deadline);
+    expect(result.values.action).toContain(original.action); expect(result.values.sourceIds).toEqual(['source', 'followup-source']);
+    const completed = supplementCandidate({ ...original, deadline: { date: '2026-10-25', time: null } }, { title: '补充具体钟点', sourceIds: ['followup-source'], deadline: original.deadline });
+    expect(completed.conflicts).toBe(false); expect(completed.values.deadline).toEqual(original.deadline);
+  });
   it.each([
     ['明天下午四点', ['16:00']], ['周四晚上九点半', ['21:30']], ['今天下午三点五十', ['15:50']],
     ['2026年10月30日下午两点到四点', ['14:00', '16:00']], ['上午9:00', ['09:00']], ['下午4：05', ['16:05']],

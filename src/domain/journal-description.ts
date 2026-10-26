@@ -1,9 +1,10 @@
 import type { Entity, JournalSummary, PreviewDetail } from '../shared/contracts';
 
 const labels: Record<string, string> = { task: '任务', block: '活动', course: '课程', courseException: '课程调整', candidate: '候选', source: '消息来源', goal: '目标', preference: '偏好', feedback: '反馈' };
-const fields: Record<string, string> = { title: '标题', start: '开始', end: '结束', deadline: '截止', location: '地点', completed: '完成状态', cancelled: '取消状态', status: '状态', reminders: '提醒', timeEstimateMinutes: '预计时长', description: '说明', text: '内容', enabled: '启用状态', firstWeek: '起始周', lastWeek: '结束周', startTime: '开始时间', endTime: '结束时间', weekdays: '星期', weekday: '星期', weeks: '教学周', termStart: '学期开始', recurrence: '重复安排' };
+const fields: Record<string, string> = { resources: '关联资料', title: '标题', start: '开始', end: '结束', deadline: '截止', location: '地点', completed: '完成状态', cancelled: '取消状态', status: '状态', reminders: '提醒', timeEstimateMinutes: '预计时长', description: '说明', text: '内容', enabled: '启用状态', firstWeek: '起始周', lastWeek: '结束周', startTime: '开始时间', endTime: '结束时间', weekdays: '星期', weekday: '星期', weeks: '教学周', termStart: '学期开始', recurrence: '重复安排' };
 const valueText = (value: unknown): string => {
   if (value == null || value === '') return '未设置';
+  if (Array.isArray(value) && value.every(item => item && typeof item === 'object' && 'name' in item && 'kind' in item)) return value.length ? value.map(item => String(item.name)).join('、').slice(0, 180) : '无';
   if (typeof value === 'boolean') return value ? '是' : '否';
   if (typeof value === 'string') return ({ open: '待完成', done: '已完成', completed: '已完成', pending: '待判断', accepted: '已接受', ignored: '已忽略' }[value] ?? value.replace('T', ' ').replace(/:\d{2}(?:\.\d+)?\+08:00$/, '')).slice(0,180);
   if (typeof value === 'object' && 'date' in value) return `${value.date} ${'time' in value && value.time ? value.time : '仅日期'}`;

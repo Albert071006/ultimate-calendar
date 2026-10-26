@@ -1,10 +1,14 @@
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
+import { FileText } from "lucide-react";
 import type { Candidate, Snapshot } from "../../../shared/contracts";
-import { candidateDisplay } from "../../candidate-display";
+import { candidateDisplay, compactCandidateText } from "../../candidate-display";
 import { candidateExpiry } from "../../../domain/candidate-eligibility";
 import { displayInstant } from "../../calendar-layout";
 import { dayWord, fullDay } from "./format";
 import { sourceLine } from "./InboxList";
+import { useMobile } from '../../mobile/layout';
+import type { HostCapabilities } from '../../../shared/client';
+import { SourceAttachments } from '../resources/SourceAttachments';
 
 /** Marks every time phrase the extraction relied on inside the original text. */
 export function highlight(text: string, quotes: string[]): ReactNode[] {
@@ -28,7 +32,22 @@ export function highlight(text: string, quotes: string[]): ReactNode[] {
 
 export type Decision = "acceptCandidate" | "ignoreCandidate";
 
-export function CandidateDetail({ snapshot, candidate, today, now, busy, reason, setReason, decide, snoozing, setSnoozing, snooze, restore, edit, openSource, viewTask, viewCandidate }: {
+function FactContent({ summary, full, label }: { summary: ReactNode; full?: ReactNode; label: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const id = useId();
+  return <>
+    <div className="v">{summary}</div>
+    {full && <>
+      <button type="button" className="a2-ib-fact-toggle" aria-expanded={expanded} aria-controls={id}
+        onKeyDown={event => {
+          if (!event.ctrlKey && !event.metaKey && !event.altKey && ['a', 'i', 'l', 'arrowup', 'arrowdown'].includes(event.key.toLowerCase())) event.stopPropagation();
+        }} onClick={() => setExpanded(value => !value)}>{expanded ? "收起" : "展开"}{label}</button>
+      {expanded && <div id={id} className="a2-ib-fact-full" role="region" aria-label={label}>{full}</div>}
+    </>}
+  </>;
+}
+
+export function CandidateDetail({ snapshot, candidate, today, now, busy, reason, setReason, decide, snoozing, setSnoozing, snooze, restore, edit, openSource, viewTask, viewCandidate, host, hideQQOriginal = false, clearedPhoneInput = false, localSourceAccess = false }: {
   snapshot: Snapshot;
   candidate: Candidate;
   today: string;
@@ -45,11 +64,17 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
   openSource: (id: string) => void;
   viewTask: (id: string) => void;
   viewCandidate: (id: string) => void;
+  hideQQOriginal?: boolean;
+  localSourceAccess?: boolean;
+  host?: HostCapabilities;
+  clearedPhoneInput?: boolean;
 }) {
+  const mobile = useMobile();
+  const hideRawInput = hideQQOriginal || clearedPhoneInput;
   const defaultUntil = now < Date.parse(`${today}T18:00:00+08:00`) ? `${today}T18:00` : `${new Date(Date.parse(`${today}T12:00:00Z`) + 86400_000).toISOString().slice(0, 10)}T09:00`;
   const [until, setUntil] = useState(defaultUntil);
   const display = candidateDisplay(candidate, snapshot.settings), expiry = candidateExpiry(candidate, now);
-  const source = sourceLine(snapshot, candidate, today);
+  const source = sourceLine(snapshot, candidate, today, mobile ? '来源原件未提供' : undefined);
   const old = snapshot.candidates.find(value => value.id === candidate.revisionOfId);
   const duplicate = snapshot.candidates.find(value => value.id === candidate.duplicateOfId);
   const merged = snapshot.candidates.filter(value => value.duplicateOfId === candidate.id).length;
@@ -58,35 +83,42 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
   const snoozed = open && candidate.snoozedUntil && Date.parse(candidate.snoozedUntil) > now;
   const stated = candidate.benefitKind === "stated" && candidate.benefit;
   const guessed = candidate.potentialBenefit || (candidate.benefitKind === "inferred" ? candidate.benefit : "");
+  const actionSummary = compactCandidateText(candidate.action, candidate.title);
+  const statedSummary = stated ? compactCandidateText(stated) : '';
+  const guessedSummary = compactCandidateText(guessed);
+  const benefits = (short: boolean) => <>
+    {stated && <p>{short ? statedSummary : stated}<span className="tag">原文写明</span></p>}
+    {guessed && <p>{short ? guessedSummary : guessed}<span className="tag">AI 推测</span></p>}
+    {!stated && !guessed && "未说明"}
+  </>;
   return (
     <article className="a2-ib-detail" aria-label="通知详情" data-candidate-id={candidate.id}>
       <div className="src">
         {[source.label, source.at, merged ? `另有 ${merged} 条重复通知已合并` : "", candidate.revisionOfId ? "事项变更" : "", candidate.duplicateOfId ? "关联重复通知" : ""].filter(Boolean).join(" · ")}
-        <button className="ui-btn sm ghost" onClick={edit}>校对</button>
+        <button className={mobile ? "m-link" : "ui-btn sm ghost"} onClick={edit}>校对</button>
       </div>
       <h2>{candidate.title}</h2>
       {expiry.expired && candidate.status === "pending" && <div className="a2-ib-note warn"><strong>已过期 · 自动归类</strong><p>{expiry.reason}</p><p>按北京时间与明确时间依据归类，不代表你选择了忽略；时间有误可校对后自动回到待判断。</p></div>}
       {snoozed && <div className="a2-ib-note">稍后决定 · {dayWord(candidate.snoozedUntil!.slice(0, 10), today)} {candidate.snoozedUntil!.slice(11, 16)} 回到待判断</div>}
       <div className="a2-ib-facts">
-        <div><div className="k">要做什么</div><div className="v">{candidate.action || "原文未明确，请校对"}</div></div>
-        <div><div className="k">能得到什么</div><div className="v">
-          {stated && <p>{candidate.benefit}<span className="tag">原文写明</span></p>}
-          {guessed && <p>{guessed}<span className="tag">AI 推测</span></p>}
-          {!stated && !guessed && "未说明"}
-        </div></div>
+        <div><div className="k">要做什么</div><FactContent label="行动详情" summary={actionSummary || "原文未明确，请校对"}
+          full={actionSummary !== candidate.action.trim() ? candidate.action : undefined} /></div>
+        <div><div className="k">能得到什么</div><FactContent label="收益详情" summary={benefits(true)}
+          full={statedSummary !== (stated || '').trim() || guessedSummary !== guessed.trim() ? benefits(false) : undefined} /></div>
       </div>
+      <SourceAttachments key={candidate.id} sourceIds={candidate.sourceIds} host={host} />
       <section className="a2-ib-times" aria-label="事项时间">
         <div>
           <div className="k">截止</div>
           <div className={`v${candidate.deadline ? " red" : " none"}`}>{candidate.deadline ? `${fullDay(candidate.deadline.date)} ${candidate.deadline.time ?? "· 当天结束"}` : "未提供"}</div>
-          {evidence("deadline") && <div className="q">原文“{evidence("deadline")!.quote}”</div>}
+          {!hideRawInput && evidence("deadline") && <div className="q">原文“{evidence("deadline")!.quote}”</div>}
         </div>
         <div>
           <div className="k">活动时间</div>
           <div className={`v${candidate.eventStart ? "" : " none"}`}>{candidate.eventStart
             ? `${fullDay(candidate.eventStart.slice(0, 10))} ${candidate.eventStart.slice(11, 16)}${candidate.eventEnd ? `–${candidate.eventEnd.slice(0, 10) === candidate.eventStart.slice(0, 10) ? "" : `${fullDay(candidate.eventEnd.slice(0, 10))} `}${candidate.eventEnd.slice(11, 16)}` : " 起"}`
             : "未明确"}</div>
-          {(evidence("eventStart") ?? evidence("eventEnd")) && <div className="q">原文“{(evidence("eventStart") ?? evidence("eventEnd"))!.quote}”</div>}
+          {!hideRawInput && (evidence("eventStart") ?? evidence("eventEnd")) && <div className="q">原文“{(evidence("eventStart") ?? evidence("eventEnd"))!.quote}”</div>}
           {candidate.eventStart && !candidate.eventEnd && <div className="q">结束时间未提供</div>}
         </div>
         <div>
@@ -97,7 +129,7 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
         {!expiry.expired && expiry.reason && <p className="warning">{expiry.reason}</p>}
       </section>
       {display.conditions.length > 0 && <><p className="a2-ib-sub">参加资格与准备</p><ul className="a2-ib-plain">{display.conditions.map((item, index) => <li key={index}>{item}</li>)}</ul></>}
-      {candidate.sourceQuote && <><p className="a2-ib-sub">原文</p><blockquote className="a2-ib-quote">{highlight(candidate.sourceQuote, candidate.temporalEvidence.map(item => item.quote))}</blockquote></>}
+      {localSourceAccess && hideRawInput ? null : hideQQOriginal ? <p className="a2-ib-note">QQ 原文和附件仅在采集电脑保存，目前无法在手机查看。手机只显示提炼结果。</p> : clearedPhoneInput ? <p className="a2-ib-note">手机导入的分析输入已清理，提炼事项仍保留。</p> : candidate.sourceQuote && <><p className="a2-ib-sub">原文</p><blockquote className="a2-ib-quote">{highlight(candidate.sourceQuote, candidate.temporalEvidence.map(item => item.quote))}</blockquote></>}
       {display.uncertainties.length > 0 && <><p className="a2-ib-sub">待确认</p><ul className="a2-ib-plain">{display.uncertainties.map((item, index) => <li key={index}>{item}</li>)}</ul></>}
       {old && <div className="a2-ib-note">
         <strong>原事项 → 本次变更</strong>
@@ -112,15 +144,16 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
       <div className="a2-ib-sources">
         {candidate.sourceIds.map(id => {
           const value = snapshot.sources.find(item => item.id === id);
-          return value ? <button className="ui-btn sm ghost" key={id} onClick={() => openSource(id)}>查看来源 · {value.label || "原文"}</button> : <span key={id}>原文已删除</span>;
+          return value ? <button className="ui-btn sm" key={id} aria-label={`查看来源 · ${value.label || "原文"}`} onClick={() => openSource(id)}><FileText aria-hidden="true" />查看来源<span className="from">{value.label || "原文"}</span></button> : <span key={id}>{mobile ? '来源原件未提供；QQ 原文和附件留在采集电脑' : '原文已删除'}</span>;
         })}
+        {localSourceAccess && hideRawInput && <span className="hint">{hideQQOriginal ? '原文和附件只存在这台电脑，不上传云端' : '可在来源里查找这台电脑保留的原始输入'}</span>}
       </div>
       <div className="a2-ib-decide">
         {open && !snoozing && <>
-          <button className="ui-btn primary" disabled={busy} aria-label="接受事项" onClick={() => decide("acceptCandidate")}>{old ? "审阅并接受变更" : "接受"} <kbd>A</kbd></button>
-          <button className="ui-btn" disabled={busy} onClick={() => decide("ignoreCandidate")}>忽略 <kbd>I</kbd></button>
-          <button className="ui-btn" disabled={busy} onClick={() => setSnoozing(true)}>稍后 <kbd>L</kbd></button>
-          <input aria-label="决定原因（可选）" value={reason} maxLength={2000} onChange={event => setReason(event.target.value)} placeholder="原因（可选），例如：时间冲突、没兴趣" />
+          <button className="ui-btn primary" disabled={busy} aria-label="接受事项" onClick={() => decide("acceptCandidate")}>{old ? "审阅并接受变更" : "接受"}{!mobile && <> <kbd>A</kbd></>}</button>
+          <button className={mobile ? "m-text-btn quiet" : "ui-btn"} disabled={busy} onClick={() => decide("ignoreCandidate")}>忽略{!mobile && <> <kbd>I</kbd></>}</button>
+          <button className={mobile ? "m-text-btn quiet" : "ui-btn"} disabled={busy} onClick={() => setSnoozing(true)}>稍后{!mobile && <> <kbd>L</kbd></>}</button>
+          <input aria-label="决定原因（可选）" value={reason} maxLength={2000} onChange={event => setReason(event.target.value)} placeholder={mobile ? "原因（可选）" : "原因（可选），例如：时间冲突、没兴趣"} />
         </>}
         {open && snoozing && <form className="a2-ib-snooze" onSubmit={event => { event.preventDefault(); snooze(`${until}:00+08:00`); setSnoozing(false); }}>
           <label>再次查看时间<input type="datetime-local" required value={until} onChange={event => setUntil(event.target.value)} autoFocus /></label>

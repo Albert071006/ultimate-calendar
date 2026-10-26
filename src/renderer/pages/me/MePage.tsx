@@ -10,6 +10,8 @@ import { CapturePage } from "../../components/CapturePage";
 import { Settings, type SettingsSection } from "../../components/Settings";
 import { LedgerRulesSettings } from "../../components/ledger/Rules";
 import "./MePage.css";
+import { useEffect, useState, type ReactNode } from 'react';
+import { useMobile } from '../../mobile/layout';
 
 export type MeSection = "goals" | "courses" | "capture" | "ai" | "term" | "reminders" | "ledger" | "data" | "update";
 const groups: { title: string; host?: boolean; items: [MeSection, string][] }[] = [
@@ -20,7 +22,7 @@ const groups: { title: string; host?: boolean; items: [MeSection, string][] }[] 
 
 const settingsSections: MeSection[] = ["ai", "term", "reminders", "data", "update"];
 
-export function MePage({ snapshot, ui, section, setSection, updates, select, edit, openSource, coursePreview, captureReference }: {
+export function MePage({ snapshot, ui, section, setSection, updates, select, edit, openSource, coursePreview, captureReference, remoteSettings, exportGoal }: {
   snapshot: Snapshot;
   ui: PlannerUI;
   section: MeSection;
@@ -31,33 +33,41 @@ export function MePage({ snapshot, ui, section, setSection, updates, select, edi
   openSource: (id: string) => void;
   coursePreview?: CourseImportResult;
   captureReference?: NonNullable<Source["captureRef"]>;
+  remoteSettings?: ReactNode;
+  exportGoal?: (id: string) => void;
 }) {
-  const visible = groups.filter(group => !group.host || ui.host);
+  const mobile = useMobile();
+  const [showSection, setShowSection] = useState(false);
+  useEffect(() => { if (section !== 'goals') setShowSection(true); }, [section]);
+  const visible = groups.filter(group => !group.host || (!mobile && ui.host));
+  if (mobile) visible.push({ title: '设置', items: [['ledger', '记账规则']] });
   const current = visible.some(group => group.items.some(([id]) => id === section)) ? section : "goals";
   const label = groups.flatMap(group => group.items).find(([id]) => id === current)![1];
   return (
     <div className="a2-page">
       <PageToolbar title="我的" ui={ui} />
       <div className="a2-me">
-        <nav className="a2-me-menu" aria-label="我的">
+        {(!mobile || !showSection) && <nav className="a2-me-menu" aria-label="我的">
           {visible.map(group => (
             <div key={group.title}>
               <h2>{group.title}</h2>
               {group.items.map(([id, label]) => (
-                <button key={id} className={current === id ? "on" : ""} aria-current={current === id ? "page" : undefined} onClick={() => setSection(id)}>{label}</button>
+                <button key={id} className={current === id ? "on" : ""} aria-current={current === id ? "page" : undefined} onClick={() => { setSection(id); setShowSection(true); }}>{label}</button>
               ))}
             </div>
           ))}
-        </nav>
-        <section className="a2-me-content" aria-label={label}>
-          {current === "goals" && <Goals snapshot={snapshot} ui={ui} select={select} create={() => edit({ entity: "goal" })} />}
+          {mobile && <section className="mobile-settings" aria-label="手机设置"><h2>手机设置</h2>{remoteSettings ?? <p className="ui-hint">账户、设备与资料服务状态尚未提供。</p>}</section>}
+        </nav>}
+        {(!mobile || showSection) && <section className="a2-me-content" aria-label={label}>
+          {mobile && <button className="ui-btn ghost mobile-back" onClick={() => setShowSection(false)}>‹ 返回我的</button>}
+          {current === "goals" && <Goals snapshot={snapshot} ui={ui} select={select} create={() => edit({ entity: "goal" })} exportGoal={exportGoal} />}
           {current === "courses" && <CourseEditor key={coursePreview?.sourceId ?? "courses"} snapshot={snapshot} ui={ui} edit={edit} initial={coursePreview} openSource={openSource} />}
           {current === "capture" && <CapturePage ui={ui} initialReference={captureReference} />}
           {current === "ledger" && ui.client && <LedgerRulesSettings api={ui.client} />}
           {settingsSections.includes(current) && (
             <Settings snapshot={snapshot} ui={ui} courses={() => setSection("courses")} updates={updates} section={current as SettingsSection} onSection={setSection} />
           )}
-        </section>
+        </section>}
       </div>
     </div>
   );

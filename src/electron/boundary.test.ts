@@ -19,6 +19,22 @@ async function temporary() { const p = await mkdtemp(join(tmpdir(), 'planner-bou
 afterEach(async () => { for (const p of dirs.splice(0)) await rm(p, { recursive: true, force: true }); });
 const caller = { senderId: 7, frameId: 4, url: 'file:///C:/app/dist/index.html' };
 describe('desktop trust boundary', () => {
+  it('source attachments accept only source IDs from the trusted frame and never expose file paths', async () => {
+    const sourceIds = ['synthetic-source'];
+    for (const [method, input, data] of [
+      ['sourceAttachments', { sourceIds }, { attachments: [{ id: 'synthetic-attachment', name: '合成教程.docx', status: 'available' }], unavailableSources: 0 }],
+      ['sourceAttachmentOpen', { sourceIds, attachmentId: 'synthetic-attachment' }, { opened: true }],
+    ] as const) {
+      let calls = 0;
+      const handlers = { [method]: async () => { calls++; return { ok: true, data }; } };
+      expect((await dispatchRequest(method, input, { ...caller, frameId: 99 }, caller, handlers)).ok).toBe(false);
+      expect((await dispatchRequest(method, { ...input, path: 'C:/arbitrary.exe' }, caller, caller, handlers)).ok).toBe(false);
+      expect(calls).toBe(0);
+      expect(await dispatchRequest(method, input, caller, caller, handlers)).toEqual({ ok: true, data });
+      const invalid = await dispatchRequest(method, input, caller, caller, { [method]: async () => ({ ok: true, data: { ...data, path: 'synthetic-private-path' } }) });
+      expect(invalid.ok).toBe(false); expect(JSON.stringify(invalid)).not.toContain('synthetic-private-path');
+    }
+  });
   it('update commands reject caller-supplied URLs, installer paths and foreign frames', async () => {
     const state = UpdateStateSchema.parse({ currentVersion: '0.3.3', status: 'idle', latestVersion: null, releaseNotes: '', progressPercent: null, checkedAt: null, message: '尚未检查' });
     for (const method of ['updateSnapshot', 'checkForUpdates', 'downloadUpdate', 'installUpdate']) {

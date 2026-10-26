@@ -1,0 +1,158 @@
+import { useId, useRef, useState } from 'react';
+import type { PlanImportDesktopAPI, PlanImportPreview, PlanImportResult } from '../../shared/plan-import';
+import type { BusyExportDesktopAPI } from '../../shared/busy-context';
+import type { PlannerUI } from '../hooks/usePlanner';
+import { Modal } from './Modal';
+import { BusyExportPanel, hasBusyExport } from './BusyExportPanel';
+import './plan-import.css';
+
+export function hasPlanImport(host: Partial<PlanImportDesktopAPI> | undefined): host is PlanImportDesktopAPI {
+  return Boolean(host && typeof host.planImportOpen === 'function' && typeof host.planImportConfirm === 'function' && typeof host.planImportTemplate === 'function');
+}
+
+const kindNames = { goal: '目标', task: '任务', block: '时段' };
+const stateNames = { new: '待新增', update: '待修改', delete: '待删除', existing: '已存在', blocked: '需处理' };
+function displayTime(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(date);
+}
+/** "2026/11/02 19:00–20:00" when both ends fall on the same day, otherwise both full stamps. */
+function displayRange(start?: string, end?: string) {
+  const from = start && displayTime(start), to = end && displayTime(end);
+  if (!from || !to) return from || `结束 ${to}`;
+  return from.slice(0, 10) === to.slice(0, 10) ? `${from}–${to.slice(11)}` : `${from} – ${to}`;
+}
+
+export function PlanImportDialog({ host, ui, onClose }: {
+  host: PlanImportDesktopAPI & Partial<BusyExportDesktopAPI>;
+  ui: Pick<PlannerUI, 'refresh' | 'setNotice'>;
+  onClose: () => void;
+}) {
+  const [preview, setPreview] = useState<PlanImportPreview | null>(null);
+  const [report, setReport] = useState<PlanImportResult | null>(null);
+  const [allowConflicts, setAllowConflicts] = useState(false);
+  const [allowDeletions, setAllowDeletions] = useState(false);
+  const [busy, setBusy] = useState<'open' | 'confirm' | 'template' | null>(null);
+  const [error, setError] = useState('');
+  const [feedback, setFeedback] = useState('');
+  const [busyExportOpen, setBusyExportOpen] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const exporting = useRef(false);
+  const busyPanelId = useId();
+  const busyHost = hasBusyExport(host) ? host : undefined;
+  const locked = Boolean(busy) || exportBusy;
+  const working = useRef(false);
+  const counts = { new: 0, update: 0, delete: 0, existing: 0, blocked: 0 };
+  preview?.rows.forEach(row => { counts[row.state] += 1; });
+  const verifyPending = preview?.canVerifyPending === true;
+  const pendingCount = counts.new + counts.update + counts.delete;
+  const hasRevisions = preview?.rows.some(row => row.action === 'update' || row.action === 'delete' || row.state === 'update' || row.state === 'delete');
+  const requiresDeletions = preview?.requiresDeletionApproval === true || counts.delete > 0;
+  const confirmable = Boolean(preview && (verifyPending || (pendingCount > 0 && counts.blocked === 0 && (!preview.conflicts.length || allowConflicts) && (!requiresDeletions || allowDeletions))));
+  const close = () => { if (!working.current && !exporting.current) onClose(); };
+
+  async function run(action: NonNullable<typeof busy>, job: () => Promise<void>) {
+    if (working.current || exporting.current) return;
+    working.current = true; setBusy(action); setError(''); setFeedback('');
+    try { await job(); }
+    catch (failure) { setError(failure instanceof Error ? failure.message : '操作失败，请重试。'); }
+    finally { working.current = false; setBusy(null); }
+  }
+  const chooseFile = () => run('open', async () => {
+    setAllowConflicts(false); setAllowDeletions(false);
+    const result = await host.planImportOpen();
+    if (!result.ok) { setPreview(null); setAllowConflicts(false); setError(result.error.message); return; }
+    if (result.data) {
+      setPreview(result.data); setReport(null); setAllowConflicts(false);
+    }
+  });
+  const saveTemplate = () => run('template', async () => {
+    const result = await host.planImportTemplate();
+    if (!result.ok) setError(result.error.message);
+    else if (result.data.saved) setFeedback('示例 JSON 已保存，可交给外部智能体按相同格式生成计划。');
+  });
+  const confirm = () => {
+    if (!preview || !confirmable) return;
+    return run('confirm', async () => {
+      const result = await host.planImportConfirm({ token: preview.token, allowConflicts: verifyPending ? false : allowConflicts,
+        ...(requiresDeletions ? { allowDeletions: verifyPending ? false : allowDeletions } : {}),
+      });
+      if (!result.ok) { setError(result.error.message); return; }
+      const receipt = result.data;
+      setReport(receipt); setPreview(receipt.preview ?? null); setAllowConflicts(false); setAllowDeletions(false);
+      ui.setNotice(receipt.message);
+      try { await ui.refresh(); }
+      catch { ui.setNotice(`${receipt.message} 页面刷新失败，请重新载入。`); }
+      if (receipt.status === 'complete') onClose();
+    });
+  };
+
+  return <Modal wide title="导入计划" onClose={close} closeDisabled={locked}>
+    <div className="editor-form plan-import" aria-busy={locked}>
+      <p className="plan-import-intro">首次新建可整份导入目标、任务、学习时段和资料引用，核对后一次确认保存。<span className="hint">已有目标要续排或修改，请先在目标里“导出给外部智能体”。修订文件会列出修改前后和删除项；未提及的记录保留。选择文件只生成预览，中断后用原文件继续。</span></p>
+      <div className="plan-import-file-actions">
+        <button className="plan-import-pick" disabled={locked} onClick={() => void chooseFile()}>{busy === 'open' ? '正在读取…' : preview ? '重新选择 JSON 文件' : '选择 JSON 文件'}</button>
+        <span className="plan-import-tools">
+          <button className="link" disabled={locked} onClick={() => void saveTemplate()}>{busy === 'template' ? '正在保存…' : '保存示例文件'}</button>
+          {busyHost && <button className="link" disabled={locked} aria-expanded={busyExportOpen} aria-controls={busyPanelId} onClick={() => { if (!working.current && !exporting.current) setBusyExportOpen(open => !open); }}>导出忙碌时间</button>}
+        </span>
+      </div>
+      {busyExportOpen && busyHost && <div id={busyPanelId}><BusyExportPanel host={busyHost} disabled={Boolean(busy)} onBusyChange={value => { exporting.current = value; setExportBusy(value); }} onSaved={ui.setNotice} /></div>}
+      {feedback && <p role="status">{feedback}</p>}
+      {error && <p className="error" role="alert">{error}</p>}
+      {report?.status === 'partial' && <section className="warning plan-import-receipt" role="status" aria-label="导入进度">
+        <strong>已保存 {report.applied} 条 · 未完成 {report.remaining} 条</strong>
+        <p>{report.message}</p>
+        <p>{verifyPending ? '请先核对上次已保存的结果。' : preview ? '请核对最新预览，再继续导入未完成的条目。' : '请重新选择同一份原始 JSON 文件，核对预览后继续。'}</p>
+      </section>}
+      {preview ? <>
+        <section className="plan-import-summary" aria-label="计划预览">
+          <div className="plan-import-title"><h3>{preview.title}</h3><span className="hint">编号 {preview.planId}</span></div>
+          <div className="plan-import-counts" aria-label="条目统计">
+            <span className="new">待新增 <b>{counts.new}</b></span>
+            {hasRevisions && <><span className="update">待修改 <b>{counts.update}</b></span><span className="delete">待删除 <b>{counts.delete}</b></span></>}
+            <span>已存在 <b>{counts.existing}</b></span><span className={counts.blocked ? 'blocked' : undefined}>需处理 <b>{counts.blocked}</b></span>
+          </div>
+          <p className="hint">共 {preview.rows.length} 条：目标 {preview.rows.filter(row => row.kind === 'goal').length} · 任务 {preview.rows.filter(row => row.kind === 'task').length} · 时段 {preview.rows.filter(row => row.kind === 'block').length}，时间均为北京时间。</p>
+        </section>
+        <ol className="plan-import-rows" aria-label="导入条目">
+          {preview.rows.map(row => <li key={`${row.action ?? 'create'}:${row.kind}:${row.localId}`} className={`plan-import-row ${row.state}`}>
+            <div className="plan-import-row-heading"><span className="plan-import-kind">{kindNames[row.kind]}</span><strong>{row.title}</strong><span className="plan-import-state">{stateNames[row.state]}</span></div>
+            {(row.detail || row.start || row.end) && <p>{row.detail && <span>{row.detail}</span>}{(row.start || row.end) && <span className="plan-import-time">{displayRange(row.start, row.end)}</span>}</p>}
+            {!!row.changes?.length && <table className="plan-import-changes" aria-label={`${row.title} 修改前后`}>
+              <thead><tr><th scope="col">字段</th><th scope="col">修改前</th><th scope="col">修改后</th></tr></thead>
+              <tbody>{row.changes.map((change, index) => <tr key={`${change.field}:${index}`}><th scope="row">{change.field}</th><td>{change.before || '（空）'}</td><td>{change.after || '（空）'}</td></tr>)}</tbody>
+            </table>}
+          </li>)}
+        </ol>
+        {preview.resources.length > 0 && <section className="plan-import-resources" aria-label="资料引用">
+          <h3>资料引用 · {preview.resources.length}</h3>
+          <ul>{preview.resources.map(resource => <li key={resource.id}>
+            <strong>{resource.name}</strong>
+            <span>{resource.kind === 'web' ? resource.url : `${resource.kind === 'file' ? '本地文件' : '本地文件夹'} · ${resource.deviceName}`}</span>
+          </li>)}</ul>
+          <p className="hint">只保存引用，本地文件仍留在所属设备。</p>
+        </section>}
+        {preview.warnings.length > 0 && <section className="warning" aria-label="导入提醒"><ul>{preview.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></section>}
+        {verifyPending && <p className="warning" role="status">只核对上次已保存的结果，不继续新增；之后重新导出最新计划。</p>}
+        {counts.blocked > 0 && !verifyPending && <p className="warning" role="alert">有 {counts.blocked} 条需要处理，暂时无法导入。请核对上方原因后重新选择文件。</p>}
+        {preview.conflicts.length > 0 && <section className="warning plan-import-conflicts" aria-label="时间冲突">
+          <h3>时间冲突 · {preview.conflicts.length}</h3>
+          <ul>{preview.conflicts.map((conflict, index) => <li key={index}>{conflict}</li>)}</ul>
+          <label className="check"><input type="checkbox" disabled={locked || verifyPending} checked={!verifyPending && allowConflicts} onChange={event => setAllowConflicts(event.target.checked)} />我已核对以上时间冲突，仍按文件导入</label>
+        </section>}
+        {requiresDeletions && <section className="warning plan-import-deletions" aria-label="删除确认">
+          <p>仅删除上方明确列出的记录，未列出的任务和时段会保留。</p>
+          <label className="check"><input type="checkbox" disabled={locked || verifyPending} checked={!verifyPending && allowDeletions} onChange={event => setAllowDeletions(event.target.checked)} />我已核对以上删除项</label>
+        </section>}
+        {pendingCount === 0 && counts.blocked === 0 && !verifyPending && <p role="status">这些条目已全部存在，无需再次导入。</p>}
+      </> : !report && <div className="plan-import-empty"><p>还未选择计划文件</p><p className="hint">支持 JSON 格式，单个文件不超过 1 MB、最多 500 条新增、修改或删除条目。</p></div>}
+      <footer className="form-footer">
+        <button disabled={locked} onClick={close}>取消</button>
+        <button className="primary" disabled={locked || !confirmable} onClick={() => void confirm()}>{busy === 'confirm' ? verifyPending ? '正在核对，请稍候…' : '正在导入，请稍候…' : verifyPending ? '仅核对已保存操作' : report?.status === 'partial' && preview ? '继续导入未完成条目' : '确认批量导入'}</button>
+      </footer>
+    </div>
+  </Modal>;
+}

@@ -1,0 +1,44 @@
+{
+  "format": "ultimate-calendar-plan",
+  "version": 1,
+  "timezone": "Asia/Shanghai",
+  "planId": "demo-supplement-existing-tasks-20300417-v1",
+  "title": "演示：已有1目标6任务2时段，仅补4个时段（请替换 taskId 和日期）",
+  "resources": [],
+  "goals": [],
+  "tasks": [],
+  "blocks": [
+    {
+      "id": "supplement-task-03",
+      "title": "演示：任务3学习时段",
+      "kind": "work",
+      "taskId": "00000000-0000-4000-8000-000000000003",
+      "start": "2030-04-17T19:00:00+08:00",
+      "end": "2030-04-17T19:45:00+08:00"
+    },
+    {
+      "id": "supplement-task-04",
+      "title": "演示：任务4学习时段",
+      "kind": "work",
+      "taskId": "00000000-0000-4000-8000-000000000004",
+      "start": "2030-04-18T19:00:00+08:00",
+      "end": "2030-04-18T19:45:00+08:00"
+    },
+    {
+      "id": "supplement-task-05",
+      "title": "演示：任务5学习时段",
+      "kind": "work",
+      "taskId": "00000000-0000-4000-8000-000000000005",
+      "start": "2030-04-19T19:00:00+08:00",
+      "end": "2030-04-19T19:45:00+08:00"
+    },
+    {
+      "id": "supplement-task-06",
+      "title": "演示：任务6学习时段",
+      "kind": "work",
+      "taskId": "00000000-0000-4000-8000-000000000006",
+      "start": "2030-04-20T19:00:00+08:00",
+      "end": "2030-04-20T19:45:00+08:00"
+    }
+  ]
+}

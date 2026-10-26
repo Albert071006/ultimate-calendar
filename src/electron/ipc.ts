@@ -1,7 +1,7 @@
 import { requests, responses, methods, type Method } from './protocol';
 import { imageDataUrlValid } from './files';
 import { safeError } from '../ai/deepseek';
-import type { ApiError, ApiResult } from '../shared/contracts';
+import type { ApiError, ApiResult, CommandRequest } from '../shared/contracts';
 export interface Caller { senderId: number; frameId: number; url: string }
 export function trustedCaller(actual: Caller | null, expected: Caller | null): boolean {
   return !!actual && !!expected && actual.senderId === expected.senderId && actual.frameId === expected.frameId && actual.url === expected.url;
@@ -16,6 +16,11 @@ export async function dispatchRequest(method: string, input: unknown, actual: Ca
   const body = parsed.data;
   const image = body && typeof body === 'object' ? ('imageDataUrl' in body ? body.imageDataUrl : 'source' in body ? body.source.imageDataUrl : null) : null;
   if (typeof image === 'string' && !imageDataUrlValid(image)) return failure('VALIDATION', '图片内容与 PNG/JPEG 类型不符');
+  if (name === 'command') {
+    const request = body as CommandRequest;
+    const images = [request.image, ...(request.history ?? []).map(entry => entry.image)];
+    if (images.some(image => image && !imageDataUrlValid(image.imageDataUrl))) return failure('VALIDATION', '图片内容与 PNG/JPEG 类型不符');
+  }
   try {
     const handler = handlers[name]; if (!handler) return failure('INTERNAL', '本机服务尚未准备好，请重新打开应用');
     const result = await handler(body); const checked = responses[name].safeParse(result);

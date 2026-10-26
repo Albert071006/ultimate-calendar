@@ -8,11 +8,13 @@ import { createCaptureService, normalizeMessage, fromUnix } from './service';
 import { createCaptureStore } from './store';
 import { createRepository } from '../storage/repository';
 import { AttachmentDownloadError } from './download';
+import { WorkflowError } from '../ai/deepseek';
 import { detectExistingBridge } from './bridge';
 vi.mock('./bridge', async importOriginal => ({ ...await importOriginal<typeof import('./bridge')>(), detectExistingBridge: vi.fn(async () => []) }));
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.mocked(detectExistingBridge).mockReset().mockResolvedValue([]); });
 async function waitFor(check: () => boolean) { for (let n = 0; n < 150; n++) { if (check()) return; await new Promise(resolve => setTimeout(resolve, 20)); } throw Error('Expected state did not arrive'); }
+const successfulAnalysis = () => new Response(JSON.stringify({ choices: [{ message: { content: '{"candidates":[]}' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
 async function setup(fetcher: typeof fetch = async () => { throw Error('AI must not be called'); }, overrides: Partial<Parameters<typeof createCaptureService>[0]> = {}, read?: (request: { action: string; params: Record<string, unknown> }) => unknown) {
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 }); await once(server, 'listening');
   let socket: WebSocket | undefined; const actions: string[] = [];
@@ -31,6 +33,213 @@ async function setup(fetcher: typeof fetch = async () => { throw Error('AI must 
   return { service, store, repository, send, actions };
 }
 describe('capture orchestration against real local OneBot websocket', () => {
+  it('automatically resumes known credential failures with a new key without retrying uncertain work', async () => {
+    let valid = false;
+    const fetcher = vi.fn(async () => valid ? successfulAnalysis() : new Response(JSON.stringify({ error: { message: 'invalid key' } }), { status: 401 }));
+    const { service, store, send } = await setup(fetcher);
+    await service.configure({ ...store.config(), enabled: true, groupIds: ['200'] }); send('unknown');
+    await waitFor(() => store.stats().messages === 1 && !service.busy());
+    const unknown = store.sealBatches({ force: true })[0]!; store.failBatch(unknown.id, 'synthetic unknown response', true);
+    send('credential'); await waitFor(() => store.stats().messages === 2);
+    await service.configure({ ...store.config(), analysisEnabled: true }); await waitFor(() => !service.busy());
+    service.action({ action: 'analyze' }); await waitFor(() => !service.busy());
+    const rejected = store.listBatches().items.find(batch => batch.id !== unknown.id)!;
+    expect(service.snapshot()).toMatchObject({ analysisWaitingForKey: true, config: { enabled: true, analysisEnabled: false } });
+    expect(store.batch(rejected.id)?.status).toBe('failed'); expect(fetcher).toHaveBeenCalledTimes(1);
+    valid = true; await service.credentialsChanged({ configured: true });
+    await waitFor(() => !service.busy() && store.batch(rejected.id)?.status === 'applied');
+    expect(service.snapshot()).toMatchObject({ error: null, analysisWaitingForKey: false, config: { analysisEnabled: true } });
+    expect(store.batch(unknown.id)?.status).toBe('uncertain'); expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+  it('ignores duplicate revision callbacks when the worker lost its receipt and the new key was also rejected', async () => {
+    const fetcher = vi.fn(async () => new Response('{}', { status: 401 }));
+    const { service, store, send } = await setup(fetcher);
+    await service.configure({ ...store.config(), enabled: true, groupIds: ['200'] }); send('repeated-revision');
+    await waitFor(() => store.stats().messages === 1 && !service.busy());
+    await service.configure({ ...store.config(), analysisEnabled: true }); await waitFor(() => !service.busy());
+    service.action({ action: 'analyze' }); await waitFor(() => !service.busy());
+    const change = { sourceId: '1'.repeat(64), revision: '11111111-1111-4111-8111-111111111111', configured: true };
+    await service.credentialsChanged(change); await waitFor(() => !service.busy());
+    expect(fetcher).toHaveBeenCalledTimes(2); expect(store.config().analysisEnabled).toBe(false);
+    await service.credentialsChanged(change); await waitFor(() => !service.busy());
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(service.snapshot()).toMatchObject({ analysisWaitingForKey: true, config: { analysisEnabled: false } });
+    await service.credentialsChanged({ ...change, revision: '22222222-2222-4222-8222-222222222222' }); await waitFor(() => !service.busy());
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+  it('does not mistake a key synchronized during retrieval for an obsolete in-flight key', async () => {
+    let notify: (() => Promise<unknown>) | undefined;
+    const fetcher = vi.fn(async () => new Response('{}', { status: 401 }));
+    const { service, store, send } = await setup(fetcher, { getApiKey: async () => { await notify!(); return 'new-rejected-key'; } });
+    notify = () => service.credentialsChanged({ sourceId: '1'.repeat(64), revision: '11111111-1111-4111-8111-111111111111', configured: true });
+    await service.configure({ ...store.config(), enabled: true, groupIds: ['200'] }); send('sync-before-request');
+    await waitFor(() => store.stats().messages === 1 && !service.busy());
+    await service.configure({ ...store.config(), analysisEnabled: true }); await waitFor(() => !service.busy());
+    service.action({ action: 'analyze' }); await waitFor(() => !service.busy());
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(service.snapshot()).toMatchObject({ analysisWaitingForKey: true, config: { analysisEnabled: false } });
+  });
+  it('keeps collecting while keys are cleared and recovers missing-key work in a new service instance', async () => {
+    let key: string | null = null;
+    const fetcher = vi.fn(async () => successfulAnalysis());
+    const { service, store, repository, send } = await setup(fetcher, { getApiKey: async () => key });
+    await service.configure({ ...store.config(), enabled: true, groupIds: ['200'] }); send('missing-key');
+    await waitFor(() => store.stats().messages === 1 && !service.busy());
+    await service.configure({ ...store.config(), analysisEnabled: true }); await waitFor(() => !service.busy());
+    service.action({ action: 'analyze' }); await waitFor(() => !service.busy());
+    const batch = store.listBatches().items[0]!;
+    expect(store.credentialPause()?.reason).toBe('NO_API_KEY'); expect(fetcher).not.toHaveBeenCalled();
+    await service.credentialsChanged({ configured: false }); send('while-waiting');
+    await waitFor(() => store.stats().messages === 2);
+    expect(store.batch(batch.id)?.status).toBe('failed'); expect(service.snapshot().config.enabled).toBe(true);
+    service.stop(); key = 'new-synthetic-key';
+    const restarted = createCaptureService({ store, repository, credentials: { get: async () => 'synthetic-token', set: async () => {}, status: () => ({ configured: true }) }, getApiKey: async () => key, extract: async () => ({ parts: [], warnings: [], status: 'ready' }), fetch: fetcher });
+    cleanups.push(() => restarted.stop());
+    expect(restarted.snapshot().analysisWaitingForKey).toBe(true);
+    await restarted.credentialsChanged({ configured: true });
+    await waitFor(() => !restarted.busy() && store.batch(batch.id)?.status === 'applied');
+    expect(store.stats().messages).toBe(2); expect(fetcher).toHaveBeenCalledTimes(1);
+    await restarted.credentialsChanged({ configured: false });
+    expect(restarted.snapshot()).toMatchObject({ analysisWaitingForKey: true, config: { enabled: true, analysisEnabled: false } });
+    await restarted.credentialsChanged({ configured: true }); expect(store.config().analysisEnabled).toBe(true);
+  });
+  it('preserves waiting through ordinary settings but respects explicit manual pause and disconnect', async () => {
+    const { service, store } = await setup();
+    await service.configure({ ...store.config(), enabled: true, analysisEnabled: true, groupIds: ['200'] }); await waitFor(() => !service.busy());
+    await service.credentialsChanged({ configured: false });
+    await service.configure({ ...store.config(), enabled: false }); expect(service.snapshot().analysisWaitingForKey).toBe(true);
+    await service.credentialsChanged({ configured: true }); expect(store.config().analysisEnabled).toBe(true); await waitFor(() => !service.busy());
+    await service.configure({ ...store.config(), analysisEnabled: false });
+    await service.credentialsChanged({ configured: true }); expect(store.config().analysisEnabled).toBe(false);
+    await service.configure({ ...store.config(), enabled: true, analysisEnabled: true }); await waitFor(() => !service.busy());
+    await service.credentialsChanged({ configured: false }); service.action({ action: 'pause-analysis' });
+    await service.credentialsChanged({ configured: true });
+    expect(service.snapshot()).toMatchObject({ analysisWaitingForKey: false, config: { enabled: true, analysisEnabled: false } });
+    await service.configure({ ...store.config(), analysisEnabled: true }); await waitFor(() => !service.busy());
+    await service.credentialsChanged({ configured: false });
+    await service.configure({ ...store.config(), analysisEnabled: false }, { analysisIntent: true });
+    await service.credentialsChanged({ configured: true }); expect(store.config().analysisEnabled).toBe(false);
+    await service.configure({ ...store.config(), analysisEnabled: true }); await waitFor(() => !service.busy());
+    await service.credentialsChanged({ configured: false }); service.action({ action: 'disconnect' });
+    await service.credentialsChanged({ configured: true }); expect(store.config().analysisEnabled).toBe(false);
+  });
+  it('saves an in-flight result when a key is cleared and never sends it twice after restoration', async () => {
+    let release: ((response: Response) => void) | undefined;
+    const fetcher = vi.fn(() => new Promise<Response>(resolve => { release = resolve; }));
+    const { service, store, send } = await setup(fetcher);
+    await service.configure({ ...store.config(), enabled: true, groupIds: ['200'] }); send('in-flight');
+    await waitFor(() => store.stats().messages === 1 && !service.busy());
+    await service.configure({ ...store.config(), analysisEnabled: true }); await waitFor(() => !service.busy());
+    service.action({ action: 'analyze' }); await waitFor(() => !!release);
+    await service.credentialsChanged({ configured: false });
+    release!(successfulAnalysis()); await waitFor(() => !service.busy());
+    expect(store.listBatches().items[0]?.status).toBe('applied'); expect(store.config().analysisEnabled).toBe(false);
+    await service.credentialsChanged({ configured: true }); await waitFor(() => !service.busy());
+    expect(store.listBatches().items[0]?.status).toBe('applied'); expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('keeps synchronization failures pending without disabling analysis or repeating completed paid fragments', async () => {
+    let reads = 0;
+    const fetcher = vi.fn(async () => successfulAnalysis());
+    const { service, store } = await setup(fetcher, { getApiKey: async () => {
+      if (++reads === 2) throw new WorkflowError('CANCELLED', '等待云端密钥同步，连接恢复后会自动重试');
+      return 'synthetic-api';
+    } });
+    await service.configure({ ...store.config(), enabled: true, groupIds: ['200'] }); await waitFor(() => !service.busy());
+    store.ingest([{ accountId: '100', groupId: '200', messageId: 'fragment-sync-failure', sentAt: fromUnix(Date.now() / 1000)!, text: '合成通知'.repeat(13000) }]);
+    await service.configure({ ...store.config(), analysisEnabled: true }); await waitFor(() => !service.busy());
+    service.action({ action: 'analyze' }); await waitFor(() => !service.busy());
+    expect(store.listBatches().items[0]?.status).toBe('pending'); expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(service.snapshot()).toMatchObject({ analysisWaitingForKey: false, config: { analysisEnabled: true } });
+    service.action({ action: 'analyze' }); await waitFor(() => !service.busy());
+    expect(store.listBatches().items[0]?.status).toBe('applied'); expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(reads).toBe(3);
+  });
+  it('notifies saved fragment progress and retries an invalid later answer locally without another paid request', async () => {
+    const onPlannerChanged = vi.fn(), groupSizes: number[] = [];
+    let firstSourceId = '', invalidAnswer: unknown;
+    const fetcher = vi.fn(async (_url: string | URL | Request, request?: RequestInit) => {
+      const payload = JSON.parse(String(request?.body));
+      const sent = JSON.parse(payload.messages.find((message: { role: string }) => message.role === 'user').content[0].text) as { units: { id: string; text: string }[] };
+      groupSizes.push(sent.units.length);
+      if (groupSizes.length === 1) firstSourceId = sent.units[0]!.id;
+      else {
+        expect(onPlannerChanged).toHaveBeenCalledTimes(1);
+        expect(repository.snapshot().candidates).toHaveLength(1);
+        expect(sent.units.every(unit => unit.id !== firstSourceId)).toBe(true);
+      }
+      const answer = { candidates: [{ title: '领取合成活动资料', action: '领取合成活动资料', benefit: '', benefitKind: 'unknown', potentialBenefit: '',
+        conditions: [], uncertainties: [], sourceIds: [firstSourceId], sourceQuote: sent.units[0]!.text, deadline: null, eventStart: null, eventEnd: null,
+        location: '', temporalEvidence: [], relation: { kind: 'new', candidateId: null } }] };
+      if (groupSizes.length === 2) invalidAnswer = answer;
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer) }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
+    });
+    const { service, store, repository } = await setup(fetcher, { onPlannerChanged });
+    await service.configure({ ...store.config(), enabled: true, groupIds: ['200'] }); await waitFor(() => !service.busy());
+    const messageId = store.ingest([{ accountId: '100', groupId: '200', messageId: 'synthetic-fragment-progress', sentAt: fromUnix(Date.now() / 1000)!, text: '',
+      attachments: [{ kind: 'file', name: '合成活动名单.xlsx' }] }]).ids[0]!;
+    store.saveExtraction(store.attachments(messageId)[0]!.id, { extractorVersion: 'synthetic-ready', chunks: Array.from({ length: 31 }, (_, ordinal) => ({
+      ordinal, location: `第 ${ordinal + 1} 页`, text: `领取合成活动资料；合成名单第 ${ordinal + 1} 页`, imageDataUrl: null, status: 'ready' as const, error: null,
+    })) });
+    await service.configure({ ...store.config(), enabled: false, analysisEnabled: true }); await waitFor(() => !service.busy());
+    service.action({ action: 'analyze' }); await waitFor(() => !service.busy());
+    const batch = store.batch(store.listBatches().items[0]!.id)!, saved = repository.snapshot();
+    expect(groupSizes).toEqual([30, 1]); expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(saved.candidates).toHaveLength(1); expect(saved.sources).toHaveLength(1); expect(onPlannerChanged).toHaveBeenCalledTimes(1);
+    expect(batch.result).toMatchObject({ completed: [expect.any(Object)], pendingResponse: { value: invalidAnswer } });
+    expect(batch.error).toContain('回答已保存在本机'); expect(batch.error).toContain('已完成内容保留'); expect(batch.error).toContain('不会自动重新付费请求');
+    service.action({ action: 'retry', batchId: batch.id }); await waitFor(() => !service.busy());
+    expect(fetcher).toHaveBeenCalledTimes(2); expect(onPlannerChanged).toHaveBeenCalledTimes(1);
+    expect(repository.snapshot().candidates).toEqual(saved.candidates); expect(repository.snapshot().sources).toEqual(saved.sources);
+    expect(store.batch(batch.id)?.result).toEqual(batch.result); expect(store.batch(batch.id)?.error).toContain('回答已保存在本机');
+  });
+  it('uses a rotated key after an in-flight rejection but honors a manual pause during the request', async () => {
+    let release: ((response: Response) => void) | undefined;
+    let hold = true;
+    const fetcher = vi.fn(() => hold ? new Promise<Response>(resolve => { release = resolve; }) : Promise.resolve(successfulAnalysis()));
+    const { service, store, send } = await setup(fetcher);
+    await service.configure({ ...store.config(), enabled: true, groupIds: ['200'] }); send('rotation');
+    await waitFor(() => store.stats().messages === 1 && !service.busy());
+    await service.configure({ ...store.config(), analysisEnabled: true }); await waitFor(() => !service.busy());
+    service.action({ action: 'analyze' }); await waitFor(() => !!release);
+    await service.credentialsChanged({ configured: true }); hold = false;
+    release!(new Response('{}', { status: 401 })); await waitFor(() => !service.busy());
+    expect(store.listBatches().items[0]?.status).toBe('applied'); expect(fetcher).toHaveBeenCalledTimes(2);
+    hold = true; release = undefined; send('manual-pause'); await waitFor(() => store.stats().messages === 2);
+    service.action({ action: 'analyze' }); await waitFor(() => !!release);
+    service.action({ action: 'pause-analysis' }); await service.credentialsChanged({ configured: true });
+    release!(new Response('{}', { status: 401 })); await waitFor(() => !service.busy());
+    expect(service.snapshot()).toMatchObject({ analysisWaitingForKey: false, config: { analysisEnabled: false } });
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+  it.each([402, 429])('does not resume balance or rate-limit failures (%s) after a key sync', async status => {
+    const fetcher = vi.fn(async () => new Response('{}', { status }));
+    const { service, store, send } = await setup(fetcher);
+    await service.configure({ ...store.config(), enabled: true, groupIds: ['200'] }); send('non-credential');
+    await waitFor(() => store.stats().messages === 1 && !service.busy());
+    await service.configure({ ...store.config(), analysisEnabled: true }); await waitFor(() => !service.busy());
+    service.action({ action: 'analyze' }); await waitFor(() => !service.busy());
+    await service.credentialsChanged({ configured: true }); await waitFor(() => !service.busy());
+    expect(store.config().analysisEnabled).toBe(false); expect(store.listBatches().items[0]?.status).toBe('failed');
+    expect(service.snapshot().analysisWaitingForKey).toBe(false); expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('pauses on rejected credentials and clears the old error after an explicit repaired-key resume', async () => {
+    let valid = false;
+    const fetcher = vi.fn(async () => valid
+      ? new Response(JSON.stringify({ choices: [{ message: { content: '{"candidates":[]}' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }))
+      : new Response('{}', { status: 401 }));
+    const { service, store, send } = await setup(fetcher);
+    await service.configure({ ...store.config(), enabled: true, groupIds: ['200'] });
+    send('synthetic-key-repair'); await waitFor(() => store.stats().messages === 1 && !service.busy());
+    await service.configure({ ...store.config(), enabled: false, analysisEnabled: true }); await waitFor(() => !service.busy());
+    service.action({ action: 'analyze' }); await waitFor(() => !service.busy() && !store.config().analysisEnabled);
+    expect(service.snapshot().error).toContain('密钥无效');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const batch = store.listBatches().items[0]!; expect(batch.status).toBe('failed');
+    valid = true; store.retryBatch(batch.id);
+    await service.configure({ ...store.config(), analysisEnabled: true }); await waitFor(() => !service.busy());
+    expect(service.snapshot()).toMatchObject({ error: null, config: { analysisEnabled: true } });
+    expect(store.batch(batch.id)?.status).toBe('applied'); expect(fetcher).toHaveBeenCalledTimes(2);
+  });
   it('keeps self, other and all mention identities in normalized text', () => {
     const message = normalizeMessage({ group_id: '200', message_id: 'recipients', time: Date.now() / 1000,
       message: [{ type: 'at', data: { qq: '100' } }, { type: 'at', data: { qq: '300' } }, { type: 'at', data: { qq: 'all' } }] }, '100', new Map());
@@ -121,6 +330,7 @@ describe('capture orchestration against real local OneBot websocket', () => {
     await service.configure({ ...store.config(), enabled: false, analysisEnabled: true }); await waitFor(() => !service.busy());
     service.action({ action: 'analyze' }); await waitFor(() => !service.busy());
     expect(calls).toBe(1); expect(store.listBatches().items[0]?.status).toBe('uncertain');
+    await service.credentialsChanged({ configured: true }); expect(store.config().analysisEnabled).toBe(true);
     service.action({ action: 'analyze' }); await waitFor(() => !service.busy()); expect(calls).toBe(1);
   });
   it('rejects groups not returned by the authenticated account', async () => {
@@ -129,6 +339,31 @@ describe('capture orchestration against real local OneBot websocket', () => {
   it('preserves file/quote locators internally and never mistakes voice/video as text', () => {
     const message = normalizeMessage({ group_id: '200', message_id: '1', time: 1792713600, message: [{ type: 'text', data: { text: '请看文件' } }, { type: 'file', data: { name: '作业.pdf', file_id: 'file-1', size: 300 } }, { type: 'record', data: { file: 'voice' } }, { type: 'reply', data: { id: 'old' } }] }, '100', new Map());
     expect(message?.text).toBe('请看文件'); expect(message?.attachments?.map(a => a.kind)).toEqual(['file', 'voice', 'other']); expect(message?.attachments?.[0]?.locator).toMatchObject({ data: { file_id: 'file-1' } });
+  });
+  it('recognizes a NapCat file segment filename while preserving its original locator and IDs', () => {
+    const segment = { type: 'file', data: { file: '合成实验操作说明.docx', file_id: '/synthetic-file-id', file_size: '2318065', url: 'https://example.com/synthetic-download' } };
+    const message = normalizeMessage({ group_id: '200', message_id: 'synthetic-docx', time: 1792713600, message: [segment] }, '100', new Map());
+    expect(message).toMatchObject({ messageId: 'synthetic-docx', groupId: '200', segments: [segment], attachments: [{ kind: 'file', name: '合成实验操作说明.docx', size: 2318065, locator: segment }] });
+  });
+  it('keeps explicit name variants ahead of the NapCat file fallback', () => {
+    for (const field of ['name', 'file_name', 'filename']) {
+      const message = normalizeMessage({ group_id: '200', message_id: field, time: 1792713600, message: [{ type: 'file', data: { [field]: '原有文件名.pdf', file: '备用文件名.docx', file_id: '/synthetic-id' } }] }, '100', new Map());
+      expect(message?.attachments?.[0]?.name).toBe('原有文件名.pdf');
+    }
+  });
+  it('does not interpret file URLs, paths, encoded payloads or opaque IDs as display filenames', () => {
+    for (const file of ['https://example.com/file.docx', 'file:///C:/synthetic/file.docx', 'C:\\synthetic\\file.docx', 'C:file.docx', '/synthetic/file.docx', '../file.docx', 'folder/file.docx',
+      'data:application/pdf;base64,c3ludGhldGlj', 'base64://c3ludGhldGlj', 'c3ludGhldGlj', '/synthetic-id', 'file\u0000.docx', 'file\n.docx', `${'x'.repeat(1000)}.pdf`]) {
+      const segment = { type: 'file', data: { file, file_id: '/synthetic-id' } };
+      const message = normalizeMessage({ group_id: '200', message_id: 'unsafe-name', time: 1792713600, message: [segment] }, '100', new Map());
+      expect(message?.attachments?.[0], file).toMatchObject({ name: '未命名文件', locator: segment });
+    }
+  });
+  it('keeps image, voice and video file locators from changing their existing fallback names', () => {
+    const segments = ['image', 'record', 'video'].map(type => ({ type, data: { file: 'synthetic-file.pdf' } }));
+    const message = normalizeMessage({ group_id: '200', message_id: 'media-names', time: 1792713600, message: segments }, '100', new Map());
+    expect(message?.attachments?.map(attachment => attachment.name)).toEqual(['群图片.jpg', '语音', '视频']);
+    expect(message?.attachments?.map(attachment => attachment.locator)).toEqual(segments);
   });
   it('catches up newest disconnected messages before resuming a saved older cursor', async () => {
     let resumed = false; const cursors: unknown[] = []; const now = Date.now() / 1000;

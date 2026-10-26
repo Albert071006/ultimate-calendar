@@ -1,0 +1,36 @@
+# Include inside nginx's http context; adapt TLS certificate paths and the placeholder host.
+# This configuration is a review sample, not an executed deployment.
+server {
+    listen 80;
+    server_name calendar.example.invalid;
+    return 308 https://calendar.example.invalid$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name calendar.example.invalid;
+    ssl_certificate /etc/letsencrypt/live/calendar.example.invalid/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/calendar.example.invalid/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    # Do not log pairing codes, cookies, payloads, query strings or private record IDs.
+    access_log off;
+    client_max_body_size 15m;
+    client_header_timeout 15s;
+    client_body_timeout 60s;
+    keepalive_timeout 5s;
+
+    location / {
+        proxy_pass http://127.0.0.1:3210;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header Origin $http_origin;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 180s;
+        proxy_send_timeout 60s;
+        # Do not retry an accepted write against another process/upstream.
+        proxy_next_upstream off;
+    }
+}

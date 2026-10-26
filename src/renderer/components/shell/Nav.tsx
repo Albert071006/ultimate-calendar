@@ -1,4 +1,4 @@
-import { CalendarDays, Inbox, Sun, UserRound, Wallet } from "lucide-react";
+import { CalendarDays, FileInput, Inbox, Sun, UserRound, Wallet } from "lucide-react";
 
 export type Page = "today" | "calendar" | "inbox" | "ledger" | "me";
 const entries = [
@@ -9,7 +9,7 @@ const entries = [
   ["me", "我的", UserRound],
 ] as const;
 
-export function Nav({ page, navigate, pending }: { page: Page; navigate: (page: Page) => void; pending: number }) {
+export function Nav({ page, navigate, pending, importPlan }: { page: Page; navigate: (page: Page) => void; pending: number; importPlan?: () => void }) {
   return (
     <aside className="a2-nav">
       <div className="a2-brand">
@@ -24,8 +24,8 @@ export function Nav({ page, navigate, pending }: { page: Page; navigate: (page: 
             {id === "inbox" && pending > 0 && <b aria-label={`${pending} 条待判断`}>{pending}</b>}
           </button>
         ))}
+        {importPlan && <button className="a2-nav-import" onClick={importPlan}><FileInput size={18} strokeWidth={1.7} aria-hidden="true" /><span>导入计划</span></button>}
       </nav>
-      <div className="a2-nav-foot"><i aria-hidden="true" />本机 · 已保存</div>
     </aside>
   );
 }

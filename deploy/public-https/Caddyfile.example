@@ -1,0 +1,71 @@
+# Review before use. This is a public listener template, not an installer.
+# Required environment: CALENDAR_PUBLIC_HOST, CALENDAR_BIND_IP, ACME_EMAIL.
+# CALENDAR_BIND_IP is the address actually assigned to the ECS primary NIC,
+# not its public NAT address and not a Tailscale/loopback address.
+{
+	email {$ACME_EMAIL}
+	admin 127.0.0.1:2019
+	auto_https disable_redirects
+	servers {
+		protocols h1 h2
+		strict_sni_host on
+		max_header_size 16KB
+		timeouts {
+			read_header 15s
+			read_body 60s
+			idle 2m
+		}
+	}
+	# Access logging is not enabled. Redact request credentials and URLs from
+	# operational error logs too. Do not enable debug or log_credentials.
+	log default {
+		level WARN
+		format filter {
+			wrap json
+			fields {
+				request>headers delete
+				request>uri delete
+				resp_headers delete
+			}
+		}
+	}
+}
+
+# Declare HTTP explicitly: Automatic HTTPS's implicit redirect listener does
+# not inherit default_bind. Both listeners must use the reviewed NIC address.
+http://{$CALENDAR_PUBLIC_HOST} {
+	bind {$CALENDAR_BIND_IP}
+	redir https://{$CALENDAR_PUBLIC_HOST}{uri} 308
+}
+
+https://{$CALENDAR_PUBLIC_HOST} {
+	bind {$CALENDAR_BIND_IP}
+	tls {
+		issuer acme {
+			dir https://acme-v02.api.letsencrypt.org/directory
+		}
+	}
+	# The application imposes tighter per-route limits. Keep enough room for its
+	# existing 16 MiB encoded backup plus transport envelope.
+	request_body {
+		max_size 17MiB
+	}
+	@private path /healthz /healthz/* /readyz /readyz/* /api/v1/status /api/v1/status/* /api/v1/distilled /api/v1/distilled/* /api/v1/ai/receiver/sync /api/v1/ai/receiver/sync/*
+	handle @private {
+		respond 404
+	}
+	handle {
+		reverse_proxy 127.0.0.1:3210 {
+			# Caddy is the direct Internet-facing proxy, with no trusted_proxies.
+			# Replace rather than append incoming forwarding headers.
+			header_up X-Forwarded-For {http.request.remote.host}
+			header_up -Forwarded
+			header_up -X-Real-IP
+			# Preserve the actual external Host and Origin. Never rewrite either
+			# to the old private origin to bypass application origin checks.
+			transport http {
+				dial_timeout 3s
+			}
+		}
+	}
+}

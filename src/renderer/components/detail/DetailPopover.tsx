@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Check, Pencil, Trash2, X } from "lucide-react";
+import { Check, FileOutput, Pencil, Trash2, X } from "lucide-react";
 import { mondayWeekday, type Block, type Candidate, type Course, type Goal, type ReminderConfig, type Snapshot, type Task } from "../../../shared/contracts";
 import type { PlannerUI } from "../../hooks/usePlanner";
 import type { Selection } from "../Calendar";
@@ -14,6 +14,9 @@ import { belongingColor } from "../../../domain/belonging";
 import { entityNames, findRecord } from "./records";
 import { workFill } from "../../work-fill";
 import "./DetailPopover.css";
+import { useMobile } from '../../mobile/layout';
+import { MobileSheet } from '../../mobile/MobileSheet';
+import { ResourceSection } from '../resources/ResourcePanel';
 
 export interface DetailActions {
   edit: () => void;
@@ -21,6 +24,7 @@ export interface DetailActions {
   schedule: (id: string, blockId?: string) => void;
   scheduleRecurring?: (id: string) => void;
   removeTask: (id: string) => void;
+  exportGoal?: (id: string) => void;
 }
 
 const weekdays = ["一", "二", "三", "四", "五", "六", "日"];
@@ -77,6 +81,7 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
   close: () => void;
   actions: DetailActions;
 }) {
+  const mobile = useMobile();
   const now = useCurrentTime();
   const value = findRecord(snapshot, selection);
   const { ref, place } = usePlacement(anchor);
@@ -110,6 +115,7 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
 
   if (selection.entity === "block") {
     const block = value as Block, task = block.taskId ? snapshot.tasks.find(t => t.id === block.taskId) : undefined;
+    const taskWork = block.kind === "work" && !!task;
     const color = task ? belongingColor(task, snapshot) : null;
     kind = block.kind === "work" ? "执行时段" : "固定活动";
     swatch = color ? { "--wf": workFill(color), "--c": color } as CSSProperties : undefined;
@@ -120,7 +126,10 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
       {task && <><dt>任务</dt><dd><button className="a2-pop-link" onClick={() => actions.editTask(task.id)}>{task.title}</button></dd></>}
       {belonging(task)}
       <dt>提醒</dt><dd>{reminderLabel(block.reminders)}</dd>
-      {(block.completed || block.cancelled) && <><dt>状态</dt><dd>{block.cancelled ? "已取消" : "已完成"}</dd></>}
+      {taskWork ? <>
+        <dt>时段状态</dt><dd>{block.cancelled ? "已取消" : block.completed ? "已完成" : "未完成"}</dd>
+        <dt>任务状态</dt><dd>{task!.status === "done" ? "已完成" : "未完成"}</dd>
+      </> : (block.completed || block.cancelled) && <><dt>状态</dt><dd>{block.cancelled ? "已取消" : "已完成"}</dd></>}
     </dl>;
     const remove = () => void ui.mutate([block.recurrence
       ? { type: "cancelRecurringEvent", id: block.id, expectedVersion: block.version, scope: "single" }
@@ -128,7 +137,9 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
     footer = <>
       {!block.cancelled && <button className="ui-btn sm dark" disabled={ui.busy}
         onClick={() => void ui.mutate([{ type: "finishBlock", id: block.id, expectedVersion: block.version, completed: !block.completed }])}>
-        <Check aria-hidden="true" />{block.completed ? "恢复未完成" : "完成"}</button>}
+        <Check aria-hidden="true" />{taskWork ? block.completed ? "恢复本次未完成" : "完成本次时段" : block.completed ? "恢复未完成" : "完成"}</button>}
+      {taskWork && task && task.status !== "done" && <button className="ui-btn sm" disabled={ui.busy}
+        onClick={() => void ui.mutate([{ type: "finishTask", id: task.id, expectedVersion: task.version, completed: true }])}>完成整个任务</button>}
       {editButton}
       <span className="spacer" />
       {!block.cancelled && <button className="ui-btn sm ghost icon" disabled={ui.busy} aria-label={block.recurrence ? `取消本次 ${block.title}` : `删除 ${block.title}`}
@@ -224,22 +235,26 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
         <dt>任务</dt><dd>{linked.length ? `${linked.filter(task => task.status === "done").length} / ${linked.length} 已完成` : "暂无关联任务"}</dd>
       </dl>
     </>;
-    footer = editButton;
+    footer = <>{editButton}{!mobile && actions.exportGoal && <button className="ui-btn sm" onClick={() => actions.exportGoal!(goal.id)}><FileOutput aria-hidden="true" />导出给外部智能体</button>}</>;
   } else {
     body = "description" in value && value.description ? <p className="a2-pop-desc">{value.description}</p> : null;
   }
 
-  return (
+  const content = (
     <aside ref={ref} aria-label={`${name}详情`}
       className={`a2-pop${place ? ` ${place.side}` : ""}${place?.arrow === -1 ? " no-arrow" : ""}`}
-      style={{ left: place?.left ?? 0, top: place?.top ?? 0, visibility: place ? undefined : "hidden", "--arrow": `${place?.arrow ?? 20}px` } as CSSProperties}>
+      style={mobile ? undefined : { left: place?.left ?? 0, top: place?.top ?? 0, visibility: place ? undefined : "hidden", "--arrow": `${place?.arrow ?? 20}px` } as CSSProperties}>
       <header className="a2-pop-h">
         <div className="kind"><i className={`swatch ${selection.entity === "block" ? (value as Block).kind : selection.entity}`} style={swatch} aria-hidden="true" />{kind}</div>
         <h3>{title}</h3>
         <button className="ui-btn sm ghost icon close" onClick={close} aria-label="关闭详情" title="关闭（Esc）"><X aria-hidden="true" /></button>
       </header>
-      <div className="a2-pop-b">{body}</div>
+      <div className="a2-pop-b">{body}
+        {(selection.entity === 'task' || selection.entity === 'block' || selection.entity === 'course' || selection.entity === 'goal') &&
+          <ResourceSection snapshot={snapshot} target={{ entity: selection.entity, id: selection.id }} ui={ui} />}
+      </div>
       {footer && <footer className="a2-pop-a">{footer}</footer>}
     </aside>
   );
+  return mobile ? <MobileSheet title={`${name}详情`} close={close} bare>{content}</MobileSheet> : content;
 }

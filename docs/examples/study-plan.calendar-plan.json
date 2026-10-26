@@ -1,0 +1,47 @@
+{
+  "format": "ultimate-calendar-plan",
+  "version": 1,
+  "timezone": "Asia/Shanghai",
+  "planId": "demo-study-2026-11-v1",
+  "title": "示例：一周学习计划",
+  "resources": [
+    {
+      "id": "course-notes",
+      "kind": "web",
+      "name": "示例课程资料（请替换）",
+      "url": "https://example.com/course"
+    }
+  ],
+  "goals": [
+    {
+      "id": "learn-basics",
+      "title": "掌握基础知识",
+      "description": "完成阅读与练习",
+      "targetDate": "2026-11-08",
+      "resourceRefs": [
+        "course-notes"
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "read-chapter",
+      "goalRef": "learn-basics",
+      "title": "阅读第一章并整理笔记",
+      "deadline": {
+        "date": "2026-11-04",
+        "time": "21:00"
+      }
+    }
+  ],
+  "blocks": [
+    {
+      "id": "reading-session",
+      "taskRef": "read-chapter",
+      "title": "第一章阅读与笔记",
+      "kind": "work",
+      "start": "2026-11-02T19:00:00+08:00",
+      "end": "2026-11-02T20:00:00+08:00"
+    }
+  ]
+}

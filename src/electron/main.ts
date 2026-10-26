@@ -1,12 +1,16 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, safeStorage, session, Tray, type IpcMainInvokeEvent, type IpcMainEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, safeStorage, session, shell, Tray, type IpcMainInvokeEvent, type IpcMainEvent } from 'electron';
 import { join, basename, extname } from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { NsisUpdater } from 'electron-updater';
 import { createRepository, type Repository } from '../storage/repository';
 import { createPlanner } from '../domain/planner';
+import { createNativePlanImport } from './plan-import';
+import { createNativePlanExport, localPlanSource } from './plan-export';
+import { createNativeBusyExport } from './busy-export';
 import { createController } from '../application/controller';
 import { createBackup, automaticBackup, inspectBackupFile } from '../storage/backups';
 import { createSpaceManager } from '../storage/space-management';
@@ -14,10 +18,10 @@ import { initializeBackupDirectory, resolveBackupDirectory } from '../storage/sp
 import { createLedgerService, type LedgerService } from '../ledger/service';
 import { nowInstant } from '../domain/time';
 import { reminderDigest } from '../domain/reminders';
-import { ChangedEventSchema, NavigateEventSchema, MAX_IMAGE_BYTES, type ChangedEvent, type NavigateEvent, type DesktopAPI } from '../shared/contracts';
+import { ChangedEventSchema, NavigateEventSchema, MutationRequestSchema, MAX_IMAGE_BYTES, type ChangedEvent, type NavigateEvent, type DesktopAPI } from '../shared/contracts';
 import { WorkflowError } from '../ai/deepseek';
 import { createKeyStore } from './key-store';
-import { boundedFile, imageFromBytes, profileFromArgs } from './files';
+import { boundedFile, imageFromBytes } from './files';
 import { dispatchRequest, trustedCaller, type Caller } from './ipc';
 import { methods } from './protocol';
 import { createRestoreManager } from './restore';
@@ -31,10 +35,20 @@ import { CaptureSnapshotSchema } from '../shared/capture';
 import { createModelRequestQueue } from '../ai/request-queue';
 import { createUpdateService } from './update-service';
 import { UpdateStateSchema } from '../shared/update';
-import { prepareDataDirectory, resolveDataDirectory } from './data-directory';
+import { prepareDataDirectory } from './data-directory';
+import type { NativeRemoteConfig } from './remote-config';
+import { desktopEdition, desktopStartup, LOCAL_ONLY } from './desktop-edition';
+import { createCollectorControlServer } from './collector-control';
+import { startNativeRemote } from './remote-mode';
+import { startCollectorMode } from './collector-mode';
+import { createNativeResourceHost } from './resources-native';
+import { createLocalEvidenceResolver } from './local-evidence';
+import { createSourceAttachmentHost } from './source-attachments';
+import { createCollectorTrayOwnership } from './collector-tray';
 
-app.setName('终极日历');
-const APP_ID = 'local.ultimate-calendar.desktop'; app.setAppUserModelId(APP_ID);
+const edition = desktopEdition(LOCAL_ONLY);
+app.setName(edition.name);
+const APP_ID = edition.appId; app.setAppUserModelId(APP_ID);
 let window: BrowserWindow | null = null; let tray: Tray | null = null; let repository: Repository | null = null;
 let quitting = false; let timer: ReturnType<typeof setInterval> | undefined; let navigationReady = false;
 let pendingNavigation: NavigateEvent | null = null;
@@ -48,22 +62,48 @@ const missed = createReminderSummary(); let acknowledgeReminders: (ids: string[]
 let startupNotice: { title: string; message: string } | null = null;
 const legacyDataDirectory = app.getPath('userData');
 let profile: string | null = null;
+let remoteConfig: NativeRemoteConfig | null = null;
+let stopRemote: (() => void) | undefined;
+let collectorOnly = false, collectorClosing = false, collectorStopped = false;
+let stopCollector: (() => Promise<void>) | undefined;
+let stopCollectorTray: (() => void) | undefined;
+let collectorStartup: ReturnType<typeof startCollectorMode> | undefined;
 try {
-  profile = profileFromArgs(process.argv);
-  const dataDirectory = resolveDataDirectory(app.getPath('documents'), profile);
+  const startup = desktopStartup(process.argv, app.getPath('documents'), LOCAL_ONLY);
+  profile = startup.profile;
+  remoteConfig = startup.remoteConfig;
+  const dataDirectory = startup.directory;
+  const collectorFlags = process.argv.filter(value => value.startsWith('--planner-capture-only'));
+  if (collectorFlags.length) {
+    if (collectorFlags.length !== 1 || collectorFlags[0] !== '--planner-capture-only' || remoteConfig || !existsSync(join(dataDirectory, 'planner.sqlite'))) throw Error('采集专用模式需要已有本机资料，且不能同时指定云端界面模式');
+    collectorOnly = true;
+  }
   mkdirSync(dataDirectory, { recursive: true });
   app.setPath('userData', dataDirectory);
 }
-catch { dialog.showErrorBox('无法打开数据目录', '请使用 --planner-profile=本地绝对目录，并避免磁盘根目录或重复参数。'); app.exit(1); }
+catch (error) { dialog.showErrorBox('启动配置无效', error instanceof Error ? error.message : '请检查明确的本地资料目录和启动参数，避免磁盘根目录或重复参数。'); app.exit(1); }
 const locked = app.requestSingleInstanceLock();
 if (!locked) app.quit();
 else {
   app.on('second-instance', () => showWindow());
-  app.on('before-quit', () => { quitting = true; });
-  app.on('will-quit', () => { if (timer) clearInterval(timer); stopSpace?.(); disposeRestore?.(); stopUpdates?.(); stopAccount?.(); stopCapture?.(); ledger?.close(); repository?.close(); tray?.destroy(); });
+  app.on('before-quit', event => {
+    if ((stopCollector || collectorStartup) && !collectorStopped) {
+      event.preventDefault();
+      if (!collectorClosing) {
+        collectorClosing = true;
+        void (async () => { await collectorStartup?.catch(() => undefined); await stopCollector?.(); })().then(() => { collectorStopped = true; app.quit(); }).catch(() => {
+          collectorClosing = false; dialog.showErrorBox('采集服务尚未正常退出', '请等待正在处理的消息结束，再从托盘退出。未关闭 QQ，也未提前关闭资料库。');
+        });
+      }
+      return;
+    }
+    quitting = true;
+  });
+  app.on('will-quit', () => { if (timer) clearInterval(timer); stopCollectorTray?.(); stopRemote?.(); stopSpace?.(); disposeRestore?.(); stopUpdates?.(); stopAccount?.(); stopCapture?.(); ledger?.close(); repository?.close(); tray?.destroy(); });
   app.on('activate', () => showWindow());
-  app.on('window-all-closed', () => { if (!tray || quitting) app.quit(); });
-  const dataPreparation = prepareDataDirectory({ directory: app.getPath('userData'), legacyDirectory: legacyDataDirectory, profile });
+  app.on('window-all-closed', () => { if ((!tray && !collectorOnly) || quitting) app.quit(); });
+  // The independent edition starts with its own data; never import a legacy/cloud user's old local database.
+  const dataPreparation = remoteConfig || collectorOnly ? Promise.resolve() : prepareDataDirectory({ directory: app.getPath('userData'), legacyDirectory: legacyDataDirectory, profile, migrateLegacy: !LOCAL_ONLY });
   void Promise.all([app.whenReady(), dataPreparation]).then(start).catch(error => {
     const detail = error instanceof Error ? error.message : '请检查目录权限与可用空间。';
     dialog.showErrorBox('日历启动失败', `无法打开本地数据或界面。${detail}\n数据目录：${app.getPath('userData')}\n不要删除已有数据库；可从备份恢复。`); app.quit();
@@ -101,8 +141,39 @@ async function showRetainedSummary(explicit = false) {
   finally { missed.finish(reminders.map(r => r.id), deferred); if (startupNotice || !deferred) void showRetainedSummary(); }
 }
 async function start() {
+  if (remoteConfig) { const remote = await startNativeRemote(remoteConfig, app.getPath('userData'), documentUrl()); window = remote.window; stopRemote = remote.close; window.once('closed', () => { window = null; }); return; }
+  if (collectorOnly) {
+    collectorStartup = startCollectorMode(app.getPath('userData')).then(async collector => {
+      stopCollector = collector.close;
+      const status = () => {
+        const state = collector.status();
+        tray?.setToolTip(`终极日历 · QQ ${!state.enabled ? '采集未启用' : state.error ? '采集异常' : state.connection === 'online' ? '已连接' : '连接待恢复'} · ${state.analysisEnabled ? '自动提炼启用' : '自动提炼未启用'}`);
+      };
+      const openCalendar = () => {
+        const child = spawn(process.execPath, [], { windowsHide: false, detached: true, stdio: 'ignore' });
+        child.on('error', () => { dialog.showErrorBox('日历未能打开', '请从桌面快捷方式重新打开终极日历。采集继续运行。'); }); child.unref();
+      };
+      const setTrayVisible = (visible: boolean) => {
+        if (!visible) { tray?.destroy(); tray = null; return; }
+        if (tray) return;
+        tray = new Tray(nativeImage.createFromPath(join(__dirname, '../assets/app-icon.ico')));
+        tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开终极日历', click: openCalendar }, { label: 'QQ 本机采集服务', enabled: false }, { type: 'separator' }, { label: '退出采集服务（QQ 保持运行）', click: () => app.quit() }]));
+        tray.on('double-click', openCalendar); status();
+      };
+      const ownership = createCollectorTrayOwnership(setTrayVisible);
+      stopCollectorTray = ownership.close;
+      // With no cloud owner, the collector retains an entry point even after the window exits.
+      setTrayVisible(true);
+      timer = setInterval(status, 30_000);
+      const control = await createCollectorControlServer({ directory: app.getPath('userData'), api: collector.api, encryption: safeStorage, onShutdown: () => { app.quit(); }, onTrayOwner: ownership.update });
+      stopCollector = async () => { await control.close(); await collector.close(); };
+      return collector;
+    });
+    await collectorStartup;
+    return;
+  }
   const data = app.getPath('userData'); await mkdir(data, { recursive: true });
-  initializeBackupDirectory(data, app.getPath('documents'), !!profile);
+  initializeBackupDirectory(data, app.getPath('documents'), !!profile, edition.directoryName);
   repository = createRepository(join(data, 'planner.sqlite')); const repo = repository; const planner = createPlanner(repo);
   ledger = createLedgerService(repo.path); const localLedger = ledger;
   localLedger.ensureMonthlyAllowance();
@@ -150,7 +221,7 @@ async function start() {
   disposeRestore = () => { void restore.dispose(); };
   let activeRequests = 0, captureSuspendedForUpdate = false;
   const updates = createUpdateService({
-    currentVersion: app.getVersion(), packaged: app.isPackaged, platform: process.platform, isolatedProfile: !!profile,
+    currentVersion: app.getVersion(), packaged: app.isPackaged, platform: process.platform, isolatedProfile: !!profile, channel: edition.updateChannel,
     getUpdater: () => new NsisUpdater(),
     isBusy: () => activeRequests > 0 || activeWorkflows > 0 || capture.busy() || modelQueue.busy() || space.isRunning(),
     prepareInstall: () => {
@@ -169,7 +240,21 @@ async function start() {
     attachments: capture, clearCache: () => session.defaultSession.clearCache(),
   });
   stopSpace = space.stop;
+  const resources = createNativeResourceHost(data, () => window!);
+  const sourceAttachments = createSourceAttachmentHost({ directory: data, store: captureStore, resolveEvidence: createLocalEvidenceResolver(repo), openPath: path => shell.openPath(path) });
+  const planSource = async () => localPlanSource(data);
+  const planExport = createNativePlanExport({ window: () => window!, snapshot: async () => planner.snapshot(), source: planSource });
+  const busyExport = createNativeBusyExport({ window: () => window!, snapshot: async () => planner.snapshot(), source: planSource });
+  const planImport = createNativePlanImport({ directory: join(data, 'plan-import'), resourceDirectory: data, window: () => window!,
+    source: planSource,
+    changed: () => changed({ reason: 'mutation' }), scope: async () => `local:${repo.path}`,
+    snapshot: async () => planner.snapshot(), mutate: async input => planner.mutate(MutationRequestSchema.parse(input)),
+  });
   const api: Omit<DesktopAPI, 'onChanged' | 'onNavigate' | 'onAccountChanged' | 'onCaptureChanged' | 'onUpdateChanged'> = {
+    ...planImport, ...planExport, ...busyExport,
+    sourceAttachments: async request => ({ ok: true, data: await sourceAttachments.list(request) }),
+    sourceAttachmentOpen: async request => ({ ok: true, data: await sourceAttachments.open(request) }),
+    localSourceEvidence: async request => { const source = repo.snapshot().sources.find(item => item.id === request.sourceId); return source ? { ok: true, data: { sourceId: request.sourceId, match: 'legacy-id', sources: [source] } } : { ok: false, error: { code: 'VALIDATION', message: '本机未找到这份来源', retryable: false } }; },
     spaceSnapshot: async () => ({ ok: true, data: space.snapshot() }),
     spaceConfigure: async policy => ({ ok: true, data: space.configure(policy) }),
     spaceCleanup: async request => ({ ok: true, data: await space.cleanup(request) }),
@@ -225,7 +310,7 @@ async function start() {
   };
   Menu.setApplicationMenu(null);
   const icon = join(__dirname, '../assets/app-icon.png');
-  window = new BrowserWindow({ width: 1440, height: 940, minWidth: 980, minHeight: 680, show: false, title: '终极日历', backgroundColor: '#f5f0e6', icon,
+  window = new BrowserWindow({ width: 1440, height: 940, minWidth: 980, minHeight: 680, show: false, title: edition.name, backgroundColor: '#f5f0e6', icon,
     titleBarStyle: 'hidden', titleBarOverlay: { color: '#f5f0e6', symbolColor: '#1f1c18', height: 32 },
     webPreferences: { preload: join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, spellcheck: false, devTools: !app.isPackaged } });
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -252,15 +337,15 @@ async function start() {
       // Cleanup checks other active requests; do not count its own IPC request as a conflict.
       if (method === 'spaceCleanup') return handler(request);
       activeRequests++;
-      try { return await handler(request); } finally { activeRequests--; }
+      try { return await resources.handle(method, request) ?? await handler(request); } finally { activeRequests--; }
     },
   }));
   ipcMain.on('planner:navigation-ready', event => { if (!trustedCaller(actual(event), owner())) return; navigationReady = true; void showRetainedSummary(); });
   // Use the Windows ICO asset; nativeImage handles decoding before the tray scales it.
   // Load it through nativeImage: a bare path inside app.asar cannot be opened by the tray itself.
   const trayIcon = process.platform === 'win32' ? nativeImage.createFromPath(join(__dirname, '../assets/app-icon.ico')) : nativeImage.createFromPath(icon).resize({ width: 20, height: 20 });
-  tray = new Tray(trayIcon); tray.setToolTip('终极日历 · 本地计划与提醒');
-  tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开终极日历', click: () => { showWindow(); void showRetainedSummary(); } }, { label: '查看漏过提醒', click: () => { showWindow(); void showRetainedSummary(true); } }, { type: 'separator' }, { label: '退出（停止提醒）', click: () => { quitting = true; app.quit(); } }]));
+  tray = new Tray(trayIcon); tray.setToolTip(`${edition.name} · 本地计划与提醒`);
+  tray.setContextMenu(Menu.buildFromTemplate([{ label: `打开${edition.name}`, click: () => { showWindow(); void showRetainedSummary(); } }, { label: '查看漏过提醒', click: () => { showWindow(); void showRetainedSummary(true); } }, { type: 'separator' }, { label: '退出（停止提醒）', click: () => { quitting = true; app.quit(); } }]));
   tray.on('double-click', showWindow);
   const noticeFile = join(data, 'tray-notice-seen'); let noticeSeen = false;
   try { noticeSeen = (await readFile(noticeFile, 'utf8')) === 'yes'; } catch { /* first close */ }
@@ -296,5 +381,5 @@ async function start() {
 function applyAutoLaunch(enabled: boolean) {
   // Isolated profiles never change the user's startup entry. Production default remains off.
   if (profile || !app.isPackaged) return;
-  app.setLoginItemSettings({ openAtLogin: enabled, path: process.execPath, args: [] });
+  app.setLoginItemSettings({ openAtLogin: enabled, path: process.execPath, args: [], ...(LOCAL_ONLY ? { name: edition.appId } : {}) });
 }

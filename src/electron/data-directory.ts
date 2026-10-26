@@ -76,6 +76,8 @@ export interface DataDirectoryOptions {
   legacyDirectory: string;
   profile: string | null;
   packagesDirectory?: string;
+  /** A new independent edition must not adopt another edition's old database or credentials. */
+  migrateLegacy?: boolean;
 }
 
 /** Run after taking the single-instance lock, before opening any writable database connection. */
@@ -85,6 +87,7 @@ export async function prepareDataDirectory(options: DataDirectoryOptions): Promi
   const destination = join(directory, databaseName);
   if (existingFile(destination)) return 'existing';
   if (existsSync(`${destination}-wal`) || existsSync(`${destination}-shm`)) throw Error('新资料目录存在未恢复的 SQLite 日志，已停止启动，避免创建空库。');
+  if (options.migrateLegacy === false) { mkdirSync(directory, { recursive: true }); return 'new'; }
   const packagesDirectory = options.packagesDirectory ?? (process.platform === 'win32' ? join(homedir(), 'AppData', 'Local', 'Packages') : undefined);
   const candidates: { directory: string; hasData: boolean }[] = [];
   const seenDatabaseFiles = new Set<string>();

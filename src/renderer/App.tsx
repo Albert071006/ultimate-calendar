@@ -10,7 +10,7 @@ import { useAppUpdates } from './hooks/useAppUpdates';
 import { SoftwareUpdate, UpdateShortcut } from './components/SoftwareUpdate';
 import { Nav, type Page } from "./components/shell/Nav";
 import { Assistant } from "./components/shell/Assistant";
-import { Calendar, type Selection, type ScheduleDraft } from "./components/Calendar";
+import { Calendar, type Selection } from "./components/Calendar";
 import { Inbox } from "./components/Inbox";
 import { LedgerPage } from "./components/LedgerPage";
 import { EntityEditor, type EditorTarget } from "./components/editor/EntityEditor";
@@ -18,14 +18,15 @@ import { EditPanel } from "./components/editor/EditPanel";
 import { DetailPopover } from "./components/detail/DetailPopover";
 import { entityNames } from "./components/detail/records";
 import { ImportDialog, SourceViewer } from "./components/ImportDialog";
+import { hasPlanImport, PlanImportDialog } from './components/PlanImportDialog';
+import { hasPlanExport, PlanExportDialog } from './components/PlanExportDialog';
 import { Modal } from "./components/Modal";
 import { Preview } from "./components/Preview";
 import { Today } from "./pages/today/Today";
 import { UnscheduledDrawer } from "./components/calendar/UnscheduledDrawer";
 import { unscheduledTasks } from "../domain/unscheduled";
 import { MePage, type MeSection } from "./pages/me/MePage";
-import { taskEvents, taskArrangements, taskNoticeTiming, noticeTimePassed, nextTaskArrangement } from './task-schedule';
-import { effectiveActivityEnd } from '../domain/activity-duration';
+import { taskActionHandlers } from './task-actions';
 import './theme/tokens.css';
 import './theme/base.css';
 import './theme/forms.css';
@@ -39,6 +40,10 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
     snapshot = ui.snapshot;
   const updates = useAppUpdates(host);
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [planImportOpen, setPlanImportOpen] = useState(false);
+  const planImportHost = hasPlanImport(host) ? host : undefined;
+  const [planExportGoal, setPlanExportGoal] = useState<{ id: string; title: string } | null>(null);
+  const planExportHost = hasPlanExport(host) ? host : undefined;
   const [captureReference, setCaptureReference] = useState<NonNullable<Source['captureRef']>>();
   const [ledgerView, setLedgerView] = useState<LedgerViewContext>();
   const [page, setPage] = useState<Page>("calendar"),
@@ -93,39 +98,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
     setSelected(null);
     setEditor(target);
   };
-  const schedule = (draft: ScheduleDraft) =>
-    editRecord({ entity: "block", id: draft.blockId, draft });
-  const scheduleTask = (taskId: string, blockId?: string) => {
-    if (!snapshot) return;
-    const arrangements = taskArrangements(snapshot, taskId);
-    const event = blockId ? arrangements.find(block => block.id === blockId && !block.cancelled) : nextTaskArrangement(arrangements, Date.now());
-    if (event) {
-      editRecord({ entity: 'block', id: event.id });
-    } else if (arrangements.length || blockId) {
-      setSelected({ entity: 'task', id: taskId });
-    } else {
-      const timing = taskNoticeTiming(snapshot, taskId);
-      schedule(timing ? {
-        date: timing.start.slice(0, 10), time: timing.start.slice(11, 16), taskId,
-        end: effectiveActivityEnd(timing.start, timing.end).slice(0, 16), kind: 'event', location: timing.location,
-        noticeTaskVersion: snapshot.tasks.find(task => task.id === taskId)?.version,
-        timingNote: `${timing.source === 'reminder' ? '已带入指定的提醒时间；未提供结束时间，默认30分钟，可调整。' : timing.end ? '已按原消息带入活动时间。' : '已按原消息带入开始时间；未提供结束时间，默认30分钟，可调整。'}${noticeTimePassed(timing, Date.now()) ? `原${timing.source === 'reminder' ? '提醒' : '通知'}时间已过，请核对后保存。` : ''}`,
-      } : { date: todayDate(), time: '09:00', taskId });
-    }
-  };
-  const scheduleRecurringTask = (taskId: string) => {
-    if (!snapshot) return;
-    const event = taskEvents(snapshot, taskId).find(value => !value.cancelled && Date.parse(effectiveActivityEnd(value.start, value.end)) > Date.now());
-    const timing = event ?? taskNoticeTiming(snapshot, taskId);
-    editRecord({ entity: 'block', recurring: true, draft: {
-      taskId, date: timing?.start.slice(0, 10) ?? todayDate(), time: timing?.start.slice(11, 16) ?? '09:00',
-      kind: 'event', location: timing?.location ?? '',
-    } });
-  };
-  const removeTask = (taskId: string) => {
-    const task = snapshot?.tasks.find(value => value.id === taskId);
-    if (task) void ui.mutate([{ type: 'removeTask', id: task.id, expectedVersion: task.version, includeLinkedBlocks: true }]);
-  };
+  const { schedule, scheduleTask, scheduleRecurringTask, removeTask } = taskActionHandlers({ snapshot, ui, select: setSelected, editRecord });
   const editSelected = () => {
     if (selected && ["task", "block", "goal", "course", "candidate"].includes(selected.entity))
       editRecord({ ...selected, entity: selected.entity as EditorTarget["entity"] });
@@ -136,9 +109,13 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
     openMe("ai");
   };
   const taskActions = { select, editTask: (id: string) => editRecord({ entity: 'task', id }), schedule: scheduleTask, scheduleRecurring: scheduleRecurringTask, removeTask };
+  const exportGoal = planExportHost ? (id: string) => {
+    const goal = snapshot?.goals.find(value => value.id === id);
+    if (goal) { setSelected(null); setPlanExportGoal({ id: goal.id, title: goal.title }); }
+  } : undefined;
   const detail = () => snapshot && selected && (
     <DetailPopover key={`${selected.entity}:${selected.id}:${selected.occurrenceDate ?? ''}`} snapshot={snapshot} selection={selected} anchor={anchor} ui={ui}
-      close={() => setSelected(null)} actions={{ ...taskActions, edit: editSelected }} />
+      close={() => setSelected(null)} actions={{ ...taskActions, edit: editSelected, exportGoal }} />
   );
   const editPanel = (overlay: boolean) => snapshot && editor && (
     <EditPanel overlay={overlay} title={editor.recurring ? '重复安排' : `${editor.id ? "编辑" : "新建"}${entityNames[editor.entity]}`} onClose={() => setEditor(null)}>
@@ -149,7 +126,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
   return (
     <div className={`app-shell a2${host ? ' desktop-chrome' : ''}`}>
       {host && <div className="window-drag-region" aria-hidden="true" />}
-      <Nav page={page} navigate={(next) => { setEditor(null); setPage(next); }} pending={pending} />
+      <Nav page={page} navigate={(next) => { setEditor(null); setPage(next); }} pending={pending} importPlan={planImportHost ? () => setPlanImportOpen(true) : undefined} />
       {host && <div className="a2-nav-update"><UpdateShortcut updates={updates} open={() => setUpdateOpen(true)} /></div>}
       <main className="a2-main">
         {!api ? (
@@ -192,7 +169,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
               )}
               {page === "me" && (
                 <MePage snapshot={snapshot} ui={ui} section={meSection} setSection={setMeSection} updates={updates} select={select}
-                  edit={editRecord} openSource={setSourceId} coursePreview={coursePreview} captureReference={captureReference} />
+                  edit={editRecord} openSource={setSourceId} coursePreview={coursePreview} captureReference={captureReference} exportGoal={exportGoal} />
               )}
               {page !== "calendar" && editPanel(true)}
             </div>
@@ -202,6 +179,8 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
         )}
       </main>
       {updateOpen && <Modal title="软件更新" onClose={() => setUpdateOpen(false)}><SoftwareUpdate updates={updates} plannerBusy={ui.busy} /></Modal>}
+      {planImportOpen && planImportHost && <PlanImportDialog host={planImportHost} ui={ui} onClose={() => setPlanImportOpen(false)} />}
+      {planExportGoal && planExportHost && <PlanExportDialog key={planExportGoal.id} host={planExportHost} goal={planExportGoal} onClose={() => setPlanExportGoal(null)} onSaved={ui.setNotice} />}
       {snapshot && (
         <>
           {importing && (
@@ -213,7 +192,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
             <Modal wide title="原始来源" onClose={() => setSourceId(null)}>
               <SourceViewer
                 source={source}
-                onCapture={reference => { setCaptureReference(reference); setSourceId(null); openMe('capture'); }}
+                onCapture={host ? reference => { setCaptureReference(reference); setSourceId(null); openMe('capture'); } : undefined}
                 ui={ui}
                 onClose={() => setSourceId(null)}
                 settings={keySettings}

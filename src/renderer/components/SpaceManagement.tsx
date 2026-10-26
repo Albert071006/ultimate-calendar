@@ -19,10 +19,11 @@ const numericFields = [
   ['attachmentBudgetMiB', 'QQ 附件最多占用', 'MB', 128, 65536],
 ] as const;
 
-export function SpaceManagement({ host, active = true, plannerBusy = false }: {
+export function SpaceManagement({ host, active = true, plannerBusy = false, cloud = false }: {
   host?: HostCapabilities;
   active?: boolean;
   plannerBusy?: boolean;
+  cloud?: boolean;
 }) {
   const supported = !!host && ['spaceSnapshot', 'spaceConfigure', 'spaceCleanup']
     .every(method => typeof host[method as keyof HostCapabilities] === 'function');
@@ -83,20 +84,21 @@ export function SpaceManagement({ host, active = true, plannerBusy = false }: {
   ].filter(Boolean) : [];
   return <section className="space-management" aria-labelledby="space-management-title" aria-busy={busy}>
     <div className="space-h">
-      <h4 id="space-management-title">空间占用</h4>
+      <h4 id="space-management-title">{cloud ? '本机采集与空间清理' : '本机空间管理'}</h4>
       <button type="button" className="ui-btn sm ghost" disabled={disabled} onClick={() => {
         setConfirm(false);
         void run(() => host!.spaceSnapshot(), value => { if (!dirty) setPolicy(value.policy); });
       }}>{busy ? '正在处理…' : '刷新'}</button>
     </div>
+    {cloud && <p className="space-muted">这台电脑仍负责 QQ 采集、原文附件和本地文件关联。下方仅统计本机资料目录，不包含云端空间；清理不会删除云端任务、账单或课表。</p>}
     {snapshot && <>
       <dl className="space-usage">
-        <div><dt>数据库</dt><dd>{size(snapshot.databaseBytes)}</dd>{snapshot.reusableBytes > 0 && <small>其中 {size(snapshot.reusableBytes)} 可回收</small>}</div>
+        <div><dt>{cloud ? '本机采集与历史库' : '本机数据库'}</dt><dd>{size(snapshot.databaseBytes)}</dd>{snapshot.reusableBytes > 0 && <small>其中 {size(snapshot.reusableBytes)} 可回收</small>}</div>
         <div><dt>QQ 附件</dt><dd>{size(snapshot.attachments.totalBytes)}</dd>{snapshot.attachments.protectedBytes > 0 && <small>{size(snapshot.attachments.protectedBytes)} 仍在使用</small>}</div>
-        <div><dt>本机备份</dt><dd>{size(snapshot.backupBytes)}</dd>{snapshot.unmanagedBackupBytes > 0 && <small>手动导出 {size(snapshot.unmanagedBackupBytes)}，不会自动删除</small>}</div>
+        <div><dt>本机目录内的备份</dt><dd>{size(snapshot.backupBytes)}</dd>{snapshot.unmanagedBackupBytes > 0 && <small>手动导出 {size(snapshot.unmanagedBackupBytes)}，不会自动删除</small>}</div>
         <div><dt>界面缓存</dt><dd>{size(snapshot.cacheBytes)}</dd><small>可随时清理</small></div>
       </dl>
-      <p className="space-muted" style={{ overflowWrap: 'anywhere' }}>备份位置：{snapshot.backupDirectory}</p>
+      <p className="space-muted" style={{ overflowWrap: 'anywhere' }}>本机备份管理目录：{snapshot.backupDirectory}</p>
 
       <h4 className="space-sub">立即清理</h4>
       <div className="space-now">
@@ -134,7 +136,7 @@ export function SpaceManagement({ host, active = true, plannerBusy = false }: {
       </div>
       <details className="space-scope"><summary>哪些内容会被清理</summary>
         <p>账单、任务、课表和消息正文不会被清理。待分析、待判断或未完成任务还在用的附件也会保留，容量上限不会强制删除这些内容。</p>
-        <p>备份只轮换程序自动生成的备份，并始终保留必要的有效备份；手动导出的备份和其他文件不会自动删除。</p>
+        <p>只轮换上述目录内由程序管理的自动备份，并保留必要的有效备份；手动导出、下载的备份和其他文件不会自动删除。</p>
         <p>附件按保存天数和容量从旧到新清理，连同解析文本和重复的处理缓存；已提炼出的事项仍保留。清理后原附件无法再查看或分析。</p>
       </details>
 

@@ -85,7 +85,8 @@ function permitsCancellationUndo(fact: TimeConflictFact, baseline: CancellationU
   for (const detail of details) if (detail.before) putEntity(witnessState, detail.entity, detail.before);
   return original.witnesses.every(witness => participantFingerprint(witnessState, witness.entity, witness.id) === witness.fingerprint);
 }
-export function createPlanner(repository: Repository): PlannerService {
+export function createPlanner(repository: Repository, options: { automaticBackup?(repository: Repository): void } = {}): PlannerService {
+  const backup = options.automaticBackup ?? automaticBackup;
   const previews = new Map<string, { signature: string; fingerprint: string; expires: number; details: PreviewDetail[] }>();
   function apply(state: StoredState, request: MutationRequest, details: PreviewDetail[], conflicts: Conflict[]): MutationResult {
     const id = randomUUID(); const at = nowInstant(); const changes = summarize(details);
@@ -121,7 +122,7 @@ export function createPlanner(repository: Repository): PlannerService {
             return MutationResultSchema.parse({ status: 'preview', message: `${conflicts.length ? '存在时间冲突，' : ''}${previewMessage(request, details)}`, changes: summarize(details), conflicts, confirmationToken: token, expiresAt: instantAt(expires), proposedRequest: request, details });
           }
           return apply(state, request, details, conflicts);
-        }); if (result.status === 'applied') automaticBackup(repository); return result;
+        }); if (result.status === 'applied') backup(repository); return result;
       } catch (error) { return clarification(error instanceof Error ? error.message : '操作失败', error instanceof DomainConflict ? [error.conflict] : []); }
     },
     undo(transactionId) {
@@ -153,7 +154,7 @@ export function createPlanner(repository: Repository): PlannerService {
           journal.undoneAt = nowInstant(); journal.undoable = false;
           const id = randomUUID(); const changes = summarize(details); const result: MutationResult = { status: 'applied', transactionId: id, message: '已撤销', changes, conflicts: [] };
           state.journal.push({ id, operationId: `undo:${journal.id}`, createdAt: nowInstant(), origin: 'manual', message: result.message, changes, details, undoneAt: null, undoable: false }); return result;
-        }); if (result.status === 'applied') automaticBackup(repository); return result;
+        }); if (result.status === 'applied') backup(repository); return result;
       } catch (error) { return clarification(error instanceof Error ? error.message : '撤销失败', error instanceof DomainConflict ? [error.conflict] : []); }
     },
   };

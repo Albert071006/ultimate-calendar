@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import { AccountStateSchema } from '../shared/account';
 import { CaptureSnapshotSchema } from '../shared/capture';
 import { UpdateStateSchema } from '../shared/update';
@@ -30,6 +30,19 @@ function accountChanged(listener: Parameters<DesktopAPI['onAccountChanged']>[0])
 }
 // Explicit fixed methods only: no ipcRenderer, event objects or arbitrary channels cross contextBridge.
 const api = {
+  busyExportPreview: (request: unknown) => invoke('busyExportPreview', request), busyExportSave: (request: unknown) => invoke('busyExportSave', request),
+  planExportPreview: (request: unknown) => invoke('planExportPreview', request), planExportSave: (request: unknown) => invoke('planExportSave', request),
+  planImportOpen: () => invoke('planImportOpen'), planImportConfirm: (request: unknown) => invoke('planImportConfirm', request), planImportTemplate: () => invoke('planImportTemplate'),
+  resourcePick: (request: unknown) => invoke('resourcePick', request), resourceRegister: (request: unknown) => invoke('resourceRegister', request),
+  resourceOpen: (request: unknown) => invoke('resourceOpen', request), resourceRelocate: (request: unknown) => invoke('resourceRelocate', request), resourceStatus: (request: unknown) => invoke('resourceStatus', request),
+  resourceDrop: (files: File[]) => {
+    try {
+      if (!Array.isArray(files) || files.length < 1 || files.length > 50) throw Error('invalid selection');
+      const paths = files.map(file => webUtils.getPathForFile(file));
+      if (paths.some(path => !path)) throw Error('not native files');
+      return invoke('resourceRegister', { paths });
+    } catch { return Promise.resolve({ ok: false, error: { code: 'VALIDATION', message: '请从文件资源管理器拖入本机资料文件', retryable: false } }); }
+  },
   spaceSnapshot: () => invoke('spaceSnapshot'), spaceConfigure: (request: unknown) => invoke('spaceConfigure', request), spaceCleanup: (request: unknown) => invoke('spaceCleanup', request),
   updateSnapshot: () => invoke('updateSnapshot'), checkForUpdates: () => invoke('checkForUpdates'), downloadUpdate: () => invoke('downloadUpdate'), installUpdate: () => invoke('installUpdate'),
   onUpdateChanged: (listener: Parameters<DesktopAPI['onUpdateChanged']>[0]) => { const handler = (_event: IpcRendererEvent, value: unknown) => { const parsed = UpdateStateSchema.safeParse(value); if (parsed.success) listener(parsed.data); }; ipcRenderer.on('planner:update-changed', handler); return () => ipcRenderer.removeListener('planner:update-changed', handler); },
@@ -42,6 +55,8 @@ const api = {
   importSource: (request: unknown) => invoke('importSource', request), analyzeSource: (request: unknown) => invoke('analyzeSource', request),
   command: (request: unknown) => invoke('command', request), importCourses: (request: unknown) => invoke('importCourses', request),
   saveSettings: (request: unknown) => invoke('saveSettings', request), setApiKey: (request: unknown) => invoke('setApiKey', request), retryApiKey: () => invoke('retryApiKey'),
+  localSourceEvidence: (request: unknown) => invoke('localSourceEvidence', request),
+  sourceAttachments: (request: unknown) => invoke('sourceAttachments', request), sourceAttachmentOpen: (request: unknown) => invoke('sourceAttachmentOpen', request),
   backup: () => invoke('backup'), restore: (request: unknown) => invoke('restore', request), onChanged: changed, onNavigate: navigate,
 };
 contextBridge.exposeInMainWorld('planner', api);

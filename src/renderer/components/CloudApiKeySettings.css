@@ -1,0 +1,18 @@
+/* 我的 › AI 与费用: the shared cloud API Key — status line, one input row, a quiet clear action. */
+.cloud-key .ck-lead { margin: 0 0 12px; font-size: 13px; color: var(--ink-2); }
+.cloud-key .ck-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); }
+.cloud-key .ck-status strong { font-size: 13px; font-weight: 600; }
+.cloud-key .ck-status .ui-btn { margin-left: auto; }
+.cloud-key .ck-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: 0 0 auto; }
+.cloud-key .ck-dot.on { background: var(--income); }
+.cloud-key .ck-dot.off { background: var(--warn-fill); }
+.cloud-key .ck-note { font-size: 12px; color: var(--ink-3); }
+.cloud-key .warning { margin: 10px 0 0; }
+.cloud-key .ck-form { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; }
+.cloud-key .ck-form input { flex: 1 1 auto; min-width: 0; height: 34px; }
+.cloud-key .ck-form .ui-btn { flex: 0 0 auto; height: 34px; white-space: nowrap; }
+.cloud-key .ck-clear { color: var(--accent); }
+.cloud-key .ck-confirm { margin-top: 10px; padding: 12px 14px; background: color-mix(in srgb, var(--accent) 6%, var(--surface)); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--surface)); border-left: 3px solid var(--accent); border-radius: var(--radius); }
+.cloud-key .ck-confirm p { margin: 0 0 10px; font-size: 13px; line-height: 1.7; }
+.cloud-key .ck-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+.cloud-key .ck-fine { margin: 12px 0 0; font-size: 12px; line-height: 1.6; color: var(--ink-3); }

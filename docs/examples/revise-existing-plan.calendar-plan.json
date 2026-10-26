@@ -1,0 +1,80 @@
+{
+  "format": "ultimate-calendar-plan",
+  "version": 3,
+  "timezone": "Asia/Shanghai",
+  "planId": "demo-revision-20300415",
+  "title": "示例：修订现有目标并追加练习",
+  "basis": {
+    "source": {
+      "kind": "cloud",
+      "dataInstanceId": "11111111-1111-4111-8111-111111111111",
+      "generation": 1
+    },
+    "goalId": "00000000-0000-4000-8000-000000000100",
+    "fromDate": "2030-04-15",
+    "toDate": "2030-04-21",
+    "exportedAt": "2030-04-15T08:00:00+08:00",
+    "fingerprint": "84c19d15335f48228ff8d3646184e4b16181b711964b80a90ce8b21c01d79c09"
+  },
+  "goals": [],
+  "resources": [],
+  "updates": [
+    {
+      "id": "revise-goal-notes",
+      "kind": "goal",
+      "targetId": "00000000-0000-4000-8000-000000000100",
+      "expectedVersion": 1,
+      "values": {
+        "description": "保留已有任务，补充错题复盘；本次调整前两段安排。"
+      }
+    },
+    {
+      "id": "revise-task-deadline",
+      "kind": "task",
+      "targetId": "00000000-0000-4000-8000-000000000001",
+      "expectedVersion": 1,
+      "values": {
+        "deadline": {
+          "date": "2030-04-20",
+          "time": "18:00"
+        }
+      }
+    },
+    {
+      "id": "move-first-session",
+      "kind": "block",
+      "targetId": "00000000-0000-4000-8000-000000000101",
+      "expectedVersion": 1,
+      "values": {
+        "start": "2030-04-15T20:00:00+08:00",
+        "end": "2030-04-15T20:45:00+08:00"
+      }
+    }
+  ],
+  "deletions": [
+    {
+      "id": "remove-second-session",
+      "kind": "block",
+      "targetId": "00000000-0000-4000-8000-000000000102",
+      "expectedVersion": 1
+    }
+  ],
+  "tasks": [
+    {
+      "id": "new-review",
+      "title": "追加错题复盘",
+      "description": "整理三条易错点并各写一个例句",
+      "goalId": "00000000-0000-4000-8000-000000000100"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "new-review-session",
+      "title": "错题复盘",
+      "taskRef": "new-review",
+      "kind": "work",
+      "start": "2030-04-17T19:00:00+08:00",
+      "end": "2030-04-17T19:45:00+08:00"
+    }
+  ]
+}

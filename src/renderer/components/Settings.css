@@ -28,6 +28,9 @@
 .settings-calendar-options { display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap; border-top: 1px solid #e1e7da; padding-top: 16px; margin-top: 4px; }
 .settings-page .sticky-save { align-items: center; justify-content: space-between; gap: 18px; }
 .settings-key .toolbar { flex-wrap: wrap; }
+.settings-data-mode { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0 0 18px; font-size: 13px; }
+.settings-data-mode span { color: var(--ink-3); }
+.settings-backup + .space-management { border-top: 1px solid var(--line); padding-top: 18px; }
 @media (max-width: 1080px) {
   .settings-ai-overview, .settings-campus-grid { grid-template-columns: minmax(0, 1fr); gap: 18px; }
   .settings-model { border-left: 0; border-top: 1px solid #e1e7da; padding-left: 0; padding-top: 18px; }

@@ -6,6 +6,7 @@ import { dayDistance } from './time';
 import { expandRecurrence } from './recurrence';
 import { effectiveActivityEnd } from './activity-duration';
 import { recurringEventTargets, recurringEventPatch } from './recurring-events';
+import type { ResourceReference } from '../shared/resources';
 export class DomainConflict extends Error { constructor(public conflict: Conflict) { super(conflict.message); } }
 export function conflict(kind: Conflict['kind'], entity: Conflict['entity'], id: string, message: string): never { throw new DomainConflict({ kind, entity, id, message, conflictingIds: [] }); }
 function removeTask(state: StoredState, taskId: string, includeLinkedBlocks: boolean): boolean {
@@ -18,7 +19,7 @@ function removeTask(state: StoredState, taskId: string, includeLinkedBlocks: boo
   deleteEntity(state, 'task', taskId);
   return blocks.length > 0;
 }
-function scheduleRecurringTask(state: StoredState, task: Task, rule: RecurrenceRule, location: string, reminders: ReminderConfig | undefined): void {
+function scheduleRecurringTask(state: StoredState, task: Task, rule: RecurrenceRule, location: string, reminders: ReminderConfig | undefined, resources?: ResourceReference[]): void {
   if (task.status === 'done') conflict('recurrence', 'task', task.id, '已完成的任务不能新增重复活动，请先恢复任务');
   const occurrences = expandRecurrence(rule);
   if (!occurrences.length) conflict('recurrence', 'task', task.id, '所选日期范围内没有符合规则的活动，请调整日期或重复规则');
@@ -42,8 +43,11 @@ function scheduleRecurringTask(state: StoredState, task: Task, rule: RecurrenceR
     adopted.push(...matches); return false;
   });
   if (!missing.length && !adopted.length) conflict('recurrence', 'task', task.id, '这些重复活动已经全部安排，无需重复添加');
-  for (const block of adopted) updateEntity(state, 'block', block.id, { recurrence: { seriesId, occurrenceStart: block.start } });
-  for (const occurrence of missing) newEntity(state, 'block', { title: task.title, ...occurrence, kind: 'event', taskId: task.id, location, reminders: config, recurrence: { seriesId, occurrenceStart: occurrence.start } });
+  for (const block of adopted) updateEntity(state, 'block', block.id, {
+    recurrence: { seriesId, occurrenceStart: block.start },
+    ...(resources ? { resources: [...new Map([...(block.resources ?? []), ...resources].map(resource => [resource.id, resource])).values()] } : {}),
+  });
+  for (const occurrence of missing) newEntity(state, 'block', { title: task.title, ...occurrence, kind: 'event', taskId: task.id, location, reminders: config, resources, recurrence: { seriesId, occurrenceStart: occurrence.start } });
 }
 export function expandMutations(state: StoredState, mutations: Mutation[]): { deliberate: boolean } {
   let deliberate = mutations.length > 1;
@@ -57,7 +61,7 @@ export function expandMutations(state: StoredState, mutations: Mutation[]): { de
     if (m.type === 'createRecurringTask') {
       deliberate = true;
       const task = newEntity(state, 'task', m.values) as Task;
-      scheduleRecurringTask(state, task, m.rule, m.location, m.reminders);
+      scheduleRecurringTask(state, task, m.rule, m.location, m.reminders, m.resources);
       continue;
     }
     if (m.type === 'create') { newEntity(state, m.entity, m.values); continue; }
@@ -81,7 +85,7 @@ export function expandMutations(state: StoredState, mutations: Mutation[]): { de
       continue;
     }
     if ('entity' in m && m.entity === 'block' && (m.type === 'update' || m.type === 'delete') && (old as Block).recurrence) conflict('recurrence', 'block', m.id, '重复活动请明确选择“仅本次”或“本次及以后”修改、取消');
-    if (m.type === 'scheduleRecurringTask') { deliberate = true; scheduleRecurringTask(state, old as Task, m.rule, m.location, m.reminders); continue; }
+    if (m.type === 'scheduleRecurringTask') { deliberate = true; scheduleRecurringTask(state, old as Task, m.rule, m.location, m.reminders, m.resources); continue; }
     if (m.type === 'removeTask') { deliberate = true; removeTask(state, m.id, m.includeLinkedBlocks); continue; }
     if (m.type === 'scheduleTaskEvent') {
       const task = findEntity(state, 'task', m.id)!;

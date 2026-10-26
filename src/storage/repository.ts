@@ -111,7 +111,8 @@ export interface Repository {
   /** Internal database callback shares the planner transaction; never exposed to renderer IPC. */
   replaceState(state: StoredState, inTransaction?: (db: DatabaseSync) => void): void;
 }
-export function createRepository(path: string): Repository {
+export function createRepository(path: string, options: { automaticBackup?(repository: Repository): void } = {}): Repository {
+  const backup = options.automaticBackup ?? automaticBackup;
   const db = openDatabase(path); let closed = false;
   try { initializeDatabase(db, () => initializeDefaults(db)); } catch (error) { db.close(); throw error; }
   const read = () => readDatabaseState(db);
@@ -136,10 +137,10 @@ export function createRepository(path: string): Repository {
         if (request.usage) state.usage.push(TokenUsageSchema.parse(request.usage));
         const details = diffStates(before, state); if (details.length && request.journal) state.journal.push({ id: randomUUID(), operationId: request.operationId, createdAt: nowInstant(), origin: 'manual', message: '保存导入数据', changes: summarize(details), details, undoneAt: null, undoable: true });
         const result = { entities }; state.operations.push({ id: request.operationId, fingerprint, result }); return result;
-      }); automaticBackup(repository); return result;
+      }); backup(repository); return result;
     },
-    saveSettings(value) { const settings = SettingsSchema.parse(value); repository.transact(state => { state.settings = settings; }); automaticBackup(repository); return settings; },
-    addUsage(value) { const usage = TokenUsageSchema.parse(value); repository.transact(state => { if (!state.usage.some(u => u.operationId === usage.operationId)) state.usage.push(usage); }); automaticBackup(repository); },
+    saveSettings(value) { const settings = SettingsSchema.parse(value); repository.transact(state => { state.settings = settings; }); backup(repository); return settings; },
+    addUsage(value) { const usage = TokenUsageSchema.parse(value); repository.transact(state => { if (!state.usage.some(u => u.operationId === usage.operationId)) state.usage.push(usage); }); backup(repository); },
     claimReminders(values) { const reminders = values.map(r => ReminderSchema.parse(r)); return repository.transact(state => { const fresh = reminders.filter(r => !state.receipts.includes(r.id)); state.receipts.push(...fresh.map(r => r.id)); return fresh; }); },
     close() { if (!closed) { db.close(); closed = true; } },
     vacuumInto(target) { db.prepare('VACUUM INTO ?').run(target); },

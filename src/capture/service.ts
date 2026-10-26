@@ -34,7 +34,10 @@ export function normalizeMessage(raw: Raw, accountId: string, groupNames: Map<st
     else if (['image', 'file', 'record', 'video', 'reply', 'forward', 'node'].includes(type)) {
       const kind = type === 'record' ? 'voice' : ['reply', 'forward', 'node'].includes(type) ? 'other' : type as 'image' | 'file' | 'video';
       const fallback = type === 'image' ? '群图片.jpg' : type === 'reply' ? '引用消息' : type === 'forward' || type === 'node' ? '合并转发' : type === 'record' ? '语音' : type === 'video' ? '视频' : '未命名文件';
-      attachments.push({ kind, name: (string(data.name ?? data.file_name ?? data.filename) || fallback).slice(0, 1000), size: Number.isSafeInteger(Number(data.size ?? data.file_size)) && Number(data.size ?? data.file_size) >= 0 ? Number(data.size ?? data.file_size) : null, locator: z.json().parse({ type, data }) });
+      // NapCat also puts display filenames in file; accept only a basename, never decode or resolve a locator.
+      const file = type === 'file' && typeof data.file === 'string' ? data.file.trim() : '';
+      const fileName = file.length <= 1000 && /^[^\\/:*?"<>|\u0000-\u001f\u007f]+\.[a-z0-9]{1,16}$/i.test(file) ? file : '';
+      attachments.push({ kind, name: (string(data.name ?? data.file_name ?? data.filename) || fileName || fallback).slice(0, 1000), size: Number.isSafeInteger(Number(data.size ?? data.file_size)) && Number(data.size ?? data.file_size) >= 0 ? Number(data.size ?? data.file_size) : null, locator: z.json().parse({ type, data }) });
     }
   }
   const sender = object(raw.sender);
@@ -58,10 +61,11 @@ export function createCaptureService(options: {
   let health: BridgeHealth | null = null; let error: string | null = null; let lastReceivedAt: string | null = null;
   let timer: ReturnType<typeof setInterval> | null = null; let notifyTimer: ReturnType<typeof setTimeout> | null = null;
   let running = false; let historyRunning = false; let stopped = false; let suspended = false; let connectionGeneration = 0;
+  let credentialGeneration = 0; let credentialsConfigured: boolean | null = null;
   let groupNames = new Map<string, string>(); let connectPromise: Promise<z.infer<typeof CaptureSnapshotSchema>> | null = null;
   function snapshot() {
     const state = health?.state, config = store.config();
-    return CaptureSnapshotSchema.parse({ config, connection: state === 'online' ? 'online' : state === 'account-mismatch' ? 'account-changed' : state === 'connecting' ? 'connecting' : state === 'error' ? 'error' : 'disconnected', accountLabel: health?.maskedAccount ?? null, accountName: health?.nickname ?? null, error: error ?? health?.error ?? null, lastReceivedAt, credentialConfigured: options.credentials.status().configured, stats: store.stats(), coverage: store.listCoverage(config.accountId ?? undefined).filter(item => config.groupIds.includes(item.groupId)) });
+    return CaptureSnapshotSchema.parse({ config, connection: state === 'online' ? 'online' : state === 'account-mismatch' ? 'account-changed' : state === 'connecting' ? 'connecting' : state === 'error' ? 'error' : 'disconnected', accountLabel: health?.maskedAccount ?? null, accountName: health?.nickname ?? null, error: error ?? health?.error ?? null, lastReceivedAt, credentialConfigured: options.credentials.status().configured, analysisWaitingForKey: !!store.credentialPause(), stats: store.stats(), coverage: store.listCoverage(config.accountId ?? undefined).filter(item => config.groupIds.includes(item.groupId)) });
   }
   function emit() { if (!stopped && !notifyTimer) notifyTimer = setTimeout(() => { notifyTimer = null; if (!stopped) options.onChanged?.(snapshot()); }, 200); }
   function permitted(accountId: string, groupId: string, collection = true) { const config = store.config(); return !stopped && !suspended && (!collection || config.enabled) && config.accountId === accountId && config.groupIds.includes(groupId); }
@@ -80,6 +84,7 @@ export function createCaptureService(options: {
         selected = detected[0]; if (!selected) throw new WorkflowError('NOT_FOUND', '日历专用 QQ 桥接尚未配置，请先在终极日历的 qq-bridge 目录配置独立组件及访问令牌');
         const current = store.config(), flavor = selected.flavor ?? 'napcat';
         const changed = current.endpoint !== selected.endpoint || current.flavor !== flavor;
+        if (changed) store.clearCredentialPause();
         store.saveConfig({ ...current, endpoint: selected.endpoint, flavor, enabled: !changed && current.enabled, analysisEnabled: !changed && current.analysisEnabled });
         await options.credentials.set(selected.token);
       }
@@ -92,7 +97,7 @@ export function createCaptureService(options: {
         onHealth: next => {
           if (generation !== connectionGeneration || stopped) return;
           const becameOnline = next.online && !health?.online; health = next;
-          if (next.state === 'account-mismatch') { const c = store.config(); store.saveConfig({ ...c, enabled: false, analysisEnabled: false }); error = 'QQ 账号已改变。请清空原账号绑定后重新连接并选择群'; }
+          if (next.state === 'account-mismatch') { const c = store.config(); store.clearCredentialPause(); store.saveConfig({ ...c, enabled: false, analysisEnabled: false }); error = 'QQ 账号已改变。请清空原账号绑定后重新连接并选择群'; }
           if (next.online && next.accountId && !store.config().accountId) store.saveConfig({ ...store.config(), accountId: next.accountId, groupIds: [], enabled: false });
           emit(); if (becameOnline && store.config().enabled) void backfill();
         },
@@ -106,7 +111,7 @@ export function createCaptureService(options: {
     const groups = await bridge.getGroups(); groupNames = new Map(groups.map(g => [g.id, g.name]));
     return groups.map(g => ({ id: g.id, name: g.name }));
   }
-  async function configure(input: z.input<typeof CaptureConfigSchema>) {
+  async function configure(input: z.input<typeof CaptureConfigSchema>, intent: { analysisIntent?: boolean } = {}) {
     let next = CaptureConfigSchema.parse(input); const previous = store.config();
     const bridgeChanged = next.endpoint !== previous.endpoint || next.flavor !== previous.flavor;
     if ((running || historyRunning || connectPromise) && (next.accountId !== previous.accountId || bridgeChanged)) throw new WorkflowError('CONFLICT', '当前采集或分析仍在处理，请暂停并等待后再切换账号/接口');
@@ -116,11 +121,27 @@ export function createCaptureService(options: {
       const groups = await getGroups(); if (next.groupIds.some(id => !groups.some(g => g.id === id))) throw new WorkflowError('VALIDATION', '所选群不属于当前在线账号，请刷新群列表');
     }
     store.saveConfig(next);
+    if (intent.analysisIntent || next.analysisEnabled !== previous.analysisEnabled || bridgeChanged || next.accountId !== previous.accountId) store.clearCredentialPause();
+    if (next.analysisEnabled && !previous.analysisEnabled) error = null;
     if (bridgeChanged || next.accountId !== previous.accountId) { ++connectionGeneration; bridge?.stop(); bridge = null; health = null; }
     emit();
     if (next.enabled) void backfill();
     if (next.analysisEnabled) void tick(false);
     return snapshot();
+  }
+  async function credentialsChanged(input: { configured: boolean; sourceId?: string; revision?: string | null }) {
+    const { configured } = input;
+    const change = input.sourceId !== undefined || input.revision !== undefined
+      ? store.applyCredentialChange({ configured, sourceId: input.sourceId!, revision: input.revision! })
+      : { changed: true, resumed: configured && store.resumeAfterCredentials(), paused: !configured && store.pauseForCredentials('NO_API_KEY') };
+    if (!change.changed) return snapshot();
+    ++credentialGeneration; credentialsConfigured = configured;
+    if (change.resumed) { error = null; void tick(false); }
+    else if (change.paused) {
+      error = '等待可用的 AI 密钥；QQ 消息继续收集，密钥同步后自动恢复分析';
+    }
+    // Never await model work here: key retrieval can wait for the synchronizer invoking this callback.
+    emit(); return snapshot();
   }
   async function backfill() {
     if (historyRunning || stopped || suspended || !bridge || !health?.online || !store.config().enabled) return;
@@ -219,12 +240,15 @@ export function createCaptureService(options: {
       store.sealBatches({ force, maxMessages: 20 });
       for (let n = 0; n < 5 && !stopped && !suspended && store.config().analysisEnabled; n++) {
         const batch = store.claimBatch(); if (!batch) break; emit();
+        let requestCredentialGeneration = credentialGeneration;
         try {
           if (!batch.result) for (const m of store.batchMessages(batch.id).filter(message => !isAddressedElsewhere(message))) for (const a of store.attachments(m.id)) {
             if (!store.config().analysisEnabled || stopped || suspended) throw new WorkflowError('CANCELLED', '分析已暂停');
             await processAttachment(m, a);
           }
-          await analyzeCapture({ store, repository: options.repository, batch: store.batch(batch.id)!, getApiKey: options.getApiKey, getPriceQuote: options.getPriceQuote, getModelInputModalities: options.getModelInputModalities, runModel: options.runModel, afterRequest: options.afterModelRequest, fetch: options.fetch, canContinue: () => permitted(batch.accountId, batch.groupId, false) && store.config().analysisEnabled });
+          await analyzeCapture({ store, repository: options.repository, batch: store.batch(batch.id)!, getApiKey: async () => {
+            const key = await options.getApiKey(); requestCredentialGeneration = credentialGeneration; return key;
+          }, getPriceQuote: options.getPriceQuote, getModelInputModalities: options.getModelInputModalities, runModel: options.runModel, afterRequest: options.afterModelRequest, onProgress: options.onPlannerChanged, fetch: options.fetch, canContinue: () => permitted(batch.accountId, batch.groupId, false) && store.config().analysisEnabled });
           options.onPlannerChanged?.();
         } catch (cause) {
           const current = store.batch(batch.id); if (!current) continue;
@@ -234,8 +258,18 @@ export function createCaptureService(options: {
             store.failBatch(batch.id, '分析已暂停，恢复后继续已保存的进度'); store.retryBatch(batch.id); break;
           }
           const uncertain = current.status === 'requesting' && (!(cause instanceof WorkflowError) || ['NETWORK', 'AI_RESPONSE', 'STORAGE', 'INTERNAL'].includes(cause.code));
-          store.failBatch(batch.id, uncertain ? `${message}。响应结果未知或未通过校验，自动重试已停止；手动重试可能再次计费` : message, uncertain);
-          if (cause instanceof WorkflowError && ['NO_API_KEY', 'AUTH', 'BALANCE', 'RATE_LIMIT'].includes(cause.code)) { error = message; store.saveConfig({ ...store.config(), analysisEnabled: false }); break; }
+          const savedResponse = current.result && typeof current.result === 'object' && !Array.isArray(current.result) && current.result.pendingResponse;
+          store.failBatch(batch.id, savedResponse ? `${message}。回答已保存在本机，已完成内容保留；重试先核对原回答，不会自动重新付费请求` : uncertain ? `${message}。响应结果未知或未通过校验，自动重试已停止；手动重试可能再次计费` : message, uncertain);
+          if (cause instanceof WorkflowError && (cause.code === 'NO_API_KEY' || cause.code === 'AUTH')) {
+            error = cause.code === 'NO_API_KEY' ? '等待可用的 AI 密钥；QQ 消息继续收集，密钥同步后自动恢复分析' : message;
+            const paused = store.pauseForCredentials(cause.code, batch.id);
+            // A rotation can finish while the old key's request is in flight. Retry only its known rejection.
+            if (paused && credentialsConfigured && requestCredentialGeneration !== credentialGeneration) {
+              store.resumeAfterCredentials(); error = null; continue;
+            }
+            break;
+          }
+          if (cause instanceof WorkflowError && ['BALANCE', 'RATE_LIMIT'].includes(cause.code)) { error = message; store.clearCredentialPause(); store.saveConfig({ ...store.config(), analysisEnabled: false }); break; }
         }
         emit();
       }
@@ -243,16 +277,20 @@ export function createCaptureService(options: {
     finally { running = false; emit(); }
   }
   return {
-    snapshot, connect, configure, groups: getGroups,
+    snapshot, connect, configure, credentialsChanged, groups: getGroups,
     async start() { stopped = false; suspended = false; if (!timer) timer = setInterval(() => { void tick(); }, 5000); const config = store.config(), stats = store.stats(); if ((config.enabled || config.analysisEnabled && (stats.pendingBatches > 0 || stats.pendingMessages > 0)) && await options.credentials.get()) await connect(); },
     stop() { stopped = true; suspended = true; ++connectionGeneration; if (timer) clearInterval(timer); timer = null; if (notifyTimer) clearTimeout(notifyTimer); notifyTimer = null; bridge?.stop(); },
     busy: () => running || historyRunning || !!connectPromise,
     suspendForRestore() { if (running || historyRunning || connectPromise) throw new WorkflowError('CONFLICT', 'QQ 正在处理消息，请稍后恢复'); suspended = true; ++connectionGeneration; bridge?.stop(); health = null; },
     async resume() { suspended = false; emit(); if (store.config().enabled) await connect(); },
-    action(request: { action: 'analyze' | 'backfill' | 'retry' | 'reanalyze' | 'disconnect'; batchId?: string }) {
+    action(request: { action: 'analyze' | 'backfill' | 'retry' | 'reanalyze' | 'disconnect' | 'pause-analysis'; batchId?: string }) {
+      if (request.action === 'pause-analysis') {
+        store.clearCredentialPause(); store.saveConfig({ ...store.config(), analysisEnabled: false });
+        error = null; emit(); return snapshot();
+      }
       if (request.action === 'disconnect') {
         if (running || historyRunning || connectPromise) throw new WorkflowError('CONFLICT', '当前采集或分析仍在处理，请暂停并等待后再解除绑定');
-        store.saveConfig({ ...store.config(), accountId: null, groupIds: [], enabled: false, analysisEnabled: false });
+        store.clearCredentialPause(); store.saveConfig({ ...store.config(), accountId: null, groupIds: [], enabled: false, analysisEnabled: false });
         ++connectionGeneration; bridge?.stop(); bridge = null; health = null; error = null; lastReceivedAt = null; groupNames.clear();
         emit(); return snapshot();
       }

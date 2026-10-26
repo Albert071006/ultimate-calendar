@@ -39,6 +39,59 @@ describe('capture store', () => {
     for (const url of ['ws://127.0.0.1:3001', 'wss://localhost:3000', 'ws://[::1]:3001']) expect(LoopbackEndpointSchema.safeParse(url).success).toBe(true);
     expect(CaptureConfigSchema.safeParse({ enabled: true }).success).toBe(false);
   });
+  it('persists local credential pauses and resumes only the exact rejected batch after restart', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qq-credential-pause-')); dirs.push(dir); const path = join(dir, 'planner.sqlite');
+    let store = make(path); enabled(store);
+    const failures = ['credential', 'unknown', 'balance'].map((id, index) => {
+      store.ingest([incoming(id)]); const pending = store.sealBatches({ force: true })[0]!;
+      store.claimBatch(); store.startAttempt(pending.id, `input-${index}`);
+      return store.failBatch(pending.id, id, id === 'unknown');
+    });
+    expect(store.pauseForCredentials('AUTH', failures[0]!.id)).toBe(true);
+    expect(store.config()).toMatchObject({ enabled: true, analysisEnabled: false });
+    expect(JSON.stringify(store.exportState().state)).not.toContain('credentialPause');
+    close(store); store = make(path);
+    expect(store.credentialPause()?.reason).toBe('AUTH');
+    store.saveConfig({ ...store.config(), enabled: false });
+    expect(store.resumeAfterCredentials(t2)).toBe(true);
+    expect(store.config()).toMatchObject({ enabled: false, analysisEnabled: true });
+    expect(failures.map(batch => store.batch(batch.id)?.status)).toEqual(['pending', 'uncertain', 'failed']);
+    expect(store.credentialPause()).toBeNull(); expect(store.resumeAfterCredentials()).toBe(false);
+  });
+  it('does not infer resume permission for manual pauses or restore it from backups', () => {
+    const store = make(); enabled(store); store.ingest([incoming('credential')]);
+    const batch = store.sealBatches({ force: true })[0]!; store.claimBatch(); store.failBatch(batch.id, 'key rejected');
+    store.pauseForCredentials('AUTH', batch.id);
+    store.failBatch(batch.id, 'later non-credential failure');
+    store.resumeAfterCredentials(); expect(store.batch(batch.id)?.status).toBe('failed');
+    store.pauseForCredentials('NO_API_KEY'); store.clearCredentialPause();
+    expect(store.pauseForCredentials('NO_API_KEY')).toBe(false);
+    expect(store.resumeAfterCredentials()).toBe(false); expect(store.config().analysisEnabled).toBe(false);
+    store.saveConfig({ ...store.config(), analysisEnabled: true }); store.pauseForCredentials('NO_API_KEY');
+    store.replaceState(store.exportState().state);
+    expect(store.credentialPause()).toBeNull(); expect(store.resumeAfterCredentials()).toBe(false);
+  });
+  it('atomically acknowledges a credential revision and never resumes it twice after another rejection or restart', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qq-credential-receipt-')); dirs.push(dir); const path = join(dir, 'planner.sqlite');
+    let store = make(path); enabled(store); store.ingest([incoming('credential')]);
+    const batch = store.sealBatches({ force: true })[0]!; store.claimBatch(); store.failBatch(batch.id, 'first rejected key');
+    store.pauseForCredentials('AUTH', batch.id);
+    const change = { sourceId: '1'.repeat(64), revision: '11111111-1111-4111-8111-111111111111', configured: true };
+    const database = openDatabase(path);
+    database.exec("CREATE TRIGGER reject_sync_ack BEFORE INSERT ON capture_meta WHEN NEW.id='credentialChange' BEGIN SELECT RAISE(ABORT, 'synthetic receipt failure'); END;");
+    expect(() => store.applyCredentialChange(change)).toThrow('synthetic receipt failure');
+    expect(store.config().analysisEnabled).toBe(false); expect(store.credentialPause()?.reason).toBe('AUTH');
+    expect(store.batch(batch.id)?.status).toBe('failed');
+    database.exec('DROP TRIGGER reject_sync_ack'); database.close();
+    expect(store.applyCredentialChange(change)).toEqual({ changed: true, resumed: true, paused: false });
+    store.claimBatch(); store.failBatch(batch.id, 'replacement key also rejected'); store.pauseForCredentials('AUTH', batch.id);
+    close(store); store = make(path);
+    expect(store.applyCredentialChange(change)).toEqual({ changed: false, resumed: false, paused: false });
+    expect(store.config().analysisEnabled).toBe(false); expect(store.batch(batch.id)?.status).toBe('failed');
+    expect(store.credentialPause()?.reason).toBe('AUTH');
+    expect(store.applyCredentialChange({ ...change, revision: '22222222-2222-4222-8222-222222222222' }).resumed).toBe(true);
+    expect(store.batch(batch.id)?.status).toBe('pending');
+  });
   it('persists protocol selection and invalidates provider cursors without deleting collected messages', () => {
     const dir = mkdtempSync(join(tmpdir(), 'qq-protocol-store-')); dirs.push(dir); const path = join(dir, 'planner.sqlite');
     let store = make(path); enabled(store); store.ingest([incoming('m1')]);

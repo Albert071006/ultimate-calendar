@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { completeJson } from './deepseek';
+import { completeJson, WorkflowError } from './deepseek';
 import { DEFAULT_SETTINGS } from '../shared/contracts';
 const success = () => new Response(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
 const base = { key: 'synthetic-key', settings: DEFAULT_SETTINGS, messages: [{ role: 'user' as const, content: 'JSON' }], schema: z.strictObject({ ok: z.boolean() }), operationId: 'test', purpose: 'command' as const, now: '2026-10-22T20:00:00+08:00' };
@@ -30,6 +30,28 @@ describe('real DeepSeek HTTP boundary', () => {
   });
   it('rejects truncated finish reason even when JSON happens to parse and records known billable usage', async () => {
     const usage: number[] = []; await expect(completeJson({ ...base, onUsage: u => { usage.push(u.totalTokens); }, fetch: async () => new Response(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'length' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } })) })).rejects.toMatchObject({ code: 'AI_RESPONSE' }); expect(usage).toEqual([15]);
+  });
+  it('delivers parsed paid content before schema rejection without retrying', async () => {
+    const saved: unknown[] = []; let calls = 0;
+    await expect(completeJson({ ...base, schema: z.strictObject({ required: z.string() }),
+      onParsedResponse: value => { saved.push(value); }, fetch: async () => { calls++; return success(); },
+    })).rejects.toMatchObject({ code: 'AI_RESPONSE' });
+    expect(saved).toEqual([{ ok: true }]); expect(calls).toBe(1);
+  });
+  it('preserves a durable-response storage error without schema wrapping or a second charge', async () => {
+    const failure = new WorkflowError('STORAGE', 'synthetic response persistence failed'); let calls = 0;
+    await expect(completeJson({ ...base, onParsedResponse: () => { throw failure; },
+      fetch: async () => { calls++; return success(); },
+    })).rejects.toBe(failure);
+    expect(calls).toBe(1);
+  });
+  it('persists parsed content before usage accounting or its backup can fail', async () => {
+    const saved: unknown[] = []; const failure = new WorkflowError('STORAGE', 'synthetic usage backup failed'); let calls = 0;
+    await expect(completeJson({ ...base, onParsedResponse: value => { saved.push(value); },
+      onUsage: () => { expect(saved).toEqual([{ ok: true }]); throw failure; },
+      fetch: async () => { calls++; return success(); },
+    })).rejects.toBe(failure);
+    expect(saved).toEqual([{ ok: true }]); expect(calls).toBe(1);
   });
   it('aborts timed-out fetches and still stops after the third network attempt', async () => {
     let calls = 0; await expect(completeJson({ ...base, timeoutMs: 2, sleep: async () => {}, fetch: async (_url, init) => { calls++; return new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(Error('abort')))); } })).rejects.toMatchObject({ code: 'NETWORK' }); expect(calls).toBe(3);

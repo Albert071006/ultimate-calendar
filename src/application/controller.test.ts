@@ -23,6 +23,30 @@ function setup(transport: typeof fetch, key: string | null = 'synthetic-key') {
 function extract(sourceId: string, extra: object = {}) { return { candidates: [{ title: '提交报告', action: '提交报告', benefit: '', benefitKind: 'unknown', potentialBenefit: '', conditions: [], uncertainties: [], sourceIds: [sourceId], sourceQuote: '明天提交报告', deadline: { date: '2026-10-23', time: null }, eventStart: null, eventEnd: null, location: '', temporalEvidence: [{ field: 'deadline', basis: 'relative', quote: '明天' }], relation: { kind: 'new', candidateId: null }, ...extra }] }; }
 
 describe('durable AI workflows with real planner', () => {
+  it('adds a follow-up to the same pending item without erasing its original deadline or requirements', async () => {
+    let parent = '';
+    const { repository, controller } = setup(async (_url, init) => {
+      const sent = JSON.parse(String(init?.body));
+      const context = JSON.parse(sent.messages.find((m: {role: string}) => m.role === 'user').content);
+      return reply(extract(context.sourceId, parent ? {
+        title: '报告补充', action: '附上阅读记录', conditions: ['记录须附页码'], deadline: null,
+        sourceQuote: '附上阅读记录', temporalEvidence: [], relation: {kind: 'supplement', candidateId: parent},
+      } : {conditions: ['提交电子版']}));
+    });
+    const first = await controller.importSource({operationId: 'base', source: {kind: 'text', text: '明天提交报告', sentAt: at}});
+    if (!first.ok) throw Error('import');
+    await controller.analyzeSource({operationId: 'base-analysis', sourceId: first.data.id});
+    parent = repository.snapshot().candidates[0]!.id;
+    const follow = await controller.importSource({operationId: 'follow', source: {kind: 'text', text: '附上阅读记录', sentAt: at}});
+    if (!follow.ok) throw Error('import');
+    const result = await controller.analyzeSource({operationId: 'follow-analysis', sourceId: follow.data.id});
+    expect(result.ok).toBe(true);
+    const candidates = repository.snapshot().candidates;
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({id: parent, title: '提交报告', deadline: {date: '2026-10-23', time: null}, revisionOfId: null,
+      conditions: ['提交电子版', '记录须附页码'], sourceIds: [first.data.id, follow.data.id]});
+    expect(candidates[0]!.action).toContain('提交报告'); expect(candidates[0]!.action).toContain('附上阅读记录');
+  });
   it('passes the editable campus background to manual source analysis as data', async () => {
     let payload: { messages: { role: string; content: string }[] } | null = null;
     const { repository, controller } = setup(async (_url, init) => { payload = JSON.parse(String(init?.body)); return reply({ candidates: [] }); });

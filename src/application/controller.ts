@@ -10,8 +10,9 @@ import { ExtractionSchema } from '../ai/schemas';
 import { extractionMessages, commandMessages, courseMessages } from '../ai/prompts';
 import { buildCommandContext, validateCommandReferences } from '../ai/commands';
 import { groundTimedCommand } from '../ai/timed-commands';
+import { groundResourceCommand, selectedCommandResources } from '../ai/resource-commands';
 import { commandMutationReply } from './command-reply';
-import { normalizeCandidate, candidateFingerprint } from '../imports/messages';
+import { normalizeCandidate, candidateFingerprint, supplementCandidate } from '../imports/messages';
 import { parseCourseFile, parseCsv, previewCourseRows, type SelectedCourseFile } from '../imports/courses';
 import type { PriceQuote } from '../shared/account';
 import type { ModelRequestRunner } from '../ai/request-queue';
@@ -20,7 +21,7 @@ import { LedgerIntentSchema, LedgerCommandProposalSchema } from '../shared/ledge
 import { ledgerChanges, ledgerContext, ledgerMessages, ledgerQueryReply, ledgerSavedReply } from '../ai/ledger';
 import { ledgerToday } from '../shared/ledger';
 
-export interface ControllerOptions { planner: PlannerService; repository: Repository; ledger?: LedgerService; getApiKey(): Promise<string | null>; getPriceQuote?(model: string, currency: 'CNY' | 'USD'): PriceQuote | null; getModelInputModalities?(model: string): string[] | null; runModel?: ModelRequestRunner; afterModelRequest?(): void; fetch?: typeof fetch; now?(): string; selectCourseFile?(): Promise<SelectedCourseFile | null> }
+export interface ControllerOptions { automaticBackup?(repository: Repository): void; planner: PlannerService; repository: Repository; ledger?: LedgerService; getApiKey(): Promise<string | null>; getPriceQuote?(model: string, currency: 'CNY' | 'USD'): PriceQuote | null; getModelInputModalities?(model: string): string[] | null; runModel?: ModelRequestRunner; afterModelRequest?(): void; fetch?: typeof fetch; now?(): string; selectCourseFile?(): Promise<SelectedCourseFile | null> }
 const hash = (input: unknown) => createHash('sha256').update(JSON.stringify(input)).digest('hex');
 export function createController(options: ControllerOptions) {
   const { repository, planner } = options; const running = new Map<string, { fingerprint: string; promise: Promise<unknown> }>(); const analyzing = new Map<string, Promise<ApiResult<AnalysisResult>>>();
@@ -41,7 +42,7 @@ export function createController(options: ControllerOptions) {
   function execute<T>(id: string, input: unknown, work: (id: string, fingerprint: string) => Promise<T>): Promise<ApiResult<T>> {
     const fingerprint = hash(input); const current = running.get(id);
     if (current) return current.fingerprint === fingerprint ? current.promise as Promise<ApiResult<T>> : Promise.resolve({ ok: false, error: safeError(new WorkflowError('CONFLICT', 'operationId 已用于不同操作')) });
-    const promise = (async (): Promise<ApiResult<T>> => { try { return { ok: true, data: await work(`workflow:${hash(id)}`, fingerprint) }; } catch (error) { return { ok: false, error: safeError(error) }; } finally { automaticBackup(repository); } })();
+    const promise = (async (): Promise<ApiResult<T>> => { try { return { ok: true, data: await work(`workflow:${hash(id)}`, fingerprint) }; } catch (error) { return { ok: false, error: safeError(error) }; } finally { (options.automaticBackup ?? automaticBackup)(repository); } })();
     running.set(id, { fingerprint, promise }); void promise.finally(() => running.delete(id)); return promise;
   }
   async function model<T>(schema: z.ZodType<T>, messages: Parameters<typeof completeJson>[0]['messages'], operationId: string, purpose: 'source' | 'command' | 'courses') {
@@ -90,8 +91,24 @@ export function createController(options: ControllerOptions) {
             const saved = findEntity(state, 'source', input.sourceId); if (!saved || saved.text !== source!.text || saved.imageDataUrl !== source!.imageDataUrl || saved.sentAt !== source!.sentAt) throw new WorkflowError('CONFLICT', '分析期间来源已改变或被删除');
             const candidateIds: string[] = []; let review = false;
             // Normalize every response before writing any candidates.
-            const normalized = extracted.candidates.map(c => normalizeCandidate(c, saved, records(state, 'candidate')));
+            const normalized = extracted.candidates.map(c => ({ ...normalizeCandidate(c, saved, records(state, 'candidate')), relation: c.relation }));
             for (const item of normalized) {
+              if (item.relation.kind === 'supplement' && item.relation.candidateId) {
+                const target = findEntity(state, 'candidate', item.relation.candidateId)!;
+                if (target.status === 'ignored') { candidateIds.push(target.id); continue; }
+                const merged = supplementCandidate(target, item.values);
+                if (target.status === 'pending' && !merged.conflicts) {
+                  updateEntity(state, 'candidate', target.id, { ...merged.values,
+                    status: target.status, taskId: target.taskId, snoozedUntil: target.snoozedUntil,
+                    revisionOfId: target.revisionOfId, duplicateOfId: target.duplicateOfId, sourceQuote: target.sourceQuote,
+                  });
+                  candidateIds.push(target.id); review ||= merged.values.uncertainties!.length > 0;
+                } else {
+                  const candidate = newEntity(state, 'candidate', { ...merged.values, revisionOfId: target.id, duplicateOfId: null });
+                  candidateIds.push(candidate.id); review = true;
+                }
+                continue;
+              }
               const duplicate = item.duplicate ? findEntity(state, 'candidate', item.duplicate.id)! : records(state, 'candidate').find(c => c.sourceIds.includes(saved.id) && candidateFingerprint(c) === candidateFingerprint(item.values));
               if (duplicate) {
                 const temporalEvidence = [...new Map([...duplicate.temporalEvidence, ...(item.values.temporalEvidence ?? [])].map(e => [JSON.stringify(e), e])).values()];
@@ -128,8 +145,15 @@ export function createController(options: ControllerOptions) {
         if (prior?.result && prior.result.mutationResult?.status !== 'preview') return prior.result;
         const context = { ...buildCommandContext(planner.snapshot(), request, now()), currentUiDomain: request.domain ?? 'calendar',
           availableServices: { ledger: !!options.ledger }, currentLedgerView: request.domain === 'ledger' ? request.ledgerView : undefined };
-        let intent = prior?.intent ?? await model(CommandIntentSchema, commandMessages(context, request.text, request.history), input.operationId, 'command');
-        if (!prior?.intent) intent = groundTimedCommand(intent, request, context.now);
+        let intent = prior?.intent ?? await model(CommandIntentSchema, commandMessages(context, request.text, request.history, request.image), input.operationId, 'command');
+        // A picture can answer a pending textual request, but cannot authorize a fresh action.
+        const previousQuestion = request.history.at(-1); const previousUser = request.history.at(-2);
+        const pendingTextRequest = previousQuestion?.role === 'assistant' && previousQuestion.outcome?.phase === 'clarification'
+          && previousUser?.role === 'user' && previousUser.text.trim().length > 0;
+        if (request.image && !request.text && !pendingTextRequest && intent.kind !== 'query' && intent.kind !== 'clarification') {
+          intent = { kind: 'clarification', reply: '已收到图片。', questions: ['希望我解释图片、根据图片记账，还是安排日历事项？'] };
+        }
+        if (!prior?.intent) intent = groundResourceCommand(groundTimedCommand(intent, request, context.now), context, planner.snapshot());
         if (intent.kind === 'ledger') {
           const ledger = options.ledger;
           if (!ledger) throw new WorkflowError('VALIDATION', '账本服务尚未连接，请重新打开应用');
@@ -194,6 +218,11 @@ export function createController(options: ControllerOptions) {
           const calendarRequested = intent.fromDate !== undefined || intent.toDate !== undefined;
           result = { reply: intent.reply, mutationResult: null, items: calendarRequested ? buildCalendar(planner.snapshot(), from, to, true) : [] };
         }
+        else if (intent.kind === 'resource_open') {
+          const resourcesToOpen = selectedCommandResources(intent.resourceIds, context);
+          result = { reply: `已找到资料：${resourcesToOpen.map(resource => resource.name).join('、')}。`, mutationResult: null, items: [], resourcesToOpen };
+        }
+        else if (intent.kind === 'resource_attach') throw new WorkflowError('AI_RESPONSE', '资料关联提案尚未转换，请重试');
         else if (intent.kind === 'clarification') result = { reply: [intent.reply, ...intent.questions].join('\n'), mutationResult: null, items: [] };
         else if (intent.kind === 'undo') {
           // Target is durable before undo. Reconstruct an already committed undo after a crash.

@@ -1,0 +1,19 @@
+.a2 .plan-export { display: grid; gap: 14px; }
+.a2 .plan-export p { margin: 0; line-height: 1.7; }
+.a2 .plan-export-intro strong { display: block; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.a2 .plan-export-intro .hint { display: block; margin-top: 2px; }
+.a2 .plan-export-range { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.a2 .plan-export-range + .hint { margin-top: -8px; }
+.a2 .plan-export-summary { display: grid; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+/* Six small figures in one row instead of a 3×2 block of large numbers. */
+.a2 .plan-export-counts { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.a2 .plan-export-counts > div { display: grid; gap: 2px; }
+.a2 .plan-export-counts dt { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
+.a2 .plan-export-counts dd { margin: 0; font-size: 17px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.a2 .plan-export-meta { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 0; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12px; }
+.a2 .plan-export-meta dt { color: var(--ink-3); }
+.a2 .plan-export-meta dd { margin: 0; overflow-wrap: anywhere; }
+.a2 .plan-export .warning ul { margin: 0; padding-left: 18px; }
+.a2 .plan-export-feedback { padding: 8px 12px; color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.a2-goal-list .main .goal-export-entry { margin-top: 6px; padding-left: 0; font-size: 12px; }
+@media (max-width: 640px) { .a2 .plan-export-counts { grid-template-columns: repeat(3, minmax(0, 1fr)); } }

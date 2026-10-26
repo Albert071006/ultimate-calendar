@@ -20,7 +20,15 @@
       "values": {
         "title": "提交项目报告",
         "description": "完成正文、核对引用、提交最终文件；执行时段另行安排。",
-        "deadline": {"date": "2030-04-19", "time": "17:00"}
+        "deadline": {"date": "2030-04-19", "time": "17:00"},
+        "resources": [
+          {
+            "id": "fictional-project-report-guide",
+            "name": "项目报告要求（虚构示例）",
+            "kind": "web",
+            "url": "https://example.org/project-report"
+          }
+        ]
       }
     },
     {

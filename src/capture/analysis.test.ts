@@ -37,6 +37,8 @@ describe('capture analysis and durable candidate application', () => {
     await analyzeCapture({ ...options(store, repository), batch: saved, fetch: async (_url, request) => {
       calls++;
       const messages = JSON.parse(String(request?.body)).messages;
+      expect(messages.find((message: { role: string }) => message.role === 'system').content).toContain('不复制网址（URL）、本机路径、附件文件名或 QQ 账号/群号');
+      expect(messages.find((message: { role: string }) => message.role === 'system').content).toContain('sourceQuote、supportingSources[].quote、temporalEvidence[].quote 必须保留对应来源的连续原文');
       const input = JSON.parse(messages.find((message: { role: string }) => message.role === 'user').content[0].text);
       expect(input.units.map((unit: { messageId: string }) => unit.messageId)).toEqual([ordinary, imported[1], imported[2]]);
       expect(input.units.map((unit: { recipient: { audience: string } }) => unit.recipient.audience)).toEqual(['unspecified', 'self', 'all']);
@@ -69,7 +71,7 @@ describe('capture analysis and durable candidate application', () => {
   it('reuses a legacy mixed-recipient paid checkpoint without regrouping or charging again and suppresses its other-recipient result', async () => {
     const { store, repository, batch, message: ordinary } = setup();
     const other = store.ingest([{ accountId: '100', groupId: '200', messageId: 'legacy-other', sentAt: '2026-10-23T12:00:00+08:00', text: '@群成员 明天18点提交报告', segments: [{ type: 'at', data: { qq: '999' } }] }]).ids[0]!;
-    const saved = batch(), prepared = prepareAnalysis(store, saved);
+    const saved = batch(), prepared = prepareAnalysis(store, saved, { deduplicateAttachments: false, documentGrouping: false, passiveQuestionFilter: false });
     const units = prepared.units.map(({ text, imageDataUrl, ...unit }) => ({ ...unit, textHash: hashInput(text), imageHash: imageDataUrl ? hashInput(imageDataUrl) : null }));
     const profile = locationProfile(repository.snapshot().settings);
     const profileFingerprint = profile.campus || profile.locationContext ? { userProfile: profile } : {};

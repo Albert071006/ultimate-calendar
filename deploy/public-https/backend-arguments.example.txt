@@ -1,0 +1,10 @@
+# Append these arguments to the existing reviewed backend ExecStart:
+--public-origin https://calendar.example.org --trust-loopback-proxy true
+
+# Preserve the current --origin, --data-dir, --backup-dir, --static-dir,
+# --host 127.0.0.1, --port 3210 and all existing service hardening.
+# Do not replace the whole systemd unit or create a second backend process.
+# Environment variables alone do not change CLI arguments. If using a systemd
+# drop-in to replace ExecStart, first capture the effective existing ExecStart,
+# then reproduce it exactly with only the two reviewed additional arguments.
+# The exact domain is pending selection; example.org is documentation only.
