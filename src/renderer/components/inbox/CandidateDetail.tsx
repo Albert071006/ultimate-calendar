@@ -1,7 +1,7 @@
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { FileText } from "lucide-react";
 import type { Candidate, Snapshot } from "../../../shared/contracts";
-import { candidateDisplay } from "../../candidate-display";
+import { candidateDisplay, compactCandidateText } from "../../candidate-display";
 import { candidateExpiry } from "../../../domain/candidate-eligibility";
 import { displayInstant } from "../../calendar-layout";
 import { dayWord, fullDay } from "./format";
@@ -29,6 +29,21 @@ export function highlight(text: string, quotes: string[]): ReactNode[] {
 }
 
 export type Decision = "acceptCandidate" | "ignoreCandidate";
+
+function FactContent({ summary, full, label }: { summary: ReactNode; full?: ReactNode; label: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const id = useId();
+  return <>
+    <div className="v">{summary}</div>
+    {full && <>
+      <button type="button" className="a2-ib-fact-toggle" aria-expanded={expanded} aria-controls={id}
+        onKeyDown={event => {
+          if (!event.ctrlKey && !event.metaKey && !event.altKey && ['a', 'i', 'l', 'arrowup', 'arrowdown'].includes(event.key.toLowerCase())) event.stopPropagation();
+        }} onClick={() => setExpanded(value => !value)}>{expanded ? "收起" : "展开"}{label}</button>
+      {expanded && <div id={id} className="a2-ib-fact-full" role="region" aria-label={label}>{full}</div>}
+    </>}
+  </>;
+}
 
 export function CandidateDetail({ snapshot, candidate, today, now, busy, reason, setReason, decide, snoozing, setSnoozing, snooze, restore, edit, openSource, viewTask, viewCandidate, hideQQOriginal = false, clearedPhoneInput = false, localSourceAccess = false }: {
   snapshot: Snapshot;
@@ -65,6 +80,14 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
   const snoozed = open && candidate.snoozedUntil && Date.parse(candidate.snoozedUntil) > now;
   const stated = candidate.benefitKind === "stated" && candidate.benefit;
   const guessed = candidate.potentialBenefit || (candidate.benefitKind === "inferred" ? candidate.benefit : "");
+  const actionSummary = compactCandidateText(candidate.action, candidate.title);
+  const statedSummary = stated ? compactCandidateText(stated) : '';
+  const guessedSummary = compactCandidateText(guessed);
+  const benefits = (short: boolean) => <>
+    {stated && <p>{short ? statedSummary : stated}<span className="tag">原文写明</span></p>}
+    {guessed && <p>{short ? guessedSummary : guessed}<span className="tag">AI 推测</span></p>}
+    {!stated && !guessed && "未说明"}
+  </>;
   return (
     <article className="a2-ib-detail" aria-label="通知详情" data-candidate-id={candidate.id}>
       <div className="src">
@@ -75,12 +98,10 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
       {expiry.expired && candidate.status === "pending" && <div className="a2-ib-note warn"><strong>已过期 · 自动归类</strong><p>{expiry.reason}</p><p>按北京时间与明确时间依据归类，不代表你选择了忽略；时间有误可校对后自动回到待判断。</p></div>}
       {snoozed && <div className="a2-ib-note">稍后决定 · {dayWord(candidate.snoozedUntil!.slice(0, 10), today)} {candidate.snoozedUntil!.slice(11, 16)} 回到待判断</div>}
       <div className="a2-ib-facts">
-        <div><div className="k">要做什么</div><div className="v">{candidate.action || "原文未明确，请校对"}</div></div>
-        <div><div className="k">能得到什么</div><div className="v">
-          {stated && <p>{candidate.benefit}<span className="tag">原文写明</span></p>}
-          {guessed && <p>{guessed}<span className="tag">AI 推测</span></p>}
-          {!stated && !guessed && "未说明"}
-        </div></div>
+        <div><div className="k">要做什么</div><FactContent label="行动详情" summary={actionSummary || "原文未明确，请校对"}
+          full={actionSummary !== candidate.action.trim() ? candidate.action : undefined} /></div>
+        <div><div className="k">能得到什么</div><FactContent label="收益详情" summary={benefits(true)}
+          full={statedSummary !== (stated || '').trim() || guessedSummary !== guessed.trim() ? benefits(false) : undefined} /></div>
       </div>
       <section className="a2-ib-times" aria-label="事项时间">
         <div>

@@ -1,5 +1,16 @@
 import type { Candidate, Settings } from '../shared/contracts';
 
+/** A bounded excerpt for old verbose fields; the full saved wording stays available in the detail. */
+export function compactCandidateText(text: string, fallback = '', limit = 80): string {
+  const value = text.trim();
+  if (Array.from(value).length <= limit) return value;
+  const first = value.match(/^.*?(?:[。！？!?；;]|\n|$)/s)?.[0].trim() ?? '';
+  if (first && Array.from(first).length <= limit) return first;
+  const excerpt = fallback.trim() || value;
+  const characters = Array.from(excerpt);
+  return characters.length <= limit ? excerpt : `${characters.slice(0, limit - 1).join('')}…`;
+}
+
 const temporal = /\d{1,2}[:：]\d{2}|\d{1,2}月\d{1,2}[日号]|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|[一二两三四五六七八九十\d]+[点时](?:半|\d{1,2}分?)?|(?:周|星期)[一二三四五六日天]|(?:活动|举办|开始|结束|截止|报名|提交|签到)(?:时间|日期)|截止|DDL|今天|明天|后天|上午|下午|晚上/i;
 
 /** Presentation only. Old extractions keep their original fields and all wording remains available. */

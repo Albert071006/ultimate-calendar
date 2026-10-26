@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SourceSchema, type CommandRequest } from '../shared/contracts';
-import { commandMessages, conversationEditInstructions, eventExtractionInstructions, extractionMessages, temporalExtractionInstructions, titleEditInstructions } from './prompts';
+import { candidateSummaryInstructions, commandMessages, conversationEditInstructions, eventExtractionInstructions, extractionMessages, temporalExtractionInstructions, titleEditInstructions } from './prompts';
 import { batchMessages } from '../capture/analysis';
 
 describe('shared temporal instructions', () => {
@@ -11,6 +11,7 @@ describe('shared temporal instructions', () => {
     const capture = batchMessages([], [], [], [])[0]!.content;
     expect(manual).toContain(temporalExtractionInstructions); expect(capture).toContain(temporalExtractionInstructions);
     expect(manual).toContain(eventExtractionInstructions); expect(capture).toContain(eventExtractionInstructions);
+    expect(manual).toContain(candidateSummaryInstructions); expect(capture).toContain(candidateSummaryInstructions);
     expect(manual).not.toContain('explicit(明确完整年月日)');
     expect(temporalExtractionInstructions).toContain('183天');
     expect(temporalExtractionInstructions).toContain('没有截止钟点保持 time=null');
