@@ -15,7 +15,7 @@ jobs:
   release:
     if: github.repository == 'Albert071006/ultimate-calendar'
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
     permissions:
       contents: write
     env:
@@ -40,6 +40,13 @@ jobs:
         shell: pwsh
         run: |
           $env:PLANNER_SMOKE_EXE = (Resolve-Path 'release/win-unpacked/终极日历.exe').Path
+          npm run smoke
+      - name: Build standalone local installer without publishing
+        run: npm run package:local
+      - name: Smoke test local edition with isolated synthetic data
+        shell: pwsh
+        run: |
+          $env:PLANNER_SMOKE_EXE = (Resolve-Path 'release-local/win-unpacked/终极日历本地版.exe').Path
           npm run smoke
       - name: Verify update metadata and checksums
         run: npm run release:verify

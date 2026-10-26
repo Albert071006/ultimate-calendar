@@ -1,7 +1,7 @@
 {
   "name": "ultimate-calendar",
   "productName": "终极日历",
-  "version": "0.4.7",
+  "version": "0.5.0",
   "private": true,
   "description": "本地优先的 Windows 个人计划应用",
   "author": "Albert071006",
@@ -33,10 +33,13 @@
     "smoke": "node scripts/smoke.mjs",
     "smoke:remote": "node scripts/smoke-remote.mjs",
     "release:check-tag": "node scripts/release.mjs check-tag",
-    "release:verify": "node scripts/release-artifacts.mjs",
+    "release:verify": "node scripts/release-artifacts.mjs --all",
     "release:publish": "node scripts/release.mjs publish",
     "font:subset": "node scripts/font-subset.mjs",
-    "icon": "electron scripts/icon.mjs"
+    "icon": "electron scripts/icon.mjs",
+    "build:local": "node scripts/build.mjs --edition=local",
+    "package:local": "node scripts/package.mjs --edition=local",
+    "dev:local": "node scripts/dev.mjs --edition=local"
   },
   "dependencies": {
     "@xmldom/xmldom": "0.9.12",

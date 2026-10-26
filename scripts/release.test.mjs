@@ -5,29 +5,50 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { dump } from 'js-yaml';
-import { releaseArtifactNames, verifyReleaseArtifacts, writeChecksums } from './release-artifacts.mjs';
+import { allReleaseArtifactNames, releaseArtifactNames, verifyAllReleaseArtifacts, verifyReleaseArtifacts, writeChecksums } from './release-artifacts.mjs';
 import { publishRelease, validateTag } from './release.mjs';
 
 const directories = [];
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
 
-async function fixture() {
+async function fixture(edition = 'standard') {
   const directory = await mkdtemp(join(tmpdir(), 'ultimate-calendar-release-test-'));
   directories.push(directory);
-  const version = '1.2.3', [installer, blockmap] = releaseArtifactNames(version), bytes = Buffer.from('MZ synthetic test installer');
+  const version = '1.2.3', [installer, blockmap, metadataName] = releaseArtifactNames(version, edition), bytes = Buffer.from(`MZ synthetic ${edition} test installer`);
   await writeFile(join(directory, installer), bytes);
   await writeFile(join(directory, blockmap), gzipSync(JSON.stringify({ version: '2', files: [{ name: 'file', offset: 0, sizes: [bytes.length], checksums: ['c3ludGhldGlj'] }] })));
   const sha512 = createHash('sha512').update(bytes).digest('base64');
   const metadata = { version, files: [{ url: installer, sha512, size: bytes.length }], path: installer, sha512, releaseDate: '2026-01-01T00:00:00Z' };
-  await writeFile(join(directory, 'latest.yml'), dump(metadata));
-  await writeChecksums(directory, version);
-  return { directory, version, metadata, installer, blockmap };
+  await writeFile(join(directory, metadataName), dump(metadata));
+  await writeChecksums(directory, version, edition);
+  return { directory, version, metadata, metadataName, installer, blockmap };
+}
+
+async function bothEditions() {
+  const standard = await fixture(), local = await fixture('local');
+  return { ...standard, local, artifacts: await verifyAllReleaseArtifacts(standard.version, standard.directory, local.directory) };
 }
 
 describe('release artifact verification', () => {
   it('accepts exactly the generated installer, update metadata, blockmap and checksum list', async () => {
     const { directory, version } = await fixture();
     expect((await verifyReleaseArtifacts(directory, version)).map(file => file.name)).toEqual(releaseArtifactNames(version));
+  });
+  it('verifies two independent update channels without duplicate attachment names', async () => {
+    const { version, artifacts } = await bothEditions();
+    expect(artifacts.map(file => file.name)).toEqual(allReleaseArtifactNames(version));
+    expect(new Set(artifacts.map(file => file.name)).size).toBe(8);
+  });
+  it('rejects local update metadata pointing at the standard installer', async () => {
+    const { directory, version, metadata, metadataName } = await fixture('local');
+    metadata.path = metadata.files[0].url = releaseArtifactNames(version)[0];
+    await writeFile(join(directory, metadataName), dump(metadata));
+    await writeChecksums(directory, version, 'local');
+    await expect(verifyReleaseArtifacts(directory, version, 'local')).rejects.toThrow('versioned local installer');
+  });
+  it('rejects missing local artifacts instead of publishing only the legacy edition', async () => {
+    const { directory, version } = await fixture();
+    await expect(verifyAllReleaseArtifacts(version, directory, directory)).rejects.toThrow();
   });
   it('rejects mismatched versions and unexpected tag names', () => {
     expect(() => validateTag('1.2.3', 'v1.2.3')).not.toThrow();
@@ -86,19 +107,24 @@ function githubMock({ failUpload = false, omitFinalAsset = false } = {}) {
 }
 
 describe('draft then publish workflow', () => {
-  it('publishes only after all four uploaded bytes and remote digests are checked', async () => {
-    const { directory, version } = await fixture(), api = githubMock();
-    const artifacts = await verifyReleaseArtifacts(directory, version);
+  it('publishes only after all eight uploaded bytes and remote digests are checked', async () => {
+    const { version, artifacts } = await bothEditions(), api = githubMock();
     const result = await publishRelease({ version, commit: 'a'.repeat(40), notes: 'Synthetic notes', token: 'synthetic-test-token', artifacts, fetchImpl: api.fetchImpl });
     expect(result.alreadyPublished).toBe(false);
     expect(JSON.parse(api.calls.find(call => call.method === 'POST' && call.url.endsWith('/releases')).body).draft).toBe(true);
-    expect(api.calls.filter(call => call.url.startsWith('https://uploads.github.com/'))).toHaveLength(4);
+    expect(api.calls.filter(call => call.url.startsWith('https://uploads.github.com/'))).toHaveLength(8);
     expect(api.calls.at(-1).method).toBe('PATCH');
     expect(JSON.parse(api.calls.at(-1).body).draft).toBe(false);
   });
+  it('does not create a release when one edition is absent or an attachment name is repeated', async () => {
+    const { version, artifacts } = await bothEditions(), api = githubMock();
+    const request = { version, commit: 'a'.repeat(40), notes: 'Synthetic notes', token: 'synthetic-test-token', fetchImpl: api.fetchImpl };
+    await expect(publishRelease({ ...request, artifacts: artifacts.slice(0, 4) })).rejects.toThrow('both desktop editions');
+    await expect(publishRelease({ ...request, artifacts: [...artifacts.slice(0, 7), artifacts[0]] })).rejects.toThrow('both desktop editions');
+    expect(api.calls).toHaveLength(0);
+  });
   it.each([{ failUpload: true }, { omitFinalAsset: true }])('leaves the release as a draft on failure: %j', async options => {
-    const { directory, version } = await fixture(), api = githubMock(options);
-    const artifacts = await verifyReleaseArtifacts(directory, version);
+    const { version, artifacts } = await bothEditions(), api = githubMock(options);
     await expect(publishRelease({ version, commit: 'a'.repeat(40), notes: 'Synthetic notes', token: 'synthetic-test-token', artifacts, fetchImpl: api.fetchImpl })).rejects.toThrow();
     expect(api.calls.some(call => call.method === 'PATCH')).toBe(false);
   });

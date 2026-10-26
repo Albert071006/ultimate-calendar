@@ -49,9 +49,9 @@ export function resolveBackupDirectory(dataDirectory: string): string {
 }
 
 /** Main calls this before opening repositories. Isolated runs cannot inherit a production backup path. */
-export function initializeBackupDirectory(dataDirectory: string, documentsDirectory: string, isolatedProfile = false): string {
+export function initializeBackupDirectory(dataDirectory: string, documentsDirectory: string, isolatedProfile = false, applicationDirectory = '终极日历'): string {
   const state = readSpaceState(dataDirectory);
-  const chosen = isolatedProfile ? join(dataDirectory, 'backups') : state.backupDirectory ?? join(documentsDirectory, '终极日历', '备份');
+  const chosen = isolatedProfile ? join(dataDirectory, 'backups') : state.backupDirectory ?? join(documentsDirectory, applicationDirectory, '备份');
   const backupDirectory = safeBackupDirectory(dataDirectory, chosen);
   mkdirSync(backupDirectory, { recursive: true });
   if (state.backupDirectory !== backupDirectory) writeSpaceState(dataDirectory, { ...state, backupDirectory });

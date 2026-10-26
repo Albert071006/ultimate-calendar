@@ -52,6 +52,12 @@ describe('official update checks and downloads', () => {
     f.service.stop(); await vi.advanceTimersByTimeAsync(4 * 60 * 60 * 1000); expect(f.driver.checkForUpdates).toHaveBeenCalledTimes(2);
     expect(f.driver.downloadUpdate).not.toHaveBeenCalled(); expect(f.driver.quitAndInstall).not.toHaveBeenCalled();
   });
+  it('keeps the independent local edition on its own update channel', async () => {
+    const f = fixture({ channel: 'local' });
+    await f.service.checkForUpdates();
+    expect(f.driver.setFeedURL).toHaveBeenCalledExactlyOnceWith({ ...OFFICIAL_UPDATE_SOURCE, channel: 'local' });
+    expect(f.driver.downloadUpdate).not.toHaveBeenCalled();
+  });
   it('fixes the official source and requires explicit download and installation', async () => {
     const f = fixture(); const result = await f.service.checkForUpdates();
     expect(result.ok).toBe(true); expect(f.service.snapshot()).toMatchObject({ status: 'available', currentVersion: '0.3.3', latestVersion: '0.3.4', checkedAt: '2026-10-23T13:00:00.000Z' });

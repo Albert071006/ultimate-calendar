@@ -2,13 +2,20 @@ import { build as viteBuild } from 'vite';
 import { build as bundle } from 'esbuild';
 import { cp, mkdir } from 'node:fs/promises';
 import { writePwaShell } from './pwa-shell.mjs';
+import { desktopEdition, desktopViteOptions } from './desktop-edition.mjs';
 
-await viteBuild();
-await writePwaShell();
+const edition = desktopEdition();
+await viteBuild(desktopViteOptions(edition));
+if (edition === 'local') {
+  await mkdir('dist/icons', { recursive: true });
+  await cp('public/icons/app-icon.svg', 'dist/icons/app-icon.svg');
+  await cp('public/third-party', 'dist/third-party', { recursive: true });
+} else await writePwaShell();
 for (const entry of ['main', 'preload']) {
   const path = `src/electron/${entry}.ts`;
   await bundle({ entryPoints: [path], outfile: `dist-electron/${entry}.cjs`, platform: 'node',
-    format: 'cjs', target: 'node24', bundle: true, external: ['electron', 'electron-updater'], sourcemap: false });
+    format: 'cjs', target: 'node24', bundle: true, external: ['electron', 'electron-updater'], sourcemap: false,
+    define: { __PLANNER_LOCAL_ONLY__: String(edition === 'local') } });
 }
 
 await mkdir('dist-electron/pdf-assets', { recursive: true });

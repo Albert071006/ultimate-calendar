@@ -12,6 +12,8 @@ interface UpdateOptions {
   packaged: boolean;
   platform: string;
   isolatedProfile: boolean;
+  /** Build-selected channel; never accepted from renderer IPC or saved user settings. */
+  channel?: 'latest' | 'local';
   getUpdater(): UpdateDriver;
   isBusy(): boolean;
   /** Suspend background writes and finish a verified SQLite backup before returning. */
@@ -148,7 +150,7 @@ export function createUpdateService(options: UpdateOptions) {
     driver.allowDowngrade = false;
     driver.forceDevUpdateConfig = false;
     driver.disableWebInstaller = true;
-    driver.setFeedURL(OFFICIAL_UPDATE_SOURCE);
+    driver.setFeedURL({ ...OFFICIAL_UPDATE_SOURCE, channel: options.channel ?? 'latest' });
     driver.on('update-available', info => {
       if (!current()) return;
       if (operation === 'download' && recheckingDriver === driver) { recheckedVersion = info.version; return; }

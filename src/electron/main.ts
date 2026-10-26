@@ -21,7 +21,7 @@ import { reminderDigest } from '../domain/reminders';
 import { ChangedEventSchema, NavigateEventSchema, MutationRequestSchema, MAX_IMAGE_BYTES, type ChangedEvent, type NavigateEvent, type DesktopAPI } from '../shared/contracts';
 import { WorkflowError } from '../ai/deepseek';
 import { createKeyStore } from './key-store';
-import { boundedFile, imageFromBytes, profileFromArgs } from './files';
+import { boundedFile, imageFromBytes } from './files';
 import { dispatchRequest, trustedCaller, type Caller } from './ipc';
 import { methods } from './protocol';
 import { createRestoreManager } from './restore';
@@ -35,8 +35,9 @@ import { CaptureSnapshotSchema } from '../shared/capture';
 import { createModelRequestQueue } from '../ai/request-queue';
 import { createUpdateService } from './update-service';
 import { UpdateStateSchema } from '../shared/update';
-import { prepareDataDirectory, resolveDataDirectory } from './data-directory';
-import { connectionArgs, remoteConfigFromArgs, type NativeRemoteConfig } from './remote-config';
+import { prepareDataDirectory } from './data-directory';
+import type { NativeRemoteConfig } from './remote-config';
+import { desktopEdition, desktopStartup, LOCAL_ONLY } from './desktop-edition';
 import { createCollectorControlServer } from './collector-control';
 import { startNativeRemote } from './remote-mode';
 import { startCollectorMode } from './collector-mode';
@@ -45,8 +46,9 @@ import { createLocalEvidenceResolver } from './local-evidence';
 import { createSourceAttachmentHost } from './source-attachments';
 import { createCollectorTrayOwnership } from './collector-tray';
 
-app.setName('终极日历');
-const APP_ID = 'local.ultimate-calendar.desktop'; app.setAppUserModelId(APP_ID);
+const edition = desktopEdition(LOCAL_ONLY);
+app.setName(edition.name);
+const APP_ID = edition.appId; app.setAppUserModelId(APP_ID);
 let window: BrowserWindow | null = null; let tray: Tray | null = null; let repository: Repository | null = null;
 let quitting = false; let timer: ReturnType<typeof setInterval> | undefined; let navigationReady = false;
 let pendingNavigation: NavigateEvent | null = null;
@@ -67,10 +69,10 @@ let stopCollector: (() => Promise<void>) | undefined;
 let stopCollectorTray: (() => void) | undefined;
 let collectorStartup: ReturnType<typeof startCollectorMode> | undefined;
 try {
-  const startupArgs = connectionArgs(process.argv, app.getPath('documents'));
-  profile = profileFromArgs(startupArgs);
-  remoteConfig = remoteConfigFromArgs(startupArgs, profile, resolveDataDirectory(app.getPath('documents'), null));
-  const dataDirectory = resolveDataDirectory(app.getPath('documents'), profile);
+  const startup = desktopStartup(process.argv, app.getPath('documents'), LOCAL_ONLY);
+  profile = startup.profile;
+  remoteConfig = startup.remoteConfig;
+  const dataDirectory = startup.directory;
   const collectorFlags = process.argv.filter(value => value.startsWith('--planner-capture-only'));
   if (collectorFlags.length) {
     if (collectorFlags.length !== 1 || collectorFlags[0] !== '--planner-capture-only' || remoteConfig || !existsSync(join(dataDirectory, 'planner.sqlite'))) throw Error('采集专用模式需要已有本机资料，且不能同时指定云端界面模式');
@@ -100,7 +102,8 @@ else {
   app.on('will-quit', () => { if (timer) clearInterval(timer); stopCollectorTray?.(); stopRemote?.(); stopSpace?.(); disposeRestore?.(); stopUpdates?.(); stopAccount?.(); stopCapture?.(); ledger?.close(); repository?.close(); tray?.destroy(); });
   app.on('activate', () => showWindow());
   app.on('window-all-closed', () => { if ((!tray && !collectorOnly) || quitting) app.quit(); });
-  const dataPreparation = remoteConfig || collectorOnly ? Promise.resolve() : prepareDataDirectory({ directory: app.getPath('userData'), legacyDirectory: legacyDataDirectory, profile });
+  // The independent edition starts with its own data; never import a legacy/cloud user's old local database.
+  const dataPreparation = remoteConfig || collectorOnly ? Promise.resolve() : prepareDataDirectory({ directory: app.getPath('userData'), legacyDirectory: legacyDataDirectory, profile, migrateLegacy: !LOCAL_ONLY });
   void Promise.all([app.whenReady(), dataPreparation]).then(start).catch(error => {
     const detail = error instanceof Error ? error.message : '请检查目录权限与可用空间。';
     dialog.showErrorBox('日历启动失败', `无法打开本地数据或界面。${detail}\n数据目录：${app.getPath('userData')}\n不要删除已有数据库；可从备份恢复。`); app.quit();
@@ -170,7 +173,7 @@ async function start() {
     return;
   }
   const data = app.getPath('userData'); await mkdir(data, { recursive: true });
-  initializeBackupDirectory(data, app.getPath('documents'), !!profile);
+  initializeBackupDirectory(data, app.getPath('documents'), !!profile, edition.directoryName);
   repository = createRepository(join(data, 'planner.sqlite')); const repo = repository; const planner = createPlanner(repo);
   ledger = createLedgerService(repo.path); const localLedger = ledger;
   localLedger.ensureMonthlyAllowance();
@@ -218,7 +221,7 @@ async function start() {
   disposeRestore = () => { void restore.dispose(); };
   let activeRequests = 0, captureSuspendedForUpdate = false;
   const updates = createUpdateService({
-    currentVersion: app.getVersion(), packaged: app.isPackaged, platform: process.platform, isolatedProfile: !!profile,
+    currentVersion: app.getVersion(), packaged: app.isPackaged, platform: process.platform, isolatedProfile: !!profile, channel: edition.updateChannel,
     getUpdater: () => new NsisUpdater(),
     isBusy: () => activeRequests > 0 || activeWorkflows > 0 || capture.busy() || modelQueue.busy() || space.isRunning(),
     prepareInstall: () => {
@@ -307,7 +310,7 @@ async function start() {
   };
   Menu.setApplicationMenu(null);
   const icon = join(__dirname, '../assets/app-icon.png');
-  window = new BrowserWindow({ width: 1440, height: 940, minWidth: 980, minHeight: 680, show: false, title: '终极日历', backgroundColor: '#f5f0e6', icon,
+  window = new BrowserWindow({ width: 1440, height: 940, minWidth: 980, minHeight: 680, show: false, title: edition.name, backgroundColor: '#f5f0e6', icon,
     titleBarStyle: 'hidden', titleBarOverlay: { color: '#f5f0e6', symbolColor: '#1f1c18', height: 32 },
     webPreferences: { preload: join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, spellcheck: false, devTools: !app.isPackaged } });
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -341,8 +344,8 @@ async function start() {
   // Use the Windows ICO asset; nativeImage handles decoding before the tray scales it.
   // Load it through nativeImage: a bare path inside app.asar cannot be opened by the tray itself.
   const trayIcon = process.platform === 'win32' ? nativeImage.createFromPath(join(__dirname, '../assets/app-icon.ico')) : nativeImage.createFromPath(icon).resize({ width: 20, height: 20 });
-  tray = new Tray(trayIcon); tray.setToolTip('终极日历 · 本地计划与提醒');
-  tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开终极日历', click: () => { showWindow(); void showRetainedSummary(); } }, { label: '查看漏过提醒', click: () => { showWindow(); void showRetainedSummary(true); } }, { type: 'separator' }, { label: '退出（停止提醒）', click: () => { quitting = true; app.quit(); } }]));
+  tray = new Tray(trayIcon); tray.setToolTip(`${edition.name} · 本地计划与提醒`);
+  tray.setContextMenu(Menu.buildFromTemplate([{ label: `打开${edition.name}`, click: () => { showWindow(); void showRetainedSummary(); } }, { label: '查看漏过提醒', click: () => { showWindow(); void showRetainedSummary(true); } }, { type: 'separator' }, { label: '退出（停止提醒）', click: () => { quitting = true; app.quit(); } }]));
   tray.on('double-click', showWindow);
   const noticeFile = join(data, 'tray-notice-seen'); let noticeSeen = false;
   try { noticeSeen = (await readFile(noticeFile, 'utf8')) === 'yes'; } catch { /* first close */ }
@@ -378,5 +381,5 @@ async function start() {
 function applyAutoLaunch(enabled: boolean) {
   // Isolated profiles never change the user's startup entry. Production default remains off.
   if (profile || !app.isPackaged) return;
-  app.setLoginItemSettings({ openAtLogin: enabled, path: process.execPath, args: [] });
+  app.setLoginItemSettings({ openAtLogin: enabled, path: process.execPath, args: [], ...(LOCAL_ONLY ? { name: edition.appId } : {}) });
 }

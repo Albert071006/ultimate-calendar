@@ -4,6 +4,7 @@ dist-electron/
 dist-server/
 dist-tools/
 release/
+release-local/
 coverage/
 .superpowers/
 .worktrees/

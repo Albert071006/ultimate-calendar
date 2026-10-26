@@ -12,7 +12,7 @@ export function validateTag(version, tag) {
 }
 
 function verifyRemoteAssets(assets, artifacts) {
-  if (!Array.isArray(assets) || assets.length !== artifacts.length) throw Error('Release does not contain exactly the four expected assets');
+  if (!Array.isArray(assets) || assets.length !== artifacts.length) throw Error('Release does not contain exactly the expected assets');
   for (const file of artifacts) {
     const matches = assets.filter(asset => asset.name === file.name);
     if (matches.length !== 1 || matches[0].state !== 'uploaded' || matches[0].size !== file.size
@@ -26,9 +26,9 @@ export async function publishRelease({ version, commit, notes, artifacts, token,
   const tag = `v${version}`;
   validateTag(version, tag);
   if (!token || !/^[a-f0-9]{40}$/.test(commit) || !notes.trim()) throw Error('Token, commit SHA and release notes are required');
-  const { releaseArtifactNames } = await import('./release-artifacts.mjs');
-  const expectedNames = releaseArtifactNames(version);
-  if (artifacts.length !== 4 || expectedNames.some(name => !artifacts.some(file => file.name === name))) throw Error('Unexpected release artifact list');
+  const { allReleaseArtifactNames } = await import('./release-artifacts.mjs');
+  const expectedNames = allReleaseArtifactNames(version);
+  if (artifacts.length !== expectedNames.length || expectedNames.some(name => artifacts.filter(file => file.name === name).length !== 1)) throw Error('Unexpected release artifact list: both desktop editions are required');
   const base = `https://api.github.com/repos/${RELEASE_REPOSITORY}`;
   async function request(url, method = 'GET', body, binary = false, allowNotFound = false) {
     const parsed = new URL(url);
@@ -95,8 +95,8 @@ async function main() {
   const notes = await readFile(`docs/release-notes/${pkg.version}.md`, 'utf8');
   if (!notes.trim()) throw Error('Release notes are empty');
   if (command === 'check-tag') { console.log(`Verified ${tag} at ${commit}`); return; }
-  const { verifyReleaseArtifacts } = await import('./release-artifacts.mjs');
-  const artifacts = await verifyReleaseArtifacts('release', pkg.version);
+  const { verifyAllReleaseArtifacts } = await import('./release-artifacts.mjs');
+  const artifacts = await verifyAllReleaseArtifacts(pkg.version);
   const result = await publishRelease({ version: pkg.version, commit, notes, artifacts, token: process.env.GITHUB_TOKEN });
   console.log(`${result.alreadyPublished ? 'Verified existing' : 'Published'} release: ${result.url}`);
 }
