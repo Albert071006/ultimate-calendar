@@ -4,7 +4,7 @@
 
 ## 下载与首次使用
 
-在 [GitHub Releases](https://github.com/Albert071006/ultimate-calendar/releases) 下载名称含 `Local` 的安装包，例如 `UltimateCalendar-Local-Setup-0.5.0.exe`。安装后从「终极日历本地版」快捷方式启动。安装包已包含运行环境，无需 Node.js。
+在[本地版 0.5.0 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/v0.5.0) 下载 `UltimateCalendar-Local-Setup-0.5.0.exe`。安装后从「终极日历本地版」快捷方式启动。安装包已包含运行环境，无需 Node.js。服务器版另有独立 Release，不是使用本地版的前置条件。
 
 首次打开即可手动创建日程、任务、课表及账目，不需要注册日历账号、填写服务器地址或配置 API Key。新资料没有预置私人课表、账单或群名单；周期收入默认关闭，需要时自行设置。
 
@@ -78,4 +78,4 @@ npm run package:local
 npm run dev:local -- --planner-profile="$env:TEMP\ultimate-calendar-dev"
 ```
 
-测试请使用虚构日历、账目和模拟桥接，勿填写真实密钥。标准版和自托管资料服务的说明见[自托管文档](self-hosted.md)。
+测试请使用虚构日历、账目和模拟桥接，勿填写真实密钥。需要手机与电脑共用资料时，另见[服务器版与手机端 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.5.0)及[Linux 部署指南](server-mobile-deployment.md)。

@@ -39,7 +39,9 @@
     "icon": "electron scripts/icon.mjs",
     "build:local": "node scripts/build.mjs --edition=local",
     "package:local": "node scripts/package.mjs --edition=local",
-    "dev:local": "node scripts/dev.mjs --edition=local"
+    "dev:local": "node scripts/dev.mjs --edition=local",
+    "package:server": "node scripts/package-server-mobile.mjs",
+    "smoke:server": "node scripts/smoke-server-mobile.mjs"
   },
   "dependencies": {
     "@xmldom/xmldom": "0.9.12",

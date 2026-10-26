@@ -2,6 +2,8 @@
 
 这份说明面向需要手机与电脑共用资料、并自行维护服务的开发者。普通 Windows 用户请使用[本地桌面版](local-desktop.md)，无需执行本页命令。独立本地版不接入资料服务；下文的 Electron 云端能力由标准版提供。
 
+**从发布包部署**请先读[Linux 服务器与手机端部署指南](server-mobile-deployment.md)。[服务器版与手机端 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.5.0) 提供已构建的后端、手机静态页和可选 Windows 标准版；以下内容主要用于源码开发与进一步理解接口。
+
 需要 Node.js 24 或更高版本。以下命令只使用独立演示目录；不读取已安装桌面版的资料，也不会部署云资源或上传资料。
 
 ```powershell
@@ -50,11 +52,11 @@ node .\dist-server\cli.mjs pair --data-dir "$demo\data"
 | `--origin` | 必填，浏览器实际访问的完整来源，无路径；非本机来源必须为 HTTPS。仅 localhost／回环地址允许 HTTP 开发。 |
 | `--host`、`--port` | 默认 `127.0.0.1`、`3210`；不默认开放全部网络接口。 |
 | `--static-dir` | 可选，已构建 `dist` 的路径；必须与私有资料目录分开，不能互为上下级。只提供网页资源。 |
-| `--api-key-file` | 可选，受限权限的绝对路径文件；否则从 `DEEPSEEK_API_KEY` 环境变量读取。密钥不进入网页、会话响应和安全备份。不要把密钥作为命令行实参。 |
+| `--api-key-file` | 可选，受限权限的绝对路径文件；其次读取非空 `DEEPSEEK_API_KEY` 环境变量；两者均未设置时由已配对手机管理 Key。外部供应源存在时手机只可查看配置状态，不能覆盖。不要把密钥作为命令行实参。 |
 | `--backup-dir` | 可选，安全备份的绝对目录；不能是资料目录或其上级。默认是资料目录同级的 `<资料目录名>-backups`。 |
 | `VAPID_SUBJECT` | 可选，Web Push 所需的显式联系邮箱（`mailto:`）或 HTTPS 联系地址。未配置时推送明确禁用，不伪造默认地址。 |
 
-服务严格核对 Host 和 Origin。所有业务接口先鉴权；写请求必须来自同一来源并携带 `x-csrf-token`，配对接口除外。仅开放日历、任务、候选、生活助手和账本的方法；更新、Windows 文件对话框、API Key 设置及本机备份恢复不开放给网页。普通 RPC 请求体限制为 15 MiB，提炼导入为 1 MiB。Linux 服务目录为 0700，服务自身数据库和安全备份为 0600；CLI 另设 umask 077。
+服务严格核对 Host 和 Origin。所有业务接口先鉴权；写请求必须来自同一来源并携带 `x-csrf-token`，配对接口除外。网页可管理日历、任务、候选、生活助手、账本及云端共享设置，另有受保护的 AI Key 配置和云端安全导出／恢复接口；Windows 更新、本机文件对话框与本机整库恢复不会开放为网页接口。普通 RPC 请求体限制为 15 MiB，提炼导入为 1 MiB。Linux 服务目录为 0700，服务自身数据库和安全备份为 0600；CLI 另设 umask 077。
 
 ### HTTPS 与 Tailscale
 

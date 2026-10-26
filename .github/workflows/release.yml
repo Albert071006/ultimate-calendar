@@ -48,9 +48,15 @@ jobs:
         run: |
           $env:PLANNER_SMOKE_EXE = (Resolve-Path 'release-local/win-unpacked/终极日历本地版.exe').Path
           npm run smoke
+      - name: Build server and mobile deployment archive
+        run: npm run package:server
+      - name: Smoke test archived server and mobile assets with synthetic data
+        run: npm run smoke:server
+      - name: Prepare legacy desktop update route to server release
+        run: node scripts/release-artifacts.mjs --prepare
       - name: Verify update metadata and checksums
         run: npm run release:verify
-      - name: Upload draft assets, verify, then publish
+      - name: Verify both drafts, publish server first, then local Latest
         run: npm run release:publish
         env:
           GITHUB_TOKEN: ${{ github.token }}

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, renameSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, renameSync, rmSync, existsSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createResourceHost } from './resources';
@@ -24,7 +24,8 @@ describe('owning computer resource references', () => {
     expect((await register(f, path))[0]!.id).toBe(resource!.id);
     const restarted = createResourceHost({ directory: f.directory, pick: f.pick, openPath: f.openPath, openWeb: f.openWeb });
     expect(await restarted.handle('resourceOpen', { resource })).toEqual({ ok: true, data: { opened: true } });
-    expect(f.openPath).toHaveBeenCalledExactlyOnceWith(path); expect(readLocalResources(f.directory)?.locations).toHaveLength(1);
+    // Windows runner TEMP can use an 8.3 alias; the host opens the canonical path.
+    expect(f.openPath).toHaveBeenCalledExactlyOnceWith(realpathSync.native(path)); expect(readLocalResources(f.directory)?.locations).toHaveLength(1);
   });
   it('reports moved files, relocates without changing identity and never removes originals', async () => {
     const f = fixture(), oldPath = join(f.directory, 'old.txt'), newPath = join(f.directory, 'new.txt'); writeFileSync(oldPath, 'synthetic');
@@ -32,11 +33,11 @@ describe('owning computer resource references', () => {
     expect(await f.host.handle('resourceStatus', { resources: [resource] })).toMatchObject({ data: [{ status: 'missing' }] });
     await expect(f.host.handle('resourceOpen', { resource })).rejects.toThrow(/移动|改名/); expect(f.openPath).not.toHaveBeenCalled();
     f.pick.mockResolvedValue([newPath]); expect(await f.host.handle('resourceRelocate', { resource })).toEqual({ ok: true, data: resource });
-    await f.host.handle('resourceOpen', { resource }); expect(f.openPath).toHaveBeenCalledWith(newPath); expect(existsSync(newPath)).toBe(true);
+    await f.host.handle('resourceOpen', { resource }); expect(f.openPath).toHaveBeenCalledWith(realpathSync.native(newPath)); expect(existsSync(newPath)).toBe(true);
   });
   it('supports folders and web links without allowing arbitrary schemes, scripts or shortcuts', async () => {
     const f = fixture(), [folder] = await register(f, f.directory); expect(folder?.kind).toBe('folder');
-    await f.host.handle('resourceOpen', { resource: folder }); expect(f.openPath).toHaveBeenCalledWith(f.directory);
+    await f.host.handle('resourceOpen', { resource: folder }); expect(f.openPath).toHaveBeenCalledWith(realpathSync.native(f.directory));
     const web = { kind: 'web', id: 'synthetic-web', name: '练习网页', url: 'https://example.test/lesson?one=1&two=2' };
     await f.host.handle('resourceOpen', { resource: web }); expect(f.openWeb).toHaveBeenCalledExactlyOnceWith(web.url);
     for (const url of ['file:///C:/private.txt', 'javascript:alert(1)', 'microsoft-edge:https://example.test', 'https://user:password@example.test']) {

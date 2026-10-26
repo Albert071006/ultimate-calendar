@@ -5,6 +5,7 @@ dist-server/
 dist-tools/
 release/
 release-local/
+release-server/
 coverage/
 .superpowers/
 .worktrees/

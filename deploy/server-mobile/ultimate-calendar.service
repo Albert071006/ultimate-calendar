@@ -1,0 +1,44 @@
+# Self-hosted server + mobile PWA. Review paths and origin before installation.
+[Unit]
+Description=Ultimate Calendar server and mobile web
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ultimate-calendar-server
+Group=ultimate-calendar-server
+WorkingDirectory=/opt/ultimate-calendar-server/current
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/ultimate-calendar-server.env
+ExecStart=/usr/local/bin/node --max-old-space-size=512 /opt/ultimate-calendar-server/current/dist-server/cli.mjs serve --data-dir /var/lib/ultimate-calendar-server/data --backup-dir /var/lib/ultimate-calendar-server/backups --host 127.0.0.1 --port 3210 --origin ${CALENDAR_ORIGIN} --static-dir /opt/ultimate-calendar-server/current/web
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+KillSignal=SIGTERM
+UMask=0077
+StateDirectory=ultimate-calendar-server
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/ultimate-calendar-server
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+TasksMax=128
+LimitNOFILE=1024
+# Initial budget only; size the host for your workload.
+MemoryHigh=768M
+MemoryMax=1024M
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

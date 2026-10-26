@@ -1,10 +1,15 @@
 # 终极日历 · Ultimate Calendar
 
-一个把日历、课表、任务、群通知和记账放在一起的 Windows 桌面应用。
+一个把日历、课表、任务、群通知和记账放在一起的开源应用，提供本地桌面版，以及自行部署的服务器版与手机端。
 
 **推荐使用「终极日历本地版」：下载安装即可使用，无需部署服务器、注册日历账号或进行设备配对。** 资料保存在自己的电脑上；需要 AI 时，填写自己的 DeepSeek API Key，由本机直接调用。它只提供桌面端，没有手机端或跨设备同步。
 
-[下载本地版 0.5.0（Windows x64）](https://github.com/Albert071006/ultimate-calendar/releases/download/v0.5.0/UltimateCalendar-Local-Setup-0.5.0.exe) · [全部版本](https://github.com/Albert071006/ultimate-calendar/releases) · [使用说明](docs/local-desktop.md) · [反馈问题](https://github.com/Albert071006/ultimate-calendar/issues)
+[下载本地版 0.5.0（Windows x64）](https://github.com/Albert071006/ultimate-calendar/releases/download/v0.5.0/UltimateCalendar-Local-Setup-0.5.0.exe) · [服务器版与手机端 0.5.0](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.5.0) · [反馈问题](https://github.com/Albert071006/ultimate-calendar/issues)
+
+| 版本 | 适合谁 | 资料与 AI |
+| --- | --- | --- |
+| [本地版](https://github.com/Albert071006/ultimate-calendar/releases/tag/v0.5.0) | 只在 Windows 电脑使用，下载安装即可 | 资料在本机，AI 由本机调用自己的 DeepSeek API Key |
+| [服务器版与手机端](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.5.0) | 希望手机与电脑共用资料，愿意维护常在线服务器 | 资料在自己的服务器，AI 由服务器调用，手机通过 HTTPS 网页/PWA 使用 |
 
 ## 开始使用
 
@@ -76,15 +81,19 @@ $env:PLANNER_SMOKE_EXE = (Resolve-Path 'release-local/win-unpacked/终极日历�
 npm run smoke
 ```
 
-## 标准版与自托管
+## 服务器版与手机端
 
-需要手机与电脑共用资料的开发者，可使用仓库中保留的标准版与资料服务。它们与独立本地版分别构建、安装和更新；标准版安装包名为 `UltimateCalendar-Setup-*.exe`，由 `npm run package` 构建到 `release/`，继续使用 `latest.yml`。
+[服务器版 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.5.0) 单独提供 `UltimateCalendar-Server-Mobile-0.5.0.tar.gz`，内含已构建的 Node 后端、手机网页、systemd 配置、NGINX 示例与部署说明。目标 Linux 服务器安装 Node.js 24 后即可运行部署包，无需再执行 `npm ci`。管理员还需配置域名、HTTPS 和持久资料目录。
 
-部署和配对说明已移至[手机网页与自托管资料服务](docs/self-hosted.md)。本地版使用者无需配置这些服务，也没有手机配对入口。
+部署后，手机打开自己的 HTTPS 地址，输入服务器生成的一次性码配对，再添加到主屏幕。服务器持续运行时，Windows 电脑可以关机；服务器停机或不可达时，共享读写与 AI 会受影响。每个服务实例是一套共享资料，适合自己或可信设备使用。
+
+同一 Release 还提供可选 Windows 标准版 `UltimateCalendar-Setup-0.5.0.exe`，可配置为连接该服务器；独立本地版不会连接服务器。两种桌面版分别安装、保存资料和更新，标准版继续使用 `latest.yml`。
+
+[Linux 部署与手机使用步骤](docs/server-mobile-deployment.md) · [Windows 连接说明](docs/windows-cloud-mode.md) · [自托管开发与接口说明](docs/self-hosted.md)
 
 ## 发布与贡献
 
-发布前同步包版本和 `docs/release-notes/<version>.md`，完成类型检查、测试、构建及打包冒烟验证。推送 `v<version>` 标签后，Windows release 流水线构建两种桌面版，核对各自安装包、更新元数据和校验文件，上传草稿并验证全部附件后公开。两套更新文件均来自该标签的同次流水线。
+两种产品分成两个 GitHub Release：本地版使用 `v<version>` 标签与 `docs/release-notes/<version>.md`；服务器版与手机端使用 `server-v<version>` 标签与 `docs/release-notes/server-<version>.md`。发布前完成版本、类型检查、测试、构建和隔离冒烟验证；发布流水线分别核对安装包或部署包、更新元数据和校验文件，上传两个草稿并验证全部附件后公开。
 
 普通本地构建不上传；已发布附件不覆盖。维护约定见 [AGENTS.md](AGENTS.md)。欢迎通过 Issue 或 Pull Request 反馈，复现材料请使用虚构数据并移除密钥、QQ 账号及私人账目。
 

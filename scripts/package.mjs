@@ -17,7 +17,7 @@ if (code !== 0) process.exit(code ?? 1);
 // electron-builder honors ELECTRON_BUILDER_CACHE when set and otherwise uses
 // its platform default. Build artifacts stay in the configured release folder.
 const { version } = JSON.parse(await readFile('package.json', 'utf8'));
-const releaseNotes = await readFile(`docs/release-notes/${version}.md`, 'utf8');
+const releaseNotes = await readFile(`docs/release-notes/${edition === 'local' ? '' : 'server-'}${version}.md`, 'utf8');
 // A CI tag or GH_TOKEN must never silently turn a local build into a release.
 const files = await build({ win: ['nsis'], x64: true, publish: 'never', config: {
   ...(edition === 'local' ? localPackageConfig() : {}), releaseInfo: { releaseNotes },

@@ -36,6 +36,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
   let state: RemoteClientState = { status: 'connecting', session: null, pending: [], cachedAt: null, message: '', storageError: '' };
   const listeners = new Set<() => void>(), changed = new Set<(event: ChangedEvent) => void>();
   let serial: Promise<unknown> = Promise.resolve(), initialized: Promise<void> | undefined, disposed = false;
+  let reconnectFlight: Promise<void> | undefined, calendarReady: Promise<void> | undefined, refreshAfterFlight = false;
   let eventSource: EventSource | undefined, refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let renewTimer: ReturnType<typeof setTimeout> | undefined, renewAfter = 0;
   function stopRenewTimer() { if (renewTimer) clearTimeout(renewTimer); renewTimer = undefined; }
@@ -109,11 +110,11 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     const month = input && typeof input === 'object' && 'month' in input && typeof input.month === 'string' ? input.month : instant().slice(0, 7);
     const ledger = partition?.ledgers[month]; return ledger ? { ok: true, data: ledger } : failure('此月份尚无账本缓存，请联网加载；离线草稿不计入正式余额');
   }
-  async function refreshCanonical() {
+  async function refreshCanonical(includeLedgers = true) {
     const result = await rpc('snapshot', undefined);
     if (!result.ok) throw Error(result.error.message);
     const next = clone(); next.snapshot = result.data as Snapshot; next.cachedAt = instant();
-    for (const month of Object.keys(next.ledgers)) {
+    for (const month of includeLedgers ? Object.keys(next.ledgers) : []) {
       const ledger = await rpc('ledgerSnapshot', { month });
       if (!ledger.ok) throw Error(ledger.error.message);
       next.ledgers[month] = ledger.data as LedgerSnapshot;
@@ -125,12 +126,17 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     const factory = options.events ?? (typeof EventSource === 'undefined' ? undefined : (url: string) => new EventSource(url));
     if (!factory || disposed) return;
     eventSource = factory(new URL('/api/v1/events', origin).href);
+    const retry = () => {
+      if (disposed) return;
+      if (reconnectFlight) refreshAfterFlight = true;
+      else void reconnect().catch(() => {});
+    };
     // Re-read the authoritative session as well as data: an event can announce a restored generation.
     eventSource.addEventListener('changed', () => {
       if (refreshTimer) clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(() => { void reconnect().catch(() => {}); }, 250);
+      refreshTimer = setTimeout(retry, 250);
     });
-    eventSource.onerror = () => { eventSource?.close(); eventSource = undefined; if (!disposed) { if (refreshTimer) clearTimeout(refreshTimer); refreshTimer = setTimeout(() => { void reconnect().catch(() => {}); }, 15_000); } };
+    eventSource.onerror = () => { eventSource?.close(); eventSource = undefined; if (!disposed) { if (refreshTimer) clearTimeout(refreshTimer); refreshTimer = setTimeout(retry, 15_000); } };
   }
   async function acceptSession(value: unknown) {
     const parsed = RemoteSessionSchema.parse(value);
@@ -306,15 +312,39 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     const queued: QueuedWrite = { status: 'queued', requestId: item.requestId, message: '待提交 · 已保存在此手机，尚未获得资料服务确认' };
     return offline ? { ok: true, data: queued } : failure('操作结果尚未确认，已保留原操作标识。请在「我的」查询，勿重复创建。');
   }
-  async function reconnect() {
-    await locked(async () => {
+  function reconnect(): Promise<void> {
+    if (disposed) return Promise.resolve();
+    if (reconnectFlight) return reconnectFlight;
+    let releaseCalendar!: () => void;
+    calendarReady = new Promise(resolve => { releaseCalendar = resolve; });
+    return reconnectFlight = locked(async () => {
       try {
         if (!await acceptSession(await request('/api/v1/session'))) return;
+        // Make the first calendar available before renewal, queued writes or historical ledger reads.
+        await refreshCanonical(false); releaseCalendar(); emit({}, true);
         if (!await renewSessionIfDue()) return;
-        await flush(); await refreshCanonical(); emit({}, true);
+        await flush();
       } catch (error) { networkFailure(error); if (error instanceof HttpFault && [409, 507].includes(error.status)) throw error; }
-      finally { scheduleRenewal(); }
+      finally { releaseCalendar(); scheduleRenewal(); }
+    }).finally(() => {
+      releaseCalendar();
+      reconnectFlight = undefined;
+      if (refreshAfterFlight) {
+        refreshAfterFlight = false;
+        if (!disposed && !['expired', 'unpaired'].includes(state.status)) void reconnect().catch(() => {});
+      }
     });
+  }
+  async function calendarSnapshot(): Promise<ApiResult<Snapshot>> {
+    if (!reconnectFlight) return locked(() => read('snapshot')) as Promise<ApiResult<Snapshot>>;
+    // The reconnect owns the outbox lock until maintenance finishes. A read of its published
+    // calendar is safe and must not queue behind a slow renewal or a pending model request.
+    await calendarReady;
+    if (!partition || !session && state.status !== 'offline') return failure('请先配对并联网加载一次资料', 'AUTH');
+    try {
+      const snapshot = projectSnapshot(partition);
+      return snapshot ? { ok: true, data: snapshot } : failure('此手机还没有已确认的安排缓存，请联网刷新');
+    } catch { return failure('此手机没有可读取的安排缓存，请联网刷新；待提交修改仍保留。'); }
   }
   const online = () => { if (!disposed) void reconnect().catch(() => {}); };
   const visible = () => { if (document.visibilityState === 'visible') online(); };
@@ -326,7 +356,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
   }
   const controller: RemoteController = {
     client: {
-      snapshot: () => locked(() => read('snapshot')),
+      snapshot: calendarSnapshot,
       ledgerSnapshot: input => locked(() => read('ledgerSnapshot', input)),
       mutate: input => locked(() => write('mutate', input)), undo: id => locked(() => write('undo', id ?? partition?.snapshot?.journal.findLast(entry => entry.undoable && !entry.undoneAt)?.id)),
       command: input => locked(() => write('command', input)), importSource: input => locked(() => write('importSource', input)),
