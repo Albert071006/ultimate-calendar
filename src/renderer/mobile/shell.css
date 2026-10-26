@@ -631,3 +631,78 @@ body:has(.m-pair) { margin: 0; min-width: 0; background: var(--bg); }
 .is-mobile .m-ledger .a2-ledger-table tr { padding: 8px 12px; border-bottom: 1px solid var(--hair); }
 .is-mobile .m-ledger .a2-ledger-table tr:last-child { border-bottom: 0; }
 .is-mobile .m-ledger .a2-ledger-table small { font-size: 13px; }
+
+/* Settings sub-pages (Key, reminders, device): status, lists and actions as rounded groups; green kept off, red for what needs you. */
+.m-settings { gap: 0; }
+.m-settings > * + * { margin-top: 12px; }
+.m-settings .m-kv { min-height: 52px; padding: 0 16px; font-size: 17px; background: var(--surface); border: 0; border-radius: 14px; }
+.m-settings .m-kv b, .m-settings .m-kv b.ok, .m-settings .m-kv b.warn { font-weight: 400; color: var(--ink-3); }
+.m-settings > .m-note { border-left: 0; border-radius: 12px; }
+.m-settings .m-note.ok { color: var(--ink-2); background: var(--sunk); }
+.m-settings .m-subhead { margin: 22px 4px 8px; font-size: 14px; font-weight: 400; }
+.m-settings .m-subhead + * { margin-top: 0; }
+.m-settings .m-hint { margin-left: 4px; margin-right: 4px; font-size: 14px; }
+.m-settings .m-list { padding: 0 16px; background: var(--surface); border-radius: 14px; }
+.m-settings .m-row { min-height: 52px; font-size: 17px; border-bottom: 1px solid var(--hair); }
+.m-settings .m-row:last-child { border-bottom: 0; }
+.m-settings .m-row small { font-size: 14px; color: var(--ink-3); }
+.m-settings .m-row .m-btn { min-width: 0; padding: 0; font-size: 15px; color: var(--ink-2); background: none; border: 0; }
+.m-settings .m-row .m-btn.danger { color: var(--accent); }
+/* Plain actions read as rows in a group; the one form confirm stays solid ink. */
+.m-settings .m-actions { flex-direction: column; flex-wrap: nowrap; gap: 0; background: var(--surface); border-radius: 14px; overflow: hidden; }
+.m-settings .m-actions .m-btn + .m-btn { box-shadow: inset 0 1px var(--hair); }
+.m-settings > .m-btn:not(.primary), .m-settings .m-actions .m-btn { min-height: 50px; padding: 0 16px; text-align: left; font-size: 17px; color: var(--ink); background: var(--surface); border: 0; border-radius: 0; }
+.m-settings > .m-btn:not(.primary) { border-radius: 14px; }
+.m-settings .m-actions .m-btn.danger, .m-settings > .m-btn.danger { color: var(--accent); }
+.m-settings .m-btn.primary { min-height: 50px; font-size: 17px; border: 0; border-radius: 12px; }
+.m-settings .m-btn.primary:disabled { opacity: .35; }
+.m-settings .m-form { gap: 0; }
+.m-settings .m-form > label { margin: 10px 4px 8px; font-size: 14px; color: var(--ink-3); }
+.m-settings .m-form > .m-hint, .m-settings .m-form > .m-note { margin-top: 10px; }
+.m-settings .m-secret { border: 0; border-radius: 14px; }
+.m-settings .m-secret input { min-height: 52px; padding: 0 16px; font-size: 17px; }
+.m-settings .m-form .m-btn { margin-top: 16px; }
+.m-settings > .m-link.danger { align-self: center; margin-top: 18px; color: var(--accent); }
+.m-settings .m-confirm { padding: 14px 16px; background: var(--surface); border: 0; border-radius: 14px; }
+.m-settings .m-confirm .m-btn { min-height: 44px; font-size: 15px; color: var(--ink-2); background: none; border: 0; }
+.m-settings .m-confirm .m-btn.danger { color: var(--bg); background: var(--accent); border-radius: 10px; }
+.m-settings .m-switch { align-items: center; min-height: 56px; padding: 8px 16px; font-size: 17px; background: var(--surface); border-radius: 14px; }
+.m-settings .m-switch span { flex: 1; }
+.m-settings .m-switch small { font-size: 14px; }
+/* iOS-style switches for on/off settings. */
+:is(.m-settings .m-switch, .m-legacy .ledger-form .ledger-checkbox) input { position: relative; order: 2; flex: none; width: 51px; height: 31px; margin: 0 0 0 auto; background: var(--line-2); border: 0; border-radius: 16px; -webkit-appearance: none; appearance: none; transition: background-color .15s; }
+:is(.m-settings .m-switch, .m-legacy .ledger-form .ledger-checkbox) input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; background: #fff; border-radius: 50%; box-shadow: 0 2px 4px rgba(0, 0, 0, .18); transition: transform .15s; }
+:is(.m-settings .m-switch, .m-legacy .ledger-form .ledger-checkbox) input:checked { background: var(--ink); }
+:is(.m-settings .m-switch, .m-legacy .ledger-form .ledger-checkbox) input:checked::after { transform: translateX(20px); }
+
+/* 记账规则: each rule set as a rounded group of label-value rows; the long explanations stay under 记账口径. */
+.is-mobile .m-legacy .a2-ledger-rules { gap: 0; }
+.is-mobile .m-legacy .a2-ledger-rules > p.ui-hint:first-child { display: none; }
+.is-mobile .m-legacy .a2-ledger-rules > p.error:first-child { margin: 0 4px 8px; font-size: 14px; }
+.is-mobile .m-legacy .ledger-form { display: flex; flex-direction: column; gap: 0; margin-bottom: 0 !important; font-size: 17px; }
+.is-mobile .m-legacy .ledger-rules-grid { display: flex; flex-direction: column; gap: 0; margin: 0; }
+.is-mobile .m-legacy .ledger-form .form-grid { display: contents; }
+.is-mobile .m-legacy .ledger-form :is(.ledger-form-note, .ledger-rule-editor p) { display: none; }
+.is-mobile .m-legacy .ledger-card { margin: 0; padding: 0 16px; background: var(--surface); border: 0; border-radius: 14px; }
+.is-mobile .m-legacy .ledger-rule-editor { gap: 0; }
+.is-mobile .m-legacy .ledger-card + .ledger-card { margin-top: 8px; }
+.is-mobile .m-legacy .ledger-rule-editor h3 { margin: 14px 0 4px; font: 400 14px/1.4 var(--m-font); color: var(--ink-3); }
+.is-mobile .m-legacy .ledger-form label:not(.ledger-checkbox) { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; margin: 0;
+  font-size: 17px; color: var(--ink); border-bottom: 1px solid var(--hair); }
+/* The desktop hint after the last row is hidden on the phone, so that row counts as last. */
+.is-mobile .m-legacy .ledger-card > label:is(:last-child, :has(+ p:last-child)) { border-bottom: 0; }
+.is-mobile .m-legacy .ledger-form label:not(.ledger-checkbox) > :is(input, select) { flex: 0 1 auto; width: auto; min-width: 0; max-width: 55%; min-height: 44px; padding: 0; text-align: right; text-align-last: right;
+  font-size: 17px; color: var(--ink-2); background: transparent; border: 0; box-shadow: none; -webkit-appearance: none; appearance: none; }
+.is-mobile .m-legacy .ledger-form label:not(.ledger-checkbox) > :is(input, select):focus-visible { outline: none; color: var(--ink); }
+.is-mobile .m-legacy .ledger-form .ledger-checkbox { display: flex; align-items: center; gap: 12px; min-height: 52px; margin: 0; font-size: 17px; color: var(--ink); border-bottom: 1px solid var(--hair); }
+/* Rows outside the two cards (order setting, notes, reason) each get their own group, label above the field. */
+.is-mobile .m-legacy .ledger-form > label:not(.ledger-checkbox), .is-mobile .m-legacy .ledger-form > .form-grid > label:not(.ledger-checkbox) { flex-direction: column; align-items: stretch; gap: 4px; min-height: 0; margin: 8px 0 0; padding: 12px 16px;
+  font-size: 14px; color: var(--ink-3); background: var(--surface); border: 0; border-radius: 14px; }
+.is-mobile .m-legacy .ledger-form > label > :is(textarea, input), .is-mobile .m-legacy .ledger-form > .form-grid > label > :is(select, input) { max-width: none; min-height: 32px; padding: 0; text-align: left; text-align-last: auto; font: 17px/1.5 var(--m-font); color: var(--ink); background: transparent; border: 0; resize: none; }
+.is-mobile .m-legacy .ledger-form .form-footer { position: static; display: flex; margin: 16px 0 0; padding: 0; background: none; border: 0; }
+.is-mobile .m-legacy .ledger-form .form-footer button { flex: 1; min-height: 50px; font-size: 17px; color: var(--bg); background: var(--ink); border: 0; border-radius: 12px; }
+.is-mobile .m-legacy .ledger-form .form-footer button:not(.primary) { display: none; }
+.is-mobile .m-legacy .a2-ledger-conventions { margin-top: 22px; padding: 4px 16px; font-size: 15px; background: var(--surface); border: 0; border-radius: 14px; }
+.is-mobile .m-legacy .a2-ledger-conventions + .a2-ledger-conventions { margin-top: 8px; }
+.is-mobile .m-legacy .a2-ledger-conventions summary { display: flex; align-items: center; min-height: 48px; font-size: 17px; font-weight: 400; }
+.is-mobile .m-legacy .a2-ledger-conventions :is(ol, p) { color: var(--ink-2); }
