@@ -10,6 +10,7 @@ import { LedgerCommandProposalSchema } from './ledger-command';
 import { LedgerMonthSchema } from './ledger';
 import { PALETTE_COLORS } from './palette';
 import { AiConfigurationRevisionSchema, AiConfigurationStatusSchema } from './ai-configuration-status';
+import { imageDataUrlByteLength, imageDataUrlSignatureValid } from './images';
 
 /** Shared transport boundary. Unknown properties are rejected, never silently stripped. */
 export const SCHEMA_VERSION = 1;
@@ -354,13 +355,29 @@ export type ConversationState = z.infer<typeof ConversationStateSchema>;
 /** Visible ledger scope helps interpret questions; it never sets a new transaction's date. */
 export const LedgerViewContextSchema = z.strictObject({ month: LedgerMonthSchema, tab: z.enum(['flows', 'accounts']), selectedEntryId: IdSchema.optional() });
 export type LedgerViewContext = z.infer<typeof LedgerViewContextSchema>;
-export const CommandRequestSchema = z.strictObject({ operationId: IdSchema, text: text.trim().min(1),
+/** Optional fields keep legacy text request serialization and durable fingerprints unchanged. */
+export const CommandImageSchema = z.strictObject({
+  imageDataUrl: ImageDataUrlSchema.refine(imageDataUrlSignatureValid, '图片内容与 PNG/JPEG 类型不符'),
+  label: z.string().max(2000),
+});
+export type CommandImage = z.infer<typeof CommandImageSchema>;
+export const MAX_COMMAND_IMAGES = 4;
+export const CommandRequestSchema = z.strictObject({ operationId: IdSchema, text: text.trim(),
+  image: CommandImageSchema.optional(),
   selected: z.array(z.strictObject({ entity: EntityKindSchema, id: IdSchema })).max(100).default([]),
   domain: z.enum(['calendar', 'ledger']).optional(),
   ledgerView: LedgerViewContextSchema.optional(),
   resources: ResourceReferencesSchema.optional(),
   fromDate: DateOnlySchema.optional(), toDate: DateOnlySchema.optional(),
-  history: z.array(z.strictObject({ role: z.enum(['user', 'assistant']), text: z.string().max(10_000), outcome: ConversationStateSchema.optional() })).max(20).default([]),
+  history: z.array(z.strictObject({ role: z.enum(['user', 'assistant']), text: z.string().max(10_000), outcome: ConversationStateSchema.optional(), image: CommandImageSchema.optional() })
+    .refine(entry => entry.role === 'user' || !entry.image, '助手历史消息不能包含用户图片')).max(20).default([]),
+}).superRefine((request, ctx) => {
+  if (!request.text && !request.image) ctx.addIssue({ code: 'custom', message: '请输入文字或选择图片', path: ['text'] });
+  const images = [request.image, ...request.history.map(entry => entry.image)].filter(image => image !== undefined);
+  if (images.length > MAX_COMMAND_IMAGES) ctx.addIssue({ code: 'custom', message: '本次消息和历史合计最多 4 张图片', path: ['image'] });
+  if (images.reduce((total, image) => total + imageDataUrlByteLength(image.imageDataUrl), 0) > MAX_IMAGE_BYTES) {
+    ctx.addIssue({ code: 'custom', message: '本次消息和历史图片合计不能超过 10 MB', path: ['image'] });
+  }
 });
 export type CommandRequest = z.input<typeof CommandRequestSchema>;
 /** Model output is a proposal, never authorization. The AI adapter executes only through PlannerService. */

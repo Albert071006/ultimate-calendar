@@ -5,6 +5,7 @@ import type { PlannerUI } from "../../hooks/usePlanner";
 import type { Selection } from "../Calendar";
 import { useAssistantConversation } from "./assistant-conversation";
 import { ResourceFields } from '../resources/ResourcePanel';
+import { AssistantImageButton, AssistantImageDraft, AssistantMessageImage } from './assistant-image-input';
 
 /** One-line assistant at the bottom of every page; its conversation opens upward over the page. */
 export function Assistant({ ui, selected, date, domain, ledgerView }: {
@@ -16,7 +17,8 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showResources, setShowResources] = useState(false);
-  const { text, setText, history, running, send, retry, resources, setResources } = useAssistantConversation({ ui, selected, date, domain, ledgerView, onStart: () => setExpanded(true) });
+  const { text, setText, history, running, send, retry, resources, setResources,
+    image, imageReading, imageError, selectImage, readImageFile, pasteImage, removeImage } = useAssistantConversation({ ui, selected, date, domain, ledgerView, onStart: () => setExpanded(true) });
   const conversation = useRef<HTMLDivElement>(null);
   const root = useRef<HTMLElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -54,15 +56,16 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
           <div className="conversation" aria-live="polite" ref={conversation}>
             {history.length ? (
               history.map((entry) => (
-                <p className={`message ${entry.role}`} key={entry.id} aria-busy={entry.status === "pending"}>
+                <div className={`message ${entry.role}`} key={entry.id} aria-busy={entry.status === "pending"}>
                   <small>{entry.role === "user" ? "你" : "助手"}</small>
+                  <AssistantMessageImage image={entry.image} unavailable={entry.imageUnavailable} />
                   {entry.text}
                   {!ui.host?.resourceOpen && entry.resources?.filter(resource => resource.kind === 'web').map(resource =>
                     resource.kind === 'web' && <a key={resource.id} href={resource.url} target="_blank" rel="noopener noreferrer">{resource.name}</a>)}
                   {entry.status === "failed" && entry.request && <>
-                    {" "}<button className="ui-btn sm" disabled={running || ui.busy} onClick={() => retry(entry)}>重试这条指令</button>
+                    {" "}<button className="ui-btn sm" disabled={running || imageReading || ui.busy} onClick={() => retry(entry)}>重试这条指令</button>
                   </>}
-                </p>
+                </div>
               ))
             ) : (
               <p className="ui-hint">例如"明天下午有空吗""午饭 20 元，支付宝""这个月花了多少"。不明确的操作会继续询问，批量变更先预览。</p>
@@ -71,6 +74,7 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
           {(showResources || resources.length > 0) && <div className="a2-assist-resources"><ResourceFields title="待关联资料" value={resources} onChange={setResources} host={ui.host} disabled={running || ui.busy} /></div>}
         </div>
       )}
+      <AssistantImageDraft image={image} reading={imageReading} error={imageError} remove={removeImage} disabled={running || ui.busy} />
       <form className="a2-assist-bar" onSubmit={(e) => { e.preventDefault(); void send(); }}>
         <MessageSquare aria-hidden="true" />
         <textarea
@@ -80,6 +84,7 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
           value={text}
           onFocus={() => setExpanded(true)}
           onChange={(e) => setText(e.target.value)}
+          onPaste={pasteImage}
           placeholder="说一句就行：周五晚上留两小时写报告"
           onKeyDown={(e) => {
             if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
@@ -87,13 +92,14 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
           }}
         />
         <span className="ui-kbd" aria-hidden="true">Ctrl K</span>
+        <AssistantImageButton selectImage={selectImage} readImageFile={readImageFile} disabled={running || imageReading || ui.busy} />
         <button type="button" className="ui-btn ghost icon" aria-label="选择指令中的资料" title="关联文件、文件夹或网页" onClick={() => { setExpanded(true); setShowResources(value => !value); }}>
           <Paperclip aria-hidden="true" />
         </button>
         <button type="button" className="ui-btn ghost icon" aria-label={expanded ? "收起对话" : "展开对话"} onClick={() => setExpanded(!expanded)}>
           {expanded ? <ChevronDown aria-hidden="true" /> : <ChevronUp aria-hidden="true" />}
         </button>
-        <button type="submit" className="ui-btn primary icon" disabled={running || ui.busy || !text.trim()} aria-label="发送指令" title={running ? "处理中…" : "发送"}>
+        <button type="submit" className="ui-btn primary icon" disabled={running || imageReading || ui.busy || (!text.trim() && !image)} aria-label="发送指令" title={running ? "处理中…" : "发送"}>
           <ArrowRight aria-hidden="true" />
         </button>
       </form>

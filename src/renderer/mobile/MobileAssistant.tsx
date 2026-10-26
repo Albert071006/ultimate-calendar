@@ -4,6 +4,7 @@ import type { CommandRequest } from '../../shared/contracts';
 import type { PlannerUI } from '../hooks/usePlanner';
 import type { Selection } from '../components/Calendar';
 import { useAssistantConversation, type ConversationEntry } from '../components/shell/assistant-conversation';
+import { AssistantImageButton, AssistantImageDraft, AssistantMessageImage } from '../components/shell/assistant-image-input';
 
 const KEEP_ENTRIES = 20, KEEP_MS = 24 * 3600_000;
 
@@ -13,16 +14,20 @@ function load(key: string | undefined): ConversationEntry[] {
   try {
     const saved = JSON.parse(localStorage.getItem(key) ?? 'null') as { savedAt: number; entries: ConversationEntry[] } | null;
     if (!saved || Date.now() - saved.savedAt > KEEP_MS || !Array.isArray(saved.entries)) return [];
-    return saved.entries.map(entry => entry.status === 'pending'
-      ? { id: entry.id, role: entry.role, text: '页面关闭前没有收到结果。请先在日历或账单核对，再决定要不要重发。', status: 'failed' }
-      : entry);
+    return saved.entries.map(({ image, request: _request, ...entry }) => ({
+      ...entry,
+      ...(image ? { imageUnavailable: true } : {}),
+      ...(entry.status === 'pending' ? { text: '页面关闭前没有收到结果。请先在日历或账单核对，再决定要不要重发。', status: 'failed' as const } : {}),
+    }));
   } catch { return []; }
 }
 function save(key: string | undefined, entries: ConversationEntry[]) {
   if (!key) return;
   try {
     if (!entries.length) localStorage.removeItem(key);
-    else localStorage.setItem(key, JSON.stringify({ savedAt: Date.now(), entries: entries.slice(-KEEP_ENTRIES).map(({ request: _request, ...entry }) => entry) }));
+    else localStorage.setItem(key, JSON.stringify({ savedAt: Date.now(), entries: entries.slice(-KEEP_ENTRIES).map(({ request: _request, image, ...entry }) => ({
+      ...entry, ...(image ? { imageUnavailable: true } : {}),
+    })) }));
   } catch { /* Storage may be unavailable in private browsing; the conversation then lasts for this page only. */ }
 }
 
@@ -36,7 +41,7 @@ export function MobileAssistant({ ui, selected, date, domain, ledgerView, storag
   storageKey?: string; open: boolean; setOpen: (open: boolean) => void;
 }) {
   const conversation = useAssistantConversation({ ui, selected, date, domain, ledgerView, initial: load(storageKey) });
-  const { text, setText, history, running, send, retry } = conversation;
+  const { text, setText, history, running, send, retry, image, imageReading, imageError, selectImage, readImageFile, pasteImage, removeImage } = conversation;
   const input = useRef<HTMLTextAreaElement>(null);
   const thread = useRef<HTMLDivElement>(null);
   const layer = useRef<HTMLDivElement>(null);
@@ -67,11 +72,12 @@ export function MobileAssistant({ ui, selected, date, domain, ledgerView, storag
       <div className="m-assistant-thread" ref={thread} aria-live="polite">
         {history.length ? history.map(entry => (
           <div key={entry.id} className={`m-msg ${entry.role}${entry.status ? ` ${entry.status}` : ''}`} aria-busy={entry.status === 'pending'}>
+            <AssistantMessageImage image={entry.image} unavailable={entry.imageUnavailable} />
             <p>{entry.text}</p>
             {entry.resources?.map(resource => resource.kind === 'web'
               ? <a key={resource.id} href={resource.url} target="_blank" rel="noopener noreferrer">{resource.name}</a>
               : <small key={resource.id}>{resource.name} · 需在电脑打开</small>)}
-            {entry.status === 'failed' && entry.request && <button className="m-link" disabled={running || ui.busy} onClick={() => retry(entry)}>重试这条指令</button>}
+            {entry.status === 'failed' && entry.request && <button className="m-link" disabled={running || imageReading || ui.busy} onClick={() => retry(entry)}>重试这条指令</button>}
           </div>
         )) : <div className="m-assistant-intro">
           {configured ? <>
@@ -82,14 +88,17 @@ export function MobileAssistant({ ui, selected, date, domain, ledgerView, storag
         </div>}
       </div>
       {open && ui.error && <p className="m-assistant-error" role="alert">{ui.error}</p>}
+      <AssistantImageDraft image={image} reading={imageReading} error={imageError} remove={removeImage} disabled={running || ui.busy} tabIndex={open ? 0 : -1} />
       <form className="m-assistant-compose" onSubmit={submit}>
+        <AssistantImageButton selectImage={selectImage} readImageFile={readImageFile} disabled={!open || running || imageReading || ui.busy} mobile tabIndex={open ? 0 : -1} />
         <textarea ref={input} rows={1} value={text} aria-label="对生活助手说" placeholder="说一句话…" enterKeyHint="send" tabIndex={open ? 0 : -1}
           onChange={event => setText(event.target.value)}
+          onPaste={pasteImage}
           onKeyDown={event => {
             if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
             if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); }
           }} />
-        <button type="submit" className="m-send" disabled={running || ui.busy || !text.trim()} aria-label="发送" tabIndex={open ? 0 : -1}><ArrowUp aria-hidden="true" /></button>
+        <button type="submit" className="m-send" disabled={running || imageReading || ui.busy || (!text.trim() && !image)} aria-label="发送" tabIndex={open ? 0 : -1}><ArrowUp aria-hidden="true" /></button>
       </form>
     </div>
   </>;

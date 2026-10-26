@@ -1,10 +1,11 @@
 import { useRef, useState } from "react";
-import type { CommandRequest, CommandResult } from "../../../shared/contracts";
+import type { CommandRequest, CommandResult, SelectedImage } from "../../../shared/contracts";
 import { operationId } from "../../calendar-layout";
 import type { PlannerUI } from "../../hooks/usePlanner";
 import type { Selection } from "../Calendar";
 import type { ResourceReference } from '../../../shared/resources';
 import { needsResourcePreparation, openCommandResources, prepareResourceCommand, redactResourcePaths } from '../../resource-command';
+import { useAssistantImage } from './assistant-image-input';
 
 export type ConversationEntry = {
   id: string;
@@ -14,6 +15,9 @@ export type ConversationEntry = {
   request?: CommandRequest;
   outcome?: CommandResult['conversationState'];
   resources?: ResourceReference[];
+  image?: SelectedImage;
+  /** A persisted conversation never includes image bytes. */
+  imageUnavailable?: boolean;
 };
 
 /**
@@ -35,9 +39,10 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
     [running, setRunning] = useState(false),
     [resources, setResources] = useState<ResourceReference[]>([]);
   const inFlight = useRef(false);
+  const imageInput = useAssistantImage(ui, () => inFlight.current || ui.busy);
 
   async function execute(request: CommandRequest, replyId: string) {
-    if (!ui.client || inFlight.current || ui.busy) return;
+    if (!ui.client || inFlight.current || imageInput.reading.current || ui.busy) return;
     inFlight.current = true;
     setRunning(true);
     onStart?.();
@@ -97,11 +102,19 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
       } : entry));
   }
   function send() {
-    if (!ui.client || !text.trim() || inFlight.current || ui.busy) return;
+    const image = imageInput.currentImage.current;
+    if (!ui.client || (!text.trim() && !image) || inFlight.current || imageInput.reading.current || ui.busy) return;
     const id = operationId();
+    // Keep only successful pairs. An image from a failed turn must never leak into a later instruction.
+    const successfulHistory = history.flatMap((entry, index) => {
+      const reply = history[index + 1];
+      return entry.role === 'user' && reply?.role === 'assistant' && !reply.status ? [entry, reply] : [];
+    }).slice(-20);
+    const lastImageId = image ? undefined : successfulHistory.findLast(entry => entry.role === 'user' && entry.image)?.id;
     const request: CommandRequest = {
       operationId: id,
       text,
+      ...(image ? { image } : {}),
       ...(resources.length ? { resources } : {}),
       ...(domain ? { domain } : {}),
       ...(domain === 'ledger' && ledgerView ? { ledgerView } : {}),
@@ -110,22 +123,19 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
       toDate: date,
       // A failed request can only be resumed with its explicit retry action.
       // Do not turn its unsatisfied instruction into context for a different request.
-      history: history.flatMap((entry, index) => {
-        const reply = history[index + 1];
-        return entry.role === "user" && reply?.role === "assistant" && !reply.status
-          ? [entry, reply].map(({ role, text: message, outcome }) => ({
-            role, text: message.slice(0, 10_000), ...(outcome ? { outcome } : {}),
-          }))
-          : [];
-      }).slice(-20),
+      history: successfulHistory.map(({ id: entryId, role, text: message, outcome, image: priorImage, imageUnavailable }) => ({
+        role, text: (imageUnavailable ? `[先前图片未保留，如需看图请重新选择图片]\n${message}` : message).slice(0, 10_000), ...(outcome ? { outcome } : {}),
+        ...(entryId === lastImageId && priorImage ? { image: priorImage } : {}),
+      })),
     };
     const replyId = `${id}:assistant`;
     setHistory(previous => [...previous,
-      { id: `${id}:user`, role: "user", text },
+      { id: `${id}:user`, role: "user", text, ...(image ? { image } : {}) },
       { id: replyId, role: "assistant", text: "正在处理…", status: "pending", request },
     ]);
     setText("");
+    imageInput.removeImage();
     void execute(request, replyId);
   }
-  return { text, setText, history, running, send, resources, setResources, retry: (entry: ConversationEntry) => entry.request && void execute(entry.request, entry.id) };
+  return { text, setText, history, running, send, resources, setResources, ...imageInput, retry: (entry: ConversationEntry) => entry.request && void execute(entry.request, entry.id) };
 }

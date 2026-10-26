@@ -145,7 +145,14 @@ export function createController(options: ControllerOptions) {
         if (prior?.result && prior.result.mutationResult?.status !== 'preview') return prior.result;
         const context = { ...buildCommandContext(planner.snapshot(), request, now()), currentUiDomain: request.domain ?? 'calendar',
           availableServices: { ledger: !!options.ledger }, currentLedgerView: request.domain === 'ledger' ? request.ledgerView : undefined };
-        let intent = prior?.intent ?? await model(CommandIntentSchema, commandMessages(context, request.text, request.history), input.operationId, 'command');
+        let intent = prior?.intent ?? await model(CommandIntentSchema, commandMessages(context, request.text, request.history, request.image), input.operationId, 'command');
+        // A picture can answer a pending textual request, but cannot authorize a fresh action.
+        const previousQuestion = request.history.at(-1); const previousUser = request.history.at(-2);
+        const pendingTextRequest = previousQuestion?.role === 'assistant' && previousQuestion.outcome?.phase === 'clarification'
+          && previousUser?.role === 'user' && previousUser.text.trim().length > 0;
+        if (request.image && !request.text && !pendingTextRequest && intent.kind !== 'query' && intent.kind !== 'clarification') {
+          intent = { kind: 'clarification', reply: '已收到图片。', questions: ['希望我解释图片、根据图片记账，还是安排日历事项？'] };
+        }
         if (!prior?.intent) intent = groundResourceCommand(groundTimedCommand(intent, request, context.now), context, planner.snapshot());
         if (intent.kind === 'ledger') {
           const ledger = options.ledger;
