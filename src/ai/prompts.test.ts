@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { SourceSchema, type CommandRequest } from '../shared/contracts';
-import { candidateSummaryInstructions, commandMessages, conversationEditInstructions, eventExtractionInstructions, extractionMessages, temporalExtractionInstructions, titleEditInstructions } from './prompts';
+import { candidateSummaryInstructions, captureActionabilityInstructions, commandMessages, conversationEditInstructions, eventExtractionInstructions, extractionMessages, temporalExtractionInstructions, titleEditInstructions } from './prompts';
 import { batchMessages } from '../capture/analysis';
 
 describe('shared temporal instructions', () => {
+  it('makes QQ actionability precede user review without inventing errands from other people\'s questions', () => {
+    const capture = batchMessages([], [], [], [])[0]!.content;
+    expect(capture).toContain(captureActionabilityInstructions);
+    expect(capture).not.toContain('与用户有关的潜在行动保留给用户判断');
+    expect(captureActionabilityInstructions).toContain('不用于让用户清理群聊问答');
+    expect(captureActionabilityInstructions).toContain('不要按问号一概丢弃');
+  });
   it('uses the same grounded month/day, weekday, Chinese-clock and deadline-range rules for manual and QQ imports', () => {
     const at = '2026-10-23T12:00:00+08:00';
     const source = SourceSchema.parse({ id: 'source', version: 1, createdAt: at, updatedAt: at, importedAt: at, kind: 'text', text: '10月24日下午四点', sentAt: at });

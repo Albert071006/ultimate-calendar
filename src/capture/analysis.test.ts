@@ -71,7 +71,7 @@ describe('capture analysis and durable candidate application', () => {
   it('reuses a legacy mixed-recipient paid checkpoint without regrouping or charging again and suppresses its other-recipient result', async () => {
     const { store, repository, batch, message: ordinary } = setup();
     const other = store.ingest([{ accountId: '100', groupId: '200', messageId: 'legacy-other', sentAt: '2026-10-23T12:00:00+08:00', text: '@群成员 明天18点提交报告', segments: [{ type: 'at', data: { qq: '999' } }] }]).ids[0]!;
-    const saved = batch(), prepared = prepareAnalysis(store, saved, { deduplicateAttachments: false, documentGrouping: false });
+    const saved = batch(), prepared = prepareAnalysis(store, saved, { deduplicateAttachments: false, documentGrouping: false, passiveQuestionFilter: false });
     const units = prepared.units.map(({ text, imageDataUrl, ...unit }) => ({ ...unit, textHash: hashInput(text), imageHash: imageDataUrl ? hashInput(imageDataUrl) : null }));
     const profile = locationProfile(repository.snapshot().settings);
     const profileFingerprint = profile.campus || profile.locationContext ? { userProfile: profile } : {};
