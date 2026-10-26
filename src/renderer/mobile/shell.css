@@ -706,3 +706,8 @@ body:has(.m-pair) { margin: 0; min-width: 0; background: var(--bg); }
 .is-mobile .m-legacy .a2-ledger-conventions + .a2-ledger-conventions { margin-top: 8px; }
 .is-mobile .m-legacy .a2-ledger-conventions summary { display: flex; align-items: center; min-height: 48px; font-size: 17px; font-weight: 400; }
 .is-mobile .m-legacy .a2-ledger-conventions :is(ol, p) { color: var(--ink-2); }
+
+/* iOS Safari draws a date input's value at the top of its box, so in a label-value row the box takes only its text
+   height and the row centres it. */
+.is-mobile :is(.a2-edit .editor-form label:not(.check), .m-legacy .ledger-form label:not(.ledger-checkbox)) > :is(input[type=date], input[type=datetime-local], input[type=month], input[type=time]) { align-self: center; height: auto; min-height: 0; padding: 0; line-height: 1.4; }
+.is-mobile :is(.a2-edit .editor-form label:not(.check), .m-legacy .ledger-form label:not(.ledger-checkbox)) > :is(input[type=date], input[type=datetime-local], input[type=month], input[type=time])::-webkit-date-and-time-value { margin: 0; text-align: right; }
