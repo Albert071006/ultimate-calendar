@@ -68,7 +68,7 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
     <article className="a2-ib-detail" aria-label="通知详情" data-candidate-id={candidate.id}>
       <div className="src">
         {[source.label, source.at, merged ? `另有 ${merged} 条重复通知已合并` : "", candidate.revisionOfId ? "事项变更" : "", candidate.duplicateOfId ? "关联重复通知" : ""].filter(Boolean).join(" · ")}
-        <button className="ui-btn sm ghost" onClick={edit}>校对</button>
+        <button className={mobile ? "m-link" : "ui-btn sm ghost"} onClick={edit}>校对</button>
       </div>
       <h2>{candidate.title}</h2>
       {expiry.expired && candidate.status === "pending" && <div className="a2-ib-note warn"><strong>已过期 · 自动归类</strong><p>{expiry.reason}</p><p>按北京时间与明确时间依据归类，不代表你选择了忽略；时间有误可校对后自动回到待判断。</p></div>}
@@ -123,10 +123,10 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
       </div>
       <div className="a2-ib-decide">
         {open && !snoozing && <>
-          <button className="ui-btn primary" disabled={busy} aria-label="接受事项" onClick={() => decide("acceptCandidate")}>{old ? "审阅并接受变更" : "接受"} <kbd>A</kbd></button>
-          <button className="ui-btn" disabled={busy} onClick={() => decide("ignoreCandidate")}>忽略 <kbd>I</kbd></button>
-          <button className="ui-btn" disabled={busy} onClick={() => setSnoozing(true)}>稍后 <kbd>L</kbd></button>
-          <input aria-label="决定原因（可选）" value={reason} maxLength={2000} onChange={event => setReason(event.target.value)} placeholder="原因（可选），例如：时间冲突、没兴趣" />
+          <button className="ui-btn primary" disabled={busy} aria-label="接受事项" onClick={() => decide("acceptCandidate")}>{old ? "审阅并接受变更" : "接受"}{!mobile && <> <kbd>A</kbd></>}</button>
+          <button className={mobile ? "m-text-btn quiet" : "ui-btn"} disabled={busy} onClick={() => decide("ignoreCandidate")}>忽略{!mobile && <> <kbd>I</kbd></>}</button>
+          <button className={mobile ? "m-text-btn quiet" : "ui-btn"} disabled={busy} onClick={() => setSnoozing(true)}>稍后{!mobile && <> <kbd>L</kbd></>}</button>
+          <input aria-label="决定原因（可选）" value={reason} maxLength={2000} onChange={event => setReason(event.target.value)} placeholder={mobile ? "原因（可选）" : "原因（可选），例如：时间冲突、没兴趣"} />
         </>}
         {open && snoozing && <form className="a2-ib-snooze" onSubmit={event => { event.preventDefault(); snooze(`${until}:00+08:00`); setSnoozing(false); }}>
           <label>再次查看时间<input type="datetime-local" required value={until} onChange={event => setUntil(event.target.value)} autoFocus /></label>

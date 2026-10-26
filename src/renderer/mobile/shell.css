@@ -501,3 +501,133 @@ body:has(.m-pair) { margin: 0; min-width: 0; background: var(--bg); }
 .is-mobile .m-legacy .a2-goal-list :is(.meta, p) { font-size: 14px; color: var(--ink-3); }
 .is-mobile .m-legacy .a2-sw { height: 32px; padding: 0 4px; font-size: 0; background: none; border: 0; }
 .is-mobile .m-legacy .a2-sw i { flex-basis: 14px; width: 14px; height: 14px; border-radius: 50%; box-shadow: none; }
+
+/* 待判断 (§25 step 7): title with two icons, a segmented switch, two-line rows with 忽略 / 接受 as text. */
+.m-hero-acts { display: flex; margin-right: -10px; }
+.m-hero-acts .m-icon { color: var(--ink-2); }
+.m-text-btn.quiet { font-weight: 400; color: var(--ink-3); }
+.m-seg button[aria-selected=true] { color: var(--ink); font-weight: 600; background: var(--surface); box-shadow: 0 1px 3px rgba(31, 28, 24, .1); }
+.m-ib-tabs { display: flex; margin-bottom: 8px; }
+.m-ib-tabs button { flex: 1; }
+.m-ib-filter { display: flex; gap: 4px; margin: 0 -6px 4px; }
+.m-ib-filter .m-link { color: var(--ink-3); }
+.m-ib-filter .m-link[aria-pressed=true] { color: var(--ink); font-weight: 600; }
+.m-ib-row { display: flex; align-items: center; gap: 4px; min-height: 64px; padding: 8px 0; cursor: pointer; }
+.m-ib-main { flex: 1; min-width: 0; }
+.m-ib-main .pick { display: block; width: 100%; padding: 0; text-align: left; font: 17px/1.4 var(--m-font); color: var(--ink); background: none; border: 0; overflow-wrap: anywhere; }
+.m-ib-main small { display: block; margin-top: 2px; font-size: 14px; color: var(--ink-3); }
+.m-ib-main small span + span::before { content: ' · '; color: var(--ink-3); }
+.m-ib-main small .due { color: var(--accent); }
+.m-ib-acts { display: flex; }
+.m-ib-acts .m-text-btn:last-child { color: var(--ink); }
+.m-ib-empty { padding: 72px 16px 0; text-align: center; color: var(--ink-3); font-size: 14px; }
+.m-ib-empty p { margin: 0 0 6px; line-height: 1.6; }
+.m-ib-empty .title { font: 600 17px/1.5 var(--m-font); color: var(--ink-2); }
+.m-inbox .m-card-main small.attn { color: var(--accent); }
+
+/* The notice detail sheet: facts as one rounded group, no outlined boxes. */
+.is-mobile .m-sheet .a2-ib-detail > .src { font-size: 14px; }
+.is-mobile .m-sheet .a2-ib-detail > .src .m-link { margin-left: auto; min-height: 36px; padding-right: 0; }
+.is-mobile .m-sheet .a2-ib-detail h2 { margin: 2px 0 16px; font: 600 22px/1.35 var(--m-font); letter-spacing: 0; }
+.is-mobile .m-sheet :is(.a2-ib-facts, .a2-ib-times) { display: block; margin: 0 0 16px; background: var(--surface); border: 0; border-radius: 14px; }
+.is-mobile .m-sheet :is(.a2-ib-facts, .a2-ib-times) > div { position: relative; padding: 11px 16px; background: none; border: 0; border-radius: 0; }
+.is-mobile .m-sheet :is(.a2-ib-facts, .a2-ib-times) > div + div::before { content: ''; position: absolute; top: 0; left: 16px; right: 0; border-top: 1px solid var(--hair); }
+.is-mobile .m-sheet :is(.a2-ib-facts, .a2-ib-times) .k { margin: 0 0 2px; font-size: 14px; }
+.is-mobile .m-sheet :is(.a2-ib-facts, .a2-ib-times) .v { margin: 0; font: 17px/1.5 var(--m-font); }
+.is-mobile .m-sheet .a2-ib-times .v.none { color: var(--ink-3); }
+.is-mobile .m-sheet .a2-ib-times .q { font-size: 13px; }
+.is-mobile .m-sheet .a2-ib-times > .warning { padding: 0 16px 12px; font-size: 14px; }
+.is-mobile .m-sheet .a2-ib-facts .tag { border: 0; padding: 0; font-size: 13px; }
+.is-mobile .m-sheet .a2-ib-sub { margin: 0 0 6px 4px; font-size: 14px; font-weight: 400; letter-spacing: 0; }
+.is-mobile .m-sheet .a2-ib-quote { font-size: 15px; border-left: 2px solid var(--hair); }
+.is-mobile .m-sheet .a2-ib-plain { font-size: 15px; }
+.is-mobile .m-sheet .a2-ib-note { font-size: 14px; background: var(--sunk); border: 0; border-radius: 12px; }
+.is-mobile .m-sheet .a2-ib-sources { font-size: 14px; }
+.is-mobile .m-sheet .a2-ib-sources .ui-btn { min-height: 36px; padding: 0; font-size: 15px; color: var(--ink-2); background: none; border: 0; }
+.is-mobile .m-sheet .a2-ib-decide { gap: 0 4px; padding: 10px 0 calc(10px + env(safe-area-inset-bottom)); background: var(--bg); }
+.is-mobile .m-sheet .a2-ib-decide > .ui-btn.primary { order: 3; flex: 1; min-height: 46px; font-size: 17px; color: var(--bg); background: var(--ink); border: 0; border-radius: 12px; }
+.is-mobile .m-sheet .a2-ib-decide > .m-text-btn { order: 2; padding: 0 12px; }
+.is-mobile .m-sheet .a2-ib-decide > input { order: 1; flex: 1 1 100%; height: 40px; margin-bottom: 8px; padding: 0 12px; font-size: 16px; background: var(--sunk); border: 0; border-radius: 10px; }
+.is-mobile .m-sheet .a2-ib-decide .ui-btn:not(.primary) { min-height: 44px; color: var(--ink); background: var(--surface); border: 0; border-radius: 12px; }
+.is-mobile .m-sheet .a2-ib-times > div:has(> .v.none) { display: none; }
+.is-mobile .m-sheet .a2-ib-times > div:has(> .v.none) + div::before { display: none; }
+.is-mobile .m-sheet .a2-ib-times:not(:has(> div > .v:not(.none), > .notes, > .warning)) { display: none; }
+
+/* 账单 (§25 step 8): month title with + and ⋯, one large personal-spending figure, quiet day groups. */
+.is-mobile .a2-page.m-ledger { display: flex; flex-direction: column; grid-template-rows: none; }
+.m-ledger-head { flex: none; }
+.m-ledger-head .m-cal-title h1 { font-size: 22px; }
+.m-ledger-head .m-seg { display: flex; flex: 1; }
+.m-ledger-head .m-seg button { flex: 1; }
+.m-ledger-head .a2-ledger-status { margin: 0 4px 8px; font-size: 14px; }
+.is-mobile .m-ledger .a2-ledger-body { flex: 1; padding: 16px 16px 24px; }
+.is-mobile .m-ledger .a2-ledger-empty, .is-mobile .m-ledger .m-ib-empty { padding-top: 56px; }
+.m-ledger-sum { margin: 4px 0 24px; }
+.m-ledger-sum > small { font-size: 14px; color: var(--ink-3); }
+.m-ledger-sum > strong { display: block; margin: 2px 0 0; font: 600 34px/1.2 var(--m-font); letter-spacing: -.5px; }
+.m-ledger-sum > strong span { margin-right: 3px; font-size: 20px; font-weight: 400; color: var(--ink-3); }
+.m-ledger-sum > p { margin: 4px 0 0; font-size: 14px; }
+.m-ledger-sum .attn, .m-ledger-sum .attn dd { color: var(--accent); }
+.m-ledger-sum dl { display: flex; gap: 24px; margin: 14px 0 0; }
+.m-ledger-sum dl div { min-width: 0; }
+.m-ledger-sum dt { font-size: 14px; color: var(--ink-3); }
+.m-ledger-sum dd { margin: 2px 0 0; font-size: 17px; }
+.is-mobile .m-ledger .a2-sec-h { margin: 0 0 8px; }
+.is-mobile .m-ledger .a2-sec-h h3 { font: 400 14px/1.4 var(--m-font); color: var(--ink-3); }
+.is-mobile .m-ledger .a2-sec-h .ui-hint { font-size: 14px; }
+.is-mobile .m-ledger .a2-ledger-cols { gap: 28px; }
+.is-mobile .m-ledger .a2-ledger-daily .bars { height: 88px; gap: 2px; border-bottom: 1px solid var(--hair); overflow: visible; padding-bottom: 0; }
+/* Days share the width so the whole month fits; tapping a day is a secondary filter, so the 44px minimum yields here. */
+.is-mobile .m-ledger .a2-ledger-daily .bars button { flex: 1 1 0; min-width: 0 !important; border-radius: 0; }
+.is-mobile .m-ledger .a2-ledger-daily .bars i { background: var(--line-2); border-radius: 2px 2px 0 0; }
+.is-mobile .m-ledger .a2-ledger-daily .bars button:is(.hi, .today) i { background: var(--ink-3); }
+.is-mobile .m-ledger .a2-ledger-daily .bars button.on { background: none; }
+.is-mobile .m-ledger .a2-ledger-daily .bars button.on i { background: var(--ink); }
+.is-mobile .m-ledger .detail-h { margin-top: 24px; }
+.is-mobile .m-ledger .a2-sec-h .ui-chip { min-height: 30px; padding: 0 10px; font-size: 14px; color: var(--ink); background: var(--sunk); border: 0; border-radius: 15px; }
+.is-mobile .m-ledger .a2-ledger-filters { gap: 4px 12px; margin-bottom: 4px; font-size: 15px; }
+.is-mobile .m-ledger .a2-ledger-filters > input { flex: 1 1 0; height: 38px; padding: 0 12px; background: var(--sunk); border: 0; border-radius: 10px; }
+.is-mobile .m-ledger .a2-ledger-filters > .m-link { padding-right: 0; }
+.is-mobile .m-ledger .a2-ledger-filters.folded > :is(label, .ui-btn) { display: none; }
+.is-mobile .m-ledger .a2-ledger-filters select { height: 36px; font-size: 16px; background: var(--surface); border: 0; border-radius: 8px; }
+.is-mobile .m-ledger .a2-ledger-note { font-size: 14px; color: var(--accent); }
+.is-mobile .m-ledger .a2-ledger-day .day-h { padding: 18px 0 2px; border-bottom: 0; }
+.is-mobile .m-ledger .a2-ledger-day .day-h b { font: 400 14px/1.4 var(--m-font); color: var(--ink-3); }
+.is-mobile .m-ledger .a2-ledger-day .day-h span { font-size: 14px; color: var(--ink-3); }
+.is-mobile .m-ledger .a2-tx { border-bottom: 0; }
+.is-mobile .m-ledger .a2-tx > summary { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: 'n amt' 'tag tag'; gap: 0 12px; min-height: 56px; padding: 7px 0; }
+.is-mobile .m-ledger .a2-tx .n { grid-area: n; font-size: 17px; }
+.is-mobile .m-ledger .a2-tx .n small { font-size: 14px; }
+.is-mobile .m-ledger .a2-tx .amt { grid-area: amt; min-width: 0; font-size: 17px; font-weight: 400; }
+.is-mobile .m-ledger .a2-tx .tag { grid-area: tag; justify-self: start; padding: 0; font-size: 14px; color: var(--ink-3); border: 0; }
+.is-mobile .m-ledger .a2-tx .tag:empty { display: none; }
+.is-mobile .m-ledger .a2-tx .tag.owe { color: var(--accent); }
+.is-mobile .m-ledger .a2-tx .chev { display: none; }
+.is-mobile .m-ledger .a2-tx-detail { margin: 2px 0 10px; padding: 12px 16px; font-size: 15px; border: 0; border-radius: 14px; }
+.is-mobile .m-ledger .a2-tx-detail dl { grid-template-columns: 96px minmax(0, 1fr); }
+.is-mobile .m-ledger .a2-tx-detail .acts .ui-btn { min-height: 40px; padding: 0 2px; font-size: 15px; background: none; border: 0; }
+.is-mobile .m-ledger .a2-tx-detail .acts { gap: 18px; }
+.is-mobile .m-ledger .a2-ledger-cats .cat { grid-template-columns: 72px minmax(0, 1fr) auto; min-height: 40px; padding: 0; font-size: 15px; background: none; border: 0; }
+.is-mobile .m-ledger .a2-ledger-cats .bar { height: 6px; background: var(--sunk); border-radius: 3px; overflow: hidden; }
+.is-mobile .m-ledger .a2-ledger-cats .bar i { background: var(--ink-3); }
+.is-mobile .m-ledger .a2-ledger-cats .cat.on .bar i { background: var(--ink); }
+/* 账户: totals and accounts as rounded groups. */
+.is-mobile .m-ledger .a2-ledger-sum.three { display: block; margin-bottom: 24px; background: var(--surface); border: 0; border-radius: 14px; }
+.is-mobile .m-ledger .a2-ledger-sum.three > div { position: relative; padding: 11px 16px; border: 0; }
+.is-mobile .m-ledger .a2-ledger-sum.three > div + div::before { content: ''; position: absolute; top: 0; left: 16px; right: 0; border-top: 1px solid var(--hair); }
+.is-mobile .m-ledger .a2-ledger-sum.three .k { font-size: 14px; }
+.is-mobile .m-ledger .a2-ledger-sum.three .v { margin-top: 2px; font: 600 20px/1.3 var(--m-font); }
+.is-mobile .m-ledger .a2-ledger-sum.three .d { font-size: 13px; color: var(--ink-3); }
+.is-mobile .m-ledger .a2-ledger-account-list { background: var(--surface); border-radius: 14px; }
+.is-mobile .m-ledger .a2-ledger-account-list .row { position: relative; gap: 0 10px; padding: 2px 16px 4px; border: 0; }
+.is-mobile .m-ledger .a2-ledger-account-list .row + .row::before { content: ''; position: absolute; top: 0; left: 16px; right: 0; border-top: 1px solid var(--hair); }
+.is-mobile .m-ledger .a2-ledger-account-list .name { font: 17px/1.4 var(--m-font); }
+.is-mobile .m-ledger .a2-ledger-account-list .bal { font-size: 17px; font-weight: 400; text-align: right; }
+.is-mobile .m-ledger .a2-ledger-account-list .meta { font-size: 13px; }
+.is-mobile .m-ledger .a2-ledger-account-list .meta b { color: var(--accent); }
+.is-mobile .m-ledger .a2-ledger-account-list .row .meta { grid-column: 1; }
+.is-mobile .m-ledger .a2-ledger-account-list .row > .ui-btn { grid-column: 2; grid-row: 2; justify-self: end; min-height: 32px !important; padding: 0; font-size: 15px; color: var(--ink-2); background: none; border: 0; }
+.is-mobile .m-ledger .a2-ledger-table { font-size: 15px; background: var(--surface); border-radius: 14px; }
+.is-mobile .m-ledger .a2-ledger-table tr { padding: 8px 12px; border-bottom: 1px solid var(--hair); }
+.is-mobile .m-ledger .a2-ledger-table tr:last-child { border-bottom: 0; }
+.is-mobile .m-ledger .a2-ledger-table small { font-size: 13px; }

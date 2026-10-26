@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { History, Import } from "lucide-react";
+import { ChevronLeft, History, Import, Plus } from "lucide-react";
 import type { Candidate, Snapshot } from "../../shared/contracts";
 import type { CaptureSnapshot } from "../../shared/capture";
 import type { HostCapabilities } from "../../shared/client";
@@ -159,6 +159,68 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
   const snoozedList = snapshot.candidates.filter(candidate => disposition(candidate) === "snoozed")
     .sort((a, b) => a.snoozedUntil!.localeCompare(b.snoozedUntil!));
   const tabs: [Tab, string, number | null][] = [["pending", "待判断", counts.pending], ["snoozed", "稍后", counts.snoozed], ["done", "已处理", null]];
+  const switchTab = (id: Tab) => { setTab(id); setSelectedId(null); setFallback(0); };
+  const doneFilters = [["all", "全部"], ["accepted", "已接受"], ["ignored", "已忽略"], ["expired", "已过期"]] as const;
+  const detail = current && (!mobile || detailOpen) && <DetailFrame mobile={mobile} close={() => setDetailOpen(false)}><CandidateDetail key={current.id} snapshot={snapshot} candidate={current} today={today} now={now} busy={ui.busy}
+    localSourceAccess={Boolean(host) && !mobile}
+    hideQQOriginal={current.sourceIds.some(id => { const source = snapshot.sources.find(value => value.id === id); return source ? isExtractedQQSource(source) || ((mobile || !host) && Boolean(source.captureRef)) : mobile || !host; })}
+    clearedPhoneInput={current.sourceIds.some(id => { const source = snapshot.sources.find(value => value.id === id); return source ? isClearedPhoneSource(source) : false; })}
+    reason={reason} setReason={setReason} decide={type => void decide(current, type)}
+    snoozing={snoozing} setSnoozing={setSnoozing} snooze={until => void snooze(current, until)}
+    restore={() => void ui.mutate([{ type: "restoreCandidate", id: current.id, expectedVersion: current.version, reason }])}
+    edit={() => edit(current.id)} openSource={openSource} viewTask={id => select({ entity: "task", id })} viewCandidate={id => {
+      const target = snapshot.candidates.find(value => value.id === id);
+      if (!target) return;
+      const value = disposition(target);
+      setTab(value === "pending" || value === "snoozed" ? value : "done");
+      setDoneFilter("all");
+      setSelectedId(id);
+    }} /></DetailFrame>;
+  const waiting = <>
+    {capture && <>QQ 采集{capture.lastReceivedAt ? `上次收到消息 ${arrival(capture.lastReceivedAt, today)}` : "已开启"} · 每 {capture.config.intervalSeconds / 60} 分钟检查一次<br /></>}
+    {snoozedList.length > 0 && `稍后决定的 ${snoozedList.length} 条，最早${dayWord(snoozedList[0]!.snoozedUntil!.slice(0, 10), today)} ${snoozedList[0]!.snoozedUntil!.slice(11, 16)} 回到这里。`}
+  </>;
+
+  // The phone page: a plain title with two icons, a segmented switch, quiet rows. Decisions show in the shared toast.
+  if (mobile) return (
+    <div className="m-page m-inbox">
+      {sources ? <header className="m-subpage-head">
+        <button className="m-link m-back" aria-label="返回待判断" onClick={() => setSources(false)}><ChevronLeft aria-hidden="true" />待判断</button>
+        <div className="m-hero"><div><h1>导入记录</h1></div></div>
+      </header> : <header className="m-hero">
+        <div><h1>待判断</h1></div>
+        <div className="m-hero-acts">
+          <button className="m-icon" aria-label="导入记录" onClick={() => setSources(true)}><History aria-hidden="true" /></button>
+          <button className="m-icon" aria-label="导入消息" onClick={importMessage}><Plus aria-hidden="true" /></button>
+        </div>
+      </header>}
+      {sources ? (snapshot.sources.length ? <ul className="m-card" aria-label="导入记录">
+        {snapshot.sources.toReversed().map(source => <li key={source.id}><button className="m-card-row" onClick={() => openSource(source.id)}>
+          <span className="m-card-main">
+            <b>{source.label || "未命名来源"}{source.purpose === "courses" && " · 课表"}</b>
+            <small>{source.kind === "image" ? "截图" : "文字"} · {displayInstant(source.importedAt)} · {sourceStatus[source.status]}</small>
+            {source.error && <small className="attn">{source.error}</small>}
+          </span>
+        </button></li>)}
+      </ul> : <div className="m-ib-empty"><p className="title">还没有导入记录</p><p>粘贴群消息或导入截图后，原文会留在这里。</p></div>) : <>
+        <div className="m-seg m-ib-tabs" role="tablist" aria-label="通知分类">
+          {tabs.map(([id, label, count]) => <button key={id} role="tab" aria-selected={tab === id} onClick={() => switchTab(id)}>{label}{count ? ` ${count}` : ""}</button>)}
+        </div>
+        {tab === "done" && <div className="m-ib-filter" role="group" aria-label="已处理筛选">
+          {doneFilters.map(([id, label]) => <button key={id} className="m-link" aria-pressed={doneFilter === id} onClick={() => { setDoneFilter(id); setSelectedId(null); setFallback(0); }}>{label}</button>)}
+        </div>}
+        {items.length ? <>
+          <InboxList snapshot={snapshot} items={items} selectedId={current?.id} today={today} quick={quick} busy={ui.busy}
+            select={pick} decide={(candidate, type) => void decide(candidate, type)} toast={null} undo={() => {}} />
+          {detail}
+        </> : <div className="m-ib-empty">
+          <p className="title">{tab === "pending" ? "都处理完了" : tab === "snoozed" ? "没有稍后决定的通知" : "这里还没有事项"}</p>
+          {tab === "pending" && (capture || snoozedList.length > 0) && <p>{waiting}</p>}
+          {tab === "pending" && <button className="m-link" onClick={importMessage}>导入消息</button>}
+        </div>}
+      </>}
+    </div>
+  );
   return (
     <div className="a2-page a2-inbox">
       <PageToolbar title="待判断" ui={ui}>
@@ -182,12 +244,12 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
       ) : <>
         <div className="ui-tabs" role="tablist" aria-label="通知分类">
           {tabs.map(([id, label, count]) => (
-            <button key={id} role="tab" aria-selected={tab === id} onClick={() => { setTab(id); setSelectedId(null); setFallback(0); }}>
+            <button key={id} role="tab" aria-selected={tab === id} onClick={() => switchTab(id)}>
               {label}{count !== null && <b>{count}</b>}
             </button>
           ))}
           {tab === "done" && <div className="ui-seg" role="group" aria-label="已处理筛选">
-            {([["all", "全部"], ["accepted", "已接受"], ["ignored", "已忽略"], ["expired", "已过期"]] as const).map(([id, label]) => (
+            {doneFilters.map(([id, label]) => (
               <button key={id} aria-pressed={doneFilter === id} onClick={() => { setDoneFilter(id); setSelectedId(null); setFallback(0); }}>{label}</button>
             ))}
           </div>}
@@ -196,31 +258,14 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
           <div className="a2-ib-body">
             <InboxList snapshot={snapshot} items={items} selectedId={current?.id} today={today} quick={quick} busy={ui.busy}
               select={pick} decide={(candidate, type) => void decide(candidate, type)} toast={toast} undo={() => void undo()} />
-            {current && (!mobile || detailOpen) && <DetailFrame mobile={mobile} close={() => setDetailOpen(false)}><CandidateDetail key={current.id} snapshot={snapshot} candidate={current} today={today} now={now} busy={ui.busy}
-              localSourceAccess={Boolean(host) && !mobile}
-              hideQQOriginal={current.sourceIds.some(id => { const source = snapshot.sources.find(value => value.id === id); return source ? isExtractedQQSource(source) || ((mobile || !host) && Boolean(source.captureRef)) : mobile || !host; })}
-              clearedPhoneInput={current.sourceIds.some(id => { const source = snapshot.sources.find(value => value.id === id); return source ? isClearedPhoneSource(source) : false; })}
-              reason={reason} setReason={setReason} decide={type => void decide(current, type)}
-              snoozing={snoozing} setSnoozing={setSnoozing} snooze={until => void snooze(current, until)}
-              restore={() => void ui.mutate([{ type: "restoreCandidate", id: current.id, expectedVersion: current.version, reason }])}
-              edit={() => edit(current.id)} openSource={openSource} viewTask={id => select({ entity: "task", id })} viewCandidate={id => {
-                const target = snapshot.candidates.find(value => value.id === id);
-                if (!target) return;
-                const value = disposition(target);
-                setTab(value === "pending" || value === "snoozed" ? value : "done");
-                setDoneFilter("all");
-                setSelectedId(id);
-              }} /></DetailFrame>}
+            {detail}
           </div>
         ) : (
           <div className="a2-ib-empty">
             {toast && <div className="ui-toast a2-ib-toast" role="status">{toast.text}<button onClick={() => void undo()}>撤销</button></div>}
             {tab === "pending" ? <div className="ui-empty center">
               <h4>都处理完了</h4>
-              {(capture || snoozedList.length > 0) && <p>
-                {capture &&<>QQ 采集{capture.lastReceivedAt ? `上次收到消息 ${arrival(capture.lastReceivedAt, today)}` : "已开启"} · 每 {capture.config.intervalSeconds / 60} 分钟检查一次<br /></>}
-                {snoozedList.length > 0 && `稍后决定的 ${snoozedList.length} 条，最早${dayWord(snoozedList[0]!.snoozedUntil!.slice(0, 10), today)} ${snoozedList[0]!.snoozedUntil!.slice(11, 16)} 回到这里。`}
-              </p>}
+              {(capture || snoozedList.length > 0) && <p>{waiting}</p>}
               <div className="actions"><button className="ui-btn" onClick={importMessage}><Import aria-hidden="true" />导入消息</button></div>
             </div> : <div className="ui-empty center">
               <h4>{tab === "snoozed" ? "没有稍后决定的通知" : "这里还没有事项"}</h4>

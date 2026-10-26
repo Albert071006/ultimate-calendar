@@ -2,6 +2,7 @@ import { Check, X } from "lucide-react";
 import type { Candidate, Snapshot } from "../../../shared/contracts";
 import { arrival, dayWord } from "./format";
 import { useMobile } from '../../mobile/layout';
+import { dayDistance } from "../../../domain/time";
 
 export interface Toast { text: string; transactionId: string; id: string }
 
@@ -12,6 +13,14 @@ function Chips({ candidate, today }: { candidate: Candidate; today: string }) {
   if (candidate.eventStart) chips.push(<span className="ui-chip event" key="e">{dayWord(candidate.eventStart.slice(0, 10), today)} <b>{candidate.eventStart.slice(11, 16)}{candidate.eventEnd && candidate.eventEnd.slice(0, 10) === candidate.eventStart.slice(0, 10) ? `–${candidate.eventEnd.slice(11, 16)}` : ""}</b></span>);
   if (!chips.length) chips.push(<span className="ui-chip unknown" key="u">时间未说明</span>);
   return <div className="when">{chips}</div>;
+}
+
+/** The phone's one time line; a deadline due by tomorrow is the only red. */
+function TimeLine({ candidate, today }: { candidate: Candidate; today: string }) {
+  const { deadline, eventStart, eventEnd } = candidate, parts = [];
+  if (deadline) parts.push(<span key="d" className={dayDistance(today, deadline.date) <= 1 ? "due" : undefined}>截止 {dayWord(deadline.date, today)}{deadline.time && ` ${deadline.time}`}</span>);
+  if (eventStart) parts.push(<span key="e">{dayWord(eventStart.slice(0, 10), today)} {eventStart.slice(11, 16)}{eventEnd && eventEnd.slice(0, 10) === eventStart.slice(0, 10) ? `–${eventEnd.slice(11, 16)}` : ""}</span>);
+  return <small>{parts.length ? parts : "时间未说明"}</small>;
 }
 
 export function sourceLine(snapshot: Snapshot, candidate: Candidate, today: string, missingLabel = '原文已删除') {
@@ -34,6 +43,23 @@ export function InboxList({ snapshot, items, selectedId, today, quick, busy, sel
   undo: () => void;
 }) {
   const mobile = useMobile();
+  // The phone row keeps only what decides it: the title, one time line, and 忽略 / 接受 as text.
+  if (mobile) return (
+    <section className="m-ib-list" aria-label="通知列表">
+      {items.map(candidate => (
+        <article key={candidate.id} className="m-ib-row" data-candidate-id={candidate.id} onClick={() => select(candidate.id)}>
+          <div className="m-ib-main">
+            <button className="pick" onClick={event => { event.stopPropagation(); select(candidate.id); }}>{candidate.title}</button>
+            <TimeLine candidate={candidate} today={today} />
+          </div>
+          {quick && <div className="m-ib-acts" onClick={event => event.stopPropagation()}>
+            <button className="m-text-btn quiet" disabled={busy} aria-label={`忽略 ${candidate.title}`} onClick={() => decide(candidate, "ignoreCandidate")}>忽略</button>
+            <button className="m-text-btn" disabled={busy} aria-label={`接受 ${candidate.title}`} onClick={() => decide(candidate, "acceptCandidate")}>接受</button>
+          </div>}
+        </article>
+      ))}
+    </section>
+  );
   return (
     <section className="a2-ib-list" aria-label="通知列表">
       {items.map(candidate => {

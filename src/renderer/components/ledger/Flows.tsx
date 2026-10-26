@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { ChevronDown, Plus, X } from 'lucide-react';
+import { useMobile } from '../../mobile/layout';
 import { LEDGER_ACCOUNTS, type LedgerEntry, type LedgerSnapshot } from '../../../shared/ledger';
 import { ledgerReceivable } from '../../../ledger/receivable';
 import { todayDate } from '../../calendar-layout';
@@ -111,7 +113,14 @@ export function Flows({ snapshot, month, busy, filter, setFilter, create, edit, 
   create: () => void; edit: (entry: LedgerEntry) => void; voidEntry: (entry: LedgerEntry) => void;
 }) {
   const { summary } = snapshot;
+  const mobile = useMobile();
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const monthEntries = snapshot.entries.filter(entry => entry.month === month);
+  if (!monthEntries.length && mobile) return <div className="m-ib-empty">
+    <p className="title">本月还没有账目</p>
+    <p>也可以对生活助手说「午饭 15 元，微信付的」</p>
+    <button className="m-link" onClick={create}>记一笔</button>
+  </div>;
   if (!monthEntries.length) return <div className="a2-ledger-empty"><div className="ui-empty center">
     <h4>本月还没有账目</h4>
     <p>点「记一笔」，或者对助手说"午饭 15 元，微信付的"。</p>
@@ -130,26 +139,36 @@ export function Flows({ snapshot, month, busy, filter, setFilter, create, edit, 
   const set = (patch: Partial<FlowFilter>) => setFilter({ ...filter, ...patch });
   const filtered = account || category || day || search;
   return <div className="a2-ledger-flows">
-    <div className="a2-ledger-sum">
+    {mobile ? <div className="m-ledger-sum">
+      <small>个人开销</small>
+      <strong>{summary.personalCents == null ? '待确认' : <><span>¥</span>{plain(summary.personalCents)}</>}</strong>
+      {summary.pendingPersonalCount > 0 && <p className="attn">{summary.pendingPersonalCount} 笔个人承担待确认</p>}
+      <dl>
+        <div><dt>支出</dt><dd>{ledgerMoney(summary.actualPaidCents)}</dd></div>
+        <div><dt>收入</dt><dd>{ledgerMoney(summary.incomeCents)}</dd></div>
+        <div className={receivable.cents > 0 ? 'attn' : undefined}><dt>待收回</dt><dd>{ledgerMoney(receivable.cents)}</dd></div>
+      </dl>
+    </div> : <div className="a2-ledger-sum">
       <Sum label="支出" cents={summary.actualPaidCents} note="实际付款，含代垫" />
       <Sum label="个人开销" cents={summary.personalCents} note={summary.pendingPersonalCount ? `${summary.pendingPersonalCount} 笔个人承担待确认` : '扣除代垫和报销'} />
       <Sum label="收入" cents={summary.incomeCents} note={summary.assetSaleCents ? `另有资产变现 ${ledgerMoney(summary.assetSaleCents)}` : '不含退款、返款和变现'} />
       <Sum label="待收回" cents={receivable.cents} warn={receivable.cents > 0} note={receivable.uncertainties.length ? `${receivable.entryIds.length} 笔差额；另有 ${receivable.uncertainties.length} 项返款或承担金额待核对` : receivable.entryIds.length ? `代垫 ${receivable.entryIds.length} 笔，已扣关联返款、退款和报销` : '没有待收回的代垫'} />
-    </div>
+    </div>}
     <div className="a2-ledger-cols">
       <section aria-label="收支明细">
         <DailyBars month={month} values={summary.days} unknownDateCents={summary.uncertainDateCents} selected={day} onSelect={value => set({ day: value })} />
         <div className="a2-sec-h detail-h"><h3>明细</h3><span className="ui-hint">{entries.length} 笔</span>
           {day && <button className="ui-chip ddl" onClick={() => set({ day: '' })} aria-label={`取消日期筛选 ${shortDay(day)}`}>{shortDay(day)} <X aria-hidden="true" /></button>}
         </div>
-        <div className="a2-ledger-filters">
-          <input aria-label="搜索项目或备注" value={search} onChange={event => set({ search: event.target.value })} placeholder="搜索项目或备注" />
+        <div className={`a2-ledger-filters${mobile && !filtersOpen && !account && !category && !showVoided ? ' folded' : ''}`}>
+          <input aria-label="搜索项目或备注" value={search} onChange={event => set({ search: event.target.value })} placeholder={mobile ? '搜索' : '搜索项目或备注'} />
+          {mobile && <button className="m-link" aria-expanded={filtersOpen} onClick={() => setFiltersOpen(value => !value)}>筛选</button>}
           <label>账户<select value={account} onChange={event => set({ account: event.target.value })}><option value="">全部账户</option><option value="unknown">账户待确认</option>{LEDGER_ACCOUNTS.map(value => <option value={value.id} key={value.id}>{value.name}</option>)}</select></label>
           <label>分类<select value={category} onChange={event => set({ category: event.target.value })}><option value="">全部分类</option>{categories.map(value => <option key={value}>{value}</option>)}</select></label>
           <label className="a2-check"><input type="checkbox" checked={showVoided} onChange={event => set({ showVoided: event.target.checked })} />显示已作废</label>
           {filtered && <button className="ui-btn sm ghost" onClick={() => setFilter({ ...noFilter, showVoided })}>清除筛选</button>}
         </div>
-        {summary.pendingAccountCount > 0 && <p className="ui-hint a2-ledger-note">本月 {summary.pendingAccountCount} 笔账户待确认；展开记录，点「补充账户 / 更正」完善原笔。</p>}
+        {summary.pendingAccountCount > 0 && <p className="ui-hint a2-ledger-note">{mobile ? `${summary.pendingAccountCount} 笔账户待确认，展开后可补充` : <>本月 {summary.pendingAccountCount} 笔账户待确认；展开记录，点「补充账户 / 更正」完善原笔。</>}</p>}
         {entries.length ? [...groups].map(([date, list]) => {
           const paid = list.filter(entry => !entry.voided && (entry.kind === 'expense' || entry.kind === 'repayment')).reduce((sum, entry) => sum + entry.amountCents, 0);
           return <div className="a2-ledger-day" key={date || 'unknown'}>

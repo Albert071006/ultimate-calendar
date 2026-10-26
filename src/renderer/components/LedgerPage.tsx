@@ -10,6 +10,8 @@ import { useLedger } from './ledger/useLedger';
 import { Flows, noFilter, type FlowFilter } from './ledger/Flows';
 import { Accounts } from './ledger/Accounts';
 import { BalanceEditor, EntryEditor, VoidEditor, accountName } from './ledger/editors';
+import { useMobile } from '../mobile/layout';
+import { todayDate } from '../calendar-layout';
 import './LedgerPage.css';
 
 type Tab = 'flows' | 'accounts';
@@ -17,6 +19,7 @@ type Tab = 'flows' | 'accounts';
 /** 账单: 收支 (totals, daily spending, categories, day-grouped details) and 账户 (balances and snapshots). */
 export function LedgerPage({ api, host, createRequest = 0, onViewChange }: { api: PlannerClient; host?: HostCapabilities; createRequest?: number; onViewChange?: (view: LedgerViewContext | undefined) => void }) {
   const ledger = useLedger(api, host);
+  const mobile = useMobile();
   const { month, snapshot, busy, error, notice } = ledger;
   const [tab, setTab] = useState<Tab>('flows');
   const [filter, setFilter] = useState<FlowFilter>(noFilter);
@@ -29,23 +32,44 @@ export function LedgerPage({ api, host, createRequest = 0, onViewChange }: { api
   useEffect(() => () => { onViewChange?.(undefined); }, [onViewChange]);
   const moveMonth = (direction: number) => { ledger.moveMonth(direction); setFilter(value => ({ ...value, day: '' })); };
   const title = `${Number(month.slice(0, 4))} 年 ${Number(month.slice(5))} 月`;
-  return <div className="a2-page a2-ledger">
-    <PageToolbar title={title} undo={false}
+  const exportItems = host ? [
+    { label: '导出本月 CSV', disabled: busy, onSelect: () => void ledger.exportLedger('csv') },
+    { label: '导出完整账本', disabled: busy, onSelect: () => void ledger.exportLedger('json') },
+  ] : [];
+  // The phone header: the month between arrows (year only when it is not this year), + to record, the rest under ⋯.
+  const header = mobile ? <header className="m-cal-head m-ledger-head">
+    <div className="m-cal-title">
+      <button className="m-icon" aria-label="上个月" onClick={() => moveMonth(-1)}><ChevronLeft aria-hidden="true" /></button>
+      <h1>{month.slice(0, 4) === todayDate().slice(0, 4) ? `${Number(month.slice(5))} 月` : title}</h1>
+      <button className="m-icon" aria-label="下个月" onClick={() => moveMonth(1)}><ChevronRight aria-hidden="true" /></button>
+      <span className="m-spacer" />
+      <button className="m-icon" aria-label="记一笔" disabled={!snapshot} onClick={() => setEditor('new')}><Plus aria-hidden="true" /></button>
+      <MoreMenu label="账单选项" items={[
+        { label: '撤销上一次账单操作', disabled: busy || !snapshot?.audit.length, onSelect: () => void ledger.undo() },
+        ...exportItems,
+      ]} />
+    </div>
+    <div className="m-cal-tools">
+      <div className="m-seg" role="tablist" aria-label="账单页面">
+        {([['flows', '收支'], ['accounts', '账户']] as const).map(([key, label]) => <button key={key} role="tab" aria-selected={tab === key} onClick={() => setTab(key)}>{label}</button>)}
+      </div>
+    </div>
+    {error && <p role="alert" className="a2-ledger-status error">{error}</p>}
+  </header> : null;
+  return <div className={`a2-page a2-ledger${mobile ? ' m-ledger' : ''}`}>
+    {header ?? <><PageToolbar title={title} undo={false}
       lead={<div className="a2-cal-nav">
         <button className="ui-btn icon" aria-label="上个月" onClick={() => moveMonth(-1)}><ChevronLeft aria-hidden="true" /></button>
         <button className="ui-btn icon" aria-label="下个月" onClick={() => moveMonth(1)}><ChevronRight aria-hidden="true" /></button>
       </div>}>
-      {host && <MoreMenu label="导出账本" trigger={<><Download aria-hidden="true" />导出</>} items={[
-        { label: '导出本月 CSV', disabled: busy, onSelect: () => void ledger.exportLedger('csv') },
-        { label: '导出完整账本', disabled: busy, onSelect: () => void ledger.exportLedger('json') },
-      ]} />}
+      {host && <MoreMenu label="导出账本" trigger={<><Download aria-hidden="true" />导出</>} items={exportItems} />}
       <button className="ui-btn" disabled={!snapshot} onClick={() => setEditor('new')}><Plus aria-hidden="true" />记一笔</button>
       <button className="ui-btn ghost icon" aria-label="撤销账单操作" title="撤销上一次账单操作" disabled={busy || !snapshot?.audit.length} onClick={() => void ledger.undo()}><Undo2 aria-hidden="true" /></button>
     </PageToolbar>
     <div className="ui-tabs" role="tablist" aria-label="账单页面">
       {([['flows', '收支'], ['accounts', '账户']] as const).map(([key, label]) => <button key={key} role="tab" aria-selected={tab === key} onClick={() => setTab(key)}>{label}</button>)}
       <p role={error ? 'alert' : 'status'} className={`a2-ledger-status${error ? ' error' : ''}`}>{error || notice}</p>
-    </div>
+    </div></>}
     {!snapshot ? <div className="a2-ledger-empty"><div className="ui-empty center"><h4>{host ? '正在载入本地账本…' : '正在载入账本…'}</h4><div className="actions"><button className="ui-btn" onClick={() => void ledger.refresh()}>重新载入账本</button></div></div></div>
       : <section className="a2-ledger-body" role="tabpanel" aria-label={tab === 'flows' ? '收支' : '账户'}>
         {tab === 'flows' ? <Flows snapshot={snapshot} month={month} busy={busy} filter={filter} setFilter={setFilter} create={() => setEditor('new')} edit={setEditor} voidEntry={setVoidTarget} />
