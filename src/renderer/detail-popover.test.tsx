@@ -9,9 +9,9 @@ import { App } from './App';
 vi.mock('./calendar-layout', async importOriginal => ({ ...await importOriginal<typeof import('./calendar-layout')>(), todayDate: () => '2026-10-22' }));
 
 const repositories: Repository[] = [];
-afterEach(() => { cleanup(); for (const repository of repositories.splice(0)) repository.close(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); for (const repository of repositories.splice(0)) repository.close(); });
 let seq = 0;
-function setup() {
+function setup(options: { extraSession?: boolean; kind?: 'work' | 'event' } = {}) {
   const repository = createRepository(':memory:'); repositories.push(repository);
   const planner = createPlanner(repository);
   const seed = (mutations: unknown[]) => {
@@ -22,7 +22,8 @@ function setup() {
   seed([course(4), course(1)]);
   seed([{ type: 'create', entity: 'task', values: { title: '合成作业' } }]);
   const taskId = planner.snapshot().tasks[0]!.id;
-  seed([{ type: 'create', entity: 'block', values: { title: '写合成作业', kind: 'work', taskId, start: '2026-10-22T15:00:00+08:00', end: '2026-10-22T16:30:00+08:00' } }]);
+  seed([{ type: 'create', entity: 'block', values: { title: '写合成作业', kind: options.kind ?? 'work', taskId, start: '2026-10-22T15:00:00+08:00', end: '2026-10-22T16:30:00+08:00' } }]);
+  if (options.extraSession) seed([{ type: 'create', entity: 'block', values: { title: '检查合成作业', kind: 'work', taskId, start: '2026-10-22T17:00:00+08:00', end: '2026-10-22T18:00:00+08:00' } }]);
   const mutate = vi.fn(async (request: unknown) => ({ ok: true, data: planner.mutate(MutationRequestSchema.parse(request)) }));
   const api = {
     snapshot: async () => ({ ok: true, data: planner.snapshot() }), mutate,
@@ -51,17 +52,62 @@ it('opens a summary card beside a clicked session and closes it with Esc', async
 it('completes and deletes from the card through the existing mutations, each undoable', async () => {
   const { planner } = setup();
   fireEvent.click(await block());
-  fireEvent.click(within(screen.getByRole('complementary', { name: '时段详情' })).getByRole('button', { name: '完成' }));
+  fireEvent.click(within(screen.getByRole('complementary', { name: '时段详情' })).getByRole('button', { name: '完成本次时段' }));
   await screen.findByText('已保存，可撤销');
   expect(planner.snapshot().blocks[0]!.completed).toBe(true);
   fireEvent.click(screen.getByRole('button', { name: '撤销上次操作' }));
   await vi.waitFor(() => expect(planner.snapshot().blocks[0]!.completed).toBe(false));
   const card = within(screen.getByRole('complementary', { name: '时段详情' }));
-  await card.findByRole('button', { name: '完成' });
+  await card.findByRole('button', { name: '完成本次时段' });
   fireEvent.click(card.getByRole('button', { name: '删除 写合成作业' }));
   await vi.waitFor(() => expect(planner.snapshot().blocks).toHaveLength(0));
   fireEvent.click(await screen.findByRole('button', { name: '撤销上次操作' }));
   await vi.waitFor(() => expect(planner.snapshot().blocks).toHaveLength(1));
+});
+
+it('separates one work session from completing its whole task and can undo the task decision', async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-22T19:00:00+08:00'));
+  const { planner, mutate } = setup({ extraSession: true });
+  const drawer = await screen.findByRole('complementary', { name: '未安排任务' });
+  expect(within(drawer).getByRole('button', { name: '合成作业' })).toBeTruthy();
+  fireEvent.click(await block());
+  const card = within(screen.getByRole('complementary', { name: '时段详情' }));
+  expect(card.getByText('时段状态').nextElementSibling?.textContent).toBe('未完成');
+  expect(card.getByText('任务状态').nextElementSibling?.textContent).toBe('未完成');
+  fireEvent.click(card.getByRole('button', { name: '完成本次时段' }));
+  await card.findByRole('button', { name: '恢复本次未完成' });
+  const afterSession = planner.snapshot();
+  expect(afterSession.tasks[0]!.status).toBe('open');
+  expect(afterSession.blocks.find(value => value.title === '写合成作业')!.completed).toBe(true);
+  expect(afterSession.blocks.find(value => value.title === '检查合成作业')!.completed).toBe(false);
+  expect(card.getByText('时段状态').nextElementSibling?.textContent).toBe('已完成');
+  expect(card.getByText('任务状态').nextElementSibling?.textContent).toBe('未完成');
+
+  fireEvent.click(card.getByRole('button', { name: '完成整个任务' }));
+  await vi.waitFor(() => expect(card.queryByRole('button', { name: '完成整个任务' })).toBeNull());
+  expect(mutate.mock.calls.at(-1)![0]).toMatchObject({ mutations: [{ type: 'finishTask', id: afterSession.tasks[0]!.id, expectedVersion: afterSession.tasks[0]!.version, completed: true }] });
+  expect(planner.snapshot().tasks[0]!.status).toBe('done');
+  expect(planner.snapshot().blocks).toEqual(afterSession.blocks);
+  expect(card.getByText('任务状态').nextElementSibling?.textContent).toBe('已完成');
+  expect(within(drawer).queryByRole('button', { name: '合成作业' })).toBeNull();
+
+  fireEvent.click(screen.getByRole('button', { name: '撤销上次操作' }));
+  await card.findByRole('button', { name: '完成整个任务' });
+  expect(planner.snapshot().tasks[0]!.status).toBe('open');
+  expect(planner.snapshot().blocks).toEqual(afterSession.blocks);
+  expect(within(drawer).getByRole('button', { name: '合成作业' })).toBeTruthy();
+});
+
+it('keeps fixed activity completion scoped to its existing event action', async () => {
+  const { planner } = setup({ kind: 'event' });
+  fireEvent.click(await block());
+  const card = within(screen.getByRole('complementary', { name: '时段详情' }));
+  expect(card.queryByRole('button', { name: '完成整个任务' })).toBeNull();
+  expect(card.queryByRole('button', { name: '完成本次时段' })).toBeNull();
+  fireEvent.click(card.getByRole('button', { name: '完成' }));
+  await card.findByRole('button', { name: '恢复未完成' });
+  expect(planner.snapshot().blocks[0]!.completed).toBe(true);
+  expect(planner.snapshot().tasks[0]!.status).toBe('open');
 });
 
 it('swaps the drawer for the edit panel while editing and restores it on close; double-click edits directly', async () => {

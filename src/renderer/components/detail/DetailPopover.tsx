@@ -115,6 +115,7 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
 
   if (selection.entity === "block") {
     const block = value as Block, task = block.taskId ? snapshot.tasks.find(t => t.id === block.taskId) : undefined;
+    const taskWork = block.kind === "work" && !!task;
     const color = task ? belongingColor(task, snapshot) : null;
     kind = block.kind === "work" ? "执行时段" : "固定活动";
     swatch = color ? { "--wf": workFill(color), "--c": color } as CSSProperties : undefined;
@@ -125,7 +126,10 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
       {task && <><dt>任务</dt><dd><button className="a2-pop-link" onClick={() => actions.editTask(task.id)}>{task.title}</button></dd></>}
       {belonging(task)}
       <dt>提醒</dt><dd>{reminderLabel(block.reminders)}</dd>
-      {(block.completed || block.cancelled) && <><dt>状态</dt><dd>{block.cancelled ? "已取消" : "已完成"}</dd></>}
+      {taskWork ? <>
+        <dt>时段状态</dt><dd>{block.cancelled ? "已取消" : block.completed ? "已完成" : "未完成"}</dd>
+        <dt>任务状态</dt><dd>{task!.status === "done" ? "已完成" : "未完成"}</dd>
+      </> : (block.completed || block.cancelled) && <><dt>状态</dt><dd>{block.cancelled ? "已取消" : "已完成"}</dd></>}
     </dl>;
     const remove = () => void ui.mutate([block.recurrence
       ? { type: "cancelRecurringEvent", id: block.id, expectedVersion: block.version, scope: "single" }
@@ -133,7 +137,9 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
     footer = <>
       {!block.cancelled && <button className="ui-btn sm dark" disabled={ui.busy}
         onClick={() => void ui.mutate([{ type: "finishBlock", id: block.id, expectedVersion: block.version, completed: !block.completed }])}>
-        <Check aria-hidden="true" />{block.completed ? "恢复未完成" : "完成"}</button>}
+        <Check aria-hidden="true" />{taskWork ? block.completed ? "恢复本次未完成" : "完成本次时段" : block.completed ? "恢复未完成" : "完成"}</button>}
+      {taskWork && task && task.status !== "done" && <button className="ui-btn sm" disabled={ui.busy}
+        onClick={() => void ui.mutate([{ type: "finishTask", id: task.id, expectedVersion: task.version, completed: true }])}>完成整个任务</button>}
       {editButton}
       <span className="spacer" />
       {!block.cancelled && <button className="ui-btn sm ghost icon" disabled={ui.busy} aria-label={block.recurrence ? `取消本次 ${block.title}` : `删除 ${block.title}`}
