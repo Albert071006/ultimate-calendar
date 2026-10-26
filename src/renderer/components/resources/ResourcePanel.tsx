@@ -3,7 +3,8 @@ import { FileText, Folder, Link, MoreHorizontal, Paperclip, Plus, X } from 'luci
 import { MutationSchema, type ApiResult, type Snapshot } from '../../../shared/contracts';
 import type { HostCapabilities } from '../../../shared/client';
 import { ResourceReferenceSchema, type ResourceReference, type ResourceOwner as ResourceTarget } from '../../../shared/resources';
-import { resolveResources, resourceOwner } from '../../../domain/resources';
+import { resolveResources, resourceOwner, resourceSourceIds } from '../../../domain/resources';
+import { SourceAttachments } from './SourceAttachments';
 import type { PlannerUI } from '../../hooks/usePlanner';
 import './ResourcePanel.css';
 
@@ -181,13 +182,15 @@ function ResourceOwnerEditor({ snapshot, target, ui, close }: { snapshot: Snapsh
 
 export function ResourceSection({ snapshot, target, ui, inheritedOnly = false }: { snapshot: Snapshot; target: ResourceTarget; ui: PlannerUI; inheritedOnly?: boolean }) {
   const entries = resolveResources(snapshot, target).filter(entry => !inheritedOnly || entry.inherited);
+  const sourceIds = resourceSourceIds(snapshot, target);
   const native = useResourceHost(ui.host, entries.map(entry => entry.resource));
   const [editing, setEditing] = useState<ResourceTarget | null>(null);
   const groupNames = { own: target.entity === 'block' ? '本次资料' : target.entity === 'task' ? '任务资料' : '公共资料', task: '任务资料', shared: '课程与目标资料' };
-  if (inheritedOnly && !entries.length) return null;
+  if (inheritedOnly && !entries.length && !sourceIds.length) return null;
   return <section className="resource-section" aria-label={inheritedOnly ? '继承的资料' : '资料'}>
     {!inheritedOnly && <header><h4><Paperclip aria-hidden="true" />资料</h4><button type="button" className="ui-btn sm ghost" onClick={() => setEditing(target)}>管理</button></header>}
-    {!entries.length && !editing && <p className="resource-empty">关联文件、文件夹或网页</p>}
+    <SourceAttachments key={`${target.entity}:${target.id}`} sourceIds={sourceIds} host={ui.host} />
+    {!entries.length && !editing && !sourceIds.length && <p className="resource-empty">关联文件、文件夹或网页</p>}
     {(['own', 'task', 'shared'] as const).map(group => {
       const items = entries.filter(entry => entry.group === group);
       if (!items.length) return null;

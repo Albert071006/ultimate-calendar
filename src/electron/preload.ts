@@ -56,6 +56,7 @@ const api = {
   command: (request: unknown) => invoke('command', request), importCourses: (request: unknown) => invoke('importCourses', request),
   saveSettings: (request: unknown) => invoke('saveSettings', request), setApiKey: (request: unknown) => invoke('setApiKey', request), retryApiKey: () => invoke('retryApiKey'),
   localSourceEvidence: (request: unknown) => invoke('localSourceEvidence', request),
+  sourceAttachments: (request: unknown) => invoke('sourceAttachments', request), sourceAttachmentOpen: (request: unknown) => invoke('sourceAttachmentOpen', request),
   backup: () => invoke('backup'), restore: (request: unknown) => invoke('restore', request), onChanged: changed, onNavigate: navigate,
 };
 contextBridge.exposeInMainWorld('planner', api);

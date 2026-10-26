@@ -2,12 +2,13 @@
 import { useState } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { BlockSchema, CourseSchema, GoalSchema, SnapshotSchema, TaskSchema, type Snapshot } from '../shared/contracts';
+import { BlockSchema, CandidateSchema, CourseSchema, GoalSchema, SnapshotSchema, TaskSchema, type Snapshot } from '../shared/contracts';
 import type { HostCapabilities } from '../shared/client';
 import type { ResourceReference } from '../shared/resources';
 import type { PlannerUI } from './hooks/usePlanner';
 import { EntityEditor } from './components/editor/EntityEditor';
 import { ResourceFields, ResourceSection } from './components/resources/ResourcePanel';
+import { SourceAttachments } from './components/resources/SourceAttachments';
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 const metadata = { version: 1, createdAt: '2026-10-25T09:00:00+08:00', updatedAt: '2026-10-25T09:00:00+08:00' };
@@ -25,6 +26,38 @@ function fixture(): Snapshot {
 function fakeUI(host?: Partial<HostCapabilities>) {
   return { host, busy: false, mutate: vi.fn(async () => ({ status: 'applied', message: '已保存' })) } as unknown as PlannerUI;
 }
+
+it('shows the original tutorial in calendar task materials and opens only after a click', async () => {
+  const snapshot = fixture();
+  snapshot.candidates.push(CandidateSchema.parse({ ...metadata, id: 'notice', title: '合成学习通知', status: 'accepted', taskId: 'task', sourceIds: ['notice-source'] }));
+  snapshot.tasks[0]!.candidateId = 'notice';
+  const sourceAttachments = vi.fn(async () => ({ ok: true as const, data: { attachments: [{ id: 'original-tutorial', name: '学习教程.docx', status: 'available' as const }], unavailableSources: 0 } }));
+  const sourceAttachmentOpen = vi.fn(async () => ({ ok: true as const, data: { opened: true as const } }));
+  render(<ResourceSection snapshot={snapshot} target={{ entity: 'block', id: 'block' }} ui={fakeUI({ sourceAttachments, sourceAttachmentOpen })} />);
+  const open = await screen.findByRole('button', { name: '打开附件 学习教程.docx' });
+  expect(sourceAttachments).toHaveBeenCalledWith({ sourceIds: ['notice-source'] });
+  expect(sourceAttachmentOpen).not.toHaveBeenCalled();
+  fireEvent.click(open);
+  await waitFor(() => expect(sourceAttachmentOpen).toHaveBeenCalledWith({ sourceIds: ['notice-source'], attachmentId: 'original-tutorial' }));
+  expect(snapshot.tasks[0]!.resources).toEqual([local, web]);
+});
+
+it('reads every source batch, deduplicates the original file and keeps a recoverable missing attachment visible', async () => {
+  const sourceIds = Array.from({ length: 101 }, (_, index) => `source-${String(index).padStart(3, '0')}`);
+  const sourceAttachments = vi.fn(async ({ sourceIds: batch }: { sourceIds: string[] }) => ({ ok: true as const, data: {
+    attachments: [{ id: 'same-file', name: '原教程.pdf', status: 'available' as const }, ...(batch.length === 1 ? [{ id: 'missing-file', name: '补充说明.pdf', status: 'missing' as const, message: '原文件尚未下载' }] : [])], unavailableSources: 0,
+  } }));
+  const sourceAttachmentOpen = vi.fn(async () => ({ ok: false as const, error: { code: 'VALIDATION' as const, message: '默认应用未能打开，请重试', retryable: false } }));
+  render(<SourceAttachments sourceIds={sourceIds} host={{ sourceAttachments, sourceAttachmentOpen } as unknown as HostCapabilities} />);
+  const open = await screen.findByRole('button', { name: '打开附件 原教程.pdf' });
+  expect(sourceAttachments.mock.calls.map(([request]) => request.sourceIds.length)).toEqual([100, 1]);
+  expect(screen.getAllByRole('button', { name: '打开附件 原教程.pdf' })).toHaveLength(1);
+  expect((screen.getByRole('button', { name: '打开附件 补充说明.pdf' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(open);
+  await screen.findByText('默认应用未能打开，请重试');
+  expect(sourceAttachmentOpen).toHaveBeenCalledWith({ sourceIds: sourceIds.slice(0, 100), attachmentId: 'same-file' });
+  expect(screen.getByText('原文件尚未下载')).toBeTruthy();
+});
 
 it('opens inherited task/course material by metadata ID and shows each shared resource only once', async () => {
   const resourceOpen = vi.fn(async () => ({ ok: true as const, data: { opened: true as const } }));

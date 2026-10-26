@@ -3,6 +3,7 @@ import { PlanImportConfirmSchema, PlanImportPreviewSchema, PlanImportResultSchem
 import { PlanExportRequestSchema, PlanExportPreviewSchema, PlanExportSaveRequestSchema, PlanExportSaveResultSchema } from '../shared/plan-context';
 import { BusyExportRequestSchema, BusyExportPreviewSchema } from '../shared/busy-context';
 import { ResourceReferenceSchema } from '../shared/resources';
+import { SourceAttachmentsRequestSchema, SourceAttachmentOpenRequestSchema, SourceAttachmentsResultSchema, SourceAttachmentOpenResultSchema } from '../shared/source-attachments';
 import { ResourcePickRequestSchema, ResourceRegisterRequestSchema, ResourceOpenRequestSchema, ResourceStatusRequestSchema, ResourceStatusSchema } from '../shared/resource-host';
 import { LocalSourceEvidenceRequestSchema, LocalSourceEvidenceSchema } from '../shared/contracts';
 import { SpacePolicySchema, SpaceSnapshotSchema, SpaceCleanupRequestSchema } from '../shared/space';
@@ -19,6 +20,7 @@ export const requests = {
   resourcePick: ResourcePickRequestSchema, resourceRegister: ResourceRegisterRequestSchema,
   resourceOpen: ResourceOpenRequestSchema, resourceRelocate: ResourceOpenRequestSchema, resourceStatus: ResourceStatusRequestSchema,
   localSourceEvidence: LocalSourceEvidenceRequestSchema,
+  sourceAttachments: SourceAttachmentsRequestSchema, sourceAttachmentOpen: SourceAttachmentOpenRequestSchema,
   spaceSnapshot: z.undefined(), spaceConfigure: SpacePolicySchema, spaceCleanup: SpaceCleanupRequestSchema,
   updateSnapshot: z.undefined(), checkForUpdates: z.undefined(), downloadUpdate: z.undefined(), installUpdate: z.undefined(),
   ledgerSnapshot: z.strictObject({ month: LedgerMonthSchema.optional() }).optional(), ledgerMutate: LedgerMutationRequestSchema, ledgerUndo: LedgerUndoRequestSchema,
@@ -37,6 +39,7 @@ export const responses = {
   resourcePick: apiResultSchema(z.array(ResourceReferenceSchema)), resourceRegister: apiResultSchema(z.array(ResourceReferenceSchema)),
   resourceOpen: apiResultSchema(z.strictObject({ opened: z.literal(true) })), resourceRelocate: apiResultSchema(ResourceReferenceSchema.nullable()), resourceStatus: apiResultSchema(z.array(ResourceStatusSchema)),
   localSourceEvidence: apiResultSchema(LocalSourceEvidenceSchema),
+  sourceAttachments: apiResultSchema(SourceAttachmentsResultSchema), sourceAttachmentOpen: apiResultSchema(SourceAttachmentOpenResultSchema),
   spaceSnapshot: apiResultSchema(SpaceSnapshotSchema), spaceConfigure: apiResultSchema(SpaceSnapshotSchema), spaceCleanup: apiResultSchema(SpaceSnapshotSchema),
   updateSnapshot: apiResultSchema(UpdateStateSchema), checkForUpdates: apiResultSchema(UpdateStateSchema), downloadUpdate: apiResultSchema(UpdateStateSchema), installUpdate: apiResultSchema(UpdateStateSchema),
   ledgerSnapshot: apiResultSchema(LedgerSnapshotSchema), ledgerMutate: apiResultSchema(LedgerMutationResultSchema), ledgerUndo: apiResultSchema(LedgerMutationResultSchema), ledgerExport: apiResultSchema(z.strictObject({ path: z.string() })),

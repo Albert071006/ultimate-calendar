@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createRepository, newEntity, type Repository } from '../storage/repository';
 import { createPlanner } from './planner';
-import { resolveResources } from './resources';
+import { resolveResources, resourceSourceIds } from './resources';
 import { recurringEventPatch } from './recurring-events';
 import { ResourceReferenceSchema, type ResourceReference } from '../shared/resources';
 import { TaskInputSchema, BlockInputSchema, type Block, type Task, type Course } from '../shared/contracts';
@@ -14,6 +14,30 @@ const setup = () => { const repository = createRepository(':memory:'); repositor
 const courseValues = { title: '示例英语', weekday: 1, startTime: '08:30', endTime: '10:00', firstWeek: 1, lastWeek: 16, termStart: '2026-08-31' };
 
 describe('resource references and inheritance', () => {
+  it('keeps notice attachments through acceptance and calendar scheduling using real relations, including later accepted notices', () => {
+    const { repository, planner } = setup();
+    const { candidate, source, laterSource, unrelatedSource } = repository.transact(state => {
+      const importedAt = '2026-10-26T12:00:00+08:00';
+      const source = newEntity(state, 'source', { kind: 'text', text: '合成教程通知', importedAt });
+      const laterSource = newEntity(state, 'source', { kind: 'text', text: '合成补充资料', importedAt });
+      const unrelatedSource = newEntity(state, 'source', { kind: 'text', text: '另一群的同名通知', importedAt });
+      const candidate = newEntity(state, 'candidate', { title: '完成合成学习', action: '按教程完成学习', sourceIds: [source.id] });
+      newEntity(state, 'candidate', { title: '完成合成学习', sourceIds: [unrelatedSource.id] });
+      return { candidate, source, laterSource, unrelatedSource };
+    });
+    expect(planner.mutate({ operationId: 'accept-with-tutorial', origin: 'manual', confirmed: false,
+      mutations: [{ type: 'acceptCandidate', id: candidate.id, expectedVersion: candidate.version }] }).status).toBe('applied');
+    const task = planner.snapshot().tasks[0]!;
+    expect(resourceSourceIds(planner.snapshot(), { entity: 'task', id: task.id })).toEqual([source.id]);
+    expect(planner.mutate({ operationId: 'schedule-with-tutorial', origin: 'manual', confirmed: false,
+      mutations: [{ type: 'create', entity: 'block', values: BlockInputSchema.parse({ title: '合成学习时段', kind: 'work', taskId: task.id, start: '2026-11-02T18:00:00+08:00', end: '2026-11-02T18:30:00+08:00' }) }] }).status).toBe('applied');
+    repository.transact(state => newEntity(state, 'candidate', { title: '合成补充通知', status: 'accepted', taskId: task.id, sourceIds: [source.id, laterSource.id] }));
+    const snapshot = planner.snapshot(), block = snapshot.blocks[0]!;
+    expect(resourceSourceIds(snapshot, { entity: 'block', id: block.id })).toEqual([source.id, laterSource.id]);
+    expect(resourceSourceIds(snapshot, { entity: 'block', id: block.id })).not.toContain(unrelatedSource.id);
+    expect(resourceSourceIds(snapshot, { entity: 'task', id: 'missing' })).toEqual([]);
+  });
+
   it('accepts existing records without resources and rejects paths, duplicate ids, credentials and non-web protocols', () => {
     expect(TaskInputSchema.parse({ title: '旧任务' }).resources).toBeUndefined();
     expect(BlockInputSchema.parse({ title: '旧活动', kind: 'event', start: '2026-11-02T18:00:00+08:00', end: null }).resources).toBeUndefined();

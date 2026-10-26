@@ -7,6 +7,8 @@ import { displayInstant } from "../../calendar-layout";
 import { dayWord, fullDay } from "./format";
 import { sourceLine } from "./InboxList";
 import { useMobile } from '../../mobile/layout';
+import type { HostCapabilities } from '../../../shared/client';
+import { SourceAttachments } from '../resources/SourceAttachments';
 
 /** Marks every time phrase the extraction relied on inside the original text. */
 export function highlight(text: string, quotes: string[]): ReactNode[] {
@@ -45,7 +47,7 @@ function FactContent({ summary, full, label }: { summary: ReactNode; full?: Reac
   </>;
 }
 
-export function CandidateDetail({ snapshot, candidate, today, now, busy, reason, setReason, decide, snoozing, setSnoozing, snooze, restore, edit, openSource, viewTask, viewCandidate, hideQQOriginal = false, clearedPhoneInput = false, localSourceAccess = false }: {
+export function CandidateDetail({ snapshot, candidate, today, now, busy, reason, setReason, decide, snoozing, setSnoozing, snooze, restore, edit, openSource, viewTask, viewCandidate, host, hideQQOriginal = false, clearedPhoneInput = false, localSourceAccess = false }: {
   snapshot: Snapshot;
   candidate: Candidate;
   today: string;
@@ -64,6 +66,7 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
   viewCandidate: (id: string) => void;
   hideQQOriginal?: boolean;
   localSourceAccess?: boolean;
+  host?: HostCapabilities;
   clearedPhoneInput?: boolean;
 }) {
   const mobile = useMobile();
@@ -103,6 +106,7 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
         <div><div className="k">能得到什么</div><FactContent label="收益详情" summary={benefits(true)}
           full={statedSummary !== (stated || '').trim() || guessedSummary !== guessed.trim() ? benefits(false) : undefined} /></div>
       </div>
+      <SourceAttachments key={candidate.id} sourceIds={candidate.sourceIds} host={host} />
       <section className="a2-ib-times" aria-label="事项时间">
         <div>
           <div className="k">截止</div>

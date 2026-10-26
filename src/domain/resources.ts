@@ -18,6 +18,17 @@ export function resourceOwner(snapshot: Snapshot, owner: ResourceOwner): Task | 
   }
 }
 
+/** A task retains its accepted notices; calendar blocks inherit their task's original attachments. */
+export function resourceSourceIds(snapshot: Snapshot, target: ResourceOwner): string[] {
+  const block = target.entity === 'block' ? snapshot.blocks.find(item => item.id === target.id) : undefined;
+  const task = target.entity === 'task' ? snapshot.tasks.find(item => item.id === target.id)
+    : block?.taskId ? snapshot.tasks.find(item => item.id === block.taskId) : undefined;
+  const ids = new Set([task?.candidateId, block?.candidateId].filter(Boolean));
+  const candidates = snapshot.candidates.filter(candidate => ids.has(candidate.id)
+    || task && candidate.status === 'accepted' && candidate.taskId === task.id);
+  return [...new Set(candidates.flatMap(candidate => candidate.sourceIds))];
+}
+
 /** Resolve on every read: shared references stay at their owner and are never copied into a block. */
 export function resolveResources(snapshot: Snapshot, target: ResourceOwner): ResolvedResource[] {
   const result: ResolvedResource[] = [];

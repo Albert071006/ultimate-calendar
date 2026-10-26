@@ -162,7 +162,7 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
   const switchTab = (id: Tab) => { setTab(id); setSelectedId(null); setFallback(0); };
   const doneFilters = [["all", "全部"], ["accepted", "已接受"], ["ignored", "已忽略"], ["expired", "已过期"]] as const;
   const detail = current && (!mobile || detailOpen) && <DetailFrame mobile={mobile} close={() => setDetailOpen(false)}><CandidateDetail key={current.id} snapshot={snapshot} candidate={current} today={today} now={now} busy={ui.busy}
-    localSourceAccess={Boolean(host) && !mobile}
+    localSourceAccess={Boolean(host) && !mobile} host={mobile ? undefined : host}
     hideQQOriginal={current.sourceIds.some(id => { const source = snapshot.sources.find(value => value.id === id); return source ? isExtractedQQSource(source) || ((mobile || !host) && Boolean(source.captureRef)) : mobile || !host; })}
     clearedPhoneInput={current.sourceIds.some(id => { const source = snapshot.sources.find(value => value.id === id); return source ? isClearedPhoneSource(source) : false; })}
     reason={reason} setReason={setReason} decide={type => void decide(current, type)}

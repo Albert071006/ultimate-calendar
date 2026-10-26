@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { CandidateSchema, SnapshotSchema, SourceSchema, type CandidateInput, type Settings } from '../shared/contracts';
 import type { HostCapabilities } from '../shared/client';
 import { Inbox } from './components/Inbox';
@@ -23,6 +23,19 @@ const detail = () => screen.getByRole('article', { name: '通知详情' });
 const tab = (name: RegExp) => fireEvent.click(screen.getByRole('tab', { name }));
 
 describe('notice detail', () => {
+  it('opens the notice tutorial without accepting the notice or repeating it for each source', async () => {
+    const sourceAttachments = vi.fn(async () => ({ ok: true as const, data: { attachments: [{ id: 'tutorial', name: '合成操作教程.docx', status: 'available' as const }], unavailableSources: 0 } }));
+    const sourceAttachmentOpen = vi.fn(async () => ({ ok: true as const, data: { opened: true as const } }));
+    const f = view([make('合成安全学习')], {}, { sourceAttachments, sourceAttachmentOpen } as unknown as HostCapabilities);
+    const open = await screen.findByRole('button', { name: '打开附件 合成操作教程.docx' });
+    expect(sourceAttachmentOpen).not.toHaveBeenCalled();
+    fireEvent.keyDown(open, { key: 'a' });
+    expect(f.mutate).not.toHaveBeenCalled();
+    fireEvent.click(open);
+    await waitFor(() => expect(sourceAttachmentOpen).toHaveBeenCalledWith({ sourceIds: ['source'], attachmentId: 'tutorial' }));
+    expect(f.mutate).not.toHaveBeenCalled();
+  });
+
   it('keeps long action and benefit details collapsed, preserves their wording, and resets on another notice', () => {
     const action = `先按通知完成合成训练${'并核对合成资料'.repeat(20)}。\n补充：操作说明末尾仍保留。`;
     const benefit = `可获得合成结业证明。\n${'合成证明领取说明。'.repeat(20)}`;

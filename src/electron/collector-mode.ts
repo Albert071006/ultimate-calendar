@@ -1,6 +1,6 @@
 import { existsSync, lstatSync } from 'node:fs';
 import { isAbsolute, join, parse, resolve } from 'node:path';
-import { safeStorage, session } from 'electron';
+import { safeStorage, session, shell } from 'electron';
 import { z } from 'zod';
 import { createRepository, type Repository } from '../storage/repository';
 import { createCaptureStore, type CaptureStore } from '../capture/store';
@@ -13,6 +13,7 @@ import { CaptureSnapshotSchema, type CaptureSnapshot } from '../shared/capture';
 import { apiResultSchema, KeyStatusSchema, SetApiKeyRequestSchema, type ApiResult } from '../shared/contracts';
 import { requests, responses, type Method } from './protocol';
 import { createLocalEvidenceResolver, LocalSourceEvidenceRequestSchema, LocalSourceEvidenceResultSchema } from './local-evidence';
+import { createSourceAttachmentHost } from './source-attachments';
 import { createSpaceManager } from '../storage/space-management';
 import { createCollectorKeySync, hasCollectorKeySyncConfiguration, requirePersistentEncryption, type CollectorKeyChange, type CollectorKeySync } from './collector-key-sync';
 
@@ -33,6 +34,7 @@ export interface CollectorDependencies {
   onWarning?(code: string): void;
   onCaptureChanged?(snapshot: CaptureSnapshot): void;
   clearCache?(): Promise<void>;
+  openPath?(path: string): Promise<string>;
   createSpaceManager?: typeof createSpaceManager;
   createCollectorKeySync?: typeof createCollectorKeySync;
   onCloudKeyChanged?(value: CollectorKeyChange): void;
@@ -117,6 +119,7 @@ export async function startCollectorMode(directory: string, dependencies: Collec
       },
     });
     const resolveEvidence = createLocalEvidenceResolver(repository);
+    const sourceAttachments = createSourceAttachmentHost({ directory, store, resolveEvidence, openPath: path => dependencies.openPath ? dependencies.openPath(path) : shell.openPath(path) });
     const unavailable = () => { throw new WorkflowError('INTERNAL', '本机采集能力尚未准备好，请重试。'); };
     space = (dependencies.createSpaceManager ?? createSpaceManager)({ directory,
       isBusy: () => closing || activeCalls > 0 || !!capture?.busy() || !!queue?.busy(),
@@ -147,6 +150,8 @@ export async function startCollectorMode(directory: string, dependencies: Collec
       captureChunks: input => capture!.chunks?.(input) ?? unavailable(),
       captureCleanup: input => capture!.cleanup?.(input) ?? unavailable(),
       localSourceEvidence: resolveEvidence,
+      sourceAttachments: input => sourceAttachments.list(input),
+      sourceAttachmentOpen: input => sourceAttachments.open(input),
       spaceSnapshot: () => space!.snapshot(),
       spaceConfigure: input => space!.configure(input),
       spaceCleanup: input => space!.cleanup(input),

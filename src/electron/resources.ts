@@ -8,6 +8,7 @@ import { WorkflowError } from '../ai/deepseek';
 
 // Opening unrecognised executable associations is outside this feature's document/resource scope.
 const DOCUMENT_EXTENSIONS = new Set('.pdf .doc .docx .docm .odt .rtf .txt .md .csv .tsv .xls .xlsx .xlsm .ods .ppt .pptx .pptm .odp .epub .mobi .png .jpg .jpeg .gif .webp .bmp .tif .tiff .svg .ico .mp3 .wav .m4a .flac .ogg .mp4 .mov .mkv .avi .webm .zip .rar .7z .json .xml .yaml .yml .tex .bib'.split(' '));
+export const isSupportedResourceFileName = (name: string) => DOCUMENT_EXTENSIONS.has(extname(name).toLowerCase());
 export function resourceFilePath(path: string): { path: string; kind: 'file' | 'folder' } {
   if (!isAbsolute(path) || /[\u0000-\u001f]/.test(path) || /^(?:\\\\|\/\/)/.test(path) || /(?:^|[\\/])\.{1,2}(?:[\\/]|$)/.test(path) || /:(?![\\/])/.test(path)) {
     throw new WorkflowError('VALIDATION', '请选择本机文件或文件夹的完整位置，不支持网络共享、设备路径或命令');
@@ -16,7 +17,7 @@ export function resourceFilePath(path: string): { path: string; kind: 'file' | '
   if (/^(?:\\\\|\/\/)/.test(target)) throw new WorkflowError('VALIDATION', '关联资源只支持本机位置');
   const stat = statSync(target);
   if (stat.isDirectory()) return { path: target, kind: 'folder' };
-  if (!stat.isFile() || !DOCUMENT_EXTENSIONS.has(extname(target).toLowerCase())) {
+  if (!stat.isFile() || !isSupportedResourceFileName(target)) {
     throw new WorkflowError('VALIDATION', '请选择文档、图片、音视频等资料；不支持打开程序、脚本或快捷方式');
   }
   return { path: target, kind: 'file' };

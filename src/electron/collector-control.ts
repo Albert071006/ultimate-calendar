@@ -10,7 +10,7 @@ import type { AsyncEncryption } from './key-store';
 import { requests, responses } from './protocol';
 import { CaptureSnapshotSchema } from '../shared/capture';
 
-export const COLLECTOR_CONTROL_METHODS = ['captureSnapshot', 'captureConfigure', 'captureConnect', 'captureGroups', 'captureMessages', 'captureBatches', 'captureAction', 'captureChunks', 'captureCleanup', 'captureSetApiKey', 'captureRefreshApiKey', 'localSourceEvidence', 'spaceSnapshot', 'spaceConfigure', 'spaceCleanup'] as const;
+export const COLLECTOR_CONTROL_METHODS = ['captureSnapshot', 'captureConfigure', 'captureConnect', 'captureGroups', 'captureMessages', 'captureBatches', 'captureAction', 'captureChunks', 'captureCleanup', 'captureSetApiKey', 'captureRefreshApiKey', 'localSourceEvidence', 'sourceAttachments', 'sourceAttachmentOpen', 'spaceSnapshot', 'spaceConfigure', 'spaceCleanup'] as const;
 export type CollectorControlMethod = typeof COLLECTOR_CONTROL_METHODS[number];
 export interface CollectorControlAPI { invoke(method: CollectorControlMethod, input?: unknown): Promise<unknown> }
 const methodSchema = z.enum(COLLECTOR_CONTROL_METHODS);

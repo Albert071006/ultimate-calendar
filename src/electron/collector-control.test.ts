@@ -47,6 +47,24 @@ async function raw(pipe: string, content: string) {
 }
 
 describe('local collector named-pipe control', () => {
+  it('routes attachment capabilities using source IDs and rejects caller paths before invoking the host', async () => {
+    const f = fixture();
+    const listed = { attachments: [{ id: 'synthetic-attachment', name: '合成教程.docx', status: 'available' }], unavailableSources: 0 };
+    const invoke = vi.fn(async (method: CollectorControlMethod) => ({ ok: true, data: method === 'sourceAttachments' ? listed : { opened: true } }));
+    const { client } = await start(f, { api: { invoke } });
+    const sourceIds = ['synthetic-source'];
+    expect(await client.invoke('sourceAttachments', { sourceIds })).toEqual({ ok: true, data: listed });
+    expect(await client.invoke('sourceAttachmentOpen', { sourceIds, attachmentId: 'synthetic-attachment' })).toEqual({ ok: true, data: { opened: true } });
+    for (const input of [{ sourceIds: [] }, { sourceIds: Array(101).fill('synthetic-source') }, { sourceIds, path: 'C:/arbitrary.exe' }]) {
+      expect(await client.invoke('sourceAttachments', input)).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
+    }
+    expect(await client.invoke('sourceAttachmentOpen', { sourceIds, attachmentId: 'synthetic-attachment', url: 'https://other.invalid/file' })).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
+    expect(invoke).toHaveBeenCalledTimes(2);
+    invoke.mockResolvedValueOnce({ ok: true, data: { ...listed, path: 'synthetic-private-path' } } as never);
+    const invalid = await client.invoke('sourceAttachments', { sourceIds });
+    expect(invalid).toMatchObject({ ok: false, error: { code: 'STORAGE' } });
+    expect(JSON.stringify(invalid)).not.toContain('synthetic-private-path');
+  });
   it('keeps authenticated tray leases separate from renderer operations', async () => {
     const f = fixture(), onTrayOwner = vi.fn(), { client } = await start(f, { onTrayOwner });
     const owner = randomUUID();

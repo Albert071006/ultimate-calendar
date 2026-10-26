@@ -35,3 +35,12 @@
 .resource-error { font-size: 12px; line-height: 1.5; margin: 8px 0 0; color: var(--accent); overflow-wrap: anywhere; }
 .editor-form > .resource-section { margin: 0; }
 @media (max-width: 640px) { .resource-open { min-height: 32px; align-items: center; } .resource-open svg { margin-top: 0; } .resource-fields input { font-size: 16px; } }
+.source-attachments { margin: 12px 0 16px; padding: 12px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--surface); }
+.source-attachments h4 { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+.source-attachments h4 svg, .source-attachment-open svg { width: 15px; height: 15px; flex: 0 0 auto; }
+.source-attachment-open { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 0; border: 0; color: var(--ink); background: none; text-align: left; font: inherit; font-size: 13px; cursor: pointer; }
+.source-attachment-open span { overflow-wrap: anywhere; }
+.source-attachment-open:hover:not(:disabled) span { text-decoration: underline; }
+.source-attachment-open:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.source-attachment-open:disabled { cursor: default; color: var(--ink-3); }
+.source-attachment-state { display: block; margin: 6px 0 0; color: var(--ink-3); font-size: 11px; line-height: 1.5; }

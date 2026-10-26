@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, safeStorage, session, Tray, type IpcMainInvokeEvent, type IpcMainEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, safeStorage, session, shell, Tray, type IpcMainInvokeEvent, type IpcMainEvent } from 'electron';
 import { join, basename, extname } from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync, mkdirSync } from 'node:fs';
@@ -41,6 +41,8 @@ import { createCollectorControlServer } from './collector-control';
 import { startNativeRemote } from './remote-mode';
 import { startCollectorMode } from './collector-mode';
 import { createNativeResourceHost } from './resources-native';
+import { createLocalEvidenceResolver } from './local-evidence';
+import { createSourceAttachmentHost } from './source-attachments';
 import { createCollectorTrayOwnership } from './collector-tray';
 
 app.setName('终极日历');
@@ -236,6 +238,7 @@ async function start() {
   });
   stopSpace = space.stop;
   const resources = createNativeResourceHost(data, () => window!);
+  const sourceAttachments = createSourceAttachmentHost({ directory: data, store: captureStore, resolveEvidence: createLocalEvidenceResolver(repo), openPath: path => shell.openPath(path) });
   const planSource = async () => localPlanSource(data);
   const planExport = createNativePlanExport({ window: () => window!, snapshot: async () => planner.snapshot(), source: planSource });
   const busyExport = createNativeBusyExport({ window: () => window!, snapshot: async () => planner.snapshot(), source: planSource });
@@ -246,6 +249,8 @@ async function start() {
   });
   const api: Omit<DesktopAPI, 'onChanged' | 'onNavigate' | 'onAccountChanged' | 'onCaptureChanged' | 'onUpdateChanged'> = {
     ...planImport, ...planExport, ...busyExport,
+    sourceAttachments: async request => ({ ok: true, data: await sourceAttachments.list(request) }),
+    sourceAttachmentOpen: async request => ({ ok: true, data: await sourceAttachments.open(request) }),
     localSourceEvidence: async request => { const source = repo.snapshot().sources.find(item => item.id === request.sourceId); return source ? { ok: true, data: { sourceId: request.sourceId, match: 'legacy-id', sources: [source] } } : { ok: false, error: { code: 'VALIDATION', message: '本机未找到这份来源', retryable: false } }; },
     spaceSnapshot: async () => ({ ok: true, data: space.snapshot() }),
     spaceConfigure: async policy => ({ ok: true, data: space.configure(policy) }),
