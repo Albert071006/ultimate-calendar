@@ -16,14 +16,18 @@
   },
   "request": "保留已有两段，为其余四项任务各补一个 45 分钟学习时段。",
   "instructions": [
-    "这是规划上下文文件，不能直接导入日历。请返回 format 为 ultimate-calendar-plan、version 为 2、timezone 为 Asia/Shanghai 的 JSON 计划文件。",
-    "完整复制 basis，不能修改其中的来源、目标、日期范围或指纹。给本次增量计划分配独立且稳定的 planId；同一计划重复导入时保持文件内容不变。",
-    "本次仅为所选目标补充任务和学习时段，goals 必须为空。不要复制已有目标、任务、时段，不要输出更新或删除操作。",
+    "这是规划上下文文件，不能直接导入日历。请返回 format 为 ultimate-calendar-plan、timezone 为 Asia/Shanghai 的 JSON 计划文件：只追加用 version 为 2，修改或删除已有记录用 version 为 3。",
+    "完整复制 basis，不能修改其中的来源、目标、日期范围或指纹。给本次补录或修订分配独立且稳定的 planId；同一计划失败重试时保持文件内容不变，下一轮调整须重新导出上下文并使用新 planId。",
+    "goals 必须为空，沿用所选目标。不要复制已有目标、任务或时段。v1/v2 只追加，不接受 updates/deletions；v3 可在同一文件内明确列出新增、修改和删除。",
+    "v3 updates 每条为 {id,kind,targetId,expectedVersion,values}，kind 为 goal/task/block；targetId 和 expectedVersion 必须取本文件对应记录的真实 id 与 version，values 只写要改的字段，省略字段保留原值。同一记录只能修改或删除一次。",
+    "v3 可改目标的 title/description/priority/targetDate/status/color/resourceRefs，任务的 title/description/deadline/reminders/resourceRefs，时段的 title/start/end/location/reminders/resourceRefs。不能改任务完成状态、归属，或时段完成/取消/循环状态与归属。resourceRefs 省略保留，明确 [] 才清空直接资料；reminders 是整组替换，必须给 enabled/leadMinutes/dateOnlyTime。",
+    "v3 deletions 每条为 {id,kind,targetId,expectedVersion}，kind 仅 task/block；不支持删除目标，已完成任务不能通过文件删除。删除任务时必须把其全部关联时段明确列入 deletions，有通知候选关联的任务由应用阻止删除。已完成、已取消或重复系列时段不能修改或删除。",
     "新增任务的 goalId 必须等于 basis.goalId；为已有任务补时段用 blocks[].taskId，为本文件新任务排时段用 taskRef。不能引用其它目标下的事项，不能创建未关联任务的时段。",
-    "新增时段必须完整位于 basis.fromDate 至 basis.toDate 的上海日期范围内；末日次日 00:00 可作为结束时间。",
-    "已完成任务默认不再安排；为未安排的未完成任务补充学习时段。保留用户已经完成、移动或取消的安排，不重建它们。",
-    "busyIntervals 是指定日期内已确认的占用，已裁剪到日期范围。selectedPlan=true 的时段也已列入 blocks，只计算一次；其它占用不应覆盖。截止时间和待判断事项不是忙碌时段。",
-    "resourceLinks 包含直接及继承资料。需要关联时将所需 resource 原样放入 resources，用 resourceRefs 引用其 id；不要制造本机文件路径或上传原文件。"
+    "新增时段、待修改或删除时段的原时间、修改后的时间，都必须完整位于 basis.fromDate 至 basis.toDate 的上海日期范围内；末日次日 00:00 可作为结束时间。范围不足请重新导出，不要修改 basis。",
+    "不能为已完成任务新增时段；为未安排的未完成任务补充学习时段。保留用户已经完成、移动或取消的安排，不重建它们。",
+    "busyIntervals 是指定日期内已确认的占用，已裁剪到日期范围。selectedPlan=true 的时段也已列入 blocks，只计算一次；v3 按明确修改或删除后的最终安排避让，不把已移动时段的旧位置再次算作占用。其它占用不应覆盖。截止时间和待判断事项不是忙碌时段。",
+    "resourceLinks 包含直接及继承资料。需要关联时将所需 resource 原样放入 resources，用 resourceRefs 引用其 id；不要制造本机文件路径或上传原文件。",
+    "导入会展示修改前后及删除清单，删除需另行勾选确认。已有内容的修订先作为一个事务保存，再依次新增任务与时段；中断保留已保存部分，不会自动回滚整份计划。"
   ],
   "goal": {
     "title": "示例英语学习目标",

@@ -51,4 +51,33 @@ describe('native plan file boundary', () => {
     expect((await dispatchRequest('planImportConfirm', { token: 'x', confirmed: true }, trusted, trusted, { planImportConfirm: handler })).ok).toBe(false);
     expect(handler).not.toHaveBeenCalled();
   });
+  it('passes a selected revision and its before/after preview through the native IPC boundary', async () => {
+    const plan = {
+      format: 'ultimate-calendar-plan', version: 3, timezone: 'Asia/Shanghai', planId: 'synthetic-revision', title: '调整合成计划',
+      basis: { source: { kind: 'local', dataInstanceId: '11111111-1111-4111-8111-111111111111' }, goalId: 'goal-1', fromDate: '2030-04-15', toDate: '2030-04-21', exportedAt: '2030-04-15T08:00:00+08:00', fingerprint: 'a'.repeat(64) },
+      updates: [{ id: 'rename', kind: 'task', targetId: 'task-1', expectedVersion: 4, values: { title: '新任务名称' } }],
+      deletions: [{ id: 'remove-session', kind: 'block', targetId: 'block-1', expectedVersion: 2 }],
+    };
+    mocks.file.mockResolvedValue(Buffer.from(JSON.stringify(plan)));
+    const preview = { token: 'revision-token', planId: plan.planId, title: plan.title, expiresAt: '2030-04-15T08:10:00+08:00',
+      rows: [{ kind: 'task', localId: 'rename', title: '新任务名称', state: 'update', action: 'update', existingId: 'task-1', detail: '修改原任务', changes: [{ field: '名称', before: '原任务名称', after: '新任务名称' }] },
+        { kind: 'block', localId: 'remove-session', title: '原时段', state: 'delete', action: 'delete', existingId: 'block-1', detail: '删除原时段' }],
+      conflicts: [], warnings: [], resources: [], requiresDeletionApproval: true };
+    mocks.preview.mockResolvedValue(preview);
+    const trusted = { senderId: 1, frameId: 2, url: 'app://synthetic' }, native = host();
+    expect(await dispatchRequest('planImportOpen', undefined, trusted, trusted, { planImportOpen: () => native.planImportOpen() })).toEqual({ ok: true, data: preview });
+    expect(mocks.preview.mock.calls[0]![0].updates[0].values).toEqual({ title: '新任务名称' });
+    expect(mocks.confirm).not.toHaveBeenCalled();
+  });
+  it('carries explicit deletion approval only through a trusted validated confirmation', async () => {
+    const trusted = { senderId: 1, frameId: 2, url: 'app://synthetic' };
+    const handler = vi.fn(async () => ({ ok: true, data: { status: 'complete', message: '已保存', applied: 2, remaining: 0 } }));
+    const request = { token: 'revision-token', allowConflicts: false, allowDeletions: true };
+    expect((await dispatchRequest('planImportConfirm', request, trusted, trusted, { planImportConfirm: handler })).ok).toBe(true);
+    expect(handler).toHaveBeenCalledWith(request);
+    handler.mockClear();
+    expect((await dispatchRequest('planImportConfirm', request, { ...trusted, frameId: 3 }, trusted, { planImportConfirm: handler })).ok).toBe(false);
+    expect((await dispatchRequest('planImportConfirm', { ...request, allowDeletions: 'yes' }, trusted, trusted, { planImportConfirm: handler })).ok).toBe(false);
+    expect(handler).not.toHaveBeenCalled();
+  });
 });

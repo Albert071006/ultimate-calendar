@@ -553,6 +553,12 @@
         ],
         "additionalProperties": false
       }
+    },
+    "updates": {
+      "not": {}
+    },
+    "deletions": {
+      "not": {}
     }
   },
   "required": [

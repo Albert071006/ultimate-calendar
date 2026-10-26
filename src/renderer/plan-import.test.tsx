@@ -26,7 +26,7 @@ function deferred<T>() {
 function fixture(initial = preview()) {
   const host = {
     planImportOpen: vi.fn<() => Promise<ApiResult<PlanImportPreview | null>>>(async () => ({ ok: true, data: initial })),
-    planImportConfirm: vi.fn<(request: { token: string; allowConflicts?: boolean }) => Promise<ApiResult<PlanImportResult>>>(async () => ({ ok: true, data: { status: 'complete', message: '计划已导入', applied: 2, remaining: 0 } })),
+    planImportConfirm: vi.fn<(request: { token: string; allowConflicts?: boolean; allowDeletions?: boolean }) => Promise<ApiResult<PlanImportResult>>>(async () => ({ ok: true, data: { status: 'complete', message: '计划已导入', applied: 2, remaining: 0 } })),
     planImportTemplate: vi.fn(async () => ({ ok: true as const, data: { saved: true } })),
   };
   const ui = { refresh: vi.fn(async () => {}), setNotice: vi.fn() }, onClose = vi.fn();
@@ -96,6 +96,56 @@ describe('JSON plan import', () => {
     expect(await screen.findByText('这些条目已全部存在，无需再次导入。')).toBeTruthy();
     expect(button('确认批量导入').disabled).toBe(true);
     expect(f.host.planImportConfirm).not.toHaveBeenCalled();
+  });
+
+  it('shows before/after fields and can confirm a modification-only plan without creating records', async () => {
+    const f = fixture(preview({ rows: [{ kind: 'task', action: 'update', localId: 'edit-task', existingId: 'original-task', title: '阅读第一章', state: 'update', detail: '保留原任务及完成状态',
+      changes: [{ field: '说明', before: '阅读教材', after: '阅读教材并写三条摘要' }, { field: '截止', before: '2026-11-04 21:00', after: '2026-11-05 21:00' }] }] }));
+    f.show(); fireEvent.click(button('选择 JSON 文件')); await screen.findByText('一周学习计划');
+    expect(screen.getByLabelText('条目统计').textContent).toBe('待新增 0待修改 1待删除 0已存在 0需处理 0');
+    const changes = screen.getByRole('table', { name: '阅读第一章 修改前后' });
+    expect(within(changes).getByText('阅读教材')).toBeTruthy();
+    expect(within(changes).getByText('阅读教材并写三条摘要')).toBeTruthy();
+    expect(within(changes).getByText('修改前')).toBeTruthy(); expect(within(changes).getByText('修改后')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: '删除确认' })).toBeNull();
+    expect(button('确认批量导入').disabled).toBe(false);
+    fireEvent.click(button('确认批量导入'));
+    await waitFor(() => expect(f.onClose).toHaveBeenCalledTimes(1));
+    expect(f.host.planImportConfirm).toHaveBeenCalledExactlyOnceWith({ token: 'preview-1', allowConflicts: false });
+  });
+
+  it('requires separate deletion acknowledgement, locks it while saving, and clears it for a new partial preview', async () => {
+    const initial = preview({ requiresDeletionApproval: true, conflicts: ['修订后学习时段与课程重叠'], rows: [
+      { kind: 'block', action: 'delete', localId: 'remove-block', existingId: 'old-block', title: '旧学习时段', state: 'delete', detail: '明确删除', changes: [{ field: '记录', before: '2026-11-02 19:00–20:00', after: '删除' }] },
+      { kind: 'block', action: 'update', localId: 'move-block', existingId: 'other-block', title: '新学习时间', state: 'update', detail: '改期' },
+    ] });
+    const f = fixture(initial), request = deferred<ApiResult<PlanImportResult>>(); f.host.planImportConfirm.mockReturnValueOnce(request.promise);
+    f.show(); fireEvent.click(button('选择 JSON 文件')); await screen.findByText('一周学习计划');
+    const deletion = screen.getByRole('checkbox', { name: '我已核对以上删除项' }) as HTMLInputElement;
+    expect(deletion.checked).toBe(false); expect(button('确认批量导入').disabled).toBe(true);
+    fireEvent.click(screen.getByRole('checkbox', { name: '我已核对以上时间冲突，仍按文件导入' }));
+    expect(button('确认批量导入').disabled).toBe(true);
+    fireEvent.click(deletion); fireEvent.click(button('确认批量导入'));
+    expect(f.host.planImportConfirm).toHaveBeenCalledExactlyOnceWith({ token: 'preview-1', allowConflicts: true, allowDeletions: true });
+    expect(deletion.disabled).toBe(true); expect(button('关闭').disabled).toBe(true);
+    await act(async () => request.resolve({ ok: true, data: { status: 'partial', message: '修订尚未完成', applied: 0, remaining: 2, preview: { ...initial, token: 'revision-preview-2' } } }));
+    expect((screen.getByRole('checkbox', { name: '我已核对以上删除项' }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole('checkbox', { name: '我已核对以上时间冲突，仍按文件导入' }) as HTMLInputElement).checked).toBe(false);
+    expect(button('继续导入未完成条目').disabled).toBe(true);
+    fireEvent.click(screen.getByRole('checkbox', { name: '我已核对以上删除项' }));
+    fireEvent.click(button('重新选择 JSON 文件')); await waitFor(() => expect(button('重新选择 JSON 文件').disabled).toBe(false));
+    expect((screen.getByRole('checkbox', { name: '我已核对以上删除项' }) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('never authorizes deletion when only verifying an uncertain previous revision', async () => {
+    const f = fixture(preview({ canVerifyPending: true, requiresDeletionApproval: true,
+      rows: [{ kind: 'block', action: 'delete', localId: 'remove-block', title: '旧学习时段', state: 'blocked', detail: '需要核对原操作' }] }));
+    f.show(); fireEvent.click(button('选择 JSON 文件')); await screen.findByText('一周学习计划');
+    const deletion = screen.getByRole('checkbox', { name: '我已核对以上删除项' }) as HTMLInputElement;
+    expect(deletion.disabled).toBe(true); expect(deletion.checked).toBe(false);
+    fireEvent.click(button('仅核对已保存操作'));
+    await waitFor(() => expect(f.onClose).toHaveBeenCalledTimes(1));
+    expect(f.host.planImportConfirm).toHaveBeenCalledExactlyOnceWith({ token: 'preview-1', allowConflicts: false, allowDeletions: false });
   });
 
   it('verifies a previously saved operation despite blocked rows and conflicts without authorizing new conflict writes', async () => {

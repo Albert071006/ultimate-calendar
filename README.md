@@ -17,7 +17,9 @@
 
 已发布桌面版面向 Windows x64，以北京时间处理日程和账目。当前源码新增手机网页与资料服务的本地开发入口，尚未部署、迁移个人资料或随正式安装包发布，详见下文。微信采集尚未提供。
 
-使用其他 agent 制定计划，可在 Windows“导入计划 → 导出忙碌时间”选择日期并导出课表、活动占用，让 agent 按 [计划 JSON 与上下文标准](docs/plan-file-format.md) 生成完整 v1 新目标（目标、任务、全部时段及资料一次导入）。已有目标可从列表或详情“导出给外部智能体”保存上下文，agent 返回携带原状态标记的 v2 增量文件。两种计划均从“导入计划”预览后保存，支持去重和失败续导；v2 还会检查来源与原计划状态变化，无需再次调用 AI。[完整计划示例](docs/examples/study-plan.calendar-plan.json) · [忙碌文件示例](docs/examples/planning.calendar-busy.json) · [v2 补录示例](docs/examples/guarded-supplement.calendar-plan.json) · [Agent 规划与高级接口规范](docs/agent-planning-guide.md)。
+使用其他 agent 制定计划，可在 Windows“导入计划 → 导出忙碌时间”选择日期并导出课表、活动占用，让 agent 按 [计划 JSON 与上下文标准](docs/plan-file-format.md) 生成完整 v1 新目标（目标、任务、全部时段及资料一次导入）。已有目标可从列表或详情“导出给外部智能体”保存上下文：只追加任务／时段用 v2，修改或明确删除旧内容用 v3，两者均携带原 `basis`，v3 修订项还需真实编号和原记录版本。
+
+三种格式均从“导入计划”预览后保存，支持去重和失败续导；v2/v3 会检查来源与原计划状态变化，v3 展示修改前后及删除清单，删除需单独确认。v3 也可同批新增任务和时段，未列出的旧内容保留；全过程无需再次调用 AI。[完整计划示例](docs/examples/study-plan.calendar-plan.json) · [忙碌文件示例](docs/examples/planning.calendar-busy.json) · [v2 补录示例](docs/examples/guarded-supplement.calendar-plan.json) · [v3 修订示例](docs/examples/revise-existing-plan.calendar-plan.json) · [Agent 规划与高级接口规范](docs/agent-planning-guide.md)。
 
 ## 开始使用
 

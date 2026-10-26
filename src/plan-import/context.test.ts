@@ -26,7 +26,13 @@ describe('goal planning context export', () => {
     expect(context.busyIntervals.filter(interval => interval.selectedPlan)).toHaveLength(1);
     expect(context.busyIntervals.find(interval => interval.selectedPlan)?.title).toBe('合成学习时段');
     expect(context.busyIntervals.find(interval => interval.start === '2026-11-02T22:00:00+08:00')).toMatchObject({ end: '2026-11-02T22:30:00+08:00', selectedPlan: false });
-    expect(context.basis.source).toEqual(source); expect(context.instructions.join(' ')).toContain('version 为 2');
+    expect(context.basis.source).toEqual(source);
+    const instructions = context.instructions.join(' ');
+    expect(instructions).toContain('只追加用 version 为 2');
+    expect(instructions).toContain('修改或删除已有记录用 version 为 3');
+    expect(instructions).toContain('targetId 和 expectedVersion');
+    expect(instructions).toContain('省略字段保留原值');
+    expect(context.version).toBe(1);
   });
 
   it('clips confirmed occupancy and honors moved/cancelled courses, without adding deadlines or cancelled blocks', () => {

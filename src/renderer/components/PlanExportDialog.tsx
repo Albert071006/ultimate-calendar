@@ -88,7 +88,7 @@ export function PlanExportDialog({ host, goal, onClose, onSaved }: {
         {preview.warnings.length > 0 && <div className="warning"><ul>{preview.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></div>}
         <p className="hint">预览 10 分钟内有效；保存前资料若有变化，需要重新预览。</p>
       </section>}
-      <p className="hint plan-export-note">只在本机保存文件，不会上传给外部智能体，也不会调用 AI。智能体返回的计划要到“导入计划”核对后保存，只能补充新内容，已有时段请在日历里改。</p>
+      <p className="hint plan-export-note">只在本机保存文件，不会上传给外部智能体，也不会调用 AI。智能体可返回补充或修订计划，在“导入计划”核对修改前后再保存；删除内容需单独确认。</p>
       <footer className="form-footer">
         <button disabled={Boolean(busy)} onClick={close}>取消</button>
         <button disabled={Boolean(busy) || !request.success} onClick={() => void previewExport()}>{busy === 'preview' ? '正在预览…' : '预览导出内容'}</button>
