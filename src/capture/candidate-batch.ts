@@ -11,6 +11,14 @@ export const CaptureCandidateSchema = ExtractedCandidateSchema.extend({
   eventKey: z.string().trim().min(1).max(80).optional(),
 });
 export const CaptureExtractionSchema = z.strictObject({ candidates: z.array(CaptureCandidateSchema).max(100) });
+/** Only the live request uses this narrower schema; old paid checkpoints retain their exact shape. */
+export function captureRequestSchema(sourceIds: string[]) {
+  const sourceId = z.enum(sourceIds as [string, ...string[]]);
+  return z.strictObject({ candidates: z.array(CaptureCandidateSchema.extend({
+    sourceIds: z.array(sourceId).length(1),
+    supportingSources: z.array(z.strictObject({ sourceId, quote: z.string().min(1).max(2000) })).max(99).optional(),
+  })).max(100) });
+}
 export type CaptureExtraction = z.infer<typeof CaptureExtractionSchema>;
 export type CompletedCapture = { key: string; value: CaptureExtraction };
 export type CaptureEntry = { id: string; candidate: ExtractedCandidate; supportingSources: { sourceId: string; quote: string }[]; groupKey: string };

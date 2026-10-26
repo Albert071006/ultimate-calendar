@@ -16,7 +16,7 @@ export function safeError(error: unknown): ApiError {
 const UsageSchema = z.object({ prompt_tokens: z.number().int().nonnegative(), completion_tokens: z.number().int().nonnegative(), total_tokens: z.number().int().nonnegative(), prompt_cache_hit_tokens: z.number().int().nonnegative().default(0) }).refine(u => u.prompt_cache_hit_tokens <= u.prompt_tokens && u.total_tokens >= u.prompt_tokens + u.completion_tokens);
 const envelope = z.object({ choices: z.array(z.object({ message: z.object({ content: z.string().min(1).max(500_000) }), finish_reason: z.literal('stop') })).length(1), usage: UsageSchema });
 export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string | ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } })[] };
-export async function completeJson<T>(options: { key: string | null; settings: Settings; messages: ChatMessage[]; schema: z.ZodType<T>; operationId: string; purpose: TokenUsage['purpose']; now: string; autoQuote?: PriceQuote | null; fetch?: typeof fetch; timeoutMs?: number; maxAttempts?: number; sleep?(ms: number): Promise<void>; onUsage?(usage: TokenUsage): void }): Promise<{ value: T; usage: TokenUsage }> {
+export async function completeJson<T>(options: { key: string | null; settings: Settings; messages: ChatMessage[]; schema: z.ZodType<T>; operationId: string; purpose: TokenUsage['purpose']; now: string; autoQuote?: PriceQuote | null; fetch?: typeof fetch; timeoutMs?: number; maxAttempts?: number; sleep?(ms: number): Promise<void>; onUsage?(usage: TokenUsage): void; onParsedResponse?(value: unknown): void }): Promise<{ value: T; usage: TokenUsage }> {
   if (!options.key) throw new WorkflowError('NO_API_KEY', '请先在设置中配置 DeepSeek API 密钥');
   const body = JSON.stringify({ model: options.settings.model, messages: options.messages, response_format: { type: 'json_object' }, thinking: { type: 'disabled' }, max_tokens: 8192, stream: false });
   const attempts = Math.max(1, Math.min(3, options.maxAttempts ?? 3));
@@ -44,9 +44,23 @@ export async function completeJson<T>(options: { key: string | null; settings: S
         const u = usageResult.data;
         const cost = estimateCost(options.settings, { input: u.prompt_tokens, cached: u.prompt_cache_hit_tokens, output: u.completion_tokens }, options.autoQuote);
         usage = TokenUsageSchema.parse({ id: randomUUID(), operationId: options.operationId, createdAt: options.now, purpose: options.purpose, model: options.settings.model, inputTokens: u.prompt_tokens, outputTokens: u.completion_tokens, cachedInputTokens: u.prompt_cache_hit_tokens, totalTokens: u.total_tokens, ...cost });
-        options.onUsage?.(usage);
       }
-      try { const parsed = envelope.parse(raw); const value = options.schema.parse(JSON.parse(parsed.choices[0]!.message.content)); return { value, usage: usage! }; }
+      let content: unknown;
+      try { const parsed = envelope.parse(raw); content = JSON.parse(parsed.choices[0]!.message.content); }
+      catch {
+        if (usage) options.onUsage?.(usage);
+        throw new WorkflowError('AI_RESPONSE', 'DeepSeek 返回空白、截断或不符合约定的 JSON，请重试或人工校对');
+      }
+      // Capture can durably retain paid JSON before validating its references. A storage failure
+      // in usage accounting/backup must not prevent that checkpoint from being saved first.
+      try { options.onParsedResponse?.(content); }
+      catch (error) {
+        // Still record known billable usage when possible, without masking the original failure.
+        try { if (usage) options.onUsage?.(usage); } catch { /* Preserve the response-storage error. */ }
+        throw error;
+      }
+      if (usage) options.onUsage?.(usage);
+      try { return { value: options.schema.parse(content), usage: usage! }; }
       catch { throw new WorkflowError('AI_RESPONSE', 'DeepSeek 返回空白、截断或不符合约定的 JSON，请重试或人工校对'); }
     } finally { clearTimeout(timer); }
   }

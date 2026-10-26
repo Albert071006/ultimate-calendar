@@ -252,8 +252,13 @@ export function createCaptureStore(path: string, internal: { database?: Database
       for (const row of db.prepare("SELECT payload FROM capture_batches WHERE status IN ('requesting','preparing')").all()) {
         const value = parsePayload(row, BatchSchema)!;
         if (value.status === 'requesting') {
-          value.status = 'uncertain'; value.error = '上次分析请求已发出，但未保存到响应；请确认后手动重试，避免重复付费'; uncertain++;
-          const attempt = value.attempts.at(-1); if (attempt?.status === 'requesting') { attempt.status = 'uncertain'; attempt.finishedAt = at; attempt.error = value.error; }
+          const savedResponse = value.result && typeof value.result === 'object' && !Array.isArray(value.result) && value.result['pendingResponse'];
+          if (savedResponse) {
+            value.status = 'pending'; value.error = '上次回答已保存，恢复后先校验本地结果，不重复调用 AI'; pending++;
+          } else {
+            value.status = 'uncertain'; value.error = '上次分析请求已发出，但未保存到响应；请确认后手动重试，避免重复付费'; uncertain++;
+            const attempt = value.attempts.at(-1); if (attempt?.status === 'requesting') { attempt.status = 'uncertain'; attempt.finishedAt = at; attempt.error = value.error; }
+          }
         } else { value.status = 'pending'; value.error = null; pending++; }
         value.updatedAt = at; saveBatch(value);
       }
@@ -453,6 +458,15 @@ export function createCaptureStore(path: string, internal: { database?: Database
         if (inputFingerprint !== undefined) value.inputFingerprint = inputFingerprint;
         const attempt = value.attempts.at(-1); if (attempt?.status === 'requesting') { attempt.status = 'succeeded'; attempt.finishedAt = at; }
         saveBatch(value); return value;
+      });
+    },
+    /** Retain paid JSON before reference validation; the request is not successful until promoted. */
+    savePendingResponse(id: string, result: unknown, at = nowInstant()): CaptureBatch {
+      InstantSchema.parse(at); const parsed = JsonSchema.parse(result);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !parsed['pendingResponse']) throw Error('缺少待校验的已保存回答');
+      return transaction(() => {
+        const value = batch(id); if (!value || value.status !== 'requesting') throw Error('仅已发出请求的批次可保存待校验回答');
+        value.result = parsed; value.updatedAt = at; value.error = null; saveBatch(value); return value;
       });
     },
     markApplied(id: string, at = nowInstant()): CaptureBatch {

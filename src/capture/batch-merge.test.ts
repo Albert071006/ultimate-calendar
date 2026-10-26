@@ -56,7 +56,7 @@ function tableBatch(f: ReturnType<typeof fixture>) {
   return { batch: f.seal(), message, followup };
 }
 
-describe('QQ batch event evidence and durable staged candidates', () => {
+describe('QQ batch event evidence and incremental candidate application', () => {
   it('keeps a fire-safety image and its following text as two actual sources of one candidate', async () => {
     const f = fixture();
     const imageMessage = f.store.ingest([{ accountId: '100', groupId: '200', messageId: 'safety-image', sentAt: at, importedAt: at,
@@ -102,7 +102,7 @@ describe('QQ batch event evidence and durable staged candidates', () => {
     expect(f.repository.snapshot().sources).toEqual(snapshot.sources); expect(calls).toBe(1);
   });
 
-  it.each(['supplement', 'duplicate'] as const)('lets a later %s see the staged table event and retains all 32 referenced sources', async kind => {
+  it.each(['supplement', 'duplicate'] as const)('lets a later %s see the saved table event and retains all 32 referenced sources', async kind => {
     const f = fixture(); const { batch, followup } = tableBatch(f); let calls = 0;
     await analyzeCapture({ ...options(f), batch, fetch: async (_url, request) => {
       calls++; const sent = input(request);
@@ -112,9 +112,10 @@ describe('QQ batch event evidence and durable staged candidates', () => {
           supportingSources: sent.units.slice(1).map(unit => ({ sourceId: unit.id, quote: unit.text })),
         })]);
       }
-      expect(f.repository.snapshot().candidates).toEqual([]);
+      expect(f.repository.snapshot().candidates).toHaveLength(1);
       expect(sent.existingCandidates).toHaveLength(1);
-      expect(sent.existingCandidates[0]!.id).toMatch(/^qq-stage:/);
+      expect(sent.existingCandidates[0]!.id).toBe(f.repository.snapshot().candidates[0]!.id);
+      expect(sent.existingCandidates[0]!.id).not.toMatch(/^qq-stage:/);
       const text = sent.units.find(unit => unit.messageId === followup)!;
       return response([extracted(text.id, text.text, { title: '名单中的获奖同学领取奖品', action: '携带校园卡领取奖品', conditions: ['携带校园卡'],
         relation: { kind, candidateId: sent.existingCandidates[0]!.id },
@@ -129,21 +130,23 @@ describe('QQ batch event evidence and durable staged candidates', () => {
     expect(snapshot.candidates[0]!.sourceIds.some(id => id.startsWith('qq-stage:'))).toBe(false);
   });
 
-  it('reopens the checkpoint with the same staged ID and never repeats its successful paid request', async () => {
-    const f = fixture(); const { batch, followup } = tableBatch(f); let calls = 0, stagedId = '';
+  it('reopens the checkpoint with the same saved ID and never repeats its successful paid request', async () => {
+    const f = fixture(); const { batch, followup } = tableBatch(f); let calls = 0, savedId = '';
     await expect(analyzeCapture({ ...options(f), batch, fetch: async (_url, request) => {
       calls++; const sent = input(request);
       if (calls === 1) return response([extracted(sent.units[0]!.id, sent.units[0]!.text)]);
-      stagedId = sent.existingCandidates[0]!.id;
-      expect(stagedId).toMatch(/^qq-stage:/); throw Error('synthetic interrupted connection');
+      savedId = sent.existingCandidates[0]!.id;
+      expect(savedId).toBe(f.repository.snapshot().candidates[0]!.id);
+      expect(savedId).not.toMatch(/^qq-stage:/); throw Error('synthetic interrupted connection');
     } })).rejects.toMatchObject({ code: 'NETWORK' });
-    expect(calls).toBe(2); expect(f.repository.snapshot().candidates).toEqual([]);
+    expect(calls).toBe(2); expect(f.repository.snapshot().candidates).toHaveLength(1);
+    expect(f.repository.snapshot().candidates[0]).toMatchObject({ id: savedId, status: 'pending' });
     f.reopen(); f.store.retryBatch(batch.id);
     await analyzeCapture({ ...options(f), batch: f.store.claimBatch()!, fetch: async (_url, request) => {
       calls++; const sent = input(request);
-      expect(sent.units).toHaveLength(2); expect(sent.existingCandidates[0]!.id).toBe(stagedId);
+      expect(sent.units).toHaveLength(2); expect(sent.existingCandidates[0]!.id).toBe(savedId);
       const text = sent.units.find(unit => unit.messageId === followup)!;
-      return response([extracted(text.id, text.text, { action: '携带校园卡领取奖品', relation: { kind: 'supplement', candidateId: stagedId } })]);
+      return response([extracted(text.id, text.text, { action: '携带校园卡领取奖品', relation: { kind: 'supplement', candidateId: savedId } })]);
     } });
     const snapshot = f.repository.snapshot();
     expect(calls).toBe(3); expect(snapshot.tokenUsage).toHaveLength(2);

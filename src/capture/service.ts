@@ -34,7 +34,10 @@ export function normalizeMessage(raw: Raw, accountId: string, groupNames: Map<st
     else if (['image', 'file', 'record', 'video', 'reply', 'forward', 'node'].includes(type)) {
       const kind = type === 'record' ? 'voice' : ['reply', 'forward', 'node'].includes(type) ? 'other' : type as 'image' | 'file' | 'video';
       const fallback = type === 'image' ? '群图片.jpg' : type === 'reply' ? '引用消息' : type === 'forward' || type === 'node' ? '合并转发' : type === 'record' ? '语音' : type === 'video' ? '视频' : '未命名文件';
-      attachments.push({ kind, name: (string(data.name ?? data.file_name ?? data.filename) || fallback).slice(0, 1000), size: Number.isSafeInteger(Number(data.size ?? data.file_size)) && Number(data.size ?? data.file_size) >= 0 ? Number(data.size ?? data.file_size) : null, locator: z.json().parse({ type, data }) });
+      // NapCat also puts display filenames in file; accept only a basename, never decode or resolve a locator.
+      const file = type === 'file' && typeof data.file === 'string' ? data.file.trim() : '';
+      const fileName = file.length <= 1000 && /^[^\\/:*?"<>|\u0000-\u001f\u007f]+\.[a-z0-9]{1,16}$/i.test(file) ? file : '';
+      attachments.push({ kind, name: (string(data.name ?? data.file_name ?? data.filename) || fileName || fallback).slice(0, 1000), size: Number.isSafeInteger(Number(data.size ?? data.file_size)) && Number(data.size ?? data.file_size) >= 0 ? Number(data.size ?? data.file_size) : null, locator: z.json().parse({ type, data }) });
     }
   }
   const sender = object(raw.sender);
@@ -245,7 +248,7 @@ export function createCaptureService(options: {
           }
           await analyzeCapture({ store, repository: options.repository, batch: store.batch(batch.id)!, getApiKey: async () => {
             const key = await options.getApiKey(); requestCredentialGeneration = credentialGeneration; return key;
-          }, getPriceQuote: options.getPriceQuote, getModelInputModalities: options.getModelInputModalities, runModel: options.runModel, afterRequest: options.afterModelRequest, fetch: options.fetch, canContinue: () => permitted(batch.accountId, batch.groupId, false) && store.config().analysisEnabled });
+          }, getPriceQuote: options.getPriceQuote, getModelInputModalities: options.getModelInputModalities, runModel: options.runModel, afterRequest: options.afterModelRequest, onProgress: options.onPlannerChanged, fetch: options.fetch, canContinue: () => permitted(batch.accountId, batch.groupId, false) && store.config().analysisEnabled });
           options.onPlannerChanged?.();
         } catch (cause) {
           const current = store.batch(batch.id); if (!current) continue;
@@ -255,7 +258,8 @@ export function createCaptureService(options: {
             store.failBatch(batch.id, '分析已暂停，恢复后继续已保存的进度'); store.retryBatch(batch.id); break;
           }
           const uncertain = current.status === 'requesting' && (!(cause instanceof WorkflowError) || ['NETWORK', 'AI_RESPONSE', 'STORAGE', 'INTERNAL'].includes(cause.code));
-          store.failBatch(batch.id, uncertain ? `${message}。响应结果未知或未通过校验，自动重试已停止；手动重试可能再次计费` : message, uncertain);
+          const savedResponse = current.result && typeof current.result === 'object' && !Array.isArray(current.result) && current.result.pendingResponse;
+          store.failBatch(batch.id, savedResponse ? `${message}。回答已保存在本机，已完成内容保留；重试先核对原回答，不会自动重新付费请求` : uncertain ? `${message}。响应结果未知或未通过校验，自动重试已停止；手动重试可能再次计费` : message, uncertain);
           if (cause instanceof WorkflowError && (cause.code === 'NO_API_KEY' || cause.code === 'AUTH')) {
             error = cause.code === 'NO_API_KEY' ? '等待可用的 AI 密钥；QQ 消息继续收集，密钥同步后自动恢复分析' : message;
             const paused = store.pauseForCredentials(cause.code, batch.id);

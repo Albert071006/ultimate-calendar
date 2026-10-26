@@ -154,6 +154,44 @@ describe('capture orchestration against real local OneBot websocket', () => {
     expect(store.listBatches().items[0]?.status).toBe('applied'); expect(fetcher).toHaveBeenCalledTimes(2);
     expect(reads).toBe(3);
   });
+  it('notifies saved fragment progress and retries an invalid later answer locally without another paid request', async () => {
+    const onPlannerChanged = vi.fn(), groupSizes: number[] = [];
+    let firstSourceId = '', invalidAnswer: unknown;
+    const fetcher = vi.fn(async (_url: string | URL | Request, request?: RequestInit) => {
+      const payload = JSON.parse(String(request?.body));
+      const sent = JSON.parse(payload.messages.find((message: { role: string }) => message.role === 'user').content[0].text) as { units: { id: string; text: string }[] };
+      groupSizes.push(sent.units.length);
+      if (groupSizes.length === 1) firstSourceId = sent.units[0]!.id;
+      else {
+        expect(onPlannerChanged).toHaveBeenCalledTimes(1);
+        expect(repository.snapshot().candidates).toHaveLength(1);
+        expect(sent.units.every(unit => unit.id !== firstSourceId)).toBe(true);
+      }
+      const answer = { candidates: [{ title: '领取合成活动资料', action: '领取合成活动资料', benefit: '', benefitKind: 'unknown', potentialBenefit: '',
+        conditions: [], uncertainties: [], sourceIds: [firstSourceId], sourceQuote: sent.units[0]!.text, deadline: null, eventStart: null, eventEnd: null,
+        location: '', temporalEvidence: [], relation: { kind: 'new', candidateId: null } }] };
+      if (groupSizes.length === 2) invalidAnswer = answer;
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer) }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
+    });
+    const { service, store, repository } = await setup(fetcher, { onPlannerChanged });
+    await service.configure({ ...store.config(), enabled: true, groupIds: ['200'] }); await waitFor(() => !service.busy());
+    const messageId = store.ingest([{ accountId: '100', groupId: '200', messageId: 'synthetic-fragment-progress', sentAt: fromUnix(Date.now() / 1000)!, text: '',
+      attachments: [{ kind: 'file', name: '合成活动名单.xlsx' }] }]).ids[0]!;
+    store.saveExtraction(store.attachments(messageId)[0]!.id, { extractorVersion: 'synthetic-ready', chunks: Array.from({ length: 31 }, (_, ordinal) => ({
+      ordinal, location: `第 ${ordinal + 1} 页`, text: `领取合成活动资料；合成名单第 ${ordinal + 1} 页`, imageDataUrl: null, status: 'ready' as const, error: null,
+    })) });
+    await service.configure({ ...store.config(), enabled: false, analysisEnabled: true }); await waitFor(() => !service.busy());
+    service.action({ action: 'analyze' }); await waitFor(() => !service.busy());
+    const batch = store.batch(store.listBatches().items[0]!.id)!, saved = repository.snapshot();
+    expect(groupSizes).toEqual([30, 1]); expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(saved.candidates).toHaveLength(1); expect(saved.sources).toHaveLength(1); expect(onPlannerChanged).toHaveBeenCalledTimes(1);
+    expect(batch.result).toMatchObject({ completed: [expect.any(Object)], pendingResponse: { value: invalidAnswer } });
+    expect(batch.error).toContain('回答已保存在本机'); expect(batch.error).toContain('已完成内容保留'); expect(batch.error).toContain('不会自动重新付费请求');
+    service.action({ action: 'retry', batchId: batch.id }); await waitFor(() => !service.busy());
+    expect(fetcher).toHaveBeenCalledTimes(2); expect(onPlannerChanged).toHaveBeenCalledTimes(1);
+    expect(repository.snapshot().candidates).toEqual(saved.candidates); expect(repository.snapshot().sources).toEqual(saved.sources);
+    expect(store.batch(batch.id)?.result).toEqual(batch.result); expect(store.batch(batch.id)?.error).toContain('回答已保存在本机');
+  });
   it('uses a rotated key after an in-flight rejection but honors a manual pause during the request', async () => {
     let release: ((response: Response) => void) | undefined;
     let hold = true;
@@ -301,6 +339,31 @@ describe('capture orchestration against real local OneBot websocket', () => {
   it('preserves file/quote locators internally and never mistakes voice/video as text', () => {
     const message = normalizeMessage({ group_id: '200', message_id: '1', time: 1792713600, message: [{ type: 'text', data: { text: '请看文件' } }, { type: 'file', data: { name: '作业.pdf', file_id: 'file-1', size: 300 } }, { type: 'record', data: { file: 'voice' } }, { type: 'reply', data: { id: 'old' } }] }, '100', new Map());
     expect(message?.text).toBe('请看文件'); expect(message?.attachments?.map(a => a.kind)).toEqual(['file', 'voice', 'other']); expect(message?.attachments?.[0]?.locator).toMatchObject({ data: { file_id: 'file-1' } });
+  });
+  it('recognizes a NapCat file segment filename while preserving its original locator and IDs', () => {
+    const segment = { type: 'file', data: { file: '合成实验操作说明.docx', file_id: '/synthetic-file-id', file_size: '2318065', url: 'https://example.com/synthetic-download' } };
+    const message = normalizeMessage({ group_id: '200', message_id: 'synthetic-docx', time: 1792713600, message: [segment] }, '100', new Map());
+    expect(message).toMatchObject({ messageId: 'synthetic-docx', groupId: '200', segments: [segment], attachments: [{ kind: 'file', name: '合成实验操作说明.docx', size: 2318065, locator: segment }] });
+  });
+  it('keeps explicit name variants ahead of the NapCat file fallback', () => {
+    for (const field of ['name', 'file_name', 'filename']) {
+      const message = normalizeMessage({ group_id: '200', message_id: field, time: 1792713600, message: [{ type: 'file', data: { [field]: '原有文件名.pdf', file: '备用文件名.docx', file_id: '/synthetic-id' } }] }, '100', new Map());
+      expect(message?.attachments?.[0]?.name).toBe('原有文件名.pdf');
+    }
+  });
+  it('does not interpret file URLs, paths, encoded payloads or opaque IDs as display filenames', () => {
+    for (const file of ['https://example.com/file.docx', 'file:///C:/synthetic/file.docx', 'C:\\synthetic\\file.docx', 'C:file.docx', '/synthetic/file.docx', '../file.docx', 'folder/file.docx',
+      'data:application/pdf;base64,c3ludGhldGlj', 'base64://c3ludGhldGlj', 'c3ludGhldGlj', '/synthetic-id', 'file\u0000.docx', 'file\n.docx', `${'x'.repeat(1000)}.pdf`]) {
+      const segment = { type: 'file', data: { file, file_id: '/synthetic-id' } };
+      const message = normalizeMessage({ group_id: '200', message_id: 'unsafe-name', time: 1792713600, message: [segment] }, '100', new Map());
+      expect(message?.attachments?.[0], file).toMatchObject({ name: '未命名文件', locator: segment });
+    }
+  });
+  it('keeps image, voice and video file locators from changing their existing fallback names', () => {
+    const segments = ['image', 'record', 'video'].map(type => ({ type, data: { file: 'synthetic-file.pdf' } }));
+    const message = normalizeMessage({ group_id: '200', message_id: 'media-names', time: 1792713600, message: segments }, '100', new Map());
+    expect(message?.attachments?.map(attachment => attachment.name)).toEqual(['群图片.jpg', '语音', '视频']);
+    expect(message?.attachments?.map(attachment => attachment.locator)).toEqual(segments);
   });
   it('catches up newest disconnected messages before resuming a saved older cursor', async () => {
     let resumed = false; const cursors: unknown[] = []; const now = Date.now() / 1000;

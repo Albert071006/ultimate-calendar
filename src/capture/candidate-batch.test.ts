@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CandidateSchema, SourceSchema } from '../shared/contracts';
-import { CaptureExtractionSchema, captureEntries, reconcileCaptureCandidate } from './candidate-batch';
+import { CaptureExtractionSchema, captureRequestSchema, captureEntries, reconcileCaptureCandidate } from './candidate-batch';
 import type { ExtractedCandidate } from '../ai/schemas';
 import { hashInput } from './analysis';
 
@@ -13,6 +13,13 @@ const candidate: ExtractedCandidate = { title: '获奖同学领礼品', action: 
   sourceIds: [source.id], sourceQuote: source.text, deadline: null, eventStart: null, eventEnd: null, location: '', temporalEvidence: [], relation: { kind: 'duplicate', candidateId: original.id } };
 
 describe('capture-only event reconciliation', () => {
+  it('uses the same strict current-source schema for the prompt and response validation', () => {
+    const schema = captureRequestSchema([source.id, 'supporting-source']);
+    expect(schema.safeParse({ candidates: [candidate] }).success).toBe(true);
+    expect(schema.safeParse({ candidates: [{ ...candidate, sourceIds: [source.id, 'supporting-source'] }] }).success).toBe(false);
+    expect(schema.safeParse({ candidates: [{ ...candidate, sourceIds: ['other-fragment-source'] }] }).success).toBe(false);
+    expect(schema.safeParse({ candidates: [{ ...candidate, supportingSources: [{ sourceId: 'other-fragment-source', quote: '旧资料' }] }] }).success).toBe(false);
+  });
   it('parses a legacy paid response without adding fields or changing its receipt fingerprint', () => {
     const legacy = { candidates: [candidate] };
     const parsed = CaptureExtractionSchema.parse(legacy);

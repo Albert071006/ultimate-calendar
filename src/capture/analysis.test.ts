@@ -37,6 +37,8 @@ describe('capture analysis and durable candidate application', () => {
     await analyzeCapture({ ...options(store, repository), batch: saved, fetch: async (_url, request) => {
       calls++;
       const messages = JSON.parse(String(request?.body)).messages;
+      expect(messages.find((message: { role: string }) => message.role === 'system').content).toContain('不复制网址（URL）、本机路径、附件文件名或 QQ 账号/群号');
+      expect(messages.find((message: { role: string }) => message.role === 'system').content).toContain('sourceQuote、supportingSources[].quote、temporalEvidence[].quote 必须保留对应来源的连续原文');
       const input = JSON.parse(messages.find((message: { role: string }) => message.role === 'user').content[0].text);
       expect(input.units.map((unit: { messageId: string }) => unit.messageId)).toEqual([ordinary, imported[1], imported[2]]);
       expect(input.units.map((unit: { recipient: { audience: string } }) => unit.recipient.audience)).toEqual(['unspecified', 'self', 'all']);
