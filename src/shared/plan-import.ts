@@ -37,7 +37,7 @@ const revisionReminders = ReminderConfigSchema.extend({
 const updateIdentity = { id: localId, targetId: IdSchema, expectedVersion: z.number().int().positive() };
 export const PlanUpdateSchema = z.discriminatedUnion('kind', [
   z.strictObject({ ...updateIdentity, kind: z.literal('goal'), values: nonemptyPatch(GoalInputSchema.omit({ resources: true }).extend({ resourceRefs: refs })) }),
-  z.strictObject({ ...updateIdentity, kind: z.literal('task'), values: nonemptyPatch(TaskInputSchema.pick({ title: true, description: true, deadline: true }).extend({ reminders: revisionReminders, resourceRefs: refs })) }),
+  z.strictObject({ ...updateIdentity, kind: z.literal('task'), values: nonemptyPatch(TaskInputSchema.pick({ title: true, description: true, deadline: true, scheduleMode: true }).extend({ reminders: revisionReminders, resourceRefs: refs })) }),
   z.strictObject({ ...updateIdentity, kind: z.literal('block'), values: nonemptyPatch(z.strictObject({ title: TitleSchema, start: InstantSchema, end: InstantSchema, location: z.string().max(2000), reminders: revisionReminders, resourceRefs: refs })) }),
 ]);
 export const PlanDeletionSchema = z.strictObject({ ...updateIdentity, kind: z.enum(['task', 'block']) });

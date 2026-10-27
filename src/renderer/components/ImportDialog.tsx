@@ -239,8 +239,8 @@ export function SourceViewer({
   }
   if (ui.host && !mobile && ui.snapshot?.keyStatus.scope === 'cloud' && (isExtractedQQSource(source) || isClearedPhoneSource(source))) return <LocalSourceViewer sourceId={source.id} host={ui.host} onClose={onClose} onCapture={onCapture} />;
   if (isExtractedQQSource(source) || ((!ui.host || mobile) && source.captureRef)) return <div className="editor-form">
-    <p>QQ 来源 · {source.label || '无标签'}</p>
-    <p className="warning">QQ 原文和附件仅保存在采集电脑，目前无法在手机查看。手机仅接收提炼结果。</p>
+    <p>{source.captureRef?.accountId.startsWith('wechat:') || source.label?.startsWith('微信') ? '微信' : 'QQ'} 来源 · {source.label || '无标签'}</p>
+    <p className="warning">{source.captureRef?.accountId.startsWith('wechat:') || source.label?.startsWith('微信') ? '微信' : 'QQ'} 原文和附件仅保存在采集电脑，目前无法在手机查看。手机仅接收提炼结果。</p>
     <p className="hint">请在采集电脑上核对原始消息或附件；手机不能读取电脑本地文件。</p>
     <button onClick={onClose}>关闭来源详情</button>
   </div>;
@@ -253,7 +253,7 @@ export function SourceViewer({
   return (
     <div className="editor-form">
       <p>
-        {source.captureRef ? 'QQ 采集依据' : source.purpose === "courses" ? "课表截图原件" : "消息原件"} ·{" "}
+        {source.captureRef ? (source.captureRef.accountId.startsWith('wechat:') ? '微信采集依据' : 'QQ 采集依据') : source.purpose === "courses" ? "课表截图原件" : "消息原件"} ·{" "}
         {source.label || "无标签"}
       </p>
       <dl className="source-metadata">
@@ -281,7 +281,7 @@ export function SourceViewer({
         <dl className="source-metadata"><dt>来源群</dt><dd>{source.captureRef.groupId}</dd><dt>依据位置</dt><dd>{source.captureRef.locator}</dd><dt>资料类型</dt><dd>{source.captureRef.transcribed ? 'AI 图片转写 · 请对照原件核对' : source.captureRef.attachmentId ? '附件提取正文' : '群消息文字'}</dd></dl>
         <p className="hint">以下是形成这条候选时保留的依据。原始群消息或附件可能随后更正、撤回或被清理，请在采集记录中核对。</p>
         {onCapture && <button onClick={() => onCapture(source.captureRef!)}>查看本机采集记录与附件</button>}
-        <QQSearchActions evidence={{ groupId: source.captureRef.groupId, sentAt: source.sentAt, text: source.text, attachment: Boolean(source.captureRef.attachmentId || source.captureRef.transcribed) }} />
+        <QQSearchActions evidence={{ platform: source.captureRef.accountId.startsWith('wechat:') ? 'wechat' : 'qq', groupId: source.captureRef.groupId, sentAt: source.sentAt, text: source.text, attachment: Boolean(source.captureRef.attachmentId || source.captureRef.transcribed) }} />
         <p className="fine-print">需要重新分析时，请到 QQ 采集的分析批次中操作，以保留完整上下文和已完成进度。</p>
       </section>}
       {source.imageDataUrl && (
@@ -307,7 +307,7 @@ export function SourceViewer({
       </button>}
       <fieldset className="warning">
         <legend>{source.captureRef ? '删除这份候选依据' : '删除原始资料'}</legend>
-        <p>{source.captureRef ? '这会删除此处保留的候选依据。清理 QQ 群原文与附件，请到 QQ 采集页操作。' : '这会失去原文核对依据。关联摘要与独立任务会保留。'}</p>
+        <p>{source.captureRef ? `这会删除此处保留的候选依据。清理群原文与附件，请到${source.captureRef.accountId.startsWith('wechat:') ? '微信' : ' QQ '}采集页操作。` : '这会失去原文核对依据。关联摘要与独立任务会保留。'}</p>
         <label className="check">
           <input
             type="checkbox"

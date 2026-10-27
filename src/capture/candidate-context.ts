@@ -1,4 +1,5 @@
 import type { Candidate, Source } from '../shared/contracts';
+import { candidateDates } from '../domain/candidate-dates';
 
 type Scope = { accountId: string; groupId: string };
 /** Never infer cross-group identity from a similar title or copied notification. */
@@ -16,6 +17,7 @@ export function captureCandidateContext(candidate: Candidate, sources: Source[])
     benefitKind: candidate.benefitKind, potentialBenefit: candidate.potentialBenefit, conditions: candidate.conditions,
     deadline: candidate.deadline, eventStart: candidate.eventStart, eventEnd: candidate.eventEnd,
     location: candidate.location, status: candidate.status, revisionOfId: candidate.revisionOfId,
+    resolvedDates: candidateDates(candidate, sources),
     sourceSentAt: [...new Set(sources.filter(source => ids.has(source.id)).map(source => source.sentAt))].slice(-20),
   };
 }

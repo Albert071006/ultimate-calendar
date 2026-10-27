@@ -23,6 +23,19 @@ type Options = {
   openPath(path: string): Promise<string>;
 };
 
+/** Source references authorize one exact message; lookup spans both isolated collectors. */
+export function combinedCaptureSources(...stores: Options['store'][]): Options['store'] {
+  return {
+    message: id => stores.map(store => store.message(id)).find(Boolean) ?? null,
+    attachment: id => stores.map(store => store.attachment(id)).find(Boolean) ?? null,
+    attachments: id => stores.flatMap(store => store.attachments(id)),
+    readAttachmentBytes: id => {
+      const owner = stores.find(store => store.attachment(id));
+      return owner?.readAttachmentBytes(id) ?? null;
+    },
+  };
+}
+
 /** Attachment names are labels, never paths or commands. Preserve only a safe basename. */
 function safeName(value: string): string | null {
   if (!value || /[\\/:\u0000-\u001f\u007f]/.test(value)) return null;

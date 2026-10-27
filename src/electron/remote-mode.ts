@@ -99,6 +99,7 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
               if (!collector) return failure('VALIDATION', '这台电脑尚未连接本机采集资料目录');
               const result = await collector.invoke(method as CollectorControlMethod, value);
               if (result.ok && method === 'captureSnapshot') window.webContents.send('planner:capture-changed', result.data);
+              if (result.ok && method === 'wechatCaptureSnapshot') window.webContents.send('planner:wechat-capture-changed', result.data);
               return result;
             }
             const localResult = await shell.handle(method) ?? await files.handle(method, value);
@@ -118,7 +119,7 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
               if (request && collector) {
                 // The collector retrieves an authorized encrypted snapshot, never this renderer input.
                 const localKey = await collector.invoke('captureRefreshApiKey').catch(() => null);
-                if (!localKey?.ok) await dialog.showMessageBox(window, { type: 'info', message: '云端密钥已更新，QQ 提炼正在等待自动同步。', detail: '无需重复保存。电脑采集服务恢复连接后会自动取得最新配置；同步状态可在 QQ 采集页查看。' }).catch(() => {});
+                if (!localKey?.ok) await dialog.showMessageBox(window, { type: 'info', message: '云端密钥已更新，群消息提炼正在等待自动同步。', detail: '无需重复保存。电脑采集服务恢复连接后会自动取得最新配置；同步状态可在采集页查看。' }).catch(() => {});
               }
               if (request) changed();
               return { ok: true, data: { configured: status.configured, sessionOnly: false, scope: 'cloud', cloudConfiguration: status } };

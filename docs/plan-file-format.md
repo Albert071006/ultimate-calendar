@@ -124,7 +124,7 @@ v2 专用于所选目标的增量续排：`goals` 必须为空；新任务必须
 | `kind` | `values` 可修改字段 |
 | --- | --- |
 | `goal` | `title`、`description`、`priority`、`targetDate`、`status`、`color`、`resourceRefs`；目标必须是 `basis.goalId` |
-| `task` | `title`、`description`、`deadline`、`reminders`、`resourceRefs`；任务必须属于所选目标 |
+| `task` | `title`、`description`、`deadline`、`scheduleMode`、`reminders`、`resourceRefs`；任务必须属于所选目标 |
 | `block` | `title`、`start`、`end`、`location`、`reminders`、`resourceRefs`；时段必须关联所选目标下的任务 |
 
 **未写的字段保留原值**。例如只改 `title` 不清空原说明、DDL、提醒或资料。`deadline:null` 明确取消任务 DDL，`targetDate:null` 明确清空目标日期。`end` 必须是具体时间，不能设为 null；与未修改字段合并后，结束仍须晚于开始。
@@ -204,7 +204,11 @@ v2 专用于所选目标的增量续排：`goals` 必须为空；新任务必须
 
 ## 任务 `tasks[]`
 
-必填 `id`、`title`。可选 `description`、`status`（`open` / `done`，默认 `open`）、`deadline`、`goalRef`、`goalId`、`courseId`、`reminders`、`resourceRefs`。
+必填 `id`、`title`。可选 `description`、`status`（`open` / `done`，默认 `open`）、`scheduleMode`、`deadline`、`goalRef`、`goalId`、`courseId`、`reminders`、`resourceRefs`。
+
+- 默认只安排一个时段，完成该时段会同时完成任务；恢复时也同步。只有用户明确需要分多次安排，才设置 `scheduleMode:"multiple"`，每段完成与整个任务完成分别记录。
+- 给已有单时段任务增加第二段，先使用 v3 `updates` 明确设置 `scheduleMode:"multiple"`。旧资料已经存在多个时段或重复系列时继续按多时段处理。改期应修改原时段。
+- 同一任务有多段但没有明确多时段设置的文件，会在预览阻止导入。旧文件部分导入后保留原回执，不更换 `planId` 重建；重新导出当前上下文，以新的 v3 修订明确开启多时段并仅追加剩余安排。
 
 - `goalRef:"goal-01"` 关联本文件 `goals` 中的目标，应用自动取得真实 ID。
 - `goalId` 仅用于关联**已读取并核实**的现有目标 ID；不能与 `goalRef` 同时填写。
@@ -230,7 +234,7 @@ v2 专用于所选目标的增量续排：`goals` 必须为空；新任务必须
 - `kind` 默认 `work`（学习／执行）；固定活动使用 `event`。文件标准中两者都必须有明确 `end`，且结束晚于开始。
 - 时间必须是有效的上海时间 ISO 字符串，带秒和 `+08:00`；不接受 `Z`、缺时区的时间、`24:00` 或不存在的日期。可含三位毫秒。
 - `taskRef` 关联本文件任务；`taskId` 关联已核实的现有任务，两者互斥。v1 都不填时创建独立时段；v2/v3 必须关联所选目标的任务。
-- 一个任务可以有多个时段，分别使用不同 `id`。不要为每次学习重新创建同一任务。
+- 明确选择多时段的任务可以有多个时段，分别使用不同 `id`。不要为每次学习重新创建同一任务。
 - v1/v2/v3 均不接受 RRULE 或循环表达式；有限重复安排请展开成各自的时段。它们是独立时段，没有重复系列的批量修改语义。
 - `location` 默认 `""`，最多 2,000 字符；不要包含电脑文件路径。
 

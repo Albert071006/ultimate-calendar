@@ -1,10 +1,10 @@
 import { z } from 'zod';
-import { CaptureConfigSchema, CaptureSnapshotSchema } from '../shared/capture';
+import { CaptureConfigSchema, CaptureSnapshotSchema, capturePlatformLabel, type CapturePlatform } from '../shared/capture';
 import { ImageDataUrlSchema } from '../shared/contracts';
 import { nowInstant } from '../domain/time';
 import { safeError, WorkflowError } from '../ai/deepseek';
-import { createReadOnlyBridge, detectExistingBridge, type ReadOnlyBridge, type BridgeHealth, type BridgeConfiguration } from './bridge';
-import { downloadAttachment, AttachmentDownloadError } from './download';
+import { createReadOnlyBridge, detectExistingBridge, type ReadOnlyBridge, type BridgeHealth, type BridgeConfiguration, type BridgeOptions } from './bridge';
+import { downloadAttachment, AttachmentDownloadError, attachmentFileName, type CaptureAttachmentLocation } from './download';
 import { EXTRACTOR_VERSION, type DocumentExtraction, type DocumentInput } from './documents';
 import { analyzeCapture } from './analysis';
 import { isAddressedElsewhere, mentionLabel } from './recipients';
@@ -14,6 +14,11 @@ import type { PriceQuote } from '../shared/account';
 import type { ModelRequestRunner } from '../ai/request-queue';
 
 type Raw = Record<string, unknown>;
+export type CaptureBridge = Pick<ReadOnlyBridge, 'start' | 'stop' | 'getGroups' | 'history' | 'rememberMessage' | 'getReferencedMessage' | 'getForward'> & {
+  getImage(...args: Parameters<ReadOnlyBridge['getImage']>): Promise<CaptureAttachmentLocation>;
+  getFileUrl(...args: Parameters<ReadOnlyBridge['getFileUrl']>): Promise<CaptureAttachmentLocation>;
+};
+export type CaptureBridgeFactory = (options: BridgeOptions) => CaptureBridge;
 const object = (value: unknown): Raw => value && typeof value === 'object' && !Array.isArray(value) ? value as Raw : {};
 const string = (value: unknown) => typeof value === 'string' || typeof value === 'number' ? String(value) : '';
 const seconds = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value) ? Number(value) : null;
@@ -29,7 +34,7 @@ export function normalizeMessage(raw: Raw, accountId: string, groupNames: Map<st
   for (const segment of segments) {
     const data = object(segment.data); const type = string(segment.type);
     if (type === 'text') text.push(string(data.text));
-    else if (type === 'at') text.push(mentionLabel(data.qq, accountId));
+    else if (type === 'at') text.push(mentionLabel(accountId.startsWith('wechat:') ? data.wechat : data.qq, accountId));
     else if (type === 'face') text.push('[表情]');
     else if (['image', 'file', 'record', 'video', 'reply', 'forward', 'node'].includes(type)) {
       const kind = type === 'record' ? 'voice' : ['reply', 'forward', 'node'].includes(type) ? 'other' : type as 'image' | 'file' | 'video';
@@ -46,6 +51,7 @@ export function normalizeMessage(raw: Raw, accountId: string, groupNames: Map<st
   return { accountId, groupId, messageId, sentAt, senderId: string(raw.user_id ?? sender.user_id) || null, senderName: (string(sender.card) || string(sender.nickname)).slice(0, 1000), groupName: (groupNames.get(groupId) || string(raw.group_name)).slice(0, 1000), text: [combined.slice(0, 990_000), ...warnings.map(w => `[采集提示：${w}]`)].filter(Boolean).join('\n'), segments: z.array(z.json()).parse(segments), attachments: attachments.slice(0, 100) };
 }
 export function createCaptureService(options: {
+  platform?: CapturePlatform;
   store: CaptureStore; repository: Repository;
   credentials: { get(): Promise<string | null>; set(value: string | null): Promise<unknown>; status(): { configured: boolean } };
   getApiKey(): Promise<string | null>; extract(input: DocumentInput, signal?: AbortSignal): Promise<DocumentExtraction>;
@@ -53,19 +59,24 @@ export function createCaptureService(options: {
   getModelInputModalities?(model: string): string[] | null;
   runModel?: ModelRequestRunner;
   afterModelRequest?(): void; onChanged?(value: z.infer<typeof CaptureSnapshotSchema>): void; onPlannerChanged?(): void;
-  bridgeFactory?: typeof createReadOnlyBridge; downloader?: typeof downloadAttachment;
+  bridgeFactory?: CaptureBridgeFactory; downloader?: typeof downloadAttachment;
   fetch?: typeof fetch;
 }) {
   const { store } = options;
-  let bridge: ReadOnlyBridge | null = null;
+  const platform = options.platform ?? store.platform ?? 'qq';
+  const platformName = capturePlatformLabel(platform);
+  if (store.platform !== platform) throw Error('采集服务与存储平台不匹配');
+  let bridge: CaptureBridge | null = null;
   let health: BridgeHealth | null = null; let error: string | null = null; let lastReceivedAt: string | null = null;
   let timer: ReturnType<typeof setInterval> | null = null; let notifyTimer: ReturnType<typeof setTimeout> | null = null;
   let running = false; let historyRunning = false; let stopped = false; let suspended = false; let connectionGeneration = 0;
   let credentialGeneration = 0; let credentialsConfigured: boolean | null = null;
+  let lastWechatPoll = 0;
+  let lastWechatMediaRetry = 0;
   let groupNames = new Map<string, string>(); let connectPromise: Promise<z.infer<typeof CaptureSnapshotSchema>> | null = null;
   function snapshot() {
     const state = health?.state, config = store.config();
-    return CaptureSnapshotSchema.parse({ config, connection: state === 'online' ? 'online' : state === 'account-mismatch' ? 'account-changed' : state === 'connecting' ? 'connecting' : state === 'error' ? 'error' : 'disconnected', accountLabel: health?.maskedAccount ?? null, accountName: health?.nickname ?? null, error: error ?? health?.error ?? null, lastReceivedAt, credentialConfigured: options.credentials.status().configured, analysisWaitingForKey: !!store.credentialPause(), stats: store.stats(), coverage: store.listCoverage(config.accountId ?? undefined).filter(item => config.groupIds.includes(item.groupId)) });
+    return CaptureSnapshotSchema.parse({ platform, config, connection: state === 'online' ? 'online' : state === 'account-mismatch' ? 'account-changed' : state === 'connecting' ? 'connecting' : state === 'error' ? 'error' : 'disconnected', accountLabel: health?.maskedAccount ?? null, accountName: health?.nickname ?? null, error: (error ?? health?.error)?.replaceAll('QQ', platformName) ?? null, lastReceivedAt, credentialConfigured: platform === 'wechat' ? !!health?.online : options.credentials.status().configured, analysisWaitingForKey: !!store.credentialPause(), stats: store.stats(), coverage: store.listCoverage(config.accountId ?? undefined).filter(item => config.groupIds.includes(item.groupId)) });
   }
   function emit() { if (!stopped && !notifyTimer) notifyTimer = setTimeout(() => { notifyTimer = null; if (!stopped) options.onChanged?.(snapshot()); }, 200); }
   function permitted(accountId: string, groupId: string, collection = true) { const config = store.config(); return !stopped && !suspended && (!collection || config.enabled) && config.accountId === accountId && config.groupIds.includes(groupId); }
@@ -79,7 +90,7 @@ export function createCaptureService(options: {
     if (running || historyRunning) throw new WorkflowError('CONFLICT', '当前采集或分析仍在处理，请暂停并等待后再重新连接');
     connectPromise = (async () => {
       let selected: BridgeConfiguration | undefined;
-      if (request.detect) {
+      if (request.detect && platform === 'qq') {
         const detected = await detectExistingBridge();
         selected = detected[0]; if (!selected) throw new WorkflowError('NOT_FOUND', '日历专用 QQ 桥接尚未配置，请先在终极日历的 qq-bridge 目录配置独立组件及访问令牌');
         const current = store.config(), flavor = selected.flavor ?? 'napcat';
@@ -88,10 +99,11 @@ export function createCaptureService(options: {
         store.saveConfig({ ...current, endpoint: selected.endpoint, flavor, enabled: !changed && current.enabled, analysisEnabled: !changed && current.analysisEnabled });
         await options.credentials.set(selected.token);
       }
-      if (request.token) await options.credentials.set(request.token);
-      const token = await options.credentials.get(); if (!token) throw new WorkflowError('VALIDATION', '请检测现有配置或填写本机 QQ 接口访问令牌');
+      if (request.token && platform === 'qq') await options.credentials.set(request.token);
+      const token = platform === 'wechat' ? '' : await options.credentials.get(); if (platform === 'qq' && !token) throw new WorkflowError('VALIDATION', '请检测现有配置或填写本机 QQ 接口访问令牌');
+      if (platform === 'wechat' && !options.bridgeFactory) throw new WorkflowError('VALIDATION', '微信只读采集组件尚未配置');
       const generation = ++connectionGeneration; bridge?.stop(); health = null; error = null; emit();
-      bridge = (options.bridgeFactory ?? createReadOnlyBridge)({ ...selected, endpoint: store.config().endpoint, flavor: store.config().flavor, token, expectedAccountId: store.config().accountId, isGroupSelected: (accountId, groupId) => permitted(accountId, groupId, false),
+      bridge = (options.bridgeFactory ?? createReadOnlyBridge)({ ...selected, endpoint: store.config().endpoint, flavor: store.config().flavor, token: token ?? '', expectedAccountId: store.config().accountId, isGroupSelected: (accountId, groupId) => permitted(accountId, groupId, false),
         onMessage: ingest,
         onRecall: raw => { const accountId = health?.accountId; if (!accountId) return; const m = store.messageByKey(accountId, string(raw.group_id), string(raw.message_id)); if (m) { store.markMessageChanged(m.id); emit(); } },
         onHealth: next => {
@@ -107,16 +119,16 @@ export function createCaptureService(options: {
     try { return await connectPromise; } finally { connectPromise = null; }
   }
   async function getGroups() {
-    if (!bridge || !health?.online) throw new WorkflowError('VALIDATION', 'QQ 尚未在线，请先启动桥接、登录 QQ 并连接');
+    if (!bridge || !health?.online) throw new WorkflowError('VALIDATION', `${platformName} 尚未在线，请先登录并连接采集组件`);
     const groups = await bridge.getGroups(); groupNames = new Map(groups.map(g => [g.id, g.name]));
     return groups.map(g => ({ id: g.id, name: g.name }));
   }
   async function configure(input: z.input<typeof CaptureConfigSchema>, intent: { analysisIntent?: boolean } = {}) {
-    let next = CaptureConfigSchema.parse(input); const previous = store.config();
+    let next = CaptureConfigSchema.parse(platform === 'wechat' ? { ...input, platform } : input); const previous = store.config();
     const bridgeChanged = next.endpoint !== previous.endpoint || next.flavor !== previous.flavor;
     if ((running || historyRunning || connectPromise) && (next.accountId !== previous.accountId || bridgeChanged)) throw new WorkflowError('CONFLICT', '当前采集或分析仍在处理，请暂停并等待后再切换账号/接口');
     if (bridgeChanged) next = { ...next, enabled: false, analysisEnabled: false };
-    if (next.enabled && (!health?.online || next.accountId !== health.accountId)) throw new WorkflowError('VALIDATION', '请先验证该 QQ 账号在线后再开始收集');
+    if (next.enabled && (!health?.online || next.accountId !== health.accountId)) throw new WorkflowError('VALIDATION', `请先验证该 ${platformName} 账号在线后再开始收集`);
     if (next.groupIds.some(id => !previous.groupIds.includes(id))) {
       const groups = await getGroups(); if (next.groupIds.some(id => !groups.some(g => g.id === id))) throw new WorkflowError('VALIDATION', '所选群不属于当前在线账号，请刷新群列表');
     }
@@ -146,8 +158,10 @@ export function createCaptureService(options: {
   async function backfill() {
     if (historyRunning || stopped || suspended || !bridge || !health?.online || !store.config().enabled) return;
     historyRunning = true; const client = bridge;
+    if (platform === 'wechat') lastWechatPoll = Date.now();
     try {
       const config = store.config(); if (!config.accountId) return;
+      if (!groupNames.size) groupNames = new Map((await client.getGroups()).map(group => [group.id, group.name]));
       for (const groupId of config.groupIds) {
         if (!permitted(config.accountId, groupId) || client !== bridge || !health?.online) break;
         const previous = store.getCoverage(config.accountId, groupId);
@@ -172,7 +186,7 @@ export function createCaptureService(options: {
               if (!pageEarliest || Date.parse(at) < Date.parse(pageEarliest)) pageEarliest = at;
               if (!earliest || at < earliest) earliest = at;
               if (Date.parse(at) <= Date.parse(start)) complete = true;
-              if (Date.parse(at) >= Date.parse(start) && Date.parse(at) <= Date.parse(end)) { const parsed = normalizeMessage({ ...raw, group_id: groupId }, config.accountId, groupNames); if (parsed) count += store.ingest([{ ...parsed, origin: 'history' }]).inserted; }
+              if (Date.parse(at) >= Date.parse(start) && Date.parse(at) <= Date.parse(end)) { const parsed = normalizeMessage({ ...raw, group_id: groupId }, config.accountId, groupNames); if (parsed) { const inserted = store.ingest([{ ...parsed, origin: 'history' }]).inserted; count += inserted; if (inserted) lastReceivedAt = nowInstant(); } }
             }
             if (complete) break;
             if (resumeCursor && resumeUntil && pageEarliest && Date.parse(pageEarliest) <= Date.parse(resumeUntil)) {
@@ -185,6 +199,7 @@ export function createCaptureService(options: {
             await new Promise(resolve => setTimeout(resolve, 200));
           }
           if (!complete && !failure) failure = '本轮已达到 200 页；已保存获取的消息，可再次补采核对剩余历史';
+          if (platform === 'wechat' && (complete || !cursor)) failure = '已读取当前可见的本机记录；未同步到电脑的消息无法补采';
           save(complete && !failure ? 'complete' : 'partial');
         } catch { failure = '历史接口不可用或请求中断，已取得的消息仍保留；可手动补采'; save(count ? 'partial' : 'failed'); }
         emit();
@@ -193,7 +208,7 @@ export function createCaptureService(options: {
     finally { historyRunning = false; emit(); }
   }
   function remember(message: StoredCaptureMessage) {
-    bridge?.rememberMessage({ self_id: message.accountId, group_id: message.groupId, message_type: 'group', message_id: message.messageId, time: Date.parse(message.sentAt) / 1000, message: message.segments });
+    bridge?.rememberMessage({ self_id: message.accountId, group_id: message.groupId, message_type: 'group', message_id: message.sourceMessageId ?? message.messageId, time: Date.parse(message.sentAt) / 1000, message: message.segments });
   }
   async function processAttachment(message: StoredCaptureMessage, a: StoredCaptureAttachment) {
     if (a.status === 'ready' || a.status === 'deleted') return;
@@ -203,7 +218,7 @@ export function createCaptureService(options: {
     const loc = object(a.locator); const data = object(loc.data); const type = string(loc.type);
     try {
       if (a.kind === 'other') {
-        if (!bridge || !health?.online) throw Error('QQ 未在线'); remember(message);
+        if (!bridge || !health?.online) throw platform === 'wechat' ? new AttachmentDownloadError('微信未在线，连接恢复后会重试读取附件', 'failed', true) : Error('QQ 未在线'); remember(message);
         const refs = type === 'reply' ? [await bridge.getReferencedMessage(message.groupId, message.messageId, string(data.id))] : type === 'forward' ? await bridge.getForward(message.groupId, message.messageId, string(data.id)) : [data];
         const parts = refs.slice(0, 500).map((raw, index) => {
           const normalized = normalizeMessage({ ...raw, message: raw.message ?? raw.content, message_id: raw.message_id ?? `context-${index}`, group_id: message.groupId, time: raw.time ?? 0 }, message.accountId, groupNames);
@@ -215,21 +230,24 @@ export function createCaptureService(options: {
       }
       let bytes = store.readAttachmentBytes(a.id);
       if (!bytes) {
-        if (!bridge || !health?.online) throw Error('QQ 未在线'); remember(message);
+        if (!bridge || !health?.online) throw platform === 'wechat' ? new AttachmentDownloadError('微信未在线，连接恢复后会重试读取附件', 'failed', true) : Error('QQ 未在线'); remember(message);
         store.setAttachmentStatus(a.id, 'downloading'); emit();
-        const locator = a.kind === 'image' ? await bridge.getImage(message.groupId, message.messageId, string(data.file ?? data.file_id ?? data.url)) : await bridge.getFileUrl(message.groupId, message.messageId, string(data.id ?? data.file_id ?? data.file), typeof data.busid === 'number' ? data.busid : undefined);
-        bytes = await (options.downloader ?? downloadAttachment)(locator, { fileName: a.name });
+        const sourceMessageId = message.sourceMessageId ?? message.messageId;
+        const locator = a.kind === 'image' ? await bridge.getImage(message.groupId, sourceMessageId, string(data.file ?? data.file_id ?? data.url)) : await bridge.getFileUrl(message.groupId, sourceMessageId, string(data.id ?? data.file_id ?? data.file), typeof data.busid === 'number' ? data.busid : undefined);
+        const resolvedName = attachmentFileName(locator, a.name);
+        bytes = await (options.downloader ?? downloadAttachment)(locator, { fileName: resolvedName });
         if (!permitted(message.accountId, message.groupId, false)) throw new WorkflowError('CANCELLED', '来源群已取消选择，已停止附件处理');
         const saved = store.putAttachment(a.id, bytes);
+        if (resolvedName !== a.name) store.renameAttachment(a.id, resolvedName);
         const cached = saved.hash && store.findExtraction(saved.hash, EXTRACTOR_VERSION);
         if (cached) { store.saveExtraction(a.id, { extractorVersion: EXTRACTOR_VERSION, chunks: cached.chunks.map(({ id: _id, attachmentId: _attachmentId, ...c }) => c) }); return; }
       }
       store.setAttachmentStatus(a.id, 'extracting'); emit();
-      const result = await options.extract({ bytes, name: a.name });
+      const result = await options.extract({ bytes, name: store.attachment(a.id)?.name ?? a.name });
       store.saveExtraction(a.id, { extractorVersion: EXTRACTOR_VERSION, chunks: result.parts.map((p, index) => ({ ordinal: index, location: p.locator, text: p.text, imageDataUrl: p.imageDataUrl && ImageDataUrlSchema.safeParse(p.imageDataUrl).success ? p.imageDataUrl : null, status: p.imageDataUrl && !ImageDataUrlSchema.safeParse(p.imageDataUrl).success ? 'failed' : 'ready', error: p.imageDataUrl && !ImageDataUrlSchema.safeParse(p.imageDataUrl).success ? '图像格式或大小不支持，需手动查看' : null })), status: result.status === 'ready' ? 'ready' : result.status === 'encrypted' ? 'encrypted' : result.status === 'unsupported' ? 'unsupported' : 'failed', error: result.warnings.join('；').slice(0, 2000) || null });
     } catch (cause) {
-      const message = cause instanceof WorkflowError || cause instanceof AttachmentDownloadError ? cause.message : '附件下载、授权或解析未完成；请确认 QQ 在线后重试批次，或手动查看';
-      store.setAttachmentStatus(a.id, cause instanceof AttachmentDownloadError ? cause.status : 'failed', message);
+      const message = cause instanceof WorkflowError || cause instanceof AttachmentDownloadError ? cause.message : `附件下载、授权或解析未完成；请确认${platform === 'wechat' ? '微信' : ' QQ '}在线后重试批次，或手动查看`;
+      store.setAttachmentStatus(a.id, cause instanceof AttachmentDownloadError ? cause.status : 'failed', message, cause instanceof AttachmentDownloadError && cause.retryable);
     } finally { emit(); }
   }
   async function tick(force = false) {
@@ -245,6 +263,21 @@ export function createCaptureService(options: {
           if (!batch.result) for (const m of store.batchMessages(batch.id).filter(message => !isAddressedElsewhere(message))) for (const a of store.attachments(m.id)) {
             if (!store.config().analysisEnabled || stopped || suspended) throw new WorkflowError('CANCELLED', '分析已暂停');
             await processAttachment(m, a);
+          }
+          if (platform === 'wechat' && !batch.result) {
+            const unfinished = store.batchMessages(batch.id).filter(message => !isAddressedElsewhere(message)).flatMap(message => store.attachments(message.id)).filter(item => ['image', 'file'].includes(item.kind) && item.status !== 'ready');
+            if (unfinished.length) {
+              const unreadMessages = [...new Set(unfinished.map(item => item.messageId))].map(messageId => {
+                const items = unfinished.filter(item => item.messageId === messageId), retryable = items.every(item => item.retryable === true);
+                const names = items.slice(0, 3).map(item => item.name).join('、');
+                return { messageId, retryable, error: `微信附件尚未完整读取（${names}），本条消息未请求 AI，同批其他可读消息已分开处理。${retryable ? '请在微信中打开或下载附件；系统会稍后自动检查，也可重试此批。' : '请查看附件状态并处理后重试；不支持或超出大小限制的文件需手动处理。'}`.slice(0, 2000) };
+              });
+              if (store.isolateUnreadAttachments(batch.id, unreadMessages)) { emit(); continue; }
+              const retryable = unfinished.every(item => item.retryable === true) && batch.attempts.length === 0;
+              const names = unfinished.slice(0, 3).map(item => item.name).join('、');
+              store.waitForAttachments(batch.id, `微信附件尚未完整读取（${names}），本批未继续请求 AI。${retryable ? '请在微信中打开或下载附件；系统会稍后自动检查，也可重试此批。' : '请查看附件状态并处理后重试；不支持或超出大小限制的文件需手动处理。'}`.slice(0, 2000), retryable);
+              emit(); continue;
+            }
           }
           await analyzeCapture({ store, repository: options.repository, batch: store.batch(batch.id)!, getApiKey: async () => {
             const key = await options.getApiKey(); requestCredentialGeneration = credentialGeneration; return key;
@@ -278,7 +311,22 @@ export function createCaptureService(options: {
   }
   return {
     snapshot, connect, configure, credentialsChanged, groups: getGroups,
-    async start() { stopped = false; suspended = false; if (!timer) timer = setInterval(() => { void tick(); }, 5000); const config = store.config(), stats = store.stats(); if ((config.enabled || config.analysisEnabled && (stats.pendingBatches > 0 || stats.pendingMessages > 0)) && await options.credentials.get()) await connect(); },
+    async start() {
+      stopped = false; suspended = false;
+      if (!timer) timer = setInterval(() => {
+        if (platform === 'wechat' && Date.now() - lastWechatMediaRetry >= 120_000) {
+          lastWechatMediaRetry = Date.now(); store.retryWaitingAttachments();
+        }
+        if (platform === 'wechat' && store.config().enabled && Date.now() - lastWechatPoll >= 120_000) {
+          lastWechatPoll = Date.now();
+          if (health?.online) void backfill();
+          else if (!running && !historyRunning && !connectPromise) void connect().catch(() => { error = '微信读取暂时不可用，请确认微信已登录后重新连接'; emit(); });
+        }
+        void tick();
+      }, 5000);
+      const config = store.config(), stats = store.stats();
+      if ((config.enabled || config.analysisEnabled && (stats.pendingBatches > 0 || stats.pendingMessages > 0)) && (platform === 'wechat' || await options.credentials.get())) await connect();
+    },
     stop() { stopped = true; suspended = true; ++connectionGeneration; if (timer) clearInterval(timer); timer = null; if (notifyTimer) clearTimeout(notifyTimer); notifyTimer = null; bridge?.stop(); },
     busy: () => running || historyRunning || !!connectPromise,
     suspendForRestore() { if (running || historyRunning || connectPromise) throw new WorkflowError('CONFLICT', 'QQ 正在处理消息，请稍后恢复'); suspended = true; ++connectionGeneration; bridge?.stop(); health = null; },
@@ -295,7 +343,7 @@ export function createCaptureService(options: {
         emit(); return snapshot();
       }
       error = null;
-      if (request.action === 'backfill') { if (!health?.online || !store.config().enabled) throw new WorkflowError('VALIDATION', '请先连接 QQ 并启用所选群收集'); void backfill(); }
+      if (request.action === 'backfill') { if (!health?.online || !store.config().enabled) throw new WorkflowError('VALIDATION', `请先连接 ${platformName} 并启用所选群收集`); void backfill(); }
       else { if (!store.config().analysisEnabled) throw new WorkflowError('VALIDATION', '分析已暂停，请先恢复自动分析'); if (request.action === 'retry') store.retryBatch(request.batchId!); if (request.action === 'reanalyze') store.reanalyzeBatch(request.batchId!); void tick(true); }
       emit(); return snapshot();
     },

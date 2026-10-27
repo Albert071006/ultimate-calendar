@@ -7,12 +7,17 @@ export type RecipientMessage = {
 };
 export type RecipientAudience = 'self' | 'all' | 'others' | 'unspecified' | 'unknown';
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
-function target(value: unknown): string | null {
+function target(value: unknown, accountId: string): string | null {
+  if (accountId.startsWith('wechat:')) {
+    if (value === 'all') return 'all';
+    if (typeof value !== 'string' || !/^(?:wechat:)?[A-Za-z0-9_.-]{1,200}$/.test(value)) return null;
+    return value.startsWith('wechat:') ? value : `wechat:${value}`;
+  }
   if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? String(value) : null;
   return typeof value === 'string' && (value === 'all' || /^[1-9]\d*$/.test(value)) ? value : null;
 }
 export function mentionLabel(value: unknown, accountId: string): string {
-  const recipient = target(value);
+  const recipient = target(value, accountId);
   return recipient === 'all' ? '@全体成员' : recipient === accountId ? '@我' : recipient ? '@其他成员' : '@未知成员';
 }
 
@@ -28,7 +33,7 @@ export function recipientContext(message: RecipientMessage): {
   };
   const mention = (value: unknown) => {
     seen = true;
-    const recipient = target(value);
+    const recipient = target(value, message.accountId);
     if (recipient === 'all') all = true;
     else if (recipient === message.accountId) self = true;
     else if (recipient) other = true;
@@ -38,7 +43,7 @@ export function recipientContext(message: RecipientMessage): {
   const segments = message.segments.length ? message.segments : [{ type: 'text', data: { text: message.text ?? '' } }];
   for (const raw of segments) {
     const segment = object(raw), data = object(segment.data);
-    if (segment.type === 'at') append(mention(data.qq));
+    if (segment.type === 'at') append(mention(message.accountId.startsWith('wechat:') ? data.wechat : data.qq));
     else if (segment.type === 'text' && typeof data.text === 'string') {
       // Legacy CQ strings and literal code examples were stored identically. Only
       // structured at segments prove a recipient; ambiguous text must stay eligible.

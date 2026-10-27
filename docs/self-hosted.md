@@ -2,7 +2,7 @@
 
 这份说明面向需要手机与电脑共用资料、并自行维护服务的开发者。普通 Windows 用户请使用[本地桌面版](local-desktop.md)，无需执行本页命令。独立本地版不接入资料服务；下文的 Electron 云端能力由标准版提供。
 
-**从发布包部署**请先读[Linux 服务器与手机端部署指南](server-mobile-deployment.md)。[服务器版与手机端 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.5.0) 提供已构建的后端、手机静态页和可选 Windows 标准版；以下内容主要用于源码开发与进一步理解接口。
+**从发布包部署**请先读[Linux 服务器与手机端部署指南](server-mobile-deployment.md)。[服务器版与手机端 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.6.0) 提供已构建的后端、手机静态页和可选 Windows 标准版；以下内容主要用于源码开发与进一步理解接口。
 
 需要 Node.js 24 或更高版本。以下命令只使用独立演示目录；不读取已安装桌面版的资料，也不会部署云资源或上传资料。
 

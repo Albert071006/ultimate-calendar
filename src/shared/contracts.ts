@@ -118,7 +118,9 @@ export type Candidate = z.infer<typeof CandidateSchema>;
 export type CandidateInput = z.input<typeof CandidateInputSchema>;
 const taskValue = z.strictObject({ title: TitleSchema, description: text.default(''), status: z.enum(['open', 'done']).default('open'),
   deadline: DeadlineSchema.nullable().default(null), goalId: IdSchema.nullable().default(null), candidateId: IdSchema.nullable().default(null), reminders: reminder,
-  courseId: IdSchema.nullable().default(null), resources: ResourceReferencesSchema.optional() });
+  courseId: IdSchema.nullable().default(null), resources: ResourceReferencesSchema.optional(),
+  // Do not add a default: legacy backups and pending request fingerprints retain their exact shape.
+  scheduleMode: z.enum(['single', 'multiple']).optional() });
 export const TaskInputSchema = taskValue;
 export const TaskSchema = taskValue.extend(metadata);
 export type Task = z.infer<typeof TaskSchema>;
@@ -338,7 +340,12 @@ export interface PlannerService {
   undo(transactionId?: string): MutationResult;
 }
 
-export const ApiErrorSchema = z.strictObject({ code: z.enum(['VALIDATION', 'NOT_FOUND', 'CONFLICT', 'NO_API_KEY', 'NETWORK', 'RATE_LIMIT', 'AUTH', 'BALANCE', 'AI_RESPONSE', 'CANCELLED', 'STORAGE', 'INTERNAL']), message: shortText, retryable: z.boolean() });
+export const ApiErrorSchema = z.strictObject({
+  code: z.enum(['VALIDATION', 'NOT_FOUND', 'CONFLICT', 'NO_API_KEY', 'NETWORK', 'RATE_LIMIT', 'AUTH', 'BALANCE', 'AI_RESPONSE', 'CANCELLED', 'STORAGE', 'INTERNAL']),
+  message: shortText, retryable: z.boolean(),
+  /** Transport evidence only: an absent value must never be inferred to mean the operation was not sent. */
+  delivery: z.enum(['not-sent', 'unknown']).optional(),
+});
 export type ApiError = z.infer<typeof ApiErrorSchema>;
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: ApiError };
 export function apiResultSchema<T extends z.ZodType>(schema: T) {

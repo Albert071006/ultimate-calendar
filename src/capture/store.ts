@@ -9,6 +9,7 @@ import {
   CaptureMessagePageSchema, CapturePageRequestSchema, CaptureStatsSchema, GroupCoverageSchema,
   type AttachmentSummary, type CaptureBatchView, type CaptureCleanupRequest, type CaptureConfig,
   type CaptureMessageView, type CapturePageRequest, type GroupCoverage,
+  capturePlatform, type CapturePlatform,
 } from '../shared/capture';
 import { nowInstant } from '../domain/time';
 import { openDatabase } from '../storage/database';
@@ -18,6 +19,7 @@ const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const JsonSchema = z.json();
 const MessageInputSchema = z.strictObject({
   accountId: IdSchema, groupId: IdSchema, messageId: IdSchema,
+  sourceMessageId: IdSchema.optional(),
   groupName: z.string().max(1000).default(''), senderId: IdSchema.nullable().default(null),
   senderName: z.string().max(1000).default(''), sentAt: InstantSchema,
   importedAt: InstantSchema.optional(), text: z.string().max(1_000_000).default(''),
@@ -40,6 +42,7 @@ const StoredAttachmentSchema = z.strictObject({
   kind: z.enum(['image', 'file', 'voice', 'video', 'other']),
   size: z.number().int().nonnegative().nullable(), locator: JsonSchema.nullable(),
   status: AttachmentStatusSchema, error: z.string().max(2000).nullable(),
+  retryable: z.boolean().optional(),
   hash: z.string().regex(/^[a-f0-9]{64}$/).nullable(), extractorVersion: z.string().max(500).nullable(),
 });
 export type StoredCaptureAttachment = z.infer<typeof StoredAttachmentSchema>;
@@ -63,6 +66,8 @@ const BatchSchema = z.strictObject({
   origin: z.enum(['live', 'history']).default('live'),
   attempts: z.array(AttemptSchema).max(1000), error: z.string().max(2000).nullable(),
   result: JsonSchema.nullable(), inputFingerprint: z.string().max(1000).nullable(),
+  waitingForAttachments: z.boolean().optional(),
+  contextMessageIds: z.array(IdSchema).max(1000).optional(),
 });
 export type CaptureBatch = z.infer<typeof BatchSchema>;
 const CredentialPauseSchema = z.strictObject({
@@ -75,6 +80,7 @@ const CredentialChangeSchema = z.strictObject({
 export const captureBackupSchemas = { message: StoredMessageSchema, attachment: StoredAttachmentSchema, chunk: ChunkSchema, batch: BatchSchema };
 const ExportSchema = z.strictObject({
   schemaVersion: z.literal(1), config: CaptureConfigSchema,
+  wechatConfig: CaptureConfigSchema.optional(),
   selections: z.array(z.strictObject({ accountId: IdSchema, groupIds: z.array(IdSchema).max(100) })),
   messages: z.array(StoredMessageSchema), attachments: z.array(StoredAttachmentSchema),
   blobs: z.array(z.strictObject({ hash: z.string().regex(/^[a-f0-9]{64}$/), bytes: z.string().max(Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4 + 4) })),
@@ -90,7 +96,7 @@ function json(value: unknown): string {
 }
 function digest(value: string | Uint8Array): string { return createHash('sha256').update(value).digest('hex'); }
 export function captureMessageId(accountId: string, groupId: string, messageId: string): string {
-  return `qqm:${digest(JSON.stringify([IdSchema.parse(accountId), IdSchema.parse(groupId), IdSchema.parse(messageId)]))}`;
+  return `${capturePlatform(accountId) === 'wechat' ? 'wxm' : 'qqm'}:${digest(JSON.stringify([IdSchema.parse(accountId), IdSchema.parse(groupId), IdSchema.parse(messageId)]))}`;
 }
 function parsePayload<T>(row: Record<string, unknown> | undefined, schema: z.ZodType<T>): T | null {
   return row ? schema.parse(JSON.parse(row['payload'] as string)) : null;
@@ -98,6 +104,8 @@ function parsePayload<T>(row: Record<string, unknown> | undefined, schema: z.Zod
 function unique(values: string[], label: string) { if (new Set(values).size !== values.length) throw Error(`${label}存在重复标识`); }
 export function validateCaptureState(value: unknown): CaptureExportState {
   const state = ExportSchema.parse(value);
+  if (state.config.platform === 'wechat' || state.config.accountId && capturePlatform(state.config.accountId) !== 'qq') throw Error('QQ 备份配置的平台不匹配');
+  if (state.wechatConfig && (state.wechatConfig.platform !== 'wechat' || state.wechatConfig.accountId && capturePlatform(state.wechatConfig.accountId) !== 'wechat')) throw Error('微信备份配置的平台不匹配');
   for (const name of ['messages', 'attachments', 'chunks', 'batches'] as const) unique(state[name].map(item => item.id), name);
   unique(state.blobs.map(item => item.hash), '附件内容');
   unique(state.selections.map(item => item.accountId), '账号选择');
@@ -107,7 +115,7 @@ export function validateCaptureState(value: unknown): CaptureExportState {
   const blobs = new Set(state.blobs.map(item => item.hash));
   const batched = new Set<string>();
   unique(state.batches.map(item => item.operationId), '批次提交');
-  for (const message of state.messages) if (captureMessageId(message.accountId, message.groupId, message.messageId) !== message.id) throw Error('消息标识与 QQ 来源不匹配');
+  for (const message of state.messages) if (captureMessageId(message.accountId, message.groupId, message.messageId) !== message.id) throw Error('消息标识与采集来源不匹配');
   for (const attachment of state.attachments) {
     if (!messages.has(attachment.messageId) || (attachment.hash && !blobs.has(attachment.hash))) throw Error('附件来源或内容不存在');
   }
@@ -133,7 +141,12 @@ export function validateCaptureState(value: unknown): CaptureExportState {
 }
 
 /** Shares the planner file, but owns only capture_* tables and its own schema version. */
-export function createCaptureStore(path: string, internal: { database?: DatabaseSync; skipInitialize?: boolean; skipRecovery?: boolean; externalTransaction?: boolean } = {}) {
+export function createCaptureStore(path: string, internal: { platform?: CapturePlatform; database?: DatabaseSync; skipInitialize?: boolean; skipRecovery?: boolean; externalTransaction?: boolean } = {}) {
+  const platform = internal.platform ?? 'qq';
+  const metaKey = (key: string) => platform === 'qq' ? key : `wechat:${key}`;
+  const ownsAccount = (accountId: string) => capturePlatform(accountId) === platform;
+  const requireAccount = (accountId: string) => { IdSchema.parse(accountId); if (!ownsAccount(accountId)) throw Error('账号不属于当前采集平台'); return accountId; };
+  const scope = (column = 'account_id') => `substr(${column},1,7)${platform === 'wechat' ? '=' : '!='}'wechat:'`;
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = internal.database ?? openDatabase(path);
   if (!internal.skipInitialize) {
@@ -169,12 +182,15 @@ export function createCaptureStore(path: string, internal: { database?: Database
   if (version && version['payload'] !== '1') { db.close(); throw Error('采集数据库版本不受支持'); }
   db.prepare('INSERT OR IGNORE INTO capture_meta(id,payload) VALUES(?,?)').run('schemaVersion', '1');
   db.prepare('INSERT OR IGNORE INTO capture_meta(id,payload) VALUES(?,?)').run('config', json(CaptureConfigSchema.parse({})));
+  if (platform === 'wechat') db.prepare('INSERT OR IGNORE INTO capture_meta(id,payload) VALUES(?,?)').run(metaKey('config'), json(CaptureConfigSchema.parse({ platform })));
   db.prepare('INSERT OR IGNORE INTO capture_meta(id,payload) VALUES(?,?)').run('revision', '0');
   for (const table of ['capture_selections', 'capture_messages', 'capture_attachments', 'capture_blobs', 'capture_chunks', 'capture_batches', 'capture_batch_messages', 'capture_coverage']) {
     for (const event of ['INSERT', 'UPDATE', 'DELETE']) db.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_revision_${event.toLowerCase()} AFTER ${event} ON ${table}
       BEGIN UPDATE capture_meta SET payload=CAST(payload AS INTEGER)+1 WHERE id='revision'; END`);
   }
   db.exec(`CREATE TRIGGER IF NOT EXISTS capture_config_revision AFTER UPDATE ON capture_meta WHEN NEW.id='config'
+    BEGIN UPDATE capture_meta SET payload=CAST(payload AS INTEGER)+1 WHERE id='revision'; END`);
+  db.exec(`CREATE TRIGGER IF NOT EXISTS capture_wechat_config_revision AFTER UPDATE ON capture_meta WHEN NEW.id='wechat:config'
     BEGIN UPDATE capture_meta SET payload=CAST(payload AS INTEGER)+1 WHERE id='revision'; END`);
   }
   function transaction<T>(work: () => T): T {
@@ -183,16 +199,16 @@ export function createCaptureStore(path: string, internal: { database?: Database
     try { const value = work(); db.exec('COMMIT'); return value; }
     catch (error) { db.exec('ROLLBACK'); throw error; }
   }
-  function config(): CaptureConfig { return parsePayload(db.prepare('SELECT payload FROM capture_meta WHERE id=?').get('config'), CaptureConfigSchema)!; }
-  function credentialPause() { return parsePayload(db.prepare("SELECT payload FROM capture_meta WHERE id='credentialPause'").get(), CredentialPauseSchema); }
-  function clearCredentialPause() { db.prepare("DELETE FROM capture_meta WHERE id='credentialPause'").run(); }
+  function config(): CaptureConfig { return parsePayload(db.prepare('SELECT payload FROM capture_meta WHERE id=?').get(metaKey('config')), CaptureConfigSchema) ?? CaptureConfigSchema.parse(platform === 'wechat' ? { platform } : {}); }
+  function credentialPause() { return parsePayload(db.prepare('SELECT payload FROM capture_meta WHERE id=?').get(metaKey('credentialPause')), CredentialPauseSchema); }
+  function clearCredentialPause() { db.prepare('DELETE FROM capture_meta WHERE id=?').run(metaKey('credentialPause')); }
   function writeConfig(next: CaptureConfig) {
-    db.prepare('UPDATE capture_meta SET payload=? WHERE id=?').run(json(next), 'config');
+    db.prepare('INSERT INTO capture_meta(id,payload) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(metaKey('config'), json(next));
     if (next.accountId) db.prepare('INSERT INTO capture_selections(account_id,payload) VALUES(?,?) ON CONFLICT(account_id) DO UPDATE SET payload=excluded.payload').run(next.accountId, json(next.groupIds));
   }
-  function message(id: string): StoredCaptureMessage | null { return parsePayload(db.prepare('SELECT payload FROM capture_messages WHERE id=?').get(IdSchema.parse(id)), StoredMessageSchema); }
-  function attachment(id: string): StoredCaptureAttachment | null { return parsePayload(db.prepare('SELECT payload FROM capture_attachments WHERE id=?').get(IdSchema.parse(id)), StoredAttachmentSchema); }
-  function batch(id: string): CaptureBatch | null { return parsePayload(db.prepare('SELECT payload FROM capture_batches WHERE id=?').get(IdSchema.parse(id)), BatchSchema); }
+  function message(id: string): StoredCaptureMessage | null { return parsePayload(db.prepare(`SELECT payload FROM capture_messages WHERE id=? AND ${scope()}`).get(IdSchema.parse(id)), StoredMessageSchema); }
+  function attachment(id: string): StoredCaptureAttachment | null { return parsePayload(db.prepare(`SELECT a.payload FROM capture_attachments a JOIN capture_messages m ON m.id=a.message_id WHERE a.id=? AND ${scope('m.account_id')}`).get(IdSchema.parse(id)), StoredAttachmentSchema); }
+  function batch(id: string): CaptureBatch | null { return parsePayload(db.prepare(`SELECT payload FROM capture_batches WHERE id=? AND ${scope()}`).get(IdSchema.parse(id)), BatchSchema); }
   function saveMessage(value: StoredCaptureMessage) {
     db.prepare('INSERT INTO capture_messages(id,account_id,group_id,message_id,sent_at,imported_at,deleted,payload) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET deleted=excluded.deleted,payload=excluded.payload')
       .run(value.id, value.accountId, value.groupId, value.messageId, value.sentAt, value.importedAt, Number(value.deleted), json(value));
@@ -206,13 +222,15 @@ export function createCaptureStore(path: string, internal: { database?: Database
       .run(value.id, value.accountId, value.groupId, value.status, value.createdAt, json(BatchSchema.parse(value)));
   }
   function attachments(messageId: string): StoredCaptureAttachment[] {
+    if (!message(messageId)) return [];
     return db.prepare('SELECT payload FROM capture_attachments WHERE message_id=? ORDER BY rowid').all(IdSchema.parse(messageId)).map(row => parsePayload(row, StoredAttachmentSchema)!);
   }
   function chunks(attachmentId: string): CaptureChunk[] {
+    if (!attachment(attachmentId)) return [];
     return db.prepare('SELECT payload FROM capture_chunks WHERE attachment_id=? ORDER BY ordinal').all(IdSchema.parse(attachmentId)).map(row => parsePayload(row, ChunkSchema)!);
   }
   function viewMessage(value: StoredCaptureMessage): CaptureMessageView {
-    return { id: value.id, accountId: value.accountId, groupId: value.groupId, messageId: value.messageId,
+    return { platform: capturePlatform(value.accountId), id: value.id, accountId: value.accountId, groupId: value.groupId, messageId: value.messageId,
       groupName: value.groupName, senderName: value.senderName, sentAt: value.sentAt, importedAt: value.importedAt,
       text: value.text, changed: value.changed, deleted: value.deleted,
       attachments: attachments(value.id).map(item => ({ id: item.id, name: item.name, kind: item.kind, status: item.status,
@@ -221,12 +239,12 @@ export function createCaptureStore(path: string, internal: { database?: Database
       } satisfies AttachmentSummary)) };
   }
   function viewBatch(value: CaptureBatch): CaptureBatchView {
-    return { id: value.id, operationId: value.operationId, accountId: value.accountId, groupId: value.groupId,
+    return { platform: capturePlatform(value.accountId), id: value.id, operationId: value.operationId, accountId: value.accountId, groupId: value.groupId,
       status: value.status, createdAt: value.createdAt, updatedAt: value.updatedAt, messageCount: value.messageIds.length,
       attemptCount: value.attempts.length, error: value.error };
   }
   function filters(request: CapturePageRequest): { query: ReturnType<typeof CapturePageRequestSchema.parse>; where: string; args: string[] } {
-    const query = CapturePageRequestSchema.parse(request); const clauses: string[] = []; const args: string[] = [];
+    const query = CapturePageRequestSchema.parse(request); const clauses: string[] = [scope()]; const args: string[] = [];
     if (query.accountId !== undefined) { clauses.push('account_id=?'); args.push(query.accountId); }
     if (query.groupId !== undefined) { clauses.push('group_id=?'); args.push(query.groupId); }
     if (query.messageId !== undefined) { clauses.push('id=?'); args.push(query.messageId); }
@@ -234,22 +252,23 @@ export function createCaptureStore(path: string, internal: { database?: Database
   }
   function statistics() {
     const count = (sql: string) => Number(db.prepare(sql).get()!['n']);
+    const attachmentScope = `EXISTS(SELECT 1 FROM capture_messages m WHERE m.id=capture_attachments.message_id AND ${scope('m.account_id')})`;
     return CaptureStatsSchema.parse({
-      messages: count('SELECT count(*) AS n FROM capture_messages WHERE deleted=0'),
-      attachments: count("SELECT count(*) AS n FROM capture_attachments WHERE json_extract(payload,'$.status')!='deleted'"),
-      attachmentBytes: count('SELECT coalesce(sum(length(bytes)),0) AS n FROM capture_blobs'),
-      pendingMessages: count('SELECT count(*) AS n FROM capture_messages m WHERE deleted=0 AND NOT EXISTS(SELECT 1 FROM capture_batch_messages bm WHERE bm.message_id=m.id)'),
-      batches: count('SELECT count(*) AS n FROM capture_batches'),
-      pendingBatches: count("SELECT count(*) AS n FROM capture_batches WHERE status IN ('pending','preparing','requesting','result-ready')"),
-      uncertainBatches: count("SELECT count(*) AS n FROM capture_batches WHERE status='uncertain'"),
-      failedAttachments: count("SELECT count(*) AS n FROM capture_attachments WHERE json_extract(payload,'$.status') IN ('failed','too-large','encrypted','unsupported')"),
+      messages: count(`SELECT count(*) AS n FROM capture_messages WHERE deleted=0 AND ${scope()}`),
+      attachments: count(`SELECT count(*) AS n FROM capture_attachments WHERE json_extract(payload,'$.status')!='deleted' AND ${attachmentScope}`),
+      attachmentBytes: count(`SELECT coalesce(sum(length(bytes)),0) AS n FROM capture_blobs WHERE EXISTS(SELECT 1 FROM capture_attachments JOIN capture_messages m ON m.id=capture_attachments.message_id WHERE capture_attachments.hash=capture_blobs.hash AND ${scope('m.account_id')})`),
+      pendingMessages: count(`SELECT count(*) AS n FROM capture_messages m WHERE deleted=0 AND ${scope('m.account_id')} AND NOT EXISTS(SELECT 1 FROM capture_batch_messages bm WHERE bm.message_id=m.id)`),
+      batches: count(`SELECT count(*) AS n FROM capture_batches WHERE ${scope()}`),
+      pendingBatches: count(`SELECT count(*) AS n FROM capture_batches WHERE status IN ('pending','preparing','requesting','result-ready') AND ${scope()}`),
+      uncertainBatches: count(`SELECT count(*) AS n FROM capture_batches WHERE status='uncertain' AND ${scope()}`),
+      failedAttachments: count(`SELECT count(*) AS n FROM capture_attachments WHERE json_extract(payload,'$.status') IN ('failed','too-large','encrypted','unsupported') AND ${attachmentScope}`),
     });
   }
   function recoverInterrupted(at = nowInstant()) {
     InstantSchema.parse(at);
     return transaction(() => {
       let uncertain = 0; let pending = 0;
-      for (const row of db.prepare("SELECT payload FROM capture_batches WHERE status IN ('requesting','preparing')").all()) {
+      for (const row of db.prepare(`SELECT payload FROM capture_batches WHERE status IN ('requesting','preparing') AND ${scope()}`).all()) {
         const value = parsePayload(row, BatchSchema)!;
         if (value.status === 'requesting') {
           const savedResponse = value.result && typeof value.result === 'object' && !Array.isArray(value.result) && value.result['pendingResponse'];
@@ -262,7 +281,7 @@ export function createCaptureStore(path: string, internal: { database?: Database
         } else { value.status = 'pending'; value.error = null; pending++; }
         value.updatedAt = at; saveBatch(value);
       }
-      for (const row of db.prepare("SELECT payload FROM capture_attachments WHERE json_extract(payload,'$.status') IN ('downloading','extracting')").all()) {
+      for (const row of db.prepare(`SELECT a.payload FROM capture_attachments a JOIN capture_messages m ON m.id=a.message_id WHERE json_extract(a.payload,'$.status') IN ('downloading','extracting') AND ${scope('m.account_id')}`).all()) {
         const value = parsePayload(row, StoredAttachmentSchema)!; value.status = 'pending'; value.error = null; saveAttachment(value);
       }
       return { uncertain, pending };
@@ -276,7 +295,7 @@ export function createCaptureStore(path: string, internal: { database?: Database
     const failed = failedBatchId ? batch(failedBatchId) : null;
     if (failedBatchId && (!failed || failed.status !== 'failed')) throw Error('只能恢复凭据明确失败的批次');
     const value = CredentialPauseSchema.parse({ reason, failure: failed ? { batchId: failed.id, fingerprint: digest(json(failed)) } : previous?.failure ?? null });
-    db.prepare("INSERT INTO capture_meta(id,payload) VALUES('credentialPause',?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload").run(json(value));
+    db.prepare('INSERT INTO capture_meta(id,payload) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(metaKey('credentialPause'), json(value));
     writeConfig({ ...active, analysisEnabled: false });
     return true;
   }
@@ -291,7 +310,7 @@ export function createCaptureStore(path: string, internal: { database?: Database
     return true;
   }
   const store = {
-    path, config,
+    path, platform, config,
     credentialPause, clearCredentialPause,
     // Private local state: a user configuration or restored backup cannot grant automatic resume.
     pauseForCredentials(reason: 'AUTH' | 'NO_API_KEY', failedBatchId?: string) { return transaction(() => pauseForCredentials(reason, failedBatchId)); },
@@ -299,24 +318,25 @@ export function createCaptureStore(path: string, internal: { database?: Database
     applyCredentialChange(input: z.infer<typeof CredentialChangeSchema>, at = nowInstant()) {
       const next = CredentialChangeSchema.parse(input); InstantSchema.parse(at);
       return transaction(() => {
-        const previous = parsePayload(db.prepare("SELECT payload FROM capture_meta WHERE id='credentialChange'").get(), CredentialChangeSchema);
+        const previous = parsePayload(db.prepare('SELECT payload FROM capture_meta WHERE id=?').get(metaKey('credentialChange')), CredentialChangeSchema);
         if (previous?.sourceId === next.sourceId && previous.revision === next.revision) return { changed: false, resumed: false, paused: false };
         const resumed = next.configured && resumeAfterCredentials(at);
         const paused = !next.configured && pauseForCredentials('NO_API_KEY');
         // Commit the acknowledgement with the queue/config changes. A lost worker receipt cannot resume twice.
-        db.prepare("INSERT INTO capture_meta(id,payload) VALUES('credentialChange',?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload").run(json(next));
+        db.prepare('INSERT INTO capture_meta(id,payload) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(metaKey('credentialChange'), json(next));
         return { changed: true, resumed, paused };
       });
     },
     fingerprint(): string { return `capture-v1:${db.prepare("SELECT payload FROM capture_meta WHERE id='revision'").get()?.['payload'] ?? '0'}`; },
     saveConfig(value: unknown): CaptureConfig {
-      const next = CaptureConfigSchema.parse(value);
+      const next = CaptureConfigSchema.parse(platform === 'wechat' && value && typeof value === 'object' ? { ...value, platform } : value);
+      if (next.platform && next.platform !== platform || next.accountId && !ownsAccount(next.accountId)) throw Error('采集配置不属于当前平台');
       return transaction(() => {
         const previous = config();
         if (previous.endpoint !== next.endpoint || previous.flavor !== next.flavor) {
           // Cursors are provider-specific. Preserve source records while invalidating every old bridge frontier.
           const updatedAt = nowInstant();
-          for (const row of db.prepare('SELECT payload FROM capture_coverage').all()) {
+          for (const row of db.prepare(`SELECT payload FROM capture_coverage WHERE ${scope()}`).all()) {
             const coverage = parsePayload(row, GroupCoverageSchema)!;
             db.prepare('UPDATE capture_coverage SET payload=? WHERE account_id=? AND group_id=?').run(json({ ...coverage,
               status: 'not-started', cursor: null, earliestAt: null, fetchedCount: 0, updatedAt,
@@ -328,6 +348,7 @@ export function createCaptureStore(path: string, internal: { database?: Database
       });
     },
     selectedGroups(accountId: string): string[] {
+      requireAccount(accountId);
       const row = db.prepare('SELECT payload FROM capture_selections WHERE account_id=?').get(IdSchema.parse(accountId));
       return row ? z.array(IdSchema).parse(JSON.parse(row['payload'] as string)) : [];
     },
@@ -336,15 +357,41 @@ export function createCaptureStore(path: string, internal: { database?: Database
       const parsed = inputs.map(input => MessageInputSchema.parse(input));
       return transaction(() => {
         const active = config(); const result = { inserted: 0, duplicates: 0, ignored: 0, ids: [] as string[] };
-        for (const input of parsed) {
-          if (!active.enabled || input.accountId !== active.accountId || !active.groupIds.includes(input.groupId)) { result.ignored++; continue; }
-          const id = captureMessageId(input.accountId, input.groupId, input.messageId);
-          if (message(id)) { result.duplicates++; continue; }
+        for (let input of parsed) {
+          if (!ownsAccount(input.accountId) || !active.enabled || input.accountId !== active.accountId || !active.groupIds.includes(input.groupId)) { result.ignored++; continue; }
+          let id = captureMessageId(input.accountId, input.groupId, input.messageId);
+          const previous = message(id);
+          if (previous) {
+            result.duplicates++;
+            // Upgrade the first text-only WeChat reader without replaying paid text analysis.
+            if (platform !== 'wechat' || previous.deleted || Date.parse(previous.sentAt) !== Date.parse(input.sentAt)) continue;
+            const existing = attachments(id);
+            for (const row of db.prepare("SELECT id FROM capture_messages WHERE account_id=? AND group_id=? AND json_extract(payload,'$.sourceMessageId')=?").all(input.accountId, input.groupId, previous.sourceMessageId ?? previous.messageId)) {
+              existing.push(...attachments(row['id'] as string));
+            }
+            const key = (item: { kind: string; locator: unknown }) => json({ kind: item.kind, locator: item.locator });
+            const extra = input.attachments.filter(item => ['image', 'file'].includes(item.kind) && !existing.some(value => key(value) === key(item)));
+            if (!extra.length) continue;
+            const owner = parsePayload(db.prepare('SELECT b.payload FROM capture_batches b JOIN capture_batch_messages bm ON bm.batch_id=b.id WHERE bm.message_id=?').get(id), BatchSchema);
+            if (!owner || !owner.attempts.length && owner.result === null && ['pending', 'failed'].includes(owner.status)) {
+              for (const item of extra) saveAttachment({ id: `qqa:${digest(`${id}:media-upgrade:${key(item)}`)}`, messageId: id,
+                name: item.name, kind: item.kind, size: item.size, locator: item.locator, status: 'pending', error: null, hash: null, extractorVersion: null });
+              saveMessage({ ...previous, text: input.text, segments: input.segments });
+              if (owner?.status === 'failed') { owner.status = 'pending'; owner.error = null; owner.waitingForAttachments = false; owner.updatedAt = at; saveBatch(owner); }
+              continue;
+            }
+            const sourceMessageId = previous.sourceMessageId ?? previous.messageId;
+            const supplementalId = `media:${digest(json([sourceMessageId, extra.map(key).sort()]))}`;
+            input = { ...input, messageId: supplementalId, sourceMessageId, text: '', attachments: extra,
+              segments: input.segments.filter(raw => !!raw && typeof raw === 'object' && !Array.isArray(raw) && ['image', 'file', 'at'].includes(String(raw.type))) };
+            id = captureMessageId(input.accountId, input.groupId, supplementalId);
+            if (message(id)) continue;
+          }
           const { attachments: incoming, ...fields } = input;
           saveMessage({ ...fields, id, importedAt: input.importedAt ?? at, changed: false, deleted: false });
           for (const [index, item] of incoming.entries()) {
             const attachmentId = item.id ?? `qqa:${digest(`${id}:${index}`)}`;
-            if (attachment(attachmentId)) throw Error('附件标识重复');
+            if (db.prepare('SELECT 1 FROM capture_attachments WHERE id=?').get(attachmentId)) throw Error('附件标识重复');
             const unsupported = item.kind === 'voice' || item.kind === 'video';
             saveAttachment({ id: attachmentId, messageId: id, name: item.name, kind: item.kind, size: item.size,
               locator: item.locator, status: unsupported ? 'unsupported' : 'pending', error: unsupported ? '语音和视频需手动查看' : null,
@@ -409,7 +456,9 @@ export function createCaptureStore(path: string, internal: { database?: Database
         .map(row => parsePayload(row, StoredMessageSchema)!);
     },
     listBatches(request: CapturePageRequest = {}) {
-      const { query, where, args } = filters(request);
+      const { query, where: baseWhere, args: baseArgs } = filters({ ...request, messageId: undefined });
+      const where = request.messageId ? `${baseWhere} AND id IN (SELECT batch_id FROM capture_batch_messages WHERE message_id=?)` : baseWhere;
+      const args = request.messageId ? [...baseArgs, IdSchema.parse(request.messageId)] : baseArgs;
       const total = Number(db.prepare(`SELECT count(*) AS n FROM capture_batches ${where}`).get(...args)!['n']);
       const items = db.prepare(`SELECT payload FROM capture_batches ${where} ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?`).all(...args, query.limit, query.offset).map(row => viewBatch(parsePayload(row, BatchSchema)!));
       return CaptureBatchPageSchema.parse({ items, total, offset: query.offset, limit: query.limit });
@@ -418,7 +467,7 @@ export function createCaptureStore(path: string, internal: { database?: Database
       InstantSchema.parse(at);
       return transaction(() => {
         const active = config(); if (!active.analysisEnabled || !active.accountId || !active.groupIds.length) return null;
-        const turn = Number(db.prepare("SELECT payload FROM capture_meta WHERE id='priorityTurn'").get()?.['payload'] ?? 0);
+        const turn = Number(db.prepare('SELECT payload FROM capture_meta WHERE id=?').get(metaKey('priorityTurn'))?.['payload'] ?? 0);
         const preferred = turn % 4 === 3 ? 'history' : 'live';
         const value = parsePayload(db.prepare(`SELECT payload FROM capture_batches WHERE account_id=? AND group_id IN (${active.groupIds.map(() => '?').join(',')})
           AND status IN ('pending','result-ready') ORDER BY CASE WHEN status='result-ready' THEN 0 ELSE 1 END,
@@ -426,7 +475,7 @@ export function createCaptureStore(path: string, internal: { database?: Database
         if (!value) return null;
         if (value.status === 'pending') {
           value.status = 'preparing'; value.updatedAt = at; saveBatch(value);
-          db.prepare("INSERT INTO capture_meta(id,payload) VALUES('priorityTurn',?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload").run(String((turn + 1) % 4));
+          db.prepare('INSERT INTO capture_meta(id,payload) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(metaKey('priorityTurn'), String((turn + 1) % 4));
         }
         return value;
       });
@@ -485,7 +534,51 @@ export function createCaptureStore(path: string, internal: { database?: Database
       InstantSchema.parse(at);
       const value = batch(id); if (!value || !['failed', 'uncertain'].includes(value.status)) throw Error('仅失败或响应未知的批次可手动重试');
       if (value.messageIds.some(id => message(id)?.deleted)) throw Error('原文已清理，不能重新分析');
-      value.status = 'pending'; value.error = null; value.updatedAt = at; saveBatch(value); return value;
+      value.status = 'pending'; value.error = null; value.waitingForAttachments = false; value.updatedAt = at; saveBatch(value); return value;
+    },
+    waitForAttachments(id: string, error: string, retryable: boolean, at = nowInstant()): CaptureBatch {
+      InstantSchema.parse(at); z.string().max(2000).parse(error);
+      const value = batch(id); if (!value || value.status !== 'preparing') throw Error('仅准备中的批次可等待附件');
+      value.status = 'failed'; value.error = error; value.updatedAt = at;
+      value.waitingForAttachments = retryable && value.attempts.length === 0 && value.result === null;
+      saveBatch(value); return value;
+    },
+    isolateUnreadAttachments(id: string, unread: { messageId: string; error: string; retryable: boolean }[], at = nowInstant()): boolean {
+      InstantSchema.parse(at);
+      return transaction(() => {
+        const value = batch(id);
+        if (platform !== 'wechat' || !value || value.status !== 'preparing' || value.attempts.length || value.result !== null) return false;
+        const missing = new Map(unread.map(item => [IdSchema.parse(item.messageId), { error: z.string().max(2000).parse(item.error), retryable: z.boolean().parse(item.retryable) }]));
+        if (!missing.size || [...missing.keys()].some(messageId => !value.messageIds.includes(messageId))) throw Error('等待附件的消息不属于当前批次');
+        const ready = value.messageIds.filter(messageId => !missing.has(messageId));
+        const allContext = [...new Set([...(value.contextMessageIds ?? []), ...value.messageIds])];
+        const partitions = [...missing.keys()].map(messageId => [messageId]); if (ready.length) partitions.push(ready);
+        db.prepare('DELETE FROM capture_batch_messages WHERE batch_id=?').run(id);
+        for (const [index, messageIds] of partitions.entries()) {
+          const waiting = missing.get(messageIds[0]!);
+          const nextId = index === 0 ? id : `qqb:${randomUUID()}`;
+          const next: CaptureBatch = { ...value, id: nextId, operationId: index === 0 ? value.operationId : `qq-apply:${nextId}`,
+            messageIds, contextMessageIds: allContext.filter(messageId => !messageIds.includes(messageId)).slice(0, 1000),
+            status: waiting ? 'failed' : 'pending', waitingForAttachments: waiting?.retryable ?? false,
+            updatedAt: at, error: waiting?.error ?? null };
+          saveBatch(next);
+          for (const [ordinal, messageId] of messageIds.entries()) db.prepare('INSERT INTO capture_batch_messages(batch_id,message_id,ordinal) VALUES(?,?,?)').run(nextId, messageId, ordinal);
+        }
+        return true;
+      });
+    },
+    retryWaitingAttachments(at = nowInstant()): number {
+      InstantSchema.parse(at);
+      return transaction(() => {
+        const active = config(); if (!active.analysisEnabled || !active.accountId || !active.groupIds.length) return 0;
+        let count = 0;
+        for (const row of db.prepare(`SELECT payload FROM capture_batches WHERE account_id=? AND status='failed' AND json_extract(payload,'$.waitingForAttachments')=1`).all(active.accountId)) {
+          const value = parsePayload(row, BatchSchema)!;
+          if (!active.groupIds.includes(value.groupId) || value.result !== null || value.attempts.length || value.messageIds.some(id => !message(id) || message(id)!.deleted)) continue;
+          value.status = 'pending'; value.waitingForAttachments = false; value.error = null; value.updatedAt = at; saveBatch(value); count++;
+        }
+        return count;
+      });
     },
     reanalyzeBatch(id: string, at = nowInstant()): CaptureBatch {
       InstantSchema.parse(at);
@@ -495,6 +588,7 @@ export function createCaptureStore(path: string, internal: { database?: Database
         if (value.messageIds.some(id => message(id)?.deleted)) throw Error('原文已清理，不能重新分析');
         if (value.messageIds.some(id => attachments(id).some(item => item.status === 'deleted'))) throw Error('附件缓存已清理，不能重新分析不完整的资料；消息正文与已有事项仍保留');
         value.operationId = `qq-apply:${randomUUID()}`; value.result = null; value.inputFingerprint = null;
+        value.waitingForAttachments = false;
         value.status = 'pending'; value.updatedAt = at; value.error = null;
         for (const id of value.messageIds) for (const item of attachments(id)) {
           if (['failed', 'encrypted', 'too-large'].includes(item.status)) { item.status = 'pending'; item.error = null; saveAttachment(item); }
@@ -504,14 +598,17 @@ export function createCaptureStore(path: string, internal: { database?: Database
     },
     recoverInterrupted,
     getCoverage(accountId: string, groupId: string): GroupCoverage | null {
+      requireAccount(accountId);
       return parsePayload(db.prepare('SELECT payload FROM capture_coverage WHERE account_id=? AND group_id=?').get(IdSchema.parse(accountId), IdSchema.parse(groupId)), GroupCoverageSchema);
     },
     listCoverage(accountId?: string): GroupCoverage[] {
-      const rows = accountId ? db.prepare('SELECT payload FROM capture_coverage WHERE account_id=? ORDER BY group_id').all(IdSchema.parse(accountId)) : db.prepare('SELECT payload FROM capture_coverage ORDER BY account_id,group_id').all();
+      if (accountId) requireAccount(accountId);
+      const rows = accountId ? db.prepare('SELECT payload FROM capture_coverage WHERE account_id=? ORDER BY group_id').all(IdSchema.parse(accountId)) : db.prepare(`SELECT payload FROM capture_coverage WHERE ${scope()} ORDER BY account_id,group_id`).all();
       return rows.map(row => parsePayload(row, GroupCoverageSchema)!);
     },
     saveCoverage(value: unknown): GroupCoverage {
       const parsed = GroupCoverageSchema.parse(value);
+      requireAccount(parsed.accountId);
       db.prepare('INSERT INTO capture_coverage(account_id,group_id,payload) VALUES(?,?,?) ON CONFLICT(account_id,group_id) DO UPDATE SET payload=excluded.payload').run(parsed.accountId, parsed.groupId, json(parsed)); return parsed;
     },
     attachment, attachments, chunks,
@@ -519,6 +616,7 @@ export function createCaptureStore(path: string, internal: { database?: Database
       IdSchema.parse(attachmentId);
       const offset = z.number().int().min(0).max(10_000_000).parse(options.offset ?? 0);
       const limit = z.number().int().min(1).max(100).parse(options.limit ?? 5);
+      if (!attachment(attachmentId)) return { items: [], total: 0, offset, limit };
       const total = Number(db.prepare('SELECT count(*) AS n FROM capture_chunks WHERE attachment_id=?').get(attachmentId)!['n']);
       const items = db.prepare('SELECT payload FROM capture_chunks WHERE attachment_id=? ORDER BY ordinal LIMIT ? OFFSET ?').all(attachmentId, limit, offset).map(row => parsePayload(row, ChunkSchema)!);
       return { items, total, offset, limit };
@@ -536,9 +634,15 @@ export function createCaptureStore(path: string, internal: { database?: Database
       const value = attachment(id); if (!value?.hash) return null;
       const row = db.prepare('SELECT bytes FROM capture_blobs WHERE hash=?').get(value.hash); return row ? Buffer.from(row['bytes'] as Uint8Array) : null;
     },
-    setAttachmentStatus(id: string, status: StoredCaptureAttachment['status'], error: string | null = null): StoredCaptureAttachment {
+    renameAttachment(id: string, name: string): void {
+      const value = attachment(id); if (!value || value.status === 'deleted') throw Error('附件记录不存在或已删除');
+      value.name = z.string().min(1).max(1000).parse(name); saveAttachment(value);
+    },
+    setAttachmentStatus(id: string, status: StoredCaptureAttachment['status'], error: string | null = null, retryable = false): StoredCaptureAttachment {
       const value = attachment(id); if (!value) throw Error('附件记录不存在');
-      value.status = AttachmentStatusSchema.parse(status); value.error = z.string().max(2000).nullable().parse(error); saveAttachment(value); return value;
+      value.status = AttachmentStatusSchema.parse(status); value.error = z.string().max(2000).nullable().parse(error);
+      if (retryable) value.retryable = true; else delete value.retryable;
+      saveAttachment(value); return value;
     },
     saveExtraction(id: string, input: { extractorVersion: string; chunks: CaptureChunkInput[]; status?: StoredCaptureAttachment['status']; error?: string | null }): StoredCaptureAttachment {
       const value = attachment(id); if (!value || value.status === 'deleted') throw Error('附件记录不存在或已删除');
@@ -561,7 +665,7 @@ export function createCaptureStore(path: string, internal: { database?: Database
       db.prepare('INSERT INTO capture_chunks(id,attachment_id,ordinal,payload) VALUES(?,?,?,?) ON CONFLICT(attachment_id,ordinal) DO UPDATE SET payload=excluded.payload').run(item.id, id, item.ordinal, json(item)); return item;
     },
     findExtraction(hash: string, extractorVersion: string): { attachment: StoredCaptureAttachment; chunks: CaptureChunk[] } | null {
-      const row = db.prepare("SELECT payload FROM capture_attachments WHERE hash=? AND json_extract(payload,'$.extractorVersion')=? AND json_extract(payload,'$.status')='ready' ORDER BY rowid LIMIT 1").get(hash, extractorVersion);
+      const row = db.prepare(`SELECT a.payload FROM capture_attachments a JOIN capture_messages m ON m.id=a.message_id WHERE a.hash=? AND json_extract(a.payload,'$.extractorVersion')=? AND json_extract(a.payload,'$.status')='ready' AND ${scope('m.account_id')} ORDER BY a.rowid LIMIT 1`).get(hash, extractorVersion);
       const value = parsePayload(row, StoredAttachmentSchema); return value ? { attachment: value, chunks: chunks(value.id) } : null;
     },
     previewAttachmentRetention(policy: AttachmentRetentionPolicy) { return planAttachmentRetention(db, policy).summary; },
@@ -570,6 +674,7 @@ export function createCaptureStore(path: string, internal: { database?: Database
     },
     cleanup(request: CaptureCleanupRequest) {
       const parsed = CaptureCleanupRequestSchema.parse(request);
+      requireAccount(parsed.accountId);
       return transaction(() => {
         const args = [parsed.accountId]; const clauses = ['account_id=?', 'deleted=0'];
         if (parsed.groupId) { clauses.push('group_id=?'); args.push(parsed.groupId); }
@@ -602,11 +707,12 @@ export function createCaptureStore(path: string, internal: { database?: Database
     stats: statistics,
     exportState(): CaptureExport {
       const rows = <T>(table: string, schema: z.ZodType<T>) => db.prepare(`SELECT payload FROM ${table} ORDER BY rowid`).all().map(row => parsePayload(row, schema)!);
+      const wechatConfig = parsePayload(db.prepare('SELECT payload FROM capture_meta WHERE id=?').get('wechat:config'), CaptureConfigSchema);
       const state: CaptureExportState = {
-        schemaVersion: 1, config: config(), selections: db.prepare('SELECT account_id,payload FROM capture_selections ORDER BY account_id').all().map(row => ({ accountId: row['account_id'] as string, groupIds: z.array(IdSchema).parse(JSON.parse(row['payload'] as string)) })),
+        schemaVersion: 1, config: parsePayload(db.prepare('SELECT payload FROM capture_meta WHERE id=?').get('config'), CaptureConfigSchema)!, ...(wechatConfig ? { wechatConfig } : {}), selections: db.prepare('SELECT account_id,payload FROM capture_selections ORDER BY account_id').all().map(row => ({ accountId: row['account_id'] as string, groupIds: z.array(IdSchema).parse(JSON.parse(row['payload'] as string)) })),
         messages: rows('capture_messages', StoredMessageSchema), attachments: rows('capture_attachments', StoredAttachmentSchema),
         blobs: db.prepare('SELECT hash,bytes FROM capture_blobs ORDER BY hash').all().map(row => ({ hash: row['hash'] as string, bytes: Buffer.from(row['bytes'] as Uint8Array).toString('base64') })),
-        chunks: rows('capture_chunks', ChunkSchema), batches: rows('capture_batches', BatchSchema), coverage: store.listCoverage(),
+        chunks: rows('capture_chunks', ChunkSchema), batches: rows('capture_batches', BatchSchema), coverage: rows('capture_coverage', GroupCoverageSchema),
       };
       return { state, fingerprint: store.fingerprint(), stats: statistics() };
     },
@@ -617,8 +723,13 @@ export function createCaptureStore(path: string, internal: { database?: Database
         if (options.expectedFingerprint && store.fingerprint() !== options.expectedFingerprint) throw Error('采集数据已变化，请重新预览恢复');
         for (const table of ['capture_batch_messages', 'capture_chunks', 'capture_attachments', 'capture_blobs', 'capture_batches', 'capture_messages', 'capture_selections', 'capture_coverage']) db.exec(`DELETE FROM ${table}`);
         const nextConfig = options.pause === false ? state.config : { ...state.config, enabled: false, analysisEnabled: false };
-        clearCredentialPause();
-        writeConfig(nextConfig);
+        db.prepare("DELETE FROM capture_meta WHERE id IN ('credentialPause','credentialChange','priorityTurn','wechat:credentialPause','wechat:credentialChange','wechat:priorityTurn','wechat:config')").run();
+        db.prepare('INSERT INTO capture_meta(id,payload) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run('config', json(nextConfig));
+        {
+          const originalWechat = state.wechatConfig ?? CaptureConfigSchema.parse({ platform: 'wechat', enabled: false, analysisEnabled: false });
+          const nextWechat = options.pause === false ? originalWechat : { ...originalWechat, enabled: false, analysisEnabled: false };
+          db.prepare('INSERT INTO capture_meta(id,payload) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run('wechat:config', json(nextWechat));
+        }
         for (const item of state.selections) db.prepare('INSERT INTO capture_selections(account_id,payload) VALUES(?,?) ON CONFLICT(account_id) DO UPDATE SET payload=excluded.payload').run(item.accountId, json(item.groupIds));
         for (const item of state.messages) saveMessage(item);
         for (const item of state.blobs) db.prepare('INSERT INTO capture_blobs(hash,bytes) VALUES(?,?)').run(item.hash, Buffer.from(item.bytes, 'base64'));
@@ -637,7 +748,7 @@ export function createCaptureStore(path: string, internal: { database?: Database
           saveBatch(item);
           for (const [ordinal, id] of item.messageIds.entries()) db.prepare('INSERT INTO capture_batch_messages(batch_id,message_id,ordinal) VALUES(?,?,?)').run(item.id, id, ordinal);
         }
-        for (const item of state.coverage) store.saveCoverage(item);
+        for (const item of state.coverage) db.prepare('INSERT INTO capture_coverage(account_id,group_id,payload) VALUES(?,?,?)').run(item.accountId, item.groupId, json(item));
       });
       return statistics();
     },

@@ -71,6 +71,17 @@ try {
   const changed = await rpc('mutate', { operationId: 'browser-update', origin: 'manual', mutations: [{ type: 'update', entity: 'task', id: task.id, expectedVersion: task.version, values: { title: '网页修改后电脑可见' } }] });
   assert(changed.ok && changed.data.status === 'applied', 'Browser update failed');
   const fromDesktop = await cdp('window.planner.snapshot()'); assert(fromDesktop.ok && fromDesktop.data.tasks[0].title === '网页修改后电脑可见', 'Native missed browser update');
+  const arranged = await cdp(`window.planner.mutate(${JSON.stringify({ operationId: 'native-single-slot', origin: 'manual', mutations: [{ type: 'create', entity: 'block', values: { title: '合成单时段安排', taskId: task.id, kind: 'work', start: '2040-01-04T10:00:00+08:00', end: '2040-01-04T11:00:00+08:00' } }] })})`);
+  assert(arranged.ok && arranged.data.status === 'applied', 'Native default single-slot arrangement failed');
+  const arrangedSnapshot = await cdp('window.planner.snapshot()'), block = arrangedSnapshot.data.blocks[0];
+  const finished = await cdp(`window.planner.mutate(${JSON.stringify({ operationId: 'native-finish-slot', origin: 'manual', mutations: [{ type: 'finishBlock', id: block.id, expectedVersion: block.version, completed: true }] })})`);
+  assert(finished.ok && finished.data.status === 'applied', 'Native single-slot completion required an extra step');
+  const completedSnapshot = await rpc('snapshot'), completedTask = completedSnapshot.data.tasks[0];
+  assert(completedTask.status === 'done' && completedSnapshot.data.blocks[0].completed, 'Browser missed atomic task and slot completion');
+  const reopened = await rpc('mutate', { operationId: 'browser-reopen-task', origin: 'manual', mutations: [{ type: 'finishTask', id: completedTask.id, expectedVersion: completedTask.version, completed: false }] });
+  assert(reopened.ok && reopened.data.status === 'applied', 'Browser single-slot reopening failed');
+  const reopenedSnapshot = await cdp('window.planner.snapshot()');
+  assert(reopenedSnapshot.data.tasks[0].status === 'open' && !reopenedSnapshot.data.blocks[0].completed, 'Native missed atomic task and slot reopening');
   assert(!(await cdp('window.planner.captureSnapshot()')).ok, 'Cloud mode unexpectedly enabled local capture');
   assert(!(await readdir(profile)).includes('planner.sqlite'), 'Cloud mode created a second formal database');
   const credential = await readFile(join(profile, 'credentials', 'remote-device.bin')); assert(!credential.includes(Buffer.from('planner_dev_session')), 'Native credential was stored unencrypted');
@@ -104,7 +115,7 @@ try {
   await cdp('setTimeout(() => window.close(), 10); true'); await Promise.race([once(desktop, 'exit'), wait(5000)]); assert(desktop.exitCode === 0, 'Remote desktop did not exit normally');
   await assertPrivateProfileHasNoAiKey(profile);
   console.log('PASS: compiled server + real Electron preload/native remote + browser share one synthetic database and cloud Key configuration; stale Key revision rejected; no Key in native profile/journal; credentials encrypted; no QQ/local formal database opened.');
-  await writeFile(join(root, 'result.json'), JSON.stringify({ passed: true, checks: ['compiled-server', 'native-pair', 'bidirectional-task', 'remote-ledger', 'cloud-key-snapshot', 'native-cloud-key-save', 'browser-cloud-key-update', 'native-cloud-key-retry', 'stale-cloud-key-rejected', 'native-cloud-key-clear', 'no-cloud-key-in-native-profile', 'cloud-key-bypasses-write-journal', 'capture-disabled', 'no-local-database', 'encrypted-credential', 'normal-desktop-exit'] }, null, 2));
+  await writeFile(join(root, 'result.json'), JSON.stringify({ passed: true, checks: ['compiled-server', 'native-pair', 'bidirectional-task', 'single-slot-finish-from-desktop', 'single-slot-reopen-from-browser', 'remote-ledger', 'cloud-key-snapshot', 'native-cloud-key-save', 'browser-cloud-key-update', 'native-cloud-key-retry', 'stale-cloud-key-rejected', 'native-cloud-key-clear', 'no-cloud-key-in-native-profile', 'cloud-key-bypasses-write-journal', 'capture-disabled', 'no-local-database', 'encrypted-credential', 'normal-desktop-exit'] }, null, 2));
 } finally {
   socket?.close();
   for (const child of [desktop, service]) if (child && child.exitCode === null) { child.kill(); await Promise.race([once(child, 'exit'), wait(5000)]); }

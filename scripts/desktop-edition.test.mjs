@@ -16,6 +16,9 @@ describe('standalone desktop distribution', () => {
     expect(html).not.toMatch(/apple-mobile-web-app|rel="manifest"|rel="apple-touch-icon"/);
     expect(html).toContain('Content-Security-Policy');
     expect(html).toContain('终极日历本地版');
+    expect(html).toContain('请退出后重新打开终极日历本地版');
+    expect(html).toContain('已有日历和资料会保留');
+    expect(html).not.toMatch(/recovery=startup|配对|待提交修改/);
   });
   it('gives the local installer its own identity and update metadata channel', async () => {
     const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));

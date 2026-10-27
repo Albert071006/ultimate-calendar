@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { createServerMobileArchive, readServerMobileArchive } from './package-server-mobile.mjs';
 
-const names = ['LICENSE', 'README.md', 'dist-server/cli.mjs', 'deploy/server-mobile/ultimate-calendar.service', 'deploy/nginx.conf.example', 'deploy/check-health.mjs', 'docs/server-mobile-deployment.md', 'docs/windows-cloud-mode.md', 'web/index.html', 'web/sw.js', 'web/manifest.webmanifest', 'web/assets/app-synthetic.js'];
+const names = ['LICENSE', 'README.md', 'dist-server/cli.mjs', 'deploy/server-mobile/ultimate-calendar.service', 'deploy/nginx.conf.example', 'deploy/check-health.mjs', 'docs/server-mobile-deployment.md', 'docs/windows-cloud-mode.md', 'docs/backend-operations.md', 'scripts/retain-web-assets.mjs', 'web/index.html', 'web/sw.js', 'web/manifest.webmanifest', 'web/assets/app-synthetic.js'];
 const files = () => names.map(name => ({ name, bytes: Buffer.from(name === 'dist-server/cli.mjs' ? 'server-core-test' : `synthetic ${name}`) }));
 describe('standalone server and mobile archive', () => {
   it('contains a versioned server, mobile shell, service unit and deployment instructions', () => {

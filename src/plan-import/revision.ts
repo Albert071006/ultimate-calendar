@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { BlockSchema, GoalSchema, TaskSchema, MutationRequestSchema, type Entity, type MutationRequest, type MutationResult, type Snapshot } from '../shared/contracts';
 import type { PlanFile, PlanImportRow, PlanUpdate, PlanDeletion } from '../shared/plan-import';
+import { taskScheduleLimitExceeded, taskScheduleMode } from '../domain/task-scheduling';
 
 export type RevisionKind = 'goal' | 'task' | 'block';
 const kind = z.enum(['goal', 'task', 'block']);
@@ -42,7 +43,7 @@ export function revisionPatch(plan: PlanFile, item: PlanUpdate): Record<string, 
   const { resourceRefs, ...fields } = item.values;
   return { ...fields, ...(resourceRefs !== undefined ? { resources: resourceRefs.map(id => plan.resources.find(resource => resource.id === id)!) } : {}) };
 }
-const labels: Record<string, string> = { title: '名称', description: '说明', priority: '优先级', targetDate: '目标日期', status: '状态', color: '颜色', deadline: '截止时间', start: '开始时间', end: '结束时间', location: '地点', reminders: '提醒', resources: '资料引用' };
+const labels: Record<string, string> = { title: '名称', description: '说明', priority: '优先级', targetDate: '目标日期', status: '状态', color: '颜色', deadline: '截止时间', scheduleMode: '时段安排方式', start: '开始时间', end: '结束时间', location: '地点', reminders: '提醒', resources: '资料引用' };
 function display(value: unknown): string { return value == null ? '未设置' : typeof value === 'string' ? value || '空' : JSON.stringify(value); }
 function intervalInRange(plan: PlanFile, record: Entity): boolean {
   if (!('start' in record)) return false;
@@ -88,6 +89,21 @@ export function prepareRevision(plan: PlanFile, snapshot: Snapshot) {
     rows.push({ kind: item.kind, localId: item.id, existingId: item.targetId, action: item.action, title: record && 'title' in record ? record.title : item.targetId,
       state: error ? 'blocked' : item.action, detail: error || (item.action === 'update' ? '按真实编号修改；未提供的字段、完成状态及关联保留' : '明确删除此记录'), changes,
       ...(record && 'start' in record ? { start: record.start, ...(record.end ? { end: record.end } : {}) } : {}) });
+  }
+  for (const task of projected.tasks) {
+    const previous = snapshot.tasks.find(old => old.id === task.id);
+    if (taskScheduleLimitExceeded(task, projected.blocks, previous, snapshot.blocks)) {
+      const row = rows.find(row => row.kind === 'task' && row.existingId === task.id && row.state === 'update');
+      if (row) { row.state = 'blocked'; row.detail = '该任务还有多个时段或重复系列，不能改为单时段；请先明确处理已有安排'; }
+    }
+    // The core preserves a legacy task's multiple-slot mode when deleting its extra slots.
+    // Require that task update in the file so strict revision receipts never omit the derived change.
+    if (previous && !previous.scheduleMode && !task.scheduleMode && taskScheduleMode(previous, snapshot.blocks) === 'multiple'
+      && taskScheduleMode(task, projected.blocks) === 'single') {
+      for (const row of rows) if (row.kind === 'block' && row.state === 'delete' && snapshot.blocks.some(block => block.id === row.existingId && block.taskId === task.id)) {
+        row.state = 'blocked'; row.detail = '删除后需保留原任务的多时段方式；请在同份 v3 updates 中明确把该任务 scheduleMode 设为 multiple，或明确选择 single';
+      }
+    }
   }
   return { rows, before, projected };
 }

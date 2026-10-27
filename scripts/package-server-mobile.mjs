@@ -8,7 +8,7 @@ import { gzipSync, gunzipSync } from 'node:zlib';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const limit = 128 * 1024 * 1024;
-const fixed = ['LICENSE', 'dist-server/cli.mjs', 'deploy/server-mobile/ultimate-calendar.service', 'deploy/nginx.conf.example', 'deploy/check-health.mjs', 'docs/server-mobile-deployment.md', 'docs/windows-cloud-mode.md'];
+const fixed = ['LICENSE', 'dist-server/cli.mjs', 'deploy/server-mobile/ultimate-calendar.service', 'deploy/nginx.conf.example', 'deploy/check-health.mjs', 'docs/server-mobile-deployment.md', 'docs/windows-cloud-mode.md', 'docs/backend-operations.md', 'scripts/retain-web-assets.mjs'];
 const allowed = name => fixed.includes(name) || name === 'README.md'
   || /^web\/(?:index\.html|sw\.js|manifest\.webmanifest|assets\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(?:js|css|woff2?|ttf|svg|png|jpe?g|webp)|icons\/[A-Za-z0-9_-]+\.(?:png|svg)|third-party\/[A-Za-z0-9_-]+\.txt)$/.test(name);
 export function serverMobileNames(version) {

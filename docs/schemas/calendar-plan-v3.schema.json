@@ -417,6 +417,13 @@
               }
             ]
           },
+          "scheduleMode": {
+            "type": "string",
+            "enum": [
+              "single",
+              "multiple"
+            ]
+          },
           "id": {
             "type": "string",
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
@@ -725,6 +732,13 @@
                       {
                         "type": "null"
                       }
+                    ]
+                  },
+                  "scheduleMode": {
+                    "type": "string",
+                    "enum": [
+                      "single",
+                      "multiple"
                     ]
                   },
                   "reminders": {

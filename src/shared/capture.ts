@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { IdSchema, InstantSchema } from './contracts';
 
+export const CapturePlatformSchema = z.enum(['qq', 'wechat']);
+export type CapturePlatform = z.infer<typeof CapturePlatformSchema>;
+export const capturePlatform = (accountId: string | null | undefined): CapturePlatform => accountId?.startsWith('wechat:') ? 'wechat' : 'qq';
+export const capturePlatformLabel = (platform: CapturePlatform) => platform === 'wechat' ? '微信' : 'QQ';
+
 /** Bridge credentials never belong to this transport contract. */
 export const LoopbackEndpointSchema = z.string().max(2000).refine(value => {
   try {
@@ -11,13 +16,15 @@ export const LoopbackEndpointSchema = z.string().max(2000).refine(value => {
   } catch { return false; }
 }, 'QQ 桥接地址必须是本机回环地址，且不能含凭据或查询参数');
 export const CaptureConfigSchema = z.strictObject({
+  platform: CapturePlatformSchema.optional(),
   enabled: z.boolean().default(false), analysisEnabled: z.boolean().default(true),
   accountId: IdSchema.nullable().default(null), groupIds: z.array(IdSchema).max(100).default([]),
   endpoint: LoopbackEndpointSchema.default('ws://127.0.0.1:43131'),
   flavor: z.enum(['napcat', 'snowluma']).default('napcat'),
   historyDays: z.literal(7).default(7), intervalSeconds: z.literal(120).default(120),
 }).refine(value => new Set(value.groupIds).size === value.groupIds.length, '群选择不能重复')
-  .refine(value => value.accountId !== null || (!value.enabled && value.groupIds.length === 0), '启用采集或选择群之前需要确认 QQ 账号');
+  .refine(value => value.accountId !== null || (!value.enabled && value.groupIds.length === 0), '启用采集或选择群之前需要确认账号')
+  .refine(value => !value.accountId || !value.platform || capturePlatform(value.accountId) === value.platform, '采集账号与平台不匹配');
 export type CaptureConfig = z.infer<typeof CaptureConfigSchema>;
 
 export const CapturePageRequestSchema = z.strictObject({
@@ -34,6 +41,7 @@ export const AttachmentSummarySchema = z.strictObject({
 });
 export type AttachmentSummary = z.infer<typeof AttachmentSummarySchema>;
 export const CaptureMessageViewSchema = z.strictObject({
+  platform: CapturePlatformSchema.optional(),
   id: IdSchema, accountId: IdSchema, groupId: IdSchema, messageId: IdSchema,
   groupName: z.string().max(1000), senderName: z.string().max(1000),
   sentAt: InstantSchema, importedAt: InstantSchema, text: z.string().max(1_000_000),
@@ -43,6 +51,7 @@ export type CaptureMessageView = z.infer<typeof CaptureMessageViewSchema>;
 export const BatchStatusSchema = z.enum(['pending', 'preparing', 'requesting', 'uncertain', 'result-ready', 'applied', 'failed']);
 export type BatchStatus = z.infer<typeof BatchStatusSchema>;
 export const CaptureBatchViewSchema = z.strictObject({
+  platform: CapturePlatformSchema.optional(),
   id: IdSchema, operationId: IdSchema, accountId: IdSchema, groupId: IdSchema,
   status: BatchStatusSchema, createdAt: InstantSchema, updatedAt: InstantSchema,
   messageCount: z.number().int().nonnegative(), attemptCount: z.number().int().nonnegative(),
@@ -69,6 +78,7 @@ export const CaptureStatsSchema = z.strictObject({
 });
 export type CaptureStats = z.infer<typeof CaptureStatsSchema>;
 export const CaptureSnapshotSchema = z.strictObject({
+  platform: CapturePlatformSchema.optional(),
   cloudKeySync: z.strictObject({
     state: z.enum(['syncing', 'ready', 'error']), revision: z.string().uuid().nullable(), configured: z.boolean(),
     lastSyncedAt: z.string().datetime().nullable(), message: z.string().max(1000).nullable(),

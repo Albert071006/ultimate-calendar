@@ -48,12 +48,15 @@ describe('plan file v3 explicit revisions', () => {
   it('does not default omitted patch fields or add v3 fields to a legacy receipt input', () => {
     const old = PlanFileSchema.parse(PLAN_FILE_EXAMPLE);
     expect(old).not.toHaveProperty('updates'); expect(old).not.toHaveProperty('deletions');
+    expect(old.tasks[0]).not.toHaveProperty('scheduleMode');
     for (const kind of ['goal', 'task', 'block'] as const) {
       const parsed = PlanFileSchema.parse({ ...revision(), updates: [{ id: 'rename', kind, targetId: 'original-record', expectedVersion: 1, values: { title: '新标题' } }] });
       expect(parsed.updates![0]!.values).toEqual({ title: '新标题' });
     }
     expect(PlanFileSchema.parse({ ...revision(), updates: [{ id: 'date', kind: 'task', targetId: 'original-task', expectedVersion: 1, values: { deadline: null, resourceRefs: [] } }] }).updates![0]!.values)
       .toEqual({ deadline: null, resourceRefs: [] });
+    expect(PlanFileSchema.parse({ ...revision(), updates: [{ id: 'mode', kind: 'task', targetId: 'original-task', expectedVersion: 1, values: { scheduleMode: 'multiple' } }] }).updates![0]!.values)
+      .toEqual({ scheduleMode: 'multiple' });
   });
 
   it('rejects v3 fields in v1/v2 and requires an unchanged-context envelope for v3', () => {

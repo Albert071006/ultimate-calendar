@@ -5,6 +5,7 @@ import type { EditorTarget } from "./components/editor/EntityEditor";
 import { todayDate } from "./calendar-layout";
 import { taskEvents, taskArrangements, taskNoticeTiming, noticeTimePassed, nextTaskArrangement } from "./task-schedule";
 import { effectiveActivityEnd } from "../domain/activity-duration";
+import { taskScheduleMode } from '../domain/task-scheduling';
 
 /**
  * Task actions shared by the desktop and phone shells: open the next arrangement, or start a new one
@@ -18,8 +19,18 @@ export function taskActionHandlers({ snapshot, ui, select, editRecord, defaultSl
   /** Where a task without any notice time is first placed. */
   defaultSlot?: () => { date: string; time: string };
 }) {
-  const schedule = (draft: ScheduleDraft) =>
-    editRecord({ entity: "block", id: draft.blockId, draft });
+  const schedule = (draft: ScheduleDraft) => {
+    const task = snapshot?.tasks.find(value => value.id === draft.taskId);
+    const existing = task && snapshot && taskScheduleMode(task, snapshot.blocks) === 'single'
+      ? taskArrangements(snapshot, task.id).find(value => !value.cancelled) : undefined;
+    // Dropping a single-slot task elsewhere moves its existing arrangement instead of adding another one.
+    if (!draft.blockId && existing) {
+      const start = `${draft.date}T${draft.time}:00+08:00`;
+      const duration = Date.parse(effectiveActivityEnd(existing.start, existing.end)) - Date.parse(existing.start);
+      editRecord({ entity: 'block', id: existing.id, draft: { ...draft, blockId: existing.id,
+        end: new Date(Date.parse(start) + duration + 8 * 3600000).toISOString().slice(0, 16) } });
+    } else editRecord({ entity: 'block', id: draft.blockId, draft });
+  };
   const scheduleTask = (taskId: string, blockId?: string) => {
     if (!snapshot) return;
     const arrangements = taskArrangements(snapshot, taskId);
@@ -47,9 +58,15 @@ export function taskActionHandlers({ snapshot, ui, select, editRecord, defaultSl
       kind: 'event', location: timing?.location ?? '',
     } });
   };
+  const scheduleAdditionalTask = (taskId: string) => {
+    const task = snapshot?.tasks.find(value => value.id === taskId);
+    if (!snapshot || !task || task.status === 'done') return;
+    if (taskScheduleMode(task, snapshot.blocks) !== 'multiple') { editRecord({ entity: 'task', id: task.id }); return; }
+    editRecord({ entity: 'block', draft: { ...defaultSlot(), taskId } });
+  };
   const removeTask = (taskId: string) => {
     const task = snapshot?.tasks.find(value => value.id === taskId);
     if (task) void ui.mutate([{ type: 'removeTask', id: task.id, expectedVersion: task.version, includeLinkedBlocks: true }]);
   };
-  return { schedule, scheduleTask, scheduleRecurringTask, removeTask };
+  return { schedule, scheduleTask, scheduleRecurringTask, scheduleAdditionalTask, removeTask };
 }

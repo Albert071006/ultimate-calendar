@@ -117,21 +117,21 @@ describe('cloud desktop device shell', () => {
     f.collector.setTrayOwner.mockResolvedValue({ ok: false } as never); f.collector.processState.mockResolvedValue('stopped');
     await vi.advanceTimersByTimeAsync(5000);
     expect(mocks.trays).toHaveLength(1); expect(mocks.trays[0]!.destroy).not.toHaveBeenCalled();
-    expect(mocks.trays[0]!.menu!.some(item => item.label === '启动 QQ 采集')).toBe(true);
+    expect(mocks.trays[0]!.menu!.some(item => item.label === '启动本机采集')).toBe(true);
     expect(mocks.trays[0]!.menu!.some(item => item.label === '退出日历')).toBe(true);
   });
 
   it('stops and restarts collection from the same cloud tray while preserving cloud actions', async () => {
     const f = fixture(); await flush();
     f.shell.setTrayItems([{ label: '合成云端操作' }]);
-    mocks.trays[0]!.menu!.find(item => item.label?.startsWith('停止 QQ 采集'))!.click!(); await flush();
+    mocks.trays[0]!.menu!.find(item => item.label?.startsWith('停止本机采集'))!.click!(); await flush();
     expect(f.collector.shutdownAndWait).toHaveBeenCalledOnce(); expect(mocks.trays).toHaveLength(1);
     expect(mocks.trays[0]!.menu!.some(item => item.label === '退出日历')).toBe(true);
     const claims = f.collector.setTrayOwner.mock.calls.length;
     await vi.advanceTimersByTimeAsync(10_000); expect(f.collector.setTrayOwner).toHaveBeenCalledTimes(claims);
     f.collector.invoke.mockResolvedValueOnce({ ok: false } as never).mockResolvedValue({ ok: true, data: {} });
     f.collector.processState.mockResolvedValue('stopped');
-    mocks.trays[0]!.menu!.find(item => item.label === '启动 QQ 采集')!.click!(); await flush();
+    mocks.trays[0]!.menu!.find(item => item.label === '启动本机采集')!.click!(); await flush();
     expect(mocks.spawn).toHaveBeenCalledOnce(); expect(mocks.trays).toHaveLength(1);
     expect(mocks.trays[0]!.menu!.some(item => item.label === '合成云端操作')).toBe(true);
     expect(f.collector.setTrayOwner).toHaveBeenLastCalledWith(expect.any(String), true);
@@ -238,7 +238,7 @@ describe('cloud desktop device shell', () => {
 
   it('preserves an intentionally stopped collector when installation fails', async () => {
     const f = fixture(); await flush();
-    mocks.trays[0]!.menu!.find(item => item.label?.startsWith('停止 QQ 采集'))!.click!(); await flush();
+    mocks.trays[0]!.menu!.find(item => item.label?.startsWith('停止本机采集'))!.click!(); await flush();
     f.collector.processState.mockResolvedValue('stopped');
     await f.hooks.prepareInstall(); await f.hooks.resumeAfterFailedInstall();
     expect(f.collector.shutdownAndWait).toHaveBeenCalledTimes(2); expect(mocks.spawn).not.toHaveBeenCalled();

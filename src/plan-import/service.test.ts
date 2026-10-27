@@ -33,6 +33,28 @@ function insert(f: ReturnType<typeof fixture>, mutations: MutationRequestInput['
 }
 
 describe('JSON plan creation coordinator', () => {
+  it('blocks an implicit multi-slot plan before any writes and accepts an explicit choice', async () => {
+    const f = fixture(), first = f.plan.blocks![0]!;
+    f.plan.blocks!.push({ ...first, id: 'second-session', start: '2026-11-03T19:00:00+08:00', end: '2026-11-03T20:00:00+08:00' });
+    const blocked = await f.service.preview(f.plan);
+    expect(blocked.rows.filter(row => row.state === 'blocked')).toHaveLength(3);
+    expect(blocked.rows.find(row => row.kind === 'task')!.detail).toContain('scheduleMode="multiple"');
+    expect(await f.service.confirm({ token: blocked.token })).toMatchObject({ status: 'partial', applied: 0 });
+    expect(f.mutate).not.toHaveBeenCalled(); expect(f.planner.snapshot().tasks).toHaveLength(0);
+    f.plan.tasks![0]!.scheduleMode = 'multiple';
+    expect(await run(f)).toMatchObject({ status: 'complete', applied: 4 });
+    expect(f.planner.snapshot().tasks[0]!.scheduleMode).toBe('multiple'); expect(f.planner.snapshot().blocks).toHaveLength(2);
+    f.service = createPlanImportService(f.options);
+    expect(await run(f)).toMatchObject({ status: 'complete', applied: 0 });
+  });
+
+  it('rejects a second slot for an existing default task instead of silently switching its mode', async () => {
+    const f = fixture(); await run(f); const saved = f.planner.snapshot();
+    const extra: PlanFileInput = { ...f.plan, planId: 'extra-slot', goals: [], tasks: [], blocks: [{ id: 'extra', taskId: saved.tasks[0]!.id, title: '额外时段', start: '2026-11-03T19:00:00+08:00', end: '2026-11-03T20:00:00+08:00' }] };
+    const preview = await f.service.preview(extra); expect(preview.rows[0]!.state).toBe('blocked');
+    expect(await f.service.confirm({ token: preview.token })).toMatchObject({ applied: 0 }); expect(f.planner.snapshot().blocks).toHaveLength(1);
+    expect(await run(f)).toMatchObject({ status: 'complete', applied: 0 });
+  });
   it('previews without writing, then creates linked goals, tasks, blocks and resource references', async () => {
     const f = fixture(), preview = await f.service.preview(f.plan);
     expect(f.mutate).not.toHaveBeenCalled(); expect(preview.rows.map(row => row.state)).toEqual(['new', 'new', 'new']);
@@ -122,6 +144,7 @@ describe('JSON plan creation coordinator', () => {
 
   it('checks course occurrences and conflicts between proposed study blocks before confirming each backend preview', async () => {
     const f = fixture(); insert(f, [{ type: 'create', entity: 'course', values: { title: '合成周一课程', weekday: 1, startTime: '19:30', endTime: '20:30', firstWeek: 1, lastWeek: 1, parity: 'all', termStart: '2026-11-02' } }]);
+    f.plan.tasks![0]!.scheduleMode = 'multiple';
     f.plan.blocks!.push({ ...f.plan.blocks![0]!, id: 'second-session', title: '第二段学习', start: '2026-11-02T19:45:00+08:00', end: '2026-11-02T20:45:00+08:00' });
     const preview = await f.service.preview(f.plan); expect(preview.conflicts).toHaveLength(3);
     expect(await f.service.confirm({ token: preview.token, allowConflicts: true })).toMatchObject({ status: 'complete', applied: 4 });

@@ -535,6 +535,13 @@
               ]
             }
           },
+          "scheduleMode": {
+            "type": "string",
+            "enum": [
+              "single",
+              "multiple"
+            ]
+          },
           "id": {
             "type": "string",
             "minLength": 1,

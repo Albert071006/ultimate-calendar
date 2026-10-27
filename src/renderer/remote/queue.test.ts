@@ -91,6 +91,44 @@ describe('offline mutation scope', () => {
 });
 
 describe('optimistic queue projection', () => {
+  it('keeps single-slot completion, restoration and linked versions aligned', () => {
+    const value = partition(); value.snapshot!.blocks[0]!.taskId = 'task';
+    value.queue.push(pending(request([{ type: 'finishBlock', id: 'block', expectedVersion: 1, completed: true },
+      { type: 'update', entity: 'task', id: 'task', expectedVersion: 2, values: { title: '已完成的合成任务' } }])));
+    const done = projectSnapshot(value)!;
+    expect(done.tasks[0]).toMatchObject({ status: 'done', version: 3 });
+    expect(done.blocks[0]).toMatchObject({ completed: true, version: 2 });
+    expect(value.snapshot!.tasks[0]).toMatchObject({ status: 'open', version: 1 });
+    value.snapshot = done; value.queue = [pending(request([{ type: 'finishTask', id: 'task', expectedVersion: 3, completed: false }], { operationId: 'restore' }))];
+    expect(projectSnapshot(value)!.tasks[0]).toMatchObject({ status: 'open', version: 4 });
+    expect(projectSnapshot(value)!.blocks[0]).toMatchObject({ completed: false, version: 3 });
+  });
+
+  it('requires an explicit multiple-slot choice before adding a second slot and preserves per-slot completion', () => {
+    const value = partition(); value.snapshot!.blocks[0]!.taskId = 'task';
+    const second = { type: 'create', entity: 'block', values: { ...event, taskId: 'task' } };
+    expect(allowsOffline('mutate', request([second]), value.snapshot)).toBe(false);
+    const enable = { type: 'update', entity: 'task', id: 'task', expectedVersion: 1, values: { scheduleMode: 'multiple' } };
+    expect(allowsOffline('mutate', request([enable, second]), value.snapshot)).toBe(true);
+    value.queue.push(pending(request([enable, second, { type: 'finishBlock', id: 'block', expectedVersion: 1, completed: true }])));
+    const result = projectSnapshot(value)!;
+    expect(result.tasks[0]).toMatchObject({ scheduleMode: 'multiple', status: 'open', version: 2 });
+    expect(result.blocks).toHaveLength(2); expect(result.blocks[0]!.completed).toBe(true);
+  });
+
+  it('captures implicit completion and slot-limit dependencies for conflict review', () => {
+    const value = partition(); value.snapshot!.blocks[0]!.taskId = 'task';
+    expect(captureBase('mutate', request([{ type: 'finishBlock', id: 'block', expectedVersion: 1 }]), value)).toEqual([...value.snapshot!.tasks, ...value.snapshot!.blocks]);
+    expect(captureBase('mutate', request([{ type: 'finishTask', id: 'task', expectedVersion: 1 }]), value)).toEqual([...value.snapshot!.tasks, ...value.snapshot!.blocks]);
+  });
+
+  it('does not change historical completion when a full editor patch only changes its title', () => {
+    const value = partition(); value.snapshot!.blocks[0]!.taskId = 'task'; value.snapshot!.blocks[0]!.completed = true;
+    value.queue.push(pending(request([{ type: 'update', entity: 'task', id: 'task', expectedVersion: 1, values: { title: '修改名称', status: 'open' } }])));
+    expect(projectSnapshot(value)!.blocks[0]).toMatchObject({ completed: true, version: 1 });
+    value.queue = [pending(request([{ type: 'update', entity: 'block', id: 'block', expectedVersion: 1, values: { title: '修改时段名称', completed: true } }]))];
+    expect(projectSnapshot(value)!.tasks[0]).toMatchObject({ status: 'open', version: 1 });
+  });
   it('uses completed, supports restore, and applies sequential version checks without mutating canonical state', () => {
     const value = partition();
     value.queue.push(pending(request([{ type: 'finishTask', id: 'task', expectedVersion: 1, completed: true }, { type: 'finishTask', id: 'task', expectedVersion: 2, completed: false }])));
@@ -135,6 +173,14 @@ describe('optimistic queue projection', () => {
 });
 
 describe('explicit conflict resolution', () => {
+  it('rebases following task edits against the version advanced by completing its single slot', () => {
+    const value = partition(); value.snapshot!.blocks[0]!.taskId = 'task'; value.snapshot!.tasks[0]!.version = 7; value.snapshot!.blocks[0]!.version = 4;
+    const item = pending(request([{ type: 'finishBlock', id: 'block', expectedVersion: 1, completed: true },
+      { type: 'update', entity: 'task', id: 'task', expectedVersion: 2, values: { title: '保留本机标题' } }])); item.status = 'conflict';
+    const rebased = MutationRequestSchema.parse(rebaseWrite(item, value));
+    expect(rebased.mutations.map(change => 'expectedVersion' in change ? change.expectedVersion : null)).toEqual([4, 8]);
+    expect(allowsOffline('mutate', rebased, value.snapshot)).toBe(true);
+  });
   it('rebases versions per kind and within a batch only after the result is known', () => {
     const value = partition(); value.snapshot!.tasks[0]!.version = 7;
     const item = pending(request([{ type: 'update', entity: 'task', id: 'task', expectedVersion: 1, values: { title: '保留本机标题' } }, { type: 'finishTask', id: 'task', expectedVersion: 2, completed: true }])); item.status = 'conflict';

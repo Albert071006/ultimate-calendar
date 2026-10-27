@@ -46,6 +46,19 @@ async function apply(f: ReturnType<typeof fixture>, plan = f.plan, flags: { allo
 }
 
 describe('guarded JSON plan revisions', () => {
+  it('explicitly enables multiple slots in a revision before appending a second slot', async () => {
+    const f = fixture();
+    f.plan.updates = [{ id: 'multiple-slots', kind: 'task', targetId: f.task1.id, expectedVersion: 1, values: { scheduleMode: 'multiple' } }];
+    f.plan.blocks = [{ id: 'additional-session', taskId: f.task1.id, title: '第二次阅读', start: '2030-04-16T09:00:00+08:00', end: '2030-04-16T10:00:00+08:00' }];
+    expect((await f.service.preview(f.plan)).rows.map(row => row.state)).toEqual(['update', 'new']);
+    expect(await apply(f)).toMatchObject({ status: 'complete', applied: 2 });
+    expect(f.planner.snapshot().tasks.find(task => task.id === f.task1.id)).toMatchObject({ scheduleMode: 'multiple', version: 2 });
+    expect(f.planner.snapshot().blocks.filter(block => block.taskId === f.task1.id)).toHaveLength(2);
+    f.service = createPlanImportService(f.options); expect(await apply(f)).toMatchObject({ status: 'complete', applied: 0 });
+    const single: PlanFileInput = { ...f.plan, planId: 'switch-to-single', basis: f.context().basis, blocks: [], updates: [{ id: 'single', kind: 'task', targetId: f.task1.id, expectedVersion: 2, values: { scheduleMode: 'single' } }] };
+    expect((await f.service.preview(single)).rows[0]!.state).toBe('blocked');
+    expect(await apply(f, single)).toMatchObject({ applied: 0 });
+  });
   it('previews exact field changes and preserves omitted fields, IDs, state and associations', async () => {
     const f = fixture();
     f.plan.updates!.push({ id: 'task-deadline', kind: 'task', targetId: f.task1.id, expectedVersion: 1, values: { title: '更新的第一章', deadline: { date: '2030-04-20', time: '18:00' } } });

@@ -25,7 +25,7 @@ function setup() {
   };
   mutate({ type: 'create', entity: 'task', values: { title: '双周周二晚活动室值班检查', description: '去活动室查看', reminders: { enabled: true, leadMinutes: [30], dateOnlyTime: null } } });
   const task = planner.snapshot().tasks[0]!;
-  const schedule = (rule: RecurrenceRuleInput = evenRule, extra: Partial<Extract<MutationInput, { type: 'scheduleRecurringTask' }>> = {}) => mutate({ type: 'scheduleRecurringTask', id: task.id, expectedVersion: task.version, rule, location: '活动室', ...extra });
+  const schedule = (rule: RecurrenceRuleInput = evenRule, extra: Partial<Extract<MutationInput, { type: 'scheduleRecurringTask' }>> = {}) => mutate({ type: 'scheduleRecurringTask', id: task.id, expectedVersion: planner.snapshot().tasks.find(value => value.id === task.id)!.version, rule, location: '活动室', ...extra });
   return { repository, planner, mutate, confirm, task, schedule, root };
 }
 
@@ -58,17 +58,17 @@ describe('bounded activity recurrence', () => {
 });
 
 describe('recurring task transactions', () => {
-  it('previews without writing; confirms ordinary event blocks with inherited reminders and keeps the original task unchanged', () => {
+  it('previews without writing; confirms repeated blocks and explicitly opts the task into multiple slots', () => {
     const { planner, task, schedule, confirm } = setup();
     const before = planner.snapshot(); const preview = schedule();
     expect(preview).toMatchObject({ status: 'preview', conflicts: [] });
     expect(planner.snapshot()).toEqual(before);
     if (preview.status !== 'preview') throw Error('Expected preview');
-    expect(preview.details).toHaveLength(3);
-    expect(preview.details.every(value => value.entity === 'block' && value.before === null)).toBe(true);
+    expect(preview.details).toHaveLength(4);
+    expect(preview.details.filter(value => value.entity === 'block').every(value => value.before === null)).toBe(true);
     const applied = confirm(preview);
     expect(applied).toMatchObject({ status: 'applied', message: '已安排3次重复活动，可撤销' });
-    expect(planner.snapshot().tasks).toEqual([task]); expect(planner.snapshot().courses).toEqual([]);
+    expect(planner.snapshot().tasks).toEqual([{ ...task, scheduleMode: 'multiple', version: task.version + 1 }]); expect(planner.snapshot().courses).toEqual([]);
     expect(planner.snapshot().blocks).toHaveLength(3);
     expect(planner.snapshot().blocks[0]).toMatchObject({ kind: 'event', title: task.title, taskId: task.id, location: '活动室', candidateId: null, start: '2026-11-03T20:40:00+08:00', end: '2026-11-03T21:10:00+08:00', reminders: task.reminders });
     expect(collectReminders(planner.snapshot(), '2026-11-03T20:09:00+08:00', '2026-11-03T20:10:00+08:00')).toMatchObject([{ refKind: 'block', scheduledAt: '2026-11-03T20:10:00+08:00', dueAt: '2026-11-03T20:40:00+08:00' }]);
@@ -82,7 +82,7 @@ describe('recurring task transactions', () => {
     const restarted = createPlanner(reopened);
     expect(restarted.snapshot().blocks).toHaveLength(3);
     expect(restarted.undo(applied.transactionId).status).toBe('applied');
-    expect(restarted.snapshot().blocks).toEqual([]); expect(restarted.snapshot().tasks).toEqual([task]);
+    expect(restarted.snapshot().blocks).toEqual([]); expect(restarted.snapshot().tasks).toEqual([{ ...task, version: task.version + 2 }]);
   });
   it('rejects duplicate arrangements, skips compatible old occurrences and creates only missing dates', () => {
     const { planner, schedule, confirm } = setup();

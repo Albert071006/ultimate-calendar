@@ -7,6 +7,7 @@ import { expandRecurrence } from './recurrence';
 import { effectiveActivityEnd } from './activity-duration';
 import { recurringEventTargets, recurringEventPatch } from './recurring-events';
 import type { ResourceReference } from '../shared/resources';
+import { taskScheduleMode, taskScheduleLimitExceeded } from './task-scheduling';
 export class DomainConflict extends Error { constructor(public conflict: Conflict) { super(conflict.message); } }
 export function conflict(kind: Conflict['kind'], entity: Conflict['entity'], id: string, message: string): never { throw new DomainConflict({ kind, entity, id, message, conflictingIds: [] }); }
 function removeTask(state: StoredState, taskId: string, includeLinkedBlocks: boolean): boolean {
@@ -43,6 +44,8 @@ function scheduleRecurringTask(state: StoredState, task: Task, rule: RecurrenceR
     adopted.push(...matches); return false;
   });
   if (!missing.length && !adopted.length) conflict('recurrence', 'task', task.id, '这些重复活动已经全部安排，无需重复添加');
+  // Choosing a recurrence is an explicit request for multiple slots, even for a one-date range.
+  if (task.scheduleMode !== 'multiple') updateEntity(state, 'task', task.id, { scheduleMode: 'multiple' });
   for (const block of adopted) updateEntity(state, 'block', block.id, {
     recurrence: { seriesId, occurrenceStart: block.start },
     ...(resources ? { resources: [...new Map([...(block.resources ?? []), ...resources].map(resource => [resource.id, resource])).values()] } : {}),
@@ -50,6 +53,20 @@ function scheduleRecurringTask(state: StoredState, task: Task, rule: RecurrenceR
   for (const occurrence of missing) newEntity(state, 'block', { title: task.title, ...occurrence, kind: 'event', taskId: task.id, location, reminders: config, resources, recurrence: { seriesId, occurrenceStart: occurrence.start } });
 }
 export function expandMutations(state: StoredState, mutations: Mutation[]): { deliberate: boolean } {
+  const previousTasks = structuredClone(records(state, 'task'));
+  const previousBlocks = structuredClone(records(state, 'block'));
+  const completionMode = (task: Task) => task.scheduleMode ?? taskScheduleMode(previousTasks.find(value => value.id === task.id) ?? task, previousBlocks);
+  const syncTaskCompletion = (task: Task, completed: boolean) => {
+    if (completionMode(task) !== 'single') return;
+    const linked = records(state, 'block').filter(block => block.taskId === task.id && !block.cancelled);
+    if (linked.length === 1 && !linked[0]!.recurrence && linked[0]!.completed !== completed) updateEntity(state, 'block', linked[0]!.id, { completed });
+  };
+  const syncBlockCompletion = (block: Block, completed: boolean) => {
+    const task = block.taskId ? findEntity(state, 'task', block.taskId) : undefined;
+    if (!task || block.cancelled || block.recurrence || completionMode(task) !== 'single') return;
+    const linked = records(state, 'block').filter(value => value.taskId === task.id && !value.cancelled);
+    if (linked.length === 1 && task.status !== (completed ? 'done' : 'open')) updateEntity(state, 'task', task.id, { status: completed ? 'done' : 'open' });
+  };
   let deliberate = mutations.length > 1;
   for (const m of mutations) {
     if ('entity' in m && m.entity === 'courseException') deliberate = true;
@@ -95,7 +112,12 @@ export function expandMutations(state: StoredState, mutations: Mutation[]): { de
       newEntity(state, 'block', { ...m.values, candidateId: candidate.id });
       continue;
     }
-    if (m.type === 'finishTask' || m.type === 'finishBlock') { updateEntity(state, kind, m.id, m.type === 'finishTask' ? { status: m.completed ? 'done' : 'open' } : { completed: m.completed }); continue; }
+    if (m.type === 'finishTask' || m.type === 'finishBlock') {
+      if (m.type === 'finishBlock' && (old as Block).cancelled) conflict('revision', 'block', m.id, '已取消的时段不能更改完成状态');
+      const next = updateEntity(state, kind, m.id, m.type === 'finishTask' ? { status: m.completed ? 'done' : 'open' } : { completed: m.completed });
+      if (m.type === 'finishTask') syncTaskCompletion(next as Task, m.completed); else syncBlockCompletion(next as Block, m.completed);
+      continue;
+    }
     if (m.type === 'acceptCandidate' || m.type === 'ignoreCandidate' || m.type === 'snoozeCandidate' || m.type === 'restoreCandidate') {
       const candidate = findEntity(state, 'candidate', m.id)!;
       if (m.type === 'acceptCandidate') {
@@ -162,7 +184,14 @@ export function expandMutations(state: StoredState, mutations: Mutation[]): { de
         continue;
       }
     }
-    if (m.type === 'update') { if (m.entity === 'candidate' && findEntity(state, 'candidate', m.id)!.status === 'accepted') deliberate = true; updateEntity(state, m.entity, m.id, m.values); continue; }
+    if (m.type === 'update') {
+      if (m.entity === 'candidate' && findEntity(state, 'candidate', m.id)!.status === 'accepted') deliberate = true;
+      const next = updateEntity(state, m.entity, m.id, m.values);
+      // Editors submit full values; unchanged legacy completion fields are not a request to rewrite the linked record.
+      if (m.entity === 'task' && m.values.status !== undefined && m.values.status !== (old as Task).status) syncTaskCompletion(next as Task, m.values.status === 'done');
+      if (m.entity === 'block' && m.values.completed !== undefined && m.values.completed !== (old as Block).completed) syncBlockCompletion(next as Block, m.values.completed);
+      continue;
+    }
     if (m.type === 'delete') {
       if (m.entity === 'task') {
         if (removeTask(state, m.id, false)) deliberate = true;
@@ -181,6 +210,16 @@ export function expandMutations(state: StoredState, mutations: Mutation[]): { de
       }
       deleteEntity(state, m.entity, m.id);
     }
+  }
+  for (const task of records(state, 'task')) if (taskScheduleLimitExceeded(task, records(state, 'block'), previousTasks.find(value => value.id === task.id), previousBlocks)) {
+    conflict('revision', 'task', task.id, '这个任务默认只安排一个时段；请调整已有时段，或先选择“多个时段”再添加');
+  }
+  // Removing an old slot must not silently turn an intentionally split task into a single-slot task.
+  // Persist only when an edit would erase the legacy evidence; reads/backups remain unchanged.
+  for (const task of records(state, 'task')) {
+    const previous = previousTasks.find(value => value.id === task.id);
+    if (previous && !previous.scheduleMode && !task.scheduleMode && taskScheduleMode(previous, previousBlocks) === 'multiple'
+      && taskScheduleMode(task, records(state, 'block')) === 'single') updateEntity(state, 'task', task.id, { scheduleMode: 'multiple' });
   }
   // Recoloring a course (all records of its title) or a goal only changes presentation; it applies directly and stays undoable.
   const recolor = mutations.every(m => m.type === 'update' && (m.entity === 'course' || m.entity === 'goal')

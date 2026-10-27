@@ -7,8 +7,9 @@ import type { Repository } from '../storage/repository';
 import type { CaptureStore } from '../capture/store';
 import { CaptureSnapshotSchema } from '../shared/capture';
 import { SpaceSnapshotSchema } from '../shared/space';
+import { emptyAccountState } from '../shared/account';
 
-vi.mock('electron', () => ({ safeStorage: { isAsyncEncryptionAvailable: async () => true } }));
+vi.mock('electron', () => ({ app: { isPackaged: false }, safeStorage: { isAsyncEncryptionAvailable: async () => true } }));
 vi.mock('../capture/documents/runtime', () => ({ createDocumentExtractor: () => { throw Error('Tests must inject document handling'); } }));
 
 function fixture() {
@@ -17,26 +18,46 @@ function fixture() {
   const keyGet = vi.fn(async () => 'synthetic-preserved-ai-key'), bridgeGet = vi.fn(async () => 'synthetic-preserved-bridge-key'), set = vi.fn();
   let options: Parameters<NonNullable<CollectorDependencies['createCaptureService']>>[0] | undefined, busy = false;
   const warnings: string[] = [];
+  const accountState = emptyAccountState();
+  const accountStart = vi.fn(), accountStop = vi.fn(), accountReset = vi.fn();
   const dependencies: CollectorDependencies = {
     createRepository: vi.fn(() => ({ close: repoClose }) as unknown as Repository),
-    createCaptureStore: vi.fn(() => ({ close: storeClose }) as unknown as CaptureStore),
+    createCaptureStore: vi.fn((_path, options) => ({ close: options?.platform === 'wechat' ? vi.fn() : storeClose }) as unknown as CaptureStore),
     createDocumentExtractor: () => ({ extract: vi.fn(), dispose }),
+    createAccountService: () => ({ snapshot: () => accountState, start: accountStart, stop: accountStop, resetKey: accountReset, quote: () => null }),
     createKeyStore: path => ({ initialize: vi.fn(async () => {}), get: path.endsWith('deepseek.bin') ? keyGet : bridgeGet, set, status: () => ({ configured: true, sessionOnly: false }) }),
     createCaptureService: value => {
+      if (value.platform === 'wechat') return { start: vi.fn(async () => {}), stop: vi.fn(), busy: () => false, snapshot: () => CaptureSnapshotSchema.parse({ config: {}, connection: 'disconnected', accountLabel: null, error: null, lastReceivedAt: null, credentialConfigured: false, stats: { messages: 0, attachments: 0, attachmentBytes: 0, pendingMessages: 0, batches: 0, pendingBatches: 0, uncertainBatches: 0, failedAttachments: 0 }, coverage: [] }) };
       options = value;
       return { start, stop, busy: () => busy, snapshot: () => ({ connection: 'online', error: 'synthetic-private-account-error', config: { enabled: true, analysisEnabled: true } }) as ReturnType<typeof import('../capture/service').createCaptureService> extends { snapshot(): infer T } ? T : never };
     },
     fetch: async () => { throw Error('Tests must not connect real QQ or AI'); }, onWarning: code => warnings.push(code),
   };
-  return { root, dependencies, repoClose, storeClose, dispose, start, stop, keyGet, bridgeGet, set, warnings, options: () => options!, busy: (value: boolean) => { busy = value; } };
+  return { root, dependencies, repoClose, storeClose, dispose, start, stop, keyGet, bridgeGet, set, warnings, accountState, accountStart, accountStop, accountReset, options: () => options!, busy: (value: boolean) => { busy = value; } };
 }
 describe('Windows collection-only backend', () => {
+  it('shares current model capabilities with both capture services without changing the model or key', async () => {
+    const value = fixture(), original = value.dependencies.createCaptureService!;
+    const services: Parameters<NonNullable<CollectorDependencies['createCaptureService']>>[0][] = [];
+    value.dependencies.createCaptureService = options => { services.push(options); return original(options); };
+    try {
+      const mode = await startCollectorMode(value.root, value.dependencies);
+      expect(value.accountStart).toHaveBeenCalledOnce();
+      for (const service of services) expect(service.getModelInputModalities?.('synthetic-model')).toBeNull();
+      value.accountState.models.data = [{ id: 'synthetic-model', inputModalities: ['text'] }];
+      for (const service of services) expect(service.getModelInputModalities?.('synthetic-model')).toEqual(['text']);
+      value.accountState.models.data = [{ id: 'synthetic-model', inputModalities: ['text', 'image'] }];
+      for (const service of services) expect(service.getModelInputModalities?.('synthetic-model')).toEqual(['text', 'image']);
+      expect(value.set).not.toHaveBeenCalled();
+      await mode.close(); expect(value.accountStop).toHaveBeenCalledOnce();
+    } finally { rmSync(value.root, { recursive: true, force: true }); }
+  });
   it('owns cloud synchronization independently of UI subscribers and exposes only its metadata', async () => {
     const value = fixture(), original = value.dependencies.createCaptureService!;
     const snapshot = CaptureSnapshotSchema.parse({ config: {}, connection: 'disconnected', accountLabel: null, error: null, lastReceivedAt: null, credentialConfigured: true,
       stats: { messages: 0, attachments: 0, attachmentBytes: 0, pendingMessages: 0, batches: 0, pendingBatches: 0, uncertainBatches: 0, failedAttachments: 0 }, coverage: [] });
     const credentialsChanged = vi.fn(async () => snapshot);
-    value.dependencies.createCaptureService = options => ({ ...original(options), snapshot: () => snapshot, credentialsChanged });
+    value.dependencies.createCaptureService = options => options.platform === 'wechat' ? original(options) : ({ ...original(options), snapshot: () => snapshot, credentialsChanged });
     const state = { state: 'ready' as const, configured: true, revision: '33333333-3333-4333-8333-333333333333', lastSyncedAt: new Date(0).toISOString(), message: null };
     const startSync = vi.fn(), refresh = vi.fn(async () => {}), getApiKey = vi.fn(async () => 'synthetic-cloud-exclusive-key');
     let release: () => void = () => {};
@@ -52,6 +73,7 @@ describe('Windows collection-only backend', () => {
       const listener = vi.fn(), unsubscribe = mode.subscribe(listener); syncOptions!.onStatusChanged!(); expect(listener).toHaveBeenCalledWith({ ...snapshot, cloudKeySync: state });
       unsubscribe(); await syncOptions!.onChanged!({ previousRevision: undefined, revision: state.revision, configured: true, sourceId: 'a'.repeat(64) });
       expect(credentialsChanged).toHaveBeenCalledExactlyOnceWith({ configured: true, revision: state.revision, sourceId: 'a'.repeat(64) });
+      expect(value.accountReset).toHaveBeenCalledOnce();
       expect(JSON.stringify(await mode.api.invoke('captureSnapshot'))).not.toContain('synthetic-cloud-exclusive-key');
       const closing = mode.close(); expect(closeSync).toHaveBeenCalledOnce(); expect(value.repoClose).not.toHaveBeenCalled(); release(); await closing;
       expect(value.repoClose).toHaveBeenCalledOnce(); expect(value.stop).toHaveBeenCalledOnce();
@@ -74,6 +96,7 @@ describe('Windows collection-only backend', () => {
       const result = await mode.api.invoke('captureSetApiKey', { key });
       expect(result).toEqual({ ok: true, data: { configured: true, sessionOnly: false } });
       expect(value.set).toHaveBeenCalledExactlyOnceWith(key);
+      expect(value.accountReset).toHaveBeenCalledOnce();
       expect(JSON.stringify(result)).not.toContain(key);
       expect(await mode.api.invoke('captureSetApiKey', { key: 123 })).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
       expect(value.set).toHaveBeenCalledTimes(1); await mode.close();
@@ -123,7 +146,7 @@ describe('Windows collection-only backend', () => {
       expect(await mode.api.invoke('mutate', {})).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
       const observer = vi.fn(); const unsubscribe = mode.subscribe(observer); value.options().onChanged!(snapshot); expect(observer).toHaveBeenCalledOnce(); unsubscribe();
       await mode.close(); expect(await mode.api.invoke('captureSnapshot')).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
-      expect(value.dependencies.createRepository).toHaveBeenCalledOnce(); expect(value.dependencies.createCaptureStore).toHaveBeenCalledOnce();
+      expect(value.dependencies.createRepository).toHaveBeenCalledOnce(); expect(value.dependencies.createCaptureStore).toHaveBeenCalledTimes(2);
     } finally { rmSync(value.root, { recursive: true, force: true }); }
   });
   it('refuses a missing source without creating a database or initializing services', async () => {
@@ -186,5 +209,33 @@ describe('Windows collection-only backend', () => {
         await mode.close(); expect(value.storeClose).toHaveBeenCalledOnce(); expect(value.repoClose).toHaveBeenCalledOnce();
       } finally { rmSync(value.root, { recursive: true, force: true }); }
     }
+  });
+});
+
+
+describe('WeChat collector lifecycle', () => {
+  it('routes the second collector independently and waits for its pending work before closing SQLite', async () => {
+    const value = fixture(), original = value.dependencies.createCaptureService!;
+    let wechatBusy = false;
+    const state = CaptureSnapshotSchema.parse({ platform: 'wechat', config: { platform: 'wechat', accountId: 'wechat:synthetic-user', groupIds: [] }, connection: 'online', accountLabel: '微信 · test', accountName: '合成账号', error: null, lastReceivedAt: null, credentialConfigured: true, stats: { messages: 0, attachments: 0, attachmentBytes: 0, pendingMessages: 0, batches: 0, pendingBatches: 0, uncertainBatches: 0, failedAttachments: 0 }, coverage: [] });
+    const groups = vi.fn(async () => [{ id: 'test@chatroom', name: '合成微信群' }]), stopWechat = vi.fn();
+    value.dependencies.createCaptureService = options => options.platform === 'wechat'
+      ? { ...original(options), snapshot: () => state, groups, busy: () => wechatBusy, stop: stopWechat }
+      : original(options);
+    try {
+      const mode = await startCollectorMode(value.root, value.dependencies);
+      expect(await mode.api.invoke('wechatCaptureSnapshot')).toMatchObject({ ok: true, data: { platform: 'wechat', config: { accountId: 'wechat:synthetic-user' } } });
+      expect(await mode.api.invoke('wechatCaptureGroups')).toMatchObject({ ok: true, data: [{ id: 'test@chatroom' }] });
+      expect(groups).toHaveBeenCalledOnce();
+      expect(value.dependencies.createCaptureStore).toHaveBeenCalledWith(join(value.root, 'planner.sqlite'), { platform: 'wechat' });
+      wechatBusy = true;
+      const closing = mode.close();
+      expect(stopWechat).toHaveBeenCalledOnce();
+      expect(value.storeClose).not.toHaveBeenCalled();
+      wechatBusy = false;
+      await closing;
+      expect(value.storeClose).toHaveBeenCalledOnce();
+      expect(value.repoClose).toHaveBeenCalledOnce();
+    } finally { rmSync(value.root, { recursive: true, force: true }); }
   });
 });
