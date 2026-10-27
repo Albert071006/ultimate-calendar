@@ -31,7 +31,7 @@ export function LocalSourceViewer({ sourceId, host, onCapture }: {
       {source.text && <pre className="original-text">{source.text}</pre>}
       {source.imageDataUrl && <img className="source-image" src={source.imageDataUrl} alt="本机保存的原始截图" />}
       {!source.text && !source.imageDataUrl && <p className="hint">这份来源未保留正文，可通过采集记录核对。</p>}
-      {source.captureRef && <QQSearchActions evidence={{ groupId: source.captureRef.groupId, sentAt: source.sentAt, text: source.text, attachment: Boolean(source.captureRef.attachmentId || source.captureRef.transcribed) }}>
+      {source.captureRef && <QQSearchActions evidence={{ platform: source.captureRef.accountId.startsWith('wechat:') ? 'wechat' : 'qq', groupId: source.captureRef.groupId, sentAt: source.sentAt, text: source.text, attachment: Boolean(source.captureRef.attachmentId || source.captureRef.transcribed) }}>
         {onCapture && <button type="button" className="ui-btn sm" onClick={() => onCapture(source.captureRef!)}>查看本机采集记录与附件</button>}
       </QQSearchActions>}
     </section>)}

@@ -114,6 +114,19 @@
       "target": "nsis",
       "icon": "assets/app-icon.ico",
       "signAndEditExecutable": true
-    }
+    },
+    "extraResources": [
+      {
+        "from": "scripts/wechat",
+        "to": "wechat",
+        "filter": [
+          "**/*.py",
+          "**/LICENSE*",
+          "**/NOTICE*",
+          "**/*.md",
+          "**/*.txt"
+        ]
+      }
+    ]
   }
 }

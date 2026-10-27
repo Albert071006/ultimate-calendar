@@ -30,6 +30,7 @@ import { createAccountService } from '../ai/account';
 import { AccountStateSchema } from '../shared/account';
 import { createCaptureStore } from '../capture/store';
 import { createCaptureService } from '../capture/service';
+import { createLocalWechatBridge, wechatCredentials } from './wechat-runtime';
 import { createDocumentExtractor } from '../capture/documents/runtime';
 import { CaptureSnapshotSchema } from '../shared/capture';
 import { createModelRequestQueue } from '../ai/request-queue';
@@ -42,7 +43,7 @@ import { startNativeRemote } from './remote-mode';
 import { startCollectorMode } from './collector-mode';
 import { createNativeResourceHost } from './resources-native';
 import { createLocalEvidenceResolver } from './local-evidence';
-import { createSourceAttachmentHost } from './source-attachments';
+import { combinedCaptureSources, createSourceAttachmentHost } from './source-attachments';
 import { createCollectorTrayOwnership } from './collector-tray';
 
 app.setName('终极日历');
@@ -144,7 +145,7 @@ async function start() {
       stopCollector = collector.close;
       const status = () => {
         const state = collector.status();
-        tray?.setToolTip(`终极日历 · QQ ${!state.enabled ? '采集未启用' : state.error ? '采集异常' : state.connection === 'online' ? '已连接' : '连接待恢复'} · ${state.analysisEnabled ? '自动提炼启用' : '自动提炼未启用'}`);
+        tray?.setToolTip(`终极日历 · 群消息 ${!state.enabled ? '采集未启用' : state.error ? '采集异常' : state.connection === 'online' ? '已连接' : '连接待恢复'} · ${state.analysisEnabled ? '自动提炼启用' : '自动提炼未启用'}`);
       };
       const openCalendar = () => {
         const child = spawn(process.execPath, [], { windowsHide: false, detached: true, stdio: 'ignore' });
@@ -154,7 +155,7 @@ async function start() {
         if (!visible) { tray?.destroy(); tray = null; return; }
         if (tray) return;
         tray = new Tray(nativeImage.createFromPath(join(__dirname, '../assets/app-icon.ico')));
-        tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开终极日历', click: openCalendar }, { label: 'QQ 本机采集服务', enabled: false }, { type: 'separator' }, { label: '退出采集服务（QQ 保持运行）', click: () => app.quit() }]));
+        tray.setContextMenu(Menu.buildFromTemplate([{ label: '打开终极日历', click: openCalendar }, { label: 'QQ / 微信本机采集服务', enabled: false }, { type: 'separator' }, { label: '退出采集服务（QQ / 微信保持运行）', click: () => app.quit() }]));
         tray.on('double-click', openCalendar); status();
       };
       const ownership = createCollectorTrayOwnership(setTrayVisible);
@@ -203,6 +204,7 @@ async function start() {
   } });
   let activeWorkflows = 0;
   const captureStore = createCaptureStore(join(data, 'planner.sqlite'));
+  const wechatStore = createCaptureStore(join(data, 'planner.sqlite'), { platform: 'wechat' });
   const bridgeKeys = createKeyStore(join(data, 'credentials', 'qq-bridge.bin'), safeStorage);
   try { await bridgeKeys.initialize(); } catch { /* Surface a missing connection; preserve encrypted credentials. */ }
   const documents = createDocumentExtractor();
@@ -212,33 +214,45 @@ async function start() {
     onChanged: state => { if (window && !window.isDestroyed()) window.webContents.send('planner:capture-changed', CaptureSnapshotSchema.parse(state)); },
     onPlannerChanged: () => changed({ reason: 'analysis' }),
   });
-  stopCapture = () => { capture.stop(); documents.dispose(); captureStore.close(); };
+  const wechat = createCaptureService({ platform: 'wechat', store: wechatStore, repository: repo, credentials: wechatCredentials,
+    bridgeFactory: createLocalWechatBridge(data), getApiKey: keys.get, getPriceQuote: account.quote, extract: documents.extract,
+    runModel: modelQueue.run, getModelInputModalities: modelModalities,
+    afterModelRequest: () => { void account.refresh({ force: true, balanceOnly: true }); },
+    onChanged: state => { if (window && !window.isDestroyed()) window.webContents.send('planner:wechat-capture-changed', CaptureSnapshotSchema.parse(state)); },
+    onPlannerChanged: () => changed({ reason: 'analysis' }),
+  });
+  stopCapture = () => { capture.stop(); wechat.stop(); documents.dispose(); wechatStore.close(); captureStore.close(); };
+  const suspendCaptures = () => {
+    if (capture.busy() || wechat.busy()) throw new WorkflowError('CONFLICT', '群消息仍在处理，请稍后重试');
+    capture.suspendForRestore(); wechat.suspendForRestore();
+  };
+  const resumeCaptures = async () => { await Promise.all([capture.resume(), wechat.resume()]); };
   const workflow = async <T>(work: () => Promise<T>): Promise<T> => { activeWorkflows++; try { return await work(); } finally { activeWorkflows--; } };
-  const restore = createRestoreManager(repo, () => activeWorkflows === 0 && !capture.busy(), captureStore);
+  const restore = createRestoreManager(repo, () => activeWorkflows === 0 && !capture.busy() && !wechat.busy(), captureStore);
   disposeRestore = () => { void restore.dispose(); };
   let activeRequests = 0, captureSuspendedForUpdate = false;
   const updates = createUpdateService({
     currentVersion: app.getVersion(), packaged: app.isPackaged, platform: process.platform, isolatedProfile: !!profile,
     getUpdater: () => new NsisUpdater(),
-    isBusy: () => activeRequests > 0 || activeWorkflows > 0 || capture.busy() || modelQueue.busy() || space.isRunning(),
+    isBusy: () => activeRequests > 0 || activeWorkflows > 0 || capture.busy() || wechat.busy() || modelQueue.busy() || space.isRunning(),
     prepareInstall: () => {
       // Only pause this app's local capture socket. Never stop or restart the user's QQ process.
-      capture.suspendForRestore(); captureSuspendedForUpdate = true;
+      suspendCaptures(); captureSuspendedForUpdate = true;
       const backupPath = join(resolveBackupDirectory(data), `before-update-${randomUUID()}.sqlite`);
       createBackup(repo, backupPath); inspectBackupFile(backupPath);
     },
-    resumeAfterFailedInstall: async () => { if (captureSuspendedForUpdate) { captureSuspendedForUpdate = false; await capture.resume(); } },
+    resumeAfterFailedInstall: async () => { if (captureSuspendedForUpdate) { captureSuspendedForUpdate = false; await resumeCaptures(); } },
     setQuitting: value => { quitting = value; },
     onChanged: state => { if (window && !window.isDestroyed()) window.webContents.send('planner:update-changed', UpdateStateSchema.parse(state)); },
   });
   stopUpdates = updates.stop;
   const space = createSpaceManager({ directory: data,
-    isBusy: () => activeRequests > 0 || activeWorkflows > 0 || capture.busy() || modelQueue.busy() || updates.isInstalling(),
+    isBusy: () => activeRequests > 0 || activeWorkflows > 0 || capture.busy() || wechat.busy() || modelQueue.busy() || updates.isInstalling(),
     attachments: capture, clearCache: () => session.defaultSession.clearCache(),
   });
   stopSpace = space.stop;
   const resources = createNativeResourceHost(data, () => window!);
-  const sourceAttachments = createSourceAttachmentHost({ directory: data, store: captureStore, resolveEvidence: createLocalEvidenceResolver(repo), openPath: path => shell.openPath(path) });
+  const sourceAttachments = createSourceAttachmentHost({ directory: data, store: combinedCaptureSources(captureStore, wechatStore), resolveEvidence: createLocalEvidenceResolver(repo), openPath: path => shell.openPath(path) });
   const planSource = async () => localPlanSource(data);
   const planExport = createNativePlanExport({ window: () => window!, snapshot: async () => planner.snapshot(), source: planSource });
   const busyExport = createNativeBusyExport({ window: () => window!, snapshot: async () => planner.snapshot(), source: planSource });
@@ -247,7 +261,7 @@ async function start() {
     changed: () => changed({ reason: 'mutation' }), scope: async () => `local:${repo.path}`,
     snapshot: async () => planner.snapshot(), mutate: async input => planner.mutate(MutationRequestSchema.parse(input)),
   });
-  const api: Omit<DesktopAPI, 'onChanged' | 'onNavigate' | 'onAccountChanged' | 'onCaptureChanged' | 'onUpdateChanged'> = {
+  const api: Omit<DesktopAPI, 'onChanged' | 'onNavigate' | 'onAccountChanged' | 'onCaptureChanged' | 'onWechatCaptureChanged' | 'onUpdateChanged'> = {
     ...planImport, ...planExport, ...busyExport,
     sourceAttachments: async request => ({ ok: true, data: await sourceAttachments.list(request) }),
     sourceAttachmentOpen: async request => ({ ok: true, data: await sourceAttachments.open(request) }),
@@ -267,14 +281,23 @@ async function start() {
       await writeFile(result.filePath,content,'utf8'); return {ok:true,data:{path:result.filePath}};
     },
     captureSnapshot: async () => ({ ok: true, data: capture.snapshot() }),
+    wechatCaptureSnapshot: async () => ({ ok: true, data: wechat.snapshot() }),
     captureConfigure: async request => ({ ok: true, data: await capture.configure(request) }),
+    wechatCaptureConfigure: async request => ({ ok: true, data: await wechat.configure(request) }),
     captureConnect: async request => ({ ok: true, data: await capture.connect(request) }),
+    wechatCaptureConnect: async request => ({ ok: true, data: await wechat.connect(request) }),
     captureGroups: async () => ({ ok: true, data: await capture.groups() }),
+    wechatCaptureGroups: async () => ({ ok: true, data: await wechat.groups() }),
     captureMessages: async request => ({ ok: true, data: capture.messages(request) }),
+    wechatCaptureMessages: async request => ({ ok: true, data: wechat.messages(request) }),
     captureBatches: async request => ({ ok: true, data: capture.batches(request) }),
+    wechatCaptureBatches: async request => ({ ok: true, data: wechat.batches(request) }),
     captureAction: async request => ({ ok: true, data: capture.action(request) }),
+    wechatCaptureAction: async request => ({ ok: true, data: wechat.action(request) }),
     captureChunks: async request => ({ ok: true, data: capture.chunks(request) }),
+    wechatCaptureChunks: async request => ({ ok: true, data: wechat.chunks(request) }),
     captureCleanup: async request => ({ ok: true, data: capture.cleanup(request) }),
+    wechatCaptureCleanup: async request => ({ ok: true, data: wechat.cleanup(request) }),
     accountSnapshot: async () => { void account.refresh({ force: true, balanceOnly: true }); return { ok: true, data: account.snapshot() }; },
     refreshAccount: async () => { if (keys.status().loadError) await keys.retry(); return { ok: true, data: await account.refresh({ force: true }) }; },
     snapshot: async () => ({ ok: true, data: { ...planner.snapshot(), keyStatus: keys.status() } }),
@@ -299,7 +322,7 @@ async function start() {
       try { return { ok: true, data: createBackup(repo, result.filePath) }; } catch (error) { if (error instanceof WorkflowError) throw error; throw new WorkflowError('STORAGE', '备份未完成：请选择一个尚不存在的文件名，并检查目录写入权限'); }
     },
     restore: async request => {
-      if (request.confirmed) { if (!request.confirmationToken) throw new WorkflowError('VALIDATION', '请先选择并预览恢复文件'); capture.suspendForRestore(); try { const result = await restore.confirm(request.confirmationToken); applyAutoLaunch(repo.snapshot().settings.autoLaunch); changed({ reason: 'restore' }); return { ok: true, data: result }; } finally { await capture.resume(); } }
+      if (request.confirmed) { if (!request.confirmationToken) throw new WorkflowError('VALIDATION', '请先选择并预览恢复文件'); suspendCaptures(); try { const result = await restore.confirm(request.confirmationToken); applyAutoLaunch(repo.snapshot().settings.autoLaunch); changed({ reason: 'restore' }); return { ok: true, data: result }; } finally { await resumeCaptures(); } }
       const result = await dialog.showOpenDialog(window!, { title: '选择日历备份以预览恢复', defaultPath: resolveBackupDirectory(data), properties: ['openFile'], filters: [{ name: '日历备份', extensions: ['sqlite'] }] });
       if (result.canceled || !result.filePaths[0]) throw new WorkflowError('CANCELLED', '已取消恢复');
       try { return { ok: true, data: await restore.preview(result.filePaths[0]) }; } catch { throw new WorkflowError('STORAGE', '备份无法读取或校验未通过，请选择本应用生成的完整 SQLite 备份'); }
@@ -373,6 +396,7 @@ async function start() {
   updates.start();
   space.start();
   void capture.start().catch(() => { /* Connection detail is shown in the QQ page. */ });
+  void wechat.start().catch(() => { /* Connection detail is shown in the WeChat page. */ });
   await window.loadURL(documentUrl()); showWindow(); void showRetainedSummary();
 }
 function applyAutoLaunch(enabled: boolean) {

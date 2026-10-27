@@ -44,7 +44,7 @@ export function createCandidateReader(sourceDatabase: string): CandidateReader {
         const rows = query.all(cursor, limit); const page: CandidatePage = { items: [], localLinks: [], cursor, done: rows.length < limit, examined: rows.length, privacyRejected: 0, schemaRejected: 0 };
         for (const row of rows) {
           page.cursor = Number(row.position);
-          const tokens = (JSON.parse(String(row.private_tokens)) as { account: string; group: string }[]).flatMap(value => [value.account, value.group]);
+          const tokens = (JSON.parse(String(row.private_tokens)) as { account: string; group: string }[]).flatMap(value => [value.account, value.group, ...(value.account.startsWith('wechat:') ? [value.account.slice('wechat:'.length)] : [])]);
           const ancestorIds: string[] = []; let id = String(row.local_candidate_id);
           while (id && !ancestorIds.includes(id) && ancestorIds.length < 100) {
             ancestorIds.push(id); const ancestor = lineage.get(id); if (!ancestor) break;

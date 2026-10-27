@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 import { IdSchema } from '../shared/contracts';
-import { CaptureConfigSchema, GroupCoverageSchema, type CaptureConfig } from '../shared/capture';
+import { CaptureConfigSchema, GroupCoverageSchema, capturePlatform, type CaptureConfig } from '../shared/capture';
 import { nowInstant } from '../domain/time';
 import { captureBackupSchemas, captureMessageId } from './store';
 
@@ -13,7 +13,7 @@ function assert(valid: unknown, message: string): asserts valid { if (!valid) th
 const payload = (row: Record<string, unknown>) => JSON.parse(String(row['payload']));
 function noRows(db: DatabaseSync, sql: string, message: string) { assert(!db.prepare(sql).get(), message); }
 
-export interface CaptureBackupSummary { messages: number; attachments: number; config: CaptureConfig }
+export interface CaptureBackupSummary { messages: number; attachments: number; config: CaptureConfig; wechatConfig?: CaptureConfig }
 
 /** Validate one payload/BLOB at a time. Never create a base64 copy of the complete attachment archive. */
 export function inspectCaptureBackupFile(db: DatabaseSync): CaptureBackupSummary | null {
@@ -26,6 +26,10 @@ export function inspectCaptureBackupFile(db: DatabaseSync): CaptureBackupSummary
     noRows(db, `SELECT 1 FROM ${table} WHERE length(payload)>40000000 LIMIT 1`, 'QQ 采集备份单条记录过大');
   }
   const config = CaptureConfigSchema.parse(payload(db.prepare("SELECT payload FROM capture_meta WHERE id='config'").get() ?? {}));
+  assert(config.platform !== 'wechat' && (!config.accountId || capturePlatform(config.accountId) === 'qq'), 'QQ 备份配置的平台不匹配');
+  const wechatRow = db.prepare("SELECT payload FROM capture_meta WHERE id='wechat:config'").get();
+  const wechatConfig = wechatRow ? CaptureConfigSchema.parse(payload(wechatRow)) : undefined;
+  assert(!wechatConfig || wechatConfig.platform === 'wechat' && (!wechatConfig.accountId || capturePlatform(wechatConfig.accountId) === 'wechat'), '微信备份配置的平台不匹配');
   for (const row of db.prepare('SELECT * FROM capture_selections').iterate()) {
     IdSchema.parse(row['account_id']);
     const groups = z.array(IdSchema).max(100).parse(payload(row));
@@ -81,7 +85,7 @@ export function inspectCaptureBackupFile(db: DatabaseSync): CaptureBackupSummary
     ['capture_batches', "json_extract(payload,'$.operationId')"],
   ] as const) noRows(db, `SELECT 1 FROM ${table} GROUP BY ${key} HAVING count(*)>1 LIMIT 1`, 'QQ 采集记录存在重复标识');
   noRows(db, 'SELECT 1 FROM capture_batch_messages bm LEFT JOIN capture_batches b ON b.id=bm.batch_id LEFT JOIN capture_messages m ON m.id=bm.message_id WHERE b.id IS NULL OR m.id IS NULL LIMIT 1', 'QQ 批次成员来源不存在');
-  return { messages: count(db, 'capture_messages'), attachments: count(db, 'capture_attachments'), config };
+  return { messages: count(db, 'capture_messages'), attachments: count(db, 'capture_attachments'), config, ...(wechatConfig ? { wechatConfig } : {}) };
 }
 
 const COLUMNS = {
@@ -100,6 +104,8 @@ export function copyCaptureBackupFile(source: DatabaseSync, destination: Databas
   for (const table of ['capture_batch_messages', 'capture_chunks', 'capture_attachments', 'capture_blobs', 'capture_batches', 'capture_messages', 'capture_selections', 'capture_coverage']) destination.exec(`DELETE FROM ${table}`);
   const config = { ...summary.config, enabled: false, analysisEnabled: false };
   destination.prepare("UPDATE capture_meta SET payload=? WHERE id='config'").run(JSON.stringify(config));
+  destination.prepare("DELETE FROM capture_meta WHERE id IN ('credentialPause','credentialChange','priorityTurn','wechat:credentialPause','wechat:credentialChange','wechat:priorityTurn','wechat:config')").run();
+  destination.prepare('INSERT INTO capture_meta(id,payload) VALUES(?,?)').run('wechat:config', JSON.stringify({ ...(summary.wechatConfig ?? CaptureConfigSchema.parse({ platform: 'wechat' })), enabled: false, analysisEnabled: false }));
   for (const [table, columns] of Object.entries(COLUMNS)) {
     const insert = destination.prepare(`INSERT INTO ${table}(${columns.join(',')}) VALUES(${columns.map(() => '?').join(',')})`);
     for (const row of source.prepare(`SELECT ${columns.join(',')} FROM ${table} ORDER BY rowid`).iterate()) {

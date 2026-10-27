@@ -224,8 +224,8 @@ export function createRemoteDesktopShell(options: Options) {
   // The window has no menu bar, so cloud commands (refresh, operation review) live in the tray menu instead.
   const trayMenu = () => Menu.buildFromTemplate([{ label: '打开终极日历', click: show }, { label: '刷新提醒', click: onResume },
     ...extraTrayItems, { type: 'separator' }, { label: collectorLabel, enabled: false },
-    { label: collectorAction ? '采集服务处理中…' : collectorRunning ? '停止 QQ 采集（QQ 保持运行）' : '启动 QQ 采集', enabled: !collectorAction, click: () => { void toggleCollector(); } },
-    { type: 'separator' }, { label: collectorRunning ? '退出日历（QQ 采集继续运行）' : '退出日历', click: () => app.quit() }]);
+    { label: collectorAction ? '采集服务处理中…' : collectorRunning ? '停止本机采集（QQ / 微信保持运行）' : '启动本机采集', enabled: !collectorAction, click: () => { void toggleCollector(); } },
+    { type: 'separator' }, { label: collectorRunning ? '退出日历（采集继续运行）' : '退出日历', click: () => app.quit() }]);
   function refreshTray() { tray?.setContextMenu(trayMenu()); tray?.setToolTip(`终极日历 · 云端资料 · ${collectorLabel}`); }
   function createTray() {
     if (tray || closed || quitting) return;

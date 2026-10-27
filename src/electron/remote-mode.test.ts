@@ -71,7 +71,7 @@ describe('native cloud key IPC',()=>{
     expect(await mock.handlers.get('planner:setApiKey')!(event,{key,expectedRevision:null})).toMatchObject({ok:false});expect(localControl.invoke).not.toHaveBeenCalled();
     mock.client.updateAiConfiguration.mockResolvedValue(configuration);localControl.invoke.mockResolvedValue({ok:false,error:{code:'NETWORK',message:'本机未启动',retryable:false}});
     expect(await mock.handlers.get('planner:setApiKey')!(event,{key,expectedRevision:null})).toMatchObject({ok:true});
-    expect(mock.message).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({message:'云端密钥已更新，QQ 提炼正在等待自动同步。'}));expect(mock.client.updateAiConfiguration).toHaveBeenCalledTimes(2);
+    expect(mock.message).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({message:'云端密钥已更新，群消息提炼正在等待自动同步。'}));expect(mock.client.updateAiConfiguration).toHaveBeenCalledTimes(2);
   });
   it('routes explicit status, set and clear directly to configuration HTTP without journal persistence',async()=>{
     const f=fixture(),runtime=await startNativeRemote(f.config,f.directory,f.document);closers.push(runtime.close);
@@ -97,5 +97,21 @@ describe('native cloud key IPC',()=>{
     mock.client.updateAiConfiguration.mockRejectedValue(new RemoteClientError(status,'固定的安全配置错误'));
     expect(await mock.handlers.get('planner:setApiKey')!(event,{key,expectedRevision:null})).toEqual({ok:false,error:{code,message:'固定的安全配置错误',retryable:false}});
     expect(mock.client.updateAiConfiguration).toHaveBeenCalledTimes(1);expect(mock.journal.rpc).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('WeChat local collection in cloud mode', () => {
+  it('routes WeChat requests exclusively to the authenticated local collector', async () => {
+    const f = fixture();
+    const runtime = await startNativeRemote({ ...f.config, localDataDirectory: f.directory }, f.directory, f.document); closers.push(runtime.close);
+    const event = { sender: { id: 1 }, senderFrame: { routingId: 2, url: f.document } };
+    localControl.invoke.mockResolvedValue({ ok: true, data: [{ id: 'synthetic@chatroom', name: '合成课程群' }] });
+    expect(await mock.handlers.get('planner:wechatCaptureGroups')!(event)).toMatchObject({ ok: true, data: [{ id: 'synthetic@chatroom' }] });
+    expect(localControl.invoke).toHaveBeenCalledExactlyOnceWith('wechatCaptureGroups', undefined);
+    expect(mock.journal.rpc).not.toHaveBeenCalled();
+    localControl.invoke.mockClear();
+    expect(await mock.handlers.get('planner:wechatCaptureGroups')!({ ...event, sender: { id: 99 } })).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
+    expect(localControl.invoke).not.toHaveBeenCalled();
   });
 });

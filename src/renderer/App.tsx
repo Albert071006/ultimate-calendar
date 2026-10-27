@@ -192,7 +192,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
             <Modal wide title="原始来源" onClose={() => setSourceId(null)}>
               <SourceViewer
                 source={source}
-                onCapture={host ? reference => { setCaptureReference(reference); setSourceId(null); openMe('capture'); } : undefined}
+                onCapture={host ? reference => { setCaptureReference(reference); setSourceId(null); openMe(reference.accountId.startsWith('wechat:') ? 'wechat-capture' : 'capture'); } : undefined}
                 ui={ui}
                 onClose={() => setSourceId(null)}
                 settings={keySettings}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ApiResult, Source } from '../../shared/contracts';
 import { CaptureConfigSchema, type AttachmentSummary, type CaptureBatchView, type CaptureConfig, type CaptureGroup, type CaptureMessageView, type CaptureSnapshot } from '../../shared/capture';
 import type { CaptureDesktopAPI } from '../../shared/capture-api';
@@ -11,7 +11,6 @@ import './CapturePage.css';
 
 type Page<T> = { items: T[]; total: number; offset: number; limit: number };
 type Chunks = Extract<Awaited<ReturnType<CaptureDesktopAPI['captureChunks']>>, { ok: true }>['data'];
-const connections = { disconnected: '尚未连接', connecting: '正在连接', online: 'QQ 已在线', error: '连接异常', 'account-changed': 'QQ 账号已变化' };
 const batchLabels = { pending: '等待分析', preparing: '准备资料', requesting: 'AI 分析中', uncertain: '响应未知 · 需确认', 'result-ready': '等待保存候选', applied: '已整理', failed: '分析失败' };
 const attachmentLabels = { pending: '等待读取', downloading: '下载中', extracting: '提取正文', ready: '正文已提取', unsupported: '需手动查看', failed: '读取失败', 'too-large': '超过处理限额', encrypted: '文件已加密', deleted: '原附件已清理' };
 const coverageLabels = { 'not-started': '尚未补采', fetching: '正在补采', complete: '已取得目标范围', partial: '覆盖不完整', failed: '补采失败' };
@@ -19,8 +18,16 @@ const emptyPage = <T,>(): Page<T> => ({ items: [], total: 0, offset: 0, limit: 3
 const analysisStartedNotice = '已开启自动分析。';
 function sizeLabel(bytes: number) { return bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
 
-export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialReference?: NonNullable<Source['captureRef']> }) {
-  const api = ui.host;
+export function CapturePage({ ui, initialReference, platform = 'qq' }: { ui: PlannerUI; initialReference?: NonNullable<Source['captureRef']>; platform?: 'qq' | 'wechat' }) {
+  const wechat = platform === 'wechat', label = wechat ? '微信' : 'QQ';
+  const connections = { disconnected: '尚未连接', connecting: '正在连接', online: `${label} 已在线`, error: '连接异常', 'account-changed': `${label} 账号已变化` };
+  const api = useMemo(() => {
+    const host = ui.host; if (!host || !wechat) return host;
+    return { ...host, captureSnapshot: host.wechatCaptureSnapshot, captureConfigure: host.wechatCaptureConfigure,
+      captureConnect: host.wechatCaptureConnect, captureGroups: host.wechatCaptureGroups, captureMessages: host.wechatCaptureMessages,
+      captureBatches: host.wechatCaptureBatches, captureAction: host.wechatCaptureAction, captureChunks: host.wechatCaptureChunks,
+      captureCleanup: host.wechatCaptureCleanup, onCaptureChanged: host.onWechatCaptureChanged };
+  }, [ui.host, wechat]);
   const cloudMode = ui.snapshot?.keyStatus?.scope === 'cloud';
   const account = useAccount(api);
   const model = ui.snapshot?.settings.model;
@@ -81,7 +88,7 @@ export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialRe
         const result = await api.captureSnapshot();
         if (!alive || started !== snapshotRevision.current) return;
         if (result.ok) acceptSnapshot(result.data); else setError(result.error.message);
-      } catch { if (alive && started === snapshotRevision.current) setError('无法读取 QQ 采集状态。'); }
+      } catch { if (alive && started === snapshotRevision.current) setError(`无法读取${label}采集状态。`); }
       finally { reading = false; }
     };
     // Cloud events are unversioned echoes of other snapshot reads, not live collector updates.
@@ -90,7 +97,7 @@ export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialRe
     void refresh();
     const timer = cloudMode ? window.setInterval(() => { void refresh(); }, 2000) : undefined;
     return () => { alive = false; if (timer !== undefined) window.clearInterval(timer); unsubscribe(); };
-  }, [api, cloudMode, acceptSnapshot]);
+  }, [api, cloudMode, acceptSnapshot, label]);
   const configuredAccount = snapshot?.config.accountId;
   const recordAccount = focusedReference?.accountId ?? configuredAccount ?? null;
   const messageScope = recordAccount ? JSON.stringify([recordAccount, groupFilter, focusedReference?.messageId ?? null, offset]) : null;
@@ -154,16 +161,16 @@ export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialRe
   }
   async function connect(detect: boolean) {
     if (!api || !snapshot) return;
-    if (!detect && (endpoint !== snapshot.config.endpoint || flavor !== snapshot.config.flavor)) {
+    if (!wechat && !detect && (endpoint !== snapshot.config.endpoint || flavor !== snapshot.config.flavor)) {
       try {
         const config = CaptureConfigSchema.parse({ ...snapshot.config, endpoint, flavor, enabled: false, analysisEnabled: false });
         const saved = await requestSnapshot(() => api.captureConfigure(config)); if (!saved) return;
       } catch { setError('请填写有效的本机回环地址，例如 ws://127.0.0.1:43131。'); return; }
     }
     const entered = token.current?.value.trim();
-    const pending = api.captureConnect({ detect, ...(!detect && entered ? { token: entered } : {}) });
+    const pending = api.captureConnect(wechat ? {} : { detect, ...(!detect && entered ? { token: entered } : {}) });
     if (token.current) token.current.value = '';
-    await requestSnapshot(() => pending, value => { setEndpoint(value.config.endpoint); setFlavor(value.config.flavor); setNotice(value.connection === 'online' ? '连接成功，请核对 QQ 账号、选群以及收集和自动分析开关。切换组件后需手动恢复分析。' : '已检查连接，请查看当前状态。'); });
+    await requestSnapshot(() => pending, value => { setEndpoint(value.config.endpoint); setFlavor(value.config.flavor); setNotice(value.connection === 'online' ? `连接成功，请核对 ${label} 账号、选群以及收集和自动分析开关。` : '已检查连接，请查看当前状态。'); });
   }
   async function action(action: 'analyze' | 'backfill' | 'retry' | 'reanalyze' | 'pause-analysis', batchId?: string) {
     if (!api) return;
@@ -198,27 +205,27 @@ export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialRe
   const availableGroups = focusedReference && !selectionGroups.some(group => group.id === focusedReference.groupId) ? [...selectionGroups, { id: focusedReference.groupId, name: `来源群 ${focusedReference.groupId}` }] : selectionGroups;
   const groupChoices = selectionGroups.filter(group => `${group.name} ${group.id}`.includes(search.trim()));
   const page = tab === 'batches' ? visibleBatches : visibleMessages;
-  if (!api) return <div className="empty-state">请在 Windows 桌面应用中打开 QQ 采集。</div>;
-  if (!snapshot) return <div className="capture-page"><p role="status">{error || '正在读取 QQ 采集状态…'}</p></div>;
+  if (!api) return <div className="empty-state">请在 Windows 桌面应用中打开{label}采集。</div>;
+  if (!snapshot) return <div className="capture-page"><p role="status">{error || `正在读取${label}采集状态…`}</p></div>;
   const analysisPausedReason = !snapshot.config.analysisEnabled ? snapshot.error : null;
 
   return <div className="capture-page">
-    <div className="a2-me-h"><h2 title="每群每 2 分钟整理一次，提取要做的事、收益和时间，进入待判断后由你决定。">QQ 采集</h2>
+    <div className="a2-me-h"><h2 title="每群每 2 分钟整理一次，提取要做的事、收益和时间，进入待判断后由你决定。">{wechat ? '微信采集' : 'QQ 采集'}</h2>
       <span className={`capture-status ${snapshot.connection === 'online' ? 'is-online' : ''}`}>{connections[snapshot.connection]}</span>
     </div>
     {error && <div className="error capture-alert" role="alert">{error}</div>}
     {notice && <div className="success capture-alert" role="status">{notice}</div>}
     {snapshot.error && !analysisPausedReason && <div className="warning capture-alert" role="status">{snapshot.error}</div>}
     <section className="settings-card capture-connection">
-      <div className="capture-card-heading"><h3>日历专用 QQ 连接</h3><span className="hint">{snapshot.config.flavor === 'snowluma' ? 'SnowLuma' : 'NapCat'} · {connections[snapshot.connection]}</span></div>
-      <div className="capture-account-identity"><div><span className="hint">{snapshot.connection === 'account-changed' ? '组件返回昵称' : '账号昵称'}</span><strong>{snapshot.accountName || (snapshot.connection === 'online' ? '组件未提供昵称' : '等待连接确认')}</strong></div><div><span className="hint">{snapshot.connection === 'account-changed' ? '旧绑定 QQ 号' : '已绑定 QQ 号'}</span><strong>{configuredAccount || '尚未绑定'}</strong></div></div>
-      <div className="form-grid"><label>日历专用桥接类型<select value={flavor} onChange={event => setFlavor(event.target.value as 'napcat' | 'snowluma')}><option value="napcat">NapCat</option><option value="snowluma">SnowLuma（日历专用实例）</option></select></label><label>本机桥接地址<input value={endpoint} onChange={event => setEndpoint(event.target.value)} spellCheck={false} /></label>
+      <div className="capture-card-heading"><h3>{wechat ? '本机微信连接' : '日历专用 QQ 连接'}</h3><span className="hint">{wechat ? '本机只读采集' : snapshot.config.flavor === 'snowluma' ? 'SnowLuma' : 'NapCat'} · {connections[snapshot.connection]}</span></div>
+      <div className="capture-account-identity"><div><span className="hint">{snapshot.connection === 'account-changed' ? '组件返回昵称' : '账号昵称'}</span><strong>{snapshot.accountName || (snapshot.connection === 'online' ? '组件未提供昵称' : '等待连接确认')}</strong></div><div><span className="hint">{wechat ? (snapshot.connection === 'account-changed' ? '旧绑定微信账号' : '已绑定微信账号') : (snapshot.connection === 'account-changed' ? '旧绑定 QQ 号' : '已绑定 QQ 号')}</span><strong>{configuredAccount || '尚未绑定'}</strong></div></div>
+      {!wechat && <div className="form-grid"><label>日历专用桥接类型<select value={flavor} onChange={event => setFlavor(event.target.value as 'napcat' | 'snowluma')}><option value="napcat">NapCat</option><option value="snowluma">SnowLuma（日历专用实例）</option></select></label><label>本机桥接地址<input value={endpoint} onChange={event => setEndpoint(event.target.value)} spellCheck={false} /></label>
         <label>桥接访问令牌<input ref={token} type="password" autoComplete="off" placeholder={snapshot.credentialConfigured ? '已保存，无需重填；填写可更换' : '连接组件要求的访问令牌'} /></label>
-      </div>
-      <div className="toolbar"><button className="primary" disabled={busy} onClick={() => void connect(true)}>检测日历专用 QQ 组件</button><button disabled={busy} onClick={() => void connect(false)}>连接此地址</button></div>
+      </div>}
+      <div className="toolbar"><button className="primary" disabled={busy} onClick={() => void connect(true)}>{wechat ? '连接本机微信' : '检测日历专用 QQ 组件'}</button>{!wechat && <button disabled={busy} onClick={() => void connect(false)}>连接此地址</button>}</div>
       {snapshot.connection === 'account-changed' && <div className="warning"><p>组件返回的账号与旧绑定不一致，已暂停原账号的收集和分析。解除绑定后重新连接，再为新账号选择群。</p></div>}
       {configuredAccount && !snapshot.config.enabled && <button disabled={busy} onClick={() => { setError(''); setConfirmDisconnect(true); }}>解除账号绑定…</button>}
-      <p className="fine-print">连接为日历单独配置的 QQ 桥接。采集器只读取选定群，不发送 QQ 消息。令牌由本机安全服务保存。</p>
+      <p className="fine-print">{wechat ? '电脑微信需要保持登录。只采集你选定的群，不发送微信消息；微信更新或退出登录后，可能需要重新连接。只读取本机已有记录，未同步到电脑的消息无法补采。' : '连接为日历单独配置的 QQ 桥接。采集器只读取选定群，不发送 QQ 消息。令牌由本机安全服务保存。'}</p>
     </section>
     <div className="capture-top-grid">
       <section className="settings-card">
@@ -229,27 +236,27 @@ export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialRe
       </section>
       <section className="settings-card">
         <h3>收集与分析</h3>
-        {model && <div className="capture-model-info"><p className="hint">当前 DeepSeek 模型：{model}</p><p className={modelModalities && !modelModalities.includes('image') ? 'warning' : 'hint'}>{modelModalities ? modelModalities.includes('image') ? '模型接口标注支持图片输入，图片与扫描页会送交该模型识别。' : '当前模型不支持图片输入。图片与扫描页会保留并提示处理失败；请在设置中选择支持图片的模型后重读资料。' : '接口尚未说明图片能力。图片会保留在请求中；模型拒绝时显示错误，不会当作已读完。'}</p>{account.error && <p className="warning">{account.error}</p>}<button disabled={account.refreshing} onClick={() => void account.refresh()}>{account.refreshing ? '正在刷新模型信息…' : '刷新模型信息'}</button></div>}
+        {model && <div className="capture-model-info"><p className="hint">当前 DeepSeek 模型：{model}</p><p className={!wechat && modelModalities && !modelModalities.includes('image') ? 'warning' : 'hint'}>{wechat ? '当前微信采集只分析文字与卡片标题；图片、文件、语音和视频内容请在微信查看。' : modelModalities ? modelModalities.includes('image') ? '模型接口标注支持图片输入，图片与扫描页会送交该模型识别。' : '当前模型不支持图片输入。图片与扫描页会保留并提示处理失败；请在设置中选择支持图片的模型后重读资料。' : '接口尚未说明图片能力。图片会保留在请求中；模型拒绝时显示错误，不会当作已读完。'}</p>{account.error && <p className="warning">{account.error}</p>}<button disabled={account.refreshing} onClick={() => void account.refresh()}>{account.refreshing ? '正在刷新模型信息…' : '刷新模型信息'}</button></div>}
         <div className="capture-switch-row"><div><strong>{snapshot.config.enabled ? '正在收集选定群' : '收集已暂停'}</strong><p className="hint">最近收到：{snapshot.lastReceivedAt ? displayInstant(snapshot.lastReceivedAt) : '尚未收到消息'}</p></div><button disabled={busy || (!snapshot.config.enabled && (snapshot.connection !== 'online' || !snapshot.config.groupIds.length))} onClick={() => void configure({ enabled: !snapshot.config.enabled }, snapshot.config.enabled ? '已暂停收集。' : '已启用选定群收集。')}>{snapshot.config.enabled ? '暂停收集' : '开始收集'}</button></div>
         {snapshot.cloudKeySync && <p className={snapshot.cloudKeySync.state === 'error' ? 'warning' : 'hint'} role="status">{snapshot.cloudKeySync.state === 'ready' ? snapshot.cloudKeySync.configured ? '密钥已与云端同步；手机或电脑修改后会自动更新。' : '云端密钥已清除；保存新密钥后会自动同步。' : snapshot.cloudKeySync.state === 'syncing' ? '正在同步云端密钥…' : snapshot.cloudKeySync.message || '密钥暂未同步，连接恢复后会自动重试。'}</p>}
         <div className="capture-switch-row"><div><strong>{snapshot.config.analysisEnabled ? '自动分析已开启' : snapshot.analysisWaitingForKey ? '等待有效密钥，更新后自动继续' : '自动分析已暂停'}</strong><p className="hint">暂停分析后继续收集；已发出的请求会保存结果。</p>{analysisPausedReason && <p className="warning" role="alert">暂停原因：{analysisPausedReason}</p>}</div><button disabled={busy} onClick={() => snapshot.analysisWaitingForKey ? void action('pause-analysis') : void configure({ analysisEnabled: !snapshot.config.analysisEnabled }, snapshot.config.analysisEnabled ? '已暂停新的 AI 分析请求。' : analysisStartedNotice)}>{snapshot.config.analysisEnabled ? '暂停分析' : snapshot.analysisWaitingForKey ? '停止等待密钥' : '开启分析'}</button></div>
         <div className="capture-stats"><div><strong>{snapshot.stats.messages}</strong><span>已收消息</span></div><div><strong>{snapshot.stats.pendingBatches}</strong><span>待处理批次</span></div><div><strong>{snapshot.stats.failedAttachments}</strong><span>附件待查看</span></div></div>
         <div className="toolbar"><button disabled={busy || !configuredAccount || !snapshot.config.analysisEnabled} onClick={() => void action('analyze')}>立即分析</button><button disabled={busy || snapshot.connection !== 'online' || !snapshot.config.enabled} onClick={() => void action('backfill')}>补采最近 7 天</button></div>
-        <p className="fine-print">自动分析不设每日预算上限，沿用设置中的 DeepSeek 模型与真实余额。语音、视频和压缩包需手动查看。</p>
+        <p className="fine-print">自动分析不设每日预算上限，沿用设置中的 DeepSeek 模型与真实余额。{wechat ? '当前采集文字及卡片中的文字，图片、附件、语音和视频请在微信查看。' : '语音、视频和压缩包需手动查看。'}</p>
       </section>
     </div>
     <section className="settings-card capture-records">
       <div className="capture-card-heading"><div className="tabs">{([['messages', '消息原文'], ['batches', '分析批次'], ['history', '历史覆盖']] as const).map(([id, label]) => <button key={id} className={tab === id ? 'selected' : ''} onClick={() => { setTab(id); setOffset(0); }}>{label}</button>)}</div><button disabled={busy} onClick={() => setRevision(n => n + 1)}>刷新记录</button></div>
       <label className="capture-filter">按群查看<select value={groupFilter} onChange={event => { setFocusedReference(undefined); setGroupFilter(event.target.value); setOffset(0); }}><option value="">当前账号已收录的全部群</option>{availableGroups.map(group => <option key={group.id} value={group.id}>{group.name || group.id}</option>)}</select></label>
-      {focusedReference && <div className="capture-card-heading"><p className="hint">正在查看来源账号 QQ {focusedReference.accountId} 的指定消息 · {focusedReference.locator}</p><button onClick={() => { setFocusedReference(undefined); setRevision(n => n + 1); }}>{configuredAccount ? '返回当前账号消息' : '结束来源查看'}</button></div>}
-      {!recordAccount && <p className="hint">尚未绑定 QQ 账号，暂不读取消息和批次。已收集的数据仍保留在本机。</p>}
+      {focusedReference && <div className="capture-card-heading"><p className="hint">正在查看来源账号 {label} {focusedReference.accountId} 的指定消息 · {focusedReference.locator}</p><button onClick={() => { setFocusedReference(undefined); setRevision(n => n + 1); }}>{configuredAccount ? '返回当前账号消息' : '结束来源查看'}</button></div>}
+      {!recordAccount && <p className="hint">尚未绑定 {label} 账号，暂不读取消息和批次。已收集的数据仍保留在本机。</p>}
       {tab === 'messages' && (visibleMessages.items.length ? <div className="capture-message-list">{visibleMessages.items.map(message => <article className="capture-message" key={message.id}>
         <div className="capture-message-heading"><strong>{message.groupName || nameOf(message.groupId)}</strong><span>{message.senderName || '群成员'} · {displayInstant(message.sentAt)}</span></div>
         {message.changed && <p className="warning">来源已发生撤回或更正，请核对已整理的事项。</p>}
         {message.deleted ? <p className="hint">原文已清理</p> : <details><summary>{message.text.slice(0, 160) || '附件消息'}{message.text.length > 160 ? '…' : ''}</summary><pre>{message.text || '这条消息没有文字正文。'}</pre></details>}
-        <QQSearchActions evidence={{ groupId: message.groupId, groupName: message.groupName || nameOf(message.groupId), senderName: message.senderName, sentAt: message.sentAt, text: message.deleted ? '' : message.text }} />
+        <QQSearchActions evidence={{ platform, groupId: message.groupId, groupName: message.groupName || nameOf(message.groupId), senderName: message.senderName, sentAt: message.sentAt, text: message.deleted ? '' : message.text }} />
         {!!message.attachments.length && <div className="capture-attachments">{message.attachments.map(item => <button key={item.id} disabled={item.status === 'deleted'} onClick={() => { setAttachment(item); setAttachmentAccount(recordAccount); setChunkOffset(0); }}><strong>{item.name || '未命名附件'}</strong><span>{attachmentLabels[item.status]}{item.size !== null ? ` · ${sizeLabel(item.size)}` : ''}</span>{item.error && <small className="warning">{item.error}</small>}</button>)}</div>}
-      </article>)}</div> : <div className="empty-state"><p>这里还没有收录消息。</p><p>连接 QQ、保存群选择并开始收集后，原文会显示在这里。</p></div>)}
+      </article>)}</div> : <div className="empty-state"><p>这里还没有收录消息。</p><p>连接{label}、保存群选择并开始收集后，原文会显示在这里。</p></div>)}
       {tab === 'batches' && (visibleBatches.items.length ? <div className="capture-batch-list">{visibleBatches.items.map(batch => <article key={batch.id} className="capture-batch"><div><strong>{nameOf(batch.groupId)}</strong><p className="hint">{batch.messageCount} 条消息 · {displayInstant(batch.createdAt)} · 已发出 {batch.attemptCount} 次请求</p><p className={['failed', 'uncertain'].includes(batch.status) ? 'warning' : 'hint'}>{batchLabels[batch.status]}{batch.error ? `：${batch.error}` : ''}</p></div>{['failed', 'uncertain'].includes(batch.status) ? <div className="toolbar"><button disabled={busy} onClick={() => { setReanalysis(false); if (batch.status === 'uncertain') setRetry(batch); else void action('retry', batch.id); }}>重试此批</button><button disabled={busy} onClick={() => { setReanalysis(true); setRetry(batch); }}>重读资料…</button></div> : batch.status === 'applied' ? <button disabled={busy} onClick={() => { setReanalysis(true); setRetry(batch); }}>重新分析…</button> : null}</article>)}</div> : <div className="empty-state">还没有分析批次。消息收下后每 2 分钟合并，或点击“立即分析”。</div>)}
       {tab === 'history' && <div className="capture-coverage"><p className="hint">“完整”需要实际取得目标时间范围的证据。没有返回历史或接口返回空列表时，不会当作已经补齐。</p>{snapshot.coverage.filter(item => !groupFilter || item.groupId === groupFilter).map(item => <article key={`${item.accountId}:${item.groupId}`}><div className="capture-card-heading"><strong>{nameOf(item.groupId)}</strong><span className={item.status === 'complete' ? 'success' : 'warning'}>{coverageLabels[item.status]}</span></div><p>目标：{displayInstant(item.windowStart)} 至 {displayInstant(item.windowEnd)}</p><p className="hint">已取 {item.fetchedCount} 条 · 最早：{item.earliestAt ? displayInstant(item.earliestAt) : '尚未取得'}</p>{item.error && <p className="warning">{item.error}</p>}</article>)}{!snapshot.coverage.length && <p className="hint">首次启用收集后会尝试补采最近 7 天，也可手动开始。</p>}</div>}
       {tab !== 'history' && <div className="capture-pagination"><span>共 {page.total} 条{page.total ? ` · ${offset + 1}–${Math.min(offset + page.items.length, page.total)}` : ''}</span><div><button disabled={!offset} onClick={() => setOffset(Math.max(0, offset - 30))}>上一页</button><button disabled={offset + 30 >= page.total} onClick={() => setOffset(offset + 30)}>下一页</button></div></div>}
@@ -258,6 +265,6 @@ export function CapturePage({ ui, initialReference }: { ui: PlannerUI; initialRe
     {attachment && recordAccount && attachmentAccount === recordAccount && <Modal title={attachment.name || '附件正文'} wide onClose={() => setAttachment(null)}><div className="capture-chunk-view"><p className="hint">{attachmentLabels[attachment.status]}{attachment.error ? `：${attachment.error}` : ''}</p>{chunks ? chunks.items.length ? chunks.items.map(chunk => <article key={chunk.id}><h3>{chunk.locator}</h3>{chunk.error && <p className="warning">{chunk.error}</p>}{chunk.imageDataUrl && <img src={chunk.imageDataUrl} alt={chunk.locator} />}<pre>{chunk.text || '此处尚未取得文字正文。'}</pre></article>) : <p>尚无可显示正文。请查看附件处理状态。</p> : <p>正在读取正文…</p>}{chunks && <div className="capture-pagination"><span>共 {chunks.total} 个位置</span><div><button disabled={!chunkOffset} onClick={() => setChunkOffset(Math.max(0, chunkOffset - 5))}>上一组</button><button disabled={chunkOffset + 5 >= chunks.total} onClick={() => setChunkOffset(chunkOffset + 5)}>下一组</button></div></div>}</div></Modal>}
     {retry && <Modal title={reanalysis ? '重新读取资料并分析' : '重试响应未知的分析'} onClose={() => setRetry(null)}><p>{reanalysis ? '会重新读取可用资料，使用当前模型从头分析并产生新的费用。已有候选和任务保留，失败附件会再次尝试读取。此前成功的分析分片不会复用。' : '上一次请求已经发出，但没有保存到结果。重试可能产生重复费用；已经保存成功的分片会复用。'}</p><p className="hint">{nameOf(retry.groupId)} · {retry.messageCount} 条消息</p>{error && <p className="error" role="alert">{error}</p>}<div className="toolbar"><button onClick={() => setRetry(null)}>暂不重试</button><button className="primary" disabled={busy} onClick={() => void action(reanalysis ? 'reanalyze' : 'retry', retry.id)}>确认重试</button></div></Modal>}
     {confirmCleanup && <Modal title="确认清理原文与附件" onClose={() => setConfirmCleanup(false)}><p>范围：{cleanupGroup ? nameOf(cleanupGroup) : '当前账号所有群'}{cleanupBefore ? `，${cleanupBefore} 00:00（北京时间）之前` : '，全部时间'}。</p><p>原文与文件正文清理后无法在这里重新打开。已有候选、任务与安排会保留。</p><div className="toolbar"><button onClick={() => setConfirmCleanup(false)}>取消</button><button className="primary" disabled={busy} onClick={() => void cleanupRecords()}>确认清理</button></div></Modal>}
-    {confirmDisconnect && <Modal title="解除 QQ 账号绑定" onClose={() => setConfirmDisconnect(false)}><p>解除 QQ {configuredAccount} 的绑定，停止本次组件连接并清空当前选群，收集与自动分析都会暂停。</p><p>不会删除已经收集的消息、附件、候选或日历事项。组件访问令牌仍保存在本机，可在重新连接时使用。</p><p className="hint">如有批次正在处理，请等待当前批次完成后再解除。</p>{error && <p className="error" role="alert">{error}</p>}<div className="toolbar"><button onClick={() => setConfirmDisconnect(false)}>取消</button><button className="primary" disabled={busy || snapshot.config.enabled} onClick={() => void disconnectAccount()}>确认解除绑定</button></div></Modal>}
+    {confirmDisconnect && <Modal title={`解除 ${label} 账号绑定`} onClose={() => setConfirmDisconnect(false)}><p>解除 {label} {configuredAccount} 的绑定，停止本次组件连接并清空当前选群，收集与自动分析都会暂停。</p><p>不会删除已经收集的消息、附件、候选或日历事项。{!wechat && '组件访问令牌仍保存在本机，可在重新连接时使用。'}</p><p className="hint">如有批次正在处理，请等待当前批次完成后再解除。</p>{error && <p className="error" role="alert">{error}</p>}<div className="toolbar"><button onClick={() => setConfirmDisconnect(false)}>取消</button><button className="primary" disabled={busy || snapshot.config.enabled} onClick={() => void disconnectAccount()}>确认解除绑定</button></div></Modal>}
   </div>;
 }

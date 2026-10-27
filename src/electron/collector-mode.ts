@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { createRepository, type Repository } from '../storage/repository';
 import { createCaptureStore, type CaptureStore } from '../capture/store';
 import { createCaptureService } from '../capture/service';
+import { createLocalWechatBridge, wechatCredentials } from './wechat-runtime';
 import { createDocumentExtractor } from '../capture/documents/runtime';
 import { createKeyStore, type AsyncEncryption } from './key-store';
 import { createModelRequestQueue } from '../ai/request-queue';
@@ -13,7 +14,7 @@ import { CaptureSnapshotSchema, type CaptureSnapshot } from '../shared/capture';
 import { apiResultSchema, KeyStatusSchema, SetApiKeyRequestSchema, type ApiResult } from '../shared/contracts';
 import { requests, responses, type Method } from './protocol';
 import { createLocalEvidenceResolver, LocalSourceEvidenceRequestSchema, LocalSourceEvidenceResultSchema } from './local-evidence';
-import { createSourceAttachmentHost } from './source-attachments';
+import { combinedCaptureSources, createSourceAttachmentHost } from './source-attachments';
 import { createSpaceManager } from '../storage/space-management';
 import { createCollectorKeySync, hasCollectorKeySyncConfiguration, requirePersistentEncryption, type CollectorKeyChange, type CollectorKeySync } from './collector-key-sync';
 
@@ -48,7 +49,7 @@ export async function startCollectorMode(directory: string, dependencies: Collec
   const warn = (code: string) => { try { (dependencies.onWarning ?? console.warn)(code); } catch { /* diagnostics cannot rewrite credentials or decide shutdown */ } };
   const wait = dependencies.wait ?? (milliseconds => new Promise<void>(done => setTimeout(done, milliseconds)));
   const abort = new AbortController(); let closing = false, closed = false, closePromise: Promise<void> | undefined;
-  let repository: Repository | undefined, store: CaptureStore | undefined, capture: CollectorCapture | undefined, documents: CollectorDocuments | undefined;
+  let repository: Repository | undefined, store: CaptureStore | undefined, wechatStore: CaptureStore | undefined, capture: CollectorCapture | undefined, wechat: CollectorCapture | undefined, documents: CollectorDocuments | undefined;
   let queue: ReturnType<typeof createModelRequestQueue> | undefined;
   let space: ReturnType<typeof createSpaceManager> | undefined;
   let keySync: CollectorKeySync | undefined;
@@ -60,15 +61,15 @@ export async function startCollectorMode(directory: string, dependencies: Collec
     closePromise = (async () => {
       const syncingClosed = keySync?.close();
       space?.stop();
-      try { capture?.stop(); } catch { warn('COLLECTOR_STOP_FAILED'); throw Error('采集尚未安全停止，数据库保持打开；请重试退出'); }
+      try { capture?.stop(); wechat?.stop(); } catch { warn('COLLECTOR_STOP_FAILED'); throw Error('采集尚未安全停止，数据库保持打开；请重试退出'); }
       try { documents?.dispose(); } catch { warn('COLLECTOR_DOCUMENT_DISPOSE_FAILED'); throw Error('文档处理尚未安全停止，数据库保持打开；请重试退出'); }
       const timer = setTimeout(() => abort.abort(), Math.max(0, dependencies.shutdownGraceMs ?? 25_000)); timer.unref();
       try {
         if (syncingClosed) await syncingClosed;
         // stop() prevents new collection but in-flight callbacks still finalize batches.
         // Never close their SQLite connections until both activity indicators are idle.
-        while (capture?.busy() || queue?.busy() || activeCalls || space?.isRunning()) await wait(50);
-        try { store?.close(); } finally { repository?.close(); closed = true; subscribers.clear(); }
+        while (capture?.busy() || wechat?.busy() || queue?.busy() || activeCalls || space?.isRunning()) await wait(50);
+        try { wechatStore?.close(); store?.close(); } finally { repository?.close(); closed = true; subscribers.clear(); }
       } finally { clearTimeout(timer); }
     })();
     const attempt = closePromise;
@@ -78,6 +79,7 @@ export async function startCollectorMode(directory: string, dependencies: Collec
   try {
     repository = (dependencies.createRepository ?? createRepository)(database);
     store = (dependencies.createCaptureStore ?? createCaptureStore)(database);
+    wechatStore = (dependencies.createCaptureStore ?? createCaptureStore)(database, { platform: 'wechat' });
     const encryption = dependencies.encryption ?? safeStorage;
     const keys = (dependencies.createKeyStore ?? createKeyStore)(join(directory, 'credentials', 'deepseek.bin'), hasCollectorKeySyncConfiguration(directory) ? requirePersistentEncryption(encryption) : encryption);
     const bridgeKeys = (dependencies.createKeyStore ?? createKeyStore)(join(directory, 'credentials', 'qq-bridge.bin'), encryption);
@@ -92,6 +94,7 @@ export async function startCollectorMode(directory: string, dependencies: Collec
     keySync = (dependencies.createCollectorKeySync ?? createCollectorKeySync)({ directory, encryption, keys,
       async onChanged(value) {
         await capture?.credentialsChanged?.({ configured: value.configured, revision: value.revision, sourceId: value.sourceId });
+        await wechat?.credentialsChanged?.({ configured: value.configured, revision: value.revision, sourceId: value.sourceId });
         try { dependencies.onCloudKeyChanged?.(value); } catch { /* Observers cannot change the saved credential. */ }
       },
       onStatusChanged() { if (capture && !closing) try { emitCapture(capture.snapshot()); } catch { /* Startup may not yet have a snapshot. */ } },
@@ -107,7 +110,7 @@ export async function startCollectorMode(directory: string, dependencies: Collec
         cancel = () => reject(new WorkflowError('CANCELLED', '采集模式正在退出，模型请求已取消')); signal.addEventListener('abort', cancel, { once: true });
       })]); } finally { signal.removeEventListener('abort', cancel); }
     };
-    capture = (dependencies.createCaptureService ?? createCaptureService)({
+    const captureOptions: Parameters<typeof createCaptureService>[0] = {
       store, repository, credentials: bridgeKeys, extract: documents.extract, runModel: queue.run, fetch: cancellableFetch,
       onChanged: emitCapture,
       getApiKey: async () => {
@@ -117,12 +120,14 @@ export async function startCollectorMode(directory: string, dependencies: Collec
         if (!key && keys.status().loadError) throw new WorkflowError('STORAGE', '已保存密钥暂未载入，原凭据保留；请正常退出后重试');
         return key;
       },
-    });
+    };
+    capture = (dependencies.createCaptureService ?? createCaptureService)(captureOptions);
+    wechat = (dependencies.createCaptureService ?? createCaptureService)({ ...captureOptions, store: wechatStore, platform: 'wechat', credentials: wechatCredentials, bridgeFactory: createLocalWechatBridge(directory), onChanged: undefined });
     const resolveEvidence = createLocalEvidenceResolver(repository);
-    const sourceAttachments = createSourceAttachmentHost({ directory, store, resolveEvidence, openPath: path => dependencies.openPath ? dependencies.openPath(path) : shell.openPath(path) });
+    const sourceAttachments = createSourceAttachmentHost({ directory, store: combinedCaptureSources(store, wechatStore), resolveEvidence, openPath: path => dependencies.openPath ? dependencies.openPath(path) : shell.openPath(path) });
     const unavailable = () => { throw new WorkflowError('INTERNAL', '本机采集能力尚未准备好，请重试。'); };
     space = (dependencies.createSpaceManager ?? createSpaceManager)({ directory,
-      isBusy: () => closing || activeCalls > 0 || !!capture?.busy() || !!queue?.busy(),
+      isBusy: () => closing || activeCalls > 0 || !!capture?.busy() || !!wechat?.busy() || !!queue?.busy(),
       attachments: {
         previewAttachmentRetention: policy => capture?.previewAttachmentRetention?.(policy) ?? unavailable(),
         cleanAttachments: policy => capture?.cleanAttachments?.(policy) ?? unavailable(),
@@ -141,14 +146,23 @@ export async function startCollectorMode(directory: string, dependencies: Collec
         await keySync.refresh(); return withCloudKeySync(capture!.snapshot());
       },
       captureSnapshot: () => withCloudKeySync(capture!.snapshot()),
+      wechatCaptureSnapshot: () => withCloudKeySync(wechat!.snapshot()),
       captureConfigure: input => capture!.configure?.(input) ?? unavailable(),
+      wechatCaptureConfigure: input => wechat!.configure?.(input) ?? unavailable(),
       captureConnect: input => capture!.connect?.(input) ?? unavailable(),
+      wechatCaptureConnect: input => wechat!.connect?.(input) ?? unavailable(),
       captureGroups: () => capture!.groups?.() ?? unavailable(),
+      wechatCaptureGroups: () => wechat!.groups?.() ?? unavailable(),
       captureMessages: input => capture!.messages?.(input) ?? unavailable(),
+      wechatCaptureMessages: input => wechat!.messages?.(input) ?? unavailable(),
       captureBatches: input => capture!.batches?.(input) ?? unavailable(),
+      wechatCaptureBatches: input => wechat!.batches?.(input) ?? unavailable(),
       captureAction: input => capture!.action?.(input) ?? unavailable(),
+      wechatCaptureAction: input => wechat!.action?.(input) ?? unavailable(),
       captureChunks: input => capture!.chunks?.(input) ?? unavailable(),
+      wechatCaptureChunks: input => wechat!.chunks?.(input) ?? unavailable(),
       captureCleanup: input => capture!.cleanup?.(input) ?? unavailable(),
+      wechatCaptureCleanup: input => wechat!.cleanup?.(input) ?? unavailable(),
       localSourceEvidence: resolveEvidence,
       sourceAttachments: input => sourceAttachments.list(input),
       sourceAttachmentOpen: input => sourceAttachments.open(input),
@@ -177,6 +191,7 @@ export async function startCollectorMode(directory: string, dependencies: Collec
       },
     };
     await capture.start();
+    await wechat.start();
     keySync?.start();
     space.start();
     return {
@@ -184,7 +199,7 @@ export async function startCollectorMode(directory: string, dependencies: Collec
       subscribe(listener: (value: CaptureSnapshot) => void) { subscribers.add(listener); return () => { subscribers.delete(listener); }; },
       status(): { connection: string; error: boolean; enabled: boolean; analysisEnabled: boolean } {
         if (closed) return { connection: 'stopped', error: false, enabled: false, analysisEnabled: false };
-        try { const current = capture!.snapshot(); return { connection: current.connection, error: !!current.error, enabled: current.config.enabled, analysisEnabled: current.config.analysisEnabled }; }
+        try { const states = [capture!.snapshot(), wechat!.snapshot()], active = states.filter(value => value.config.enabled); const current = active[0] ?? states[0]!; return { connection: active.every(value => value.connection === 'online') && active.length ? 'online' : current.connection, error: active.some(value => !!value.error), enabled: active.length > 0, analysisEnabled: states.some(value => value.config.enabled && value.config.analysisEnabled) }; }
         catch { return { connection: 'unavailable', error: true, enabled: false, analysisEnabled: false }; }
       },
     };

@@ -110,6 +110,8 @@ const api: DesktopAPI = {
   accountSnapshot: ok(emptyAccountState()), refreshAccount: ok(emptyAccountState()), onAccountChanged: quiet,
   updateSnapshot: ok(update), checkForUpdates: ok(update), downloadUpdate: readOnly, installUpdate: readOnly, onUpdateChanged: quiet,
   ledgerSnapshot: ok(ledgerSnapshot), ledgerMutate: readOnly, ledgerUndo: readOnly, ledgerExport: readOnly,
+  wechatCaptureSnapshot: readOnly, wechatCaptureConfigure: readOnly, wechatCaptureConnect: readOnly, wechatCaptureGroups: readOnly, wechatCaptureMessages: readOnly,
+  wechatCaptureBatches: readOnly, wechatCaptureAction: readOnly, wechatCaptureChunks: readOnly, wechatCaptureCleanup: readOnly, onWechatCaptureChanged: quiet,
   captureSnapshot: readOnly, captureConfigure: readOnly, captureConnect: readOnly, captureGroups: readOnly, captureMessages: readOnly,
   captureBatches: readOnly, captureAction: readOnly, captureChunks: readOnly, captureCleanup: readOnly, onCaptureChanged: quiet,
 };

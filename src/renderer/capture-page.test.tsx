@@ -13,7 +13,7 @@ const time = '2026-10-23T12:00:00+08:00';
 const oldMessage = { id: 'old-message', accountId: '10001', groupId: 'g1', messageId: 'raw-old', groupName: '旧账号群', senderName: '旧群成员', sentAt: time, importedAt: time, text: '旧账号原文', changed: false, deleted: false,
   attachments: [{ id: 'old-attachment', name: '旧账号附件.txt', kind: 'file' as const, status: 'ready' as const, size: 8, error: null, chunkCount: 1 }] };
 const oldPage = { items: [oldMessage], total: 1, offset: 0, limit: 30 };
-function fixture(initial?: Partial<CaptureSnapshot>, reference?: NonNullable<Source['captureRef']>, modalities?: string[] | null, scope: 'local' | 'cloud' = 'local') {
+function fixture(initial?: Partial<CaptureSnapshot>, reference?: NonNullable<Source['captureRef']>, modalities?: string[] | null, scope: 'local' | 'cloud' = 'local', platform: 'qq' | 'wechat' = 'qq') {
   let state = CaptureSnapshotSchema.parse({ config: { accountId: '10001', groupIds: [], enabled: false }, connection: 'online', accountLabel: 'QQ 1***1', accountName: '测试同学', error: null,
     lastReceivedAt: null, credentialConfigured: true,
     stats: { messages: 0, attachments: 0, attachmentBytes: 0, pendingMessages: 0, batches: 0, pendingBatches: 0, uncertainBatches: 0, failedAttachments: 0 }, coverage: [], ...initial });
@@ -37,7 +37,16 @@ function fixture(initial?: Partial<CaptureSnapshot>, reference?: NonNullable<Sou
     captureChunks: vi.fn(async () => ({ ok: true, data: { items: [], total: 0, offset: 0, limit: 5 } })),
     onCaptureChanged: (next: typeof listener) => { listener = next; return () => {}; },
   } as unknown as DesktopAPI;
-  const view = render(<CapturePage ui={{ client: api, host: api, ...(modalities !== undefined || scope === 'cloud' ? { snapshot: { settings: { model: 'test-model' }, keyStatus: { scope } } } : {}) } as unknown as PlannerUI} initialReference={reference} />);
+  if (platform === 'wechat') {
+    for (const suffix of ['Snapshot', 'Configure', 'Connect', 'Groups', 'Messages', 'Batches', 'Action', 'Chunks', 'Cleanup'] as const) {
+      const key = `capture${suffix}` as const;
+      (api as unknown as Record<string, unknown>)[`wechatCapture${suffix}`] = api[key];
+      (api as unknown as Record<string, unknown>)[key] = vi.fn(() => { throw Error('WeChat must not call QQ APIs'); });
+    }
+    api.onWechatCaptureChanged = api.onCaptureChanged;
+    api.onCaptureChanged = vi.fn(() => { throw Error('WeChat must not subscribe to QQ'); });
+  }
+  const view = render(<CapturePage platform={platform} ui={{ client: api, host: api, ...(modalities !== undefined || scope === 'cloud' ? { snapshot: { settings: { model: 'test-model' }, keyStatus: { scope } } } : {}) } as unknown as PlannerUI} initialReference={reference} />);
   const update = (next: Partial<CaptureSnapshot>) => { state = CaptureSnapshotSchema.parse({ ...state, ...next }); };
   return { api, config, connect, action, clear, unmount: view.unmount, state: () => structuredClone(state), update,
     push(next: CaptureSnapshot) { act(() => listener(next)); }, emit(next: Partial<CaptureSnapshot>) { update(next); act(() => listener(state)); } };
@@ -306,5 +315,35 @@ describe('QQ capture page', () => {
     const requests = vi.mocked(f.api.captureMessages).mock.calls.length;
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 150)); });
     expect(f.api.captureMessages).toHaveBeenCalledTimes(requests); expect(screen.getByText(/^尚未绑定 QQ 账号，暂不读取/)).toBeTruthy();
+  });
+});
+
+
+describe('WeChat capture page', () => {
+  it('uses independent WeChat routes and requires saving selected groups before starting', async () => {
+    const f = fixture({ config: CaptureConfigSchema.parse({ platform: 'wechat', accountId: 'wechat:synthetic-user', groupIds: [], enabled: false }), platform: 'wechat' }, undefined, undefined, 'local', 'wechat');
+    await screen.findByText('微信 已在线');
+    expect(screen.queryByLabelText('桥接访问令牌')).toBeNull();
+    expect(screen.queryByRole('button', { name: '连接此地址' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '连接本机微信' }));
+    await waitFor(() => expect(f.connect).toHaveBeenCalledExactlyOnceWith({}));
+    fireEvent.click(screen.getByRole('button', { name: '读取群列表' }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: '课程群 g1' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存群选择' }));
+    await waitFor(() => expect(f.config).toHaveBeenCalledTimes(1));
+    expect(f.config.mock.calls[0]![0]).toMatchObject({ platform: 'wechat', accountId: 'wechat:synthetic-user', groupIds: ['g1'], enabled: false });
+    await waitFor(() => expect((screen.getByRole('button', { name: '开始收集' }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: '开始收集' }));
+    await waitFor(() => expect(f.config).toHaveBeenCalledTimes(2));
+    expect(f.config.mock.calls[1]![0]).toMatchObject({ enabled: true, groupIds: ['g1'] });
+    expect(f.api.captureSnapshot).not.toHaveBeenCalled();
+    expect(f.api.captureConfigure).not.toHaveBeenCalled();
+    expect(f.api.onCaptureChanged).not.toHaveBeenCalled();
+  });
+  it('shows WeChat search actions for stored source messages', async () => {
+    const f = fixture({ config: CaptureConfigSchema.parse({ platform: 'wechat', accountId: 'wechat:synthetic-user' }), platform: 'wechat' }, undefined, undefined, 'local', 'wechat');
+    vi.mocked(f.api.wechatCaptureMessages).mockResolvedValue({ ok: true, data: { ...oldPage, items: [{ ...oldMessage, accountId: 'wechat:synthetic-user', attachments: [] }] } });
+    expect(await screen.findByRole('button', { name: '复制 微信 搜索关键词' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '复制 QQ 搜索关键词' })).toBeNull();
   });
 });

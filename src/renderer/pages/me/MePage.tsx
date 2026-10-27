@@ -13,10 +13,10 @@ import "./MePage.css";
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMobile } from '../../mobile/layout';
 
-export type MeSection = "goals" | "courses" | "capture" | "ai" | "term" | "reminders" | "ledger" | "data" | "update";
+export type MeSection = "goals" | "courses" | "capture" | "wechat-capture" | "ai" | "term" | "reminders" | "ledger" | "data" | "update";
 const groups: { title: string; host?: boolean; items: [MeSection, string][] }[] = [
   { title: "规划", items: [["goals", "目标"], ["courses", "课程表"]] },
-  { title: "采集", host: true, items: [["capture", "QQ 采集"]] },
+  { title: "采集", host: true, items: [["capture", "QQ 采集"], ["wechat-capture", "微信采集"]] },
   { title: "设置", host: true, items: [["ai", "AI 与费用"], ["term", "学期与节次"], ["reminders", "提醒与启动"], ["ledger", "记账"], ["data", "数据与备份"], ["update", "软件更新"]] },
 ];
 
@@ -62,7 +62,8 @@ export function MePage({ snapshot, ui, section, setSection, updates, select, edi
           {mobile && <button className="ui-btn ghost mobile-back" onClick={() => setShowSection(false)}>‹ 返回我的</button>}
           {current === "goals" && <Goals snapshot={snapshot} ui={ui} select={select} create={() => edit({ entity: "goal" })} exportGoal={exportGoal} />}
           {current === "courses" && <CourseEditor key={coursePreview?.sourceId ?? "courses"} snapshot={snapshot} ui={ui} edit={edit} initial={coursePreview} openSource={openSource} />}
-          {current === "capture" && <CapturePage ui={ui} initialReference={captureReference} />}
+          {current === "capture" && <CapturePage key="qq" ui={ui} initialReference={captureReference?.accountId.startsWith('wechat:') ? undefined : captureReference} />}
+          {current === "wechat-capture" && <CapturePage key="wechat" ui={ui} platform="wechat" initialReference={captureReference?.accountId.startsWith('wechat:') ? captureReference : undefined} />}
           {current === "ledger" && ui.client && <LedgerRulesSettings api={ui.client} />}
           {settingsSections.includes(current) && (
             <Settings snapshot={snapshot} ui={ui} courses={() => setSection("courses")} updates={updates} section={current as SettingsSection} onSection={setSection} />
