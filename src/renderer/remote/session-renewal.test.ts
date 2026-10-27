@@ -56,16 +56,17 @@ describe('browser session maintenance', () => {
     expect(f.controller.getState().status).toBe('unpaired');
     expect(f.calls.filter(call => call.path === '/api/v1/session/renew')).toHaveLength(0);
   });
-  it('makes renewal revocation sticky instead of starting canonical reads or restoring cached auth', async () => {
+  it('makes renewal revocation sticky after the initial authenticated read without restoring cached auth', async () => {
     const f = fixture(); f.deny(401); await f.controller.initialize();
     expect(f.controller.getState().status).toBe('expired'); expect(f.controller.getState().session).toBeNull();
-    expect(f.calls.some(call => call.path.startsWith('/api/v1/rpc/'))).toBe(false);
+    expect(f.calls.filter(call => call.path.startsWith('/api/v1/rpc/')).map(call => call.path)).toEqual(['/api/v1/rpc/snapshot']);
     expect(await f.controller.client.snapshot()).toMatchObject({ ok: false, error: { code: 'AUTH' } });
   });
   it('rejects a renewal response for another data generation without replaying business operations', async () => {
     const f = fixture(); f.changeIdentity(); await f.controller.initialize();
     expect(f.controller.getState().status).toBe('expired'); expect(f.controller.getState().message).toContain('资料身份');
-    expect(f.calls.some(call => call.path.startsWith('/api/v1/rpc/'))).toBe(false);
+    expect(f.calls.filter(call => call.path.startsWith('/api/v1/rpc/')).map(call => call.path)).toEqual(['/api/v1/rpc/snapshot']);
+    expect(await f.controller.client.snapshot()).toMatchObject({ ok: false, error: { code: 'AUTH' } });
   });
   it('uses a bounded timer only while active and cancels it on dispose', async () => {
     vi.useFakeTimers(); const f = fixture(); await f.controller.initialize();

@@ -81,7 +81,7 @@ export function RemoteApp({ controller }: { controller: RemoteController }) {
     </main>;
   }
   const online = state.status === 'online';
-  return <MobileApp client={controller.client} connection={state}
+  return <MobileApp key={`${state.session!.identity.dataInstanceId}:${state.session!.identity.generation}:${state.session!.device.id}`} client={controller.client} connection={state}
     conversationKey={`ultimate-calendar:assistant:${state.session!.identity.dataInstanceId}:${state.session!.identity.generation}:${state.session!.device.id}`}
     discardPreview={token => { const item = state.pending.find(value => value.status === 'review' && value.preview?.confirmationToken === token); if (item) void controller.resolve(item.id, 'discard').catch(() => {}); }}
     pendingView={<>{feedback}{connectionLine}{pendingQueue}</>}
