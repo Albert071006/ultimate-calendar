@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { existsSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readWechatMediaLocation } from './wechat-media';
@@ -16,7 +16,11 @@ import { instantAt } from '../domain/time';
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
 async function until(predicate: () => boolean) { for (let n = 0; n < 200; n++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 15)); } throw Error('Synthetic media reader did not finish'); }
-function directory() { const path = mkdtempSync(join(tmpdir(), 'uc-wechat-media-')); cleanups.push(() => rmSync(path, { recursive: true, force: true })); return path; }
+function directory() {
+  // Match the Python worker's Path.resolve(): Windows CI TEMP may use an 8.3 alias.
+  const path = realpathSync.native(mkdtempSync(join(tmpdir(), 'uc-wechat-media-')));
+  cleanups.push(() => rmSync(path, { recursive: true, force: true })); return path;
+}
 const metadata = (path: string, bytes: Buffer) => ({ path, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
 const account = 'wechat:wxid_media_test', group = 'media@chatroom';
 
