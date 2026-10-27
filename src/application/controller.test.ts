@@ -23,6 +23,27 @@ function setup(transport: typeof fetch, key: string | null = 'synthetic-key') {
 function extract(sourceId: string, extra: object = {}) { return { candidates: [{ title: '提交报告', action: '提交报告', benefit: '', benefitKind: 'unknown', potentialBenefit: '', conditions: [], uncertainties: [], sourceIds: [sourceId], sourceQuote: '明天提交报告', deadline: { date: '2026-10-23', time: null }, eventStart: null, eventEnd: null, location: '', temporalEvidence: [{ field: 'deadline', basis: 'relative', quote: '明天' }], relation: { kind: 'new', candidateId: null }, ...extra }] }; }
 
 describe('durable AI workflows with real planner', () => {
+  it.each(['new', 'supplement'] as const)('keeps date-only notices from successive sending days separate for manual %s analysis', async kind => {
+    let parent = '';
+    const { repository, controller } = setup(async (_url, init) => {
+      const context = JSON.parse(JSON.parse(String(init?.body)).messages.find((message: { role: string }) => message.role === 'user').content);
+      return reply(extract(context.sourceId, { title: '参加午间集合', action: '去示例餐厅集合', sourceQuote: '明天中午去示例餐厅集合', deadline: null,
+        temporalEvidence: [{ field: 'eventStart', basis: 'relative', quote: '明天中午' }], relation: { kind: parent ? kind : 'new', candidateId: parent && kind !== 'new' ? parent : null } }));
+    });
+    for (const day of ['26', '27']) {
+      const imported = await controller.importSource({ operationId: `midday-${day}`, source: { kind: 'text', text: '明天中午去示例餐厅集合', sentAt: `2026-10-${day}T19:00:00+08:00` } });
+      if (!imported.ok) throw Error('import failed');
+      expect((await controller.analyzeSource({ operationId: `analyze-midday-${day}`, sourceId: imported.data.id })).ok).toBe(true);
+      parent = repository.snapshot().candidates[0]!.id;
+    }
+    const candidates = repository.snapshot().candidates;
+    expect(candidates).toHaveLength(2);
+    for (const candidate of candidates) {
+      expect(candidate).toMatchObject({ revisionOfId: null, duplicateOfId: null, eventStart: null, eventEnd: null });
+      expect(candidate.sourceIds).toHaveLength(1);
+    }
+  });
+
   it('adds a follow-up to the same pending item without erasing its original deadline or requirements', async () => {
     let parent = '';
     const { repository, controller } = setup(async (_url, init) => {

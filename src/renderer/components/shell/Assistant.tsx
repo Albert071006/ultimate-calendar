@@ -3,7 +3,7 @@ import { ArrowRight, ChevronDown, ChevronUp, MessageSquare, Paperclip } from "lu
 import type { CommandRequest } from "../../../shared/contracts";
 import type { PlannerUI } from "../../hooks/usePlanner";
 import type { Selection } from "../Calendar";
-import { useAssistantConversation } from "./assistant-conversation";
+import { canContinueUnsent, useAssistantConversation } from "./assistant-conversation";
 import { ResourceFields } from '../resources/ResourcePanel';
 import { AssistantImageButton, AssistantImageDraft, AssistantMessageImage } from './assistant-image-input';
 
@@ -17,7 +17,7 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showResources, setShowResources] = useState(false);
-  const { text, setText, history, running, send, retry, resources, setResources,
+  const { text, setText, history, running, send, retry, resources, setResources, unsentDraft, continueUnsent,
     image, imageReading, imageError, selectImage, readImageFile, pasteImage, removeImage } = useAssistantConversation({ ui, selected, date, domain, ledgerView, onStart: () => setExpanded(true) });
   const conversation = useRef<HTMLDivElement>(null);
   const root = useRef<HTMLElement>(null);
@@ -65,6 +65,8 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
                   {entry.status === "failed" && entry.request && <>
                     {" "}<button className="ui-btn sm" disabled={running || imageReading || ui.busy} onClick={() => retry(entry)}>重试这条指令</button>
                   </>}
+                  {entry.id === history.at(-1)?.id && canContinueUnsent(entry) && <button className="ui-btn sm" disabled={running || imageReading || ui.busy}
+                    onClick={() => { continueUnsent(entry); input.current?.focus(); }}>继续补充</button>}
                 </div>
               ))
             ) : (
@@ -74,6 +76,7 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
           {(showResources || resources.length > 0) && <div className="a2-assist-resources"><ResourceFields title="待关联资料" value={resources} onChange={setResources} host={ui.host} disabled={running || ui.busy} /></div>}
         </div>
       )}
+      {unsentDraft && <p className="ui-hint" role="status">这条补充尚未发送，可在输入框继续补充后发送。</p>}
       <AssistantImageDraft image={image} reading={imageReading} error={imageError} remove={removeImage} disabled={running || ui.busy} />
       <form className="a2-assist-bar" onSubmit={(e) => { e.preventDefault(); void send(); }}>
         <MessageSquare aria-hidden="true" />

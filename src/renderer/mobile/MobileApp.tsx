@@ -74,8 +74,8 @@ export function MobileApp({ client, connection, settingsPages = [], pendingView,
 
   const select = (selection: Selection) => selection.entity === 'source' ? setSourceId(selection.id) : setSelected(selection);
   const editRecord = (target: EditorTarget) => { setSelected(null); setUnscheduledOpen(false); setEditor(target); };
-  const { schedule, scheduleTask, scheduleRecurringTask, removeTask } = taskActionHandlers({ snapshot, ui, select: setSelected, editRecord, defaultSlot: () => ({ date: todayDate(), time: nextSlot(Date.now(), true) }) });
-  const taskActions = { select, editTask: (id: string) => editRecord({ entity: 'task', id }), schedule: scheduleTask, scheduleRecurring: scheduleRecurringTask, removeTask };
+  const { schedule, scheduleTask, scheduleRecurringTask, scheduleAdditionalTask, removeTask } = taskActionHandlers({ snapshot, ui, select: setSelected, editRecord, defaultSlot: () => ({ date: todayDate(), time: nextSlot(Date.now(), true) }) });
+  const taskActions = { select, editTask: (id: string) => editRecord({ entity: 'task', id }), schedule: scheduleTask, scheduleRecurring: scheduleRecurringTask, scheduleAdditional: scheduleAdditionalTask, removeTask };
   const openMe = (section: string) => { setMeSection(section); setPage('me'); };
   const navigate = (next: Page) => { setEditor(null); setSelected(null); setUnscheduledOpen(false); if (next === 'me') setMeSection(null); setPage(next); };
   const openCandidate = (id: string) => { setSelected({ entity: 'candidate', id }); setPage('inbox'); };
@@ -129,7 +129,7 @@ export function MobileApp({ client, connection, settingsPages = [], pendingView,
           )}
         </main>
         {snapshot && <Toast ui={ui} />}
-        {snapshot && <MobileAssistant ui={ui} selected={selected} date={date} domain={page === 'ledger' ? 'ledger' : undefined}
+        {snapshot && <MobileAssistant ui={ui} selected={selected} date={date} domain={page === 'ledger' ? 'ledger' : undefined} connectionStatus={connection.status}
           ledgerView={page === 'ledger' ? ledgerView : undefined} storageKey={conversationKey} open={assistantOpen} setOpen={setAssistantOpen} />}
         <nav className="m-tabs-bar" aria-label="主导航">
           {tabs.map(([id, label, Icon]) => (

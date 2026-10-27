@@ -23,9 +23,10 @@ function setup() {
     return planner.mutate({ ...result.proposedRequest, confirmed: true, confirmationToken: result.confirmationToken });
   };
   mutate({ type: 'create', entity: 'task', values: { title: '值班', reminders: { enabled: true, leadMinutes: [30], dateOnlyTime: null } } });
-  const task = planner.snapshot().tasks[0]!;
-  const schedule = (nextRule: RecurrenceRuleInput = rule) => mutate({ type: 'scheduleRecurringTask', id: task.id, expectedVersion: task.version, rule: nextRule, location: '活动室' });
+  let task = planner.snapshot().tasks[0]!;
+  const schedule = (nextRule: RecurrenceRuleInput = rule) => mutate({ type: 'scheduleRecurringTask', id: task.id, expectedVersion: planner.snapshot().tasks.find(value => value.id === task.id)!.version, rule: nextRule, location: '活动室' });
   confirm(schedule());
+  task = planner.snapshot().tasks[0]!;
   const blocks = () => planner.snapshot().blocks.sort((a, b) => (a.recurrence?.occurrenceStart ?? a.start).localeCompare(b.recurrence?.occurrenceStart ?? b.start));
   const update = (block: Block, values: Extract<MutationInput, { type: 'updateRecurringEvent' }>['values'], scope: 'single' | 'this-and-following' = 'single') => mutate({ type: 'updateRecurringEvent', id: block.id, expectedVersion: block.version, scope, values });
   const cancel = (block: Block, scope: 'single' | 'this-and-following' = 'single') => mutate({ type: 'cancelRecurringEvent', id: block.id, expectedVersion: block.version, scope });

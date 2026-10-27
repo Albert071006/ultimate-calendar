@@ -161,7 +161,8 @@ const result = await window.planner.mutate(request);
 ### 任务、目标与执行时段的关联
 
 - 新建目标使用 `{"type":"create","entity":"goal","values":{"title":"完成第一轮复习"}}`。可选字段为 `description`、`priority:low|medium|high`、`targetDate`、`status:active|completed|paused`、`color`。颜色只能使用程序预设值，不确定时省略。
-- 新建任务使用 `{"type":"create","entity":"task","values":{"title":"完成阅读练习","deadline":null}}`。可选 `description`、`status:open|done`、`goalId`、`courseId`、`candidateId`、`reminders`。普通计划不要伪造候选通知关联。
+- 新建任务使用 `{"type":"create","entity":"task","values":{"title":"完成阅读练习","deadline":null}}`。可选 `description`、`status:open|done`、`scheduleMode:single|multiple`、`goalId`、`courseId`、`candidateId`、`reminders`。普通计划不要伪造候选通知关联。
+- 默认一个任务只安排一个时段，完成或恢复该时段会同步任务状态，完成或恢复任务也会同步唯一时段；无需发送两次完成命令。只有用户明确要求分多次安排，才在新建任务或更新任务时设置 `scheduleMode:"multiple"`；计划文件通过 v3 `updates` 修改已有任务。多时段任务仍分别记录本次完成与整个任务完成。旧资料已有多段或重复系列的任务继续保留多时段语义。改期修改原 block，不额外新增。
 - 关联新目标／新任务时，先保存它，从返回的 `changes` 和新快照取得真实 ID，再发下一批。不能在同一批里用临时 ID、标题或猜出的 UUID 关联尚未存在的对象。
 - 给已有任务安排学习时间，使用普通 `create block`；这里的占位 ID 必须替换为最新快照中的真实任务 ID：
 

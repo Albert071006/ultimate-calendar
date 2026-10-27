@@ -4,6 +4,7 @@ import type { IncomingMessage } from 'node:http';
 import { isIP, type LookupFunction } from 'node:net';
 import { extname } from 'node:path';
 import { isBridgeAttachmentLocation, type BridgeAttachmentLocation } from './bridge';
+import { consumeWechatMediaLocation, hasWechatMediaLocation, type WechatAttachmentLocation } from './wechat-media';
 
 const MAX_BYTES = 25 * 1024 * 1024;
 const EXTENSIONS = new Set(['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.csv', '.md', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']);
@@ -12,8 +13,10 @@ const HOST_SUFFIXES = ['.ftn.qq.com', '.ftn.qq.com.cn', '.file.qq.com'];
 export type AttachmentDownloadOptions = { fileName: string; maxBytes?: number; timeoutMs?: number; signal?: AbortSignal };
 /** Only fixed application diagnostics use this type; network exception text is never promoted. */
 export class AttachmentDownloadError extends Error {
-  constructor(message: string, readonly status: 'failed' | 'unsupported' | 'too-large' = 'failed') { super(message); }
+  constructor(message: string, readonly status: 'failed' | 'unsupported' | 'too-large' = 'failed', readonly retryable = false) { super(message); }
 }
+export type CaptureAttachmentLocation = BridgeAttachmentLocation | WechatAttachmentLocation;
+export const attachmentFileName = (location: CaptureAttachmentLocation, fallback: string) => hasWechatMediaLocation(location) ? location.fileName : fallback;
 
 export function isPublicAttachmentAddress(address: string): boolean {
   const family = isIP(address);
@@ -69,11 +72,17 @@ async function openResponse(url: URL, signal: AbortSignal): Promise<IncomingMess
 }
 
 /** Pass the original frozen locator returned by bridge.getFileUrl/getImage; cloned or renderer input is rejected. */
-export async function downloadAttachment(location: BridgeAttachmentLocation, options: AttachmentDownloadOptions): Promise<Buffer> {
-  if (!isBridgeAttachmentLocation(location)) throw new AttachmentDownloadError('附件下载必须来自已授权 QQ 消息的桥接查询');
+export async function downloadAttachment(location: CaptureAttachmentLocation, options: AttachmentDownloadOptions): Promise<Buffer> {
+  if (!isBridgeAttachmentLocation(location) && !hasWechatMediaLocation(location)) throw new AttachmentDownloadError('附件下载必须来自已授权消息的桥接查询');
   if (!options.fileName || options.fileName.length > 512 || !EXTENSIONS.has(extname(options.fileName).toLowerCase())) throw new AttachmentDownloadError('此附件格式暂不支持自动分析', 'unsupported');
   const maxBytes = options.maxBytes ?? MAX_BYTES, timeoutMs = options.timeoutMs ?? 60_000;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_BYTES || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) throw new AttachmentDownloadError('附件下载限额不正确');
+  if (hasWechatMediaLocation(location)) {
+    if (options.signal?.aborted) throw new AttachmentDownloadError('附件读取已取消');
+    const bytes = consumeWechatMediaLocation(location);
+    if (bytes.length > maxBytes) throw new AttachmentDownloadError('附件超过自动读取大小上限', 'too-large');
+    return bytes;
+  }
   // The installed SnowLuma resolves its in-memory media cache to QQ HTTPS URLs. No on-disk
   // attachment cache root has been verified; allowing its account/data directory would expose secrets.
   if (!location.url) throw new AttachmentDownloadError(location.path ? '桥接返回了本机文件路径，但尚无已验证的附件缓存目录，请手动查看原文件' : 'QQ 尚未提供可下载的附件地址');

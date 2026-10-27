@@ -16,6 +16,7 @@ export function StatusBanner({ connection, onOpen }: { connection: Pick<RemoteCl
   const { status, pending, cachedAt, storageError } = connection;
   const waiting = pending.length, stuck = pending.filter(item => needsHand.includes(item.status)).length;
   const lead = storageError ? '手机存储异常，修改可能无法暂存'
+    : status === 'connecting' ? `正在更新${cachedLabel(cachedAt) ? ` · 显示 ${cachedLabel(cachedAt)} 的资料` : ''}`
     : status === 'offline' ? `离线${cachedLabel(cachedAt) ? ` · 显示 ${cachedLabel(cachedAt)} 的资料` : ''}`
     : status === 'error' ? '云端连接异常'
     : '';

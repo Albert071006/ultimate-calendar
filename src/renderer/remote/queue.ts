@@ -2,6 +2,7 @@ import { BlockSchema, InstantSchema, MutationRequestSchema, TaskSchema, type Mut
 import { LedgerMutationRequestSchema, type LedgerMutationRequest } from '../../shared/ledger';
 import type { RemoteMethod } from '../../shared/remote';
 import type { OfflinePartition, PendingWrite } from './types';
+import { taskScheduleLimitExceeded, taskScheduleMode } from '../../domain/task-scheduling';
 
 export const localId = (item: Pick<PendingWrite, 'id'>, index: number) => 'local:' + item.id + ':' + index;
 export const instant = (at = Date.now()) => new Date(at + 8 * 3600000).toISOString().replace('Z', '+08:00');
@@ -33,14 +34,29 @@ function applyOfflineMutations(input: unknown, baseline: Snapshot, idFor: (index
       if (change.type === 'update' && !sameAssociation(change.values, old, ['candidateId', 'goalId', 'courseId'])) return null;
       const task = TaskSchema.safeParse({ ...old, ...(change.type === 'update' ? change.values : { status: change.completed ? 'done' : 'open' }), version: old.version + 1, updatedAt: at });
       if (!task.success) return null; snapshot.tasks[index] = task.data;
+      if ((change.type === 'finishTask' || change.values.status !== undefined && change.values.status !== old.status) && taskScheduleMode(task.data, snapshot.blocks) === 'single') {
+        const linked = snapshot.blocks.filter(block => block.taskId === task.data.id && !block.cancelled);
+        const block = linked.length === 1 && !linked[0]!.recurrence ? linked[0] : undefined;
+        const completed = task.data.status === 'done';
+        if (block && block.completed !== completed) Object.assign(block, { completed, version: block.version + 1, updatedAt: at });
+      }
     } else if ((change.type === 'update' && change.entity === 'block') || change.type === 'finishBlock') {
       const index = snapshot.blocks.findIndex(block => block.id === change.id); const old = snapshot.blocks[index];
       if (!old || old.recurrence || old.cancelled || old.version !== change.expectedVersion) return null;
       if (change.type === 'update' && !sameAssociation(change.values, old, ['taskId'])) return null;
       const block = BlockSchema.safeParse({ ...old, ...(change.type === 'update' ? change.values : { completed: change.completed }), version: old.version + 1, updatedAt: at });
       if (!block.success) return null; snapshot.blocks[index] = block.data;
+      if (change.type === 'finishBlock' || change.values.completed !== undefined && change.values.completed !== old.completed) {
+        const task = snapshot.tasks.find(task => task.id === block.data.taskId);
+        const linked = snapshot.blocks.filter(value => value.taskId === task?.id && !value.cancelled);
+        if (task && taskScheduleMode(task, snapshot.blocks) === 'single' && linked.length === 1 && !linked[0]!.recurrence) {
+          const status = block.data.completed ? 'done' : 'open';
+          if (task.status !== status) Object.assign(task, { status, version: task.version + 1, updatedAt: at });
+        }
+      }
     } else return null;
   }
+  if (snapshot.tasks.some(task => taskScheduleLimitExceeded(task, snapshot.blocks, baseline.tasks.find(old => old.id === task.id), baseline.blocks))) return null;
   return snapshot;
 }
 
@@ -118,9 +134,13 @@ export function captureBase(method: RemoteMethod, input: unknown, partition: Off
     const month = request.success ? request.data.month ?? request.data.changes.find(change => change.type === 'putEntry')?.entry.month : undefined;
     return { revision: (month ? partition.ledgers[month] : Object.values(partition.ledgers)[0])?.revision ?? 0 };
   }
-  const ids = references(input);
+  const ids = new Set(references(input));
   const snapshot = projectSnapshot(partition);
-  return snapshot ? [...snapshot.tasks, ...snapshot.blocks].filter(item => ids.includes(item.id)) : [];
+  if (!snapshot) return [];
+  // Completion and slot limits depend on associated records as well as the explicitly named target.
+  for (const block of snapshot.blocks) if (ids.has(block.id) && block.taskId) ids.add(block.taskId);
+  for (const block of snapshot.blocks) if (block.taskId && ids.has(block.taskId)) ids.add(block.id);
+  return [...snapshot.tasks, ...snapshot.blocks].filter(item => ids.has(item.id));
 }
 
 /** Called only after the user chooses their version in the conflict panel. */
@@ -131,15 +151,20 @@ export function rebaseWrite(item: PendingWrite, partition: OfflinePartition): un
     const request = MutationRequestSchema.parse(input);
     const snapshot = partition.snapshot;
     if (!snapshot) throw Error('请先取得服务端最新安排');
-    const versions = new Map<string, number>();
+    let projected = structuredClone(snapshot);
     const rebased = { ...request, operationId: crypto.randomUUID(), confirmed: false, confirmationToken: undefined,
-      mutations: request.mutations.map(change => {
-        if (!('expectedVersion' in change) || !('id' in change)) return change;
-        const kind = change.type === 'finishTask' || ('entity' in change && change.entity === 'task') ? 'task' : change.type === 'finishBlock' || ('entity' in change && change.entity === 'block') ? 'block' : null;
-        const record = (kind === 'task' ? snapshot.tasks : kind === 'block' ? snapshot.blocks : []).find(value => value.id === change.id);
-        if (!record) throw Error('该事项已在服务端移除，请重新新建或放弃本机修改');
-        const key = `${kind}:${record.id}`; const next = versions.get(key) ?? record.version; versions.set(key, next + 1);
-        return { ...change, expectedVersion: next };
+      mutations: request.mutations.map((change, index) => {
+        let next = change;
+        if ('expectedVersion' in change && 'id' in change) {
+          const kind = change.type === 'finishTask' || ('entity' in change && change.entity === 'task') ? 'task' : change.type === 'finishBlock' || ('entity' in change && change.entity === 'block') ? 'block' : null;
+          const record = (kind === 'task' ? projected.tasks : kind === 'block' ? projected.blocks : []).find(value => value.id === change.id);
+          if (!record) throw Error('该事项已在服务端移除，请重新新建或放弃本机修改');
+          next = { ...change, expectedVersion: record.version };
+        }
+        const result = applyOfflineMutations({ ...request, confirmed: false, confirmationToken: undefined, mutations: [next] }, projected,
+          () => { const id = localId(item, index); return Object.hasOwn(partition.aliases, id) ? partition.aliases[id]! : id; }, item.createdAt);
+        if (!result) throw Error('这项更改超出离线基础操作范围，请回到原页面重新确认');
+        projected = result; return next;
       }) } satisfies MutationRequestInput;
     if (!allowsOffline('mutate', rebased, snapshot)) throw Error('这项更改超出离线基础操作范围，请回到原页面重新确认');
     return rebased;

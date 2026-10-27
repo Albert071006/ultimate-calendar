@@ -23,7 +23,7 @@ function setup() {
   };
   mutate({ type: 'create', entity: 'task', values: { title: '双周周二晚活动室值班检查' } });
   const task = planner.snapshot().tasks[0]!;
-  const schedule = (nextRule: RecurrenceRuleInput = rule) => confirm(mutate({ type: 'scheduleRecurringTask', id: task.id, expectedVersion: task.version, rule: nextRule, location: '活动室' }));
+  const schedule = (nextRule: RecurrenceRuleInput = rule) => confirm(mutate({ type: 'scheduleRecurringTask', id: task.id, expectedVersion: planner.snapshot().tasks.find(value => value.id === task.id)!.version, rule: nextRule, location: '活动室' }));
   const legacy = () => JSON.parse(JSON.stringify(repository.read(), (key, value) => key === 'recurrence' || key === 'cancelled' ? undefined : value));
   return { repository, planner, mutate, confirm, task, schedule, legacy, root };
 }

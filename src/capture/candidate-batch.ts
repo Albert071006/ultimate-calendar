@@ -4,6 +4,7 @@ import { ExtractedCandidateSchema, type ExtractedCandidate } from '../ai/schemas
 import { WorkflowError } from '../ai/deepseek';
 import { CandidateSchema, IdSchema, type Candidate, type CandidateInput, type Source } from '../shared/contracts';
 import { candidateFingerprint, normalizeCandidate, supplementCandidate } from '../imports/messages';
+import { candidateDatesConflict, hasExplicitReschedule } from '../domain/candidate-dates';
 
 // Optional without defaults: parsing an old paid checkpoint must not change its receipt hash.
 export const CaptureCandidateSchema = ExtractedCandidateSchema.extend({
@@ -47,6 +48,12 @@ export function supportingEvidence(entry: CaptureEntry, available: ReadonlyMap<s
     const source = available.get(reference.sourceId);
     if (!source || ids.includes(reference.sourceId)) throw new WorkflowError('AI_RESPONSE', '补充来源不在当前分片内或重复引用，请人工校对');
     if (source.kind === 'text' && !source.text.includes(reference.quote)) throw new WorkflowError('AI_RESPONSE', '补充来源引用与原文不符，请人工校对');
+    const primary = available.get(ids[0]!)!;
+    const supporting = { ...entry.candidate, sourceIds: [source.id], sourceQuote: reference.quote,
+      deadline: null, eventStart: null, eventEnd: null, temporalEvidence: [] };
+    if (candidateDatesConflict(entry.candidate, supporting, [primary, source]) && !hasExplicitReschedule(primary, entry.candidate) && !hasExplicitReschedule(source, supporting)) {
+      throw new WorkflowError('AI_RESPONSE', '补充来源指向不同日期的独立事项，不能合并，请分开校对');
+    }
     ids.push(source.id);
   }
   return ids;
@@ -55,17 +62,19 @@ export function supportingEvidence(entry: CaptureEntry, available: ReadonlyMap<s
 export type CaptureDecision = { kind: 'ignore'; id: string } | { kind: 'update'; id: string; values: Partial<CandidateInput> } | { kind: 'create'; values: CandidateInput };
 
 /** Both staged context and the final transaction use these exact same additive decisions. */
-export function reconcileCaptureCandidate(item: ExtractedCandidate, source: Source, sourceIds: string[], existing: Candidate[], warnings: string[]): CaptureDecision {
+export function reconcileCaptureCandidate(item: ExtractedCandidate, source: Source, sourceIds: string[], existing: Candidate[], warnings: string[], sources: Source[] = []): CaptureDecision {
   // An explicit same-event relation can use different wording. Apply the same guarded, additive
   // merge as a supplement instead of creating a fresh root from that paraphrase.
   if (item.relation.kind === 'duplicate' && item.relation.candidateId) item = { ...item, relation: { ...item.relation, kind: 'supplement' } };
-  const normalized = normalizeCandidate(item, source, existing);
+  const evidenceSources = [...sources.filter(saved => saved.id !== source.id), source];
+  const normalized = normalizeCandidate(item, source, existing, evidenceSources);
+  item = { ...item, relation: normalized.relation };
   const target = item.relation.candidateId ? existing.find(candidate => candidate.id === item.relation.candidateId) : null;
   if (item.relation.kind === 'supplement' && target?.status === 'ignored') return { kind: 'ignore', id: target.id };
   const uncertainties = [...new Set([...(normalized.values.uncertainties ?? []), ...warnings])].slice(0, 100);
   const values = { ...normalized.values, sourceIds, uncertainties };
   if ((item.relation.kind === 'supplement' || item.relation.kind === 'revision') && target && normalized.duplicate?.id !== target.id) {
-    const merged = supplementCandidate(target, values);
+    const merged = supplementCandidate(target, values, evidenceSources);
     if (item.relation.kind === 'supplement' && target.status === 'pending' && !merged.conflicts) {
       return { kind: 'update', id: target.id, values: { ...merged.values, sourceQuote: target.sourceQuote,
         status: target.status, taskId: target.taskId, snoozedUntil: target.snoozedUntil,
@@ -75,7 +84,8 @@ export function reconcileCaptureCandidate(item: ExtractedCandidate, source: Sour
       revisionOfId: target.id, duplicateOfId: null, status: 'pending', taskId: null,
       uncertainties: [...new Set([...merged.values.uncertainties!, ...(merged.conflicts ? ['补充内容与原事项的时间或地点不同，请作为变更核对'] : [])])] } };
   }
-  const duplicate = normalized.duplicate ?? existing.find(c => candidateFingerprint(c) === candidateFingerprint(values));
+  const duplicate = normalized.duplicate ?? existing.find(c => candidateFingerprint(c) === candidateFingerprint(values)
+    && !candidateDatesConflict(c, values, evidenceSources));
   if (duplicate) {
     const joined = { sourceIds: [...new Set([...duplicate.sourceIds, ...sourceIds])], uncertainties: [...new Set([...duplicate.uncertainties, ...uncertainties])],
       temporalEvidence: [...new Map([...duplicate.temporalEvidence, ...(values.temporalEvidence ?? [])].map(e => [JSON.stringify(e), e])).values()] };

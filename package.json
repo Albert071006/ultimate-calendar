@@ -1,7 +1,7 @@
 {
   "name": "ultimate-calendar",
   "productName": "终极日历",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "description": "本地优先的 Windows 个人计划应用",
   "author": "Albert071006",
@@ -119,6 +119,19 @@
       "target": "nsis",
       "icon": "assets/app-icon.ico",
       "signAndEditExecutable": true
-    }
+    },
+    "extraResources": [
+      {
+        "from": "scripts/wechat",
+        "to": "wechat",
+        "filter": [
+          "**/*.py",
+          "**/LICENSE*",
+          "**/NOTICE*",
+          "**/*.md",
+          "**/*.txt"
+        ]
+      }
+    ]
   }
 }

@@ -18,15 +18,17 @@ export function usePlanner(api: PlannerClient | undefined, host?: HostCapabiliti
     { status: "preview" }
   > | null>(null);
   const [busy, setBusy] = useState(false);
-  const refresh = useCallback(async () => {
+  const readSnapshot = useCallback(async () => {
     if (!api) return;
     const result = await api.snapshot();
     if (result.ok) setSnapshot(result.data);
     else {
       setError(result.error.message);
       setErrorCode(result.error.code);
+      return result.error;
     }
   }, [api]);
+  const refresh = useCallback(async () => { await readSnapshot(); }, [readSnapshot]);
   useEffect(() => {
     if (!api) return;
     void refresh().catch(() => setError("资料服务连接失败，请重试。"));
@@ -62,7 +64,15 @@ export function usePlanner(api: PlannerClient | undefined, host?: HostCapabiliti
         return undefined;
       }
       success?.(result.data);
-      await refresh();
+      // A confirmed operation stays confirmed even when the subsequent snapshot cannot be read.
+      // Returning undefined here would expose a retry button for work that already succeeded.
+      try {
+        const refreshError = await readSnapshot();
+        if (refreshError) setError(`已收到处理结果，但最新资料刷新失败：${refreshError.message}。请刷新核对，不要重复提交。`);
+      } catch (e) {
+        setError(`已收到处理结果，但最新资料刷新失败：${e instanceof Error ? e.message : '资料服务暂不可用'}。请刷新核对，不要重复提交。`);
+        setErrorCode('NETWORK');
+      }
       return result.data;
     } catch (e) {
       setError(e instanceof Error ? e.message : "操作失败，请重试。");

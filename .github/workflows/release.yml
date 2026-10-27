@@ -33,6 +33,24 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Verify offline WeChat reader and media handling
+        run: |
+          python -m pip install -r scripts/wechat/requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/wechat-worker.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/wechat-worker-media.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify optional WeChat setup in an isolated profile
+        shell: pwsh
+        run: |
+          $data = Join-Path $env:RUNNER_TEMP 'wechat-setup-data'
+          ./scripts/wechat/setup.ps1 -Edition Local -PythonPath (Get-Command python).Source -RuntimeDirectory (Join-Path $env:RUNNER_TEMP 'wechat-setup-runtime') -DataDirectory $data
+          $config = Get-Content -LiteralPath (Join-Path $data 'wechat-runtime.json') -Raw | ConvertFrom-Json
+          if (-not (Test-Path -LiteralPath $config.python -PathType Leaf)) { throw 'WeChat setup did not create the expected runtime.' }
       # package builds the renderer and Electron entry points before NSIS.
       - name: Build installer without publishing
         run: npm run package

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { buildCalendar } from '../domain/calendar';
+import { taskScheduleMode } from '../domain/task-scheduling';
 import { readPrivate, writePrivate } from '../remote/private-file';
 import { BlockInputSchema, GoalInputSchema, MutationRequestSchema, SnapshotSchema, TaskInputSchema, type Entity, type MutationRequestInput, type MutationResult, type Snapshot } from '../shared/contracts';
 import { PlanFileSchema, PlanImportConfirmSchema, type PlanFile, type PlanImportPreview, type PlanImportResult, type PlanImportRow } from '../shared/plan-import';
@@ -68,10 +69,33 @@ function detail(plan: PlanFile, item: Item, snapshot: Snapshot): string {
   }
   if (item.kind === 'task') {
     const task = plan.tasks.find(value => value.id === item.id)!;
-    return [task.goalRef ? `目标：${plan.goals.find(value => value.id === task.goalRef)!.title}` : task.goalId && `已有目标：${snapshot.goals.find(value => value.id === task.goalId)?.title ?? '未找到'}`, task.courseId && `课程：${snapshot.courses.find(value => value.id === task.courseId)?.title ?? '未找到'}`, task.deadline && `截止：${task.deadline.date}${task.deadline.time ? ' ' + task.deadline.time : ''}`, task.description, resources(task.resourceRefs)].filter(Boolean).join('；');
+    return [task.goalRef ? `目标：${plan.goals.find(value => value.id === task.goalRef)!.title}` : task.goalId && `已有目标：${snapshot.goals.find(value => value.id === task.goalId)?.title ?? '未找到'}`, task.courseId && `课程：${snapshot.courses.find(value => value.id === task.courseId)?.title ?? '未找到'}`, task.deadline && `截止：${task.deadline.date}${task.deadline.time ? ' ' + task.deadline.time : ''}`, task.scheduleMode === 'multiple' ? '安排多个时段；本次完成与整个任务分开' : '默认单个时段；完成时段同时完成任务', task.description, resources(task.resourceRefs)].filter(Boolean).join('；');
   }
   const block = plan.blocks.find(value => value.id === item.id)!;
   return [`${block.start} 至 ${block.end}`, block.taskRef ? `任务：${plan.tasks.find(value => value.id === block.taskRef)!.title}` : block.taskId && `已有任务：${snapshot.tasks.find(value => value.id === block.taskId)?.title ?? '未找到'}`, block.location, resources(block.resourceRefs)].filter(Boolean).join('；');
+}
+/** Check the final proposed slots without changing the file or its durable receipt fingerprint. */
+function checkScheduleModes(snapshot: Snapshot, plan: PlanFile, rows: PlanImportRow[], entries: Entry[]): void {
+  const groups = new Map<string, typeof plan.blocks>();
+  for (const block of plan.blocks) {
+    const row = rows.find(row => row.kind === 'block' && row.localId === block.id && row.action !== 'update' && row.action !== 'delete');
+    if (row?.state !== 'new' || row.existingId) continue;
+    const savedId = block.taskRef ? entries.find(entry => entry.key === `task:${block.taskRef}`)?.entityId : block.taskId;
+    const key = savedId ? `existing:${savedId}` : block.taskRef ? `task:${block.taskRef}` : null;
+    if (key) groups.set(key, [...(groups.get(key) ?? []), block]);
+  }
+  for (const [key, blocks] of groups) {
+    const localTask = key.startsWith('task:') ? plan.tasks.find(task => key === `task:${task.id}`) : undefined;
+    const id = localTask ? entries.find(entry => entry.key === key)?.entityId : key.slice('existing:'.length);
+    const saved = id ? snapshot.tasks.find(task => task.id === id) : undefined;
+    const mode = saved ? taskScheduleMode(saved, snapshot.blocks) : localTask?.scheduleMode ?? 'single';
+    const existing = id ? snapshot.blocks.filter(block => block.taskId === id && !block.cancelled).length : 0;
+    if (mode === 'multiple' || existing + blocks.length <= 1) continue;
+    const reason = '该任务默认只安排一个时段；多个时段须明确设置 scheduleMode="multiple"。已有部分导入请保留原回执，重新导出上下文后用 v3 明确改为多时段并追加剩余安排';
+    for (const row of rows) if (row.state === 'new' && (row.kind === 'block' && blocks.some(block => block.id === row.localId) || localTask && row.kind === 'task' && row.localId === localTask.id)) {
+      row.state = 'blocked'; row.detail = `${reason}；${row.detail}`;
+    }
+  }
 }
 function conflicts(snapshot: Snapshot, plan: PlanFile, rows: PlanImportRow[], entries: Entry[]): Fact[] {
   const additions = plan.blocks.filter(block => rows.some(row => row.kind === 'block' && row.localId === block.id && row.state === 'new' && !row.existingId));
@@ -229,6 +253,7 @@ export function createPlanImportService(options: Options) {
       const reason = revision.error ?? basis.reason ?? (row.action === 'update' || row.action === 'delete' ? undefined : basis.rows.get(`${row.kind}:${row.localId}`));
       if (reason) { row.state = 'blocked'; row.detail = `${reason}；${row.detail}`; }
     }
+    checkScheduleModes(revision.projected, plan, rows, entries);
     const canVerifyPending = rows.some(row => row.state === 'blocked') && Boolean(pendingProof(plan, scope, snapshot, store, source) || revisionProof(plan, scope, snapshot, store, source));
     const facts = conflicts(revision.projected, plan, rows, entries), token = randomUUID(), expires = Date.now() + 10 * 60_000;
     const view: PlanImportPreview = { token, planId: plan.planId, title: plan.title, expiresAt: new Date(expires).toISOString(), rows, conflicts: facts.map(value => value.message), resources: plan.resources, ...(canVerifyPending ? { canVerifyPending: true } : {}),

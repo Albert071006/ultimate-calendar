@@ -11,7 +11,7 @@ import { useCurrentTime } from '../hooks/useCurrentTime';
 import { PageToolbar } from "./shell/PageToolbar";
 import { InboxList, type Toast } from "./inbox/InboxList";
 import { CandidateDetail, type Decision } from "./inbox/CandidateDetail";
-import { arrival, dayWord } from "./inbox/format";
+import { arrival, dayWord, noticeArrival } from "./inbox/format";
 import "./inbox/Inbox.css";
 import { useMobile } from '../mobile/layout';
 import { MobileSheet } from '../mobile/MobileSheet';
@@ -78,6 +78,8 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
     const value = disposition(candidate);
     return tab === "done" ? value !== "pending" && value !== "snoozed" && (doneFilter === "all" || value === doneFilter) : value === tab;
   });
+  if (tab === "done") items.sort((a, b) => Date.parse(noticeArrival(snapshot, b)) - Date.parse(noticeArrival(snapshot, a))
+    || Date.parse(b.createdAt) - Date.parse(a.createdAt));
   const current = items.find(candidate => candidate.id === selectedId) ?? items[Math.min(fallback, items.length - 1)];
   const quick = tab !== "done";
 

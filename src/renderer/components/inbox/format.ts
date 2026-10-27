@@ -1,7 +1,17 @@
-import { mondayWeekday } from "../../../shared/contracts";
+import { mondayWeekday, type Candidate, type Snapshot } from "../../../shared/contracts";
 import { dayDistance } from "../../../domain/time";
 
 const weekdays = ["一", "二", "三", "四", "五", "六", "日"];
+
+/** Use the same available source for the visible date and chronological ordering. */
+export function noticeSource(snapshot: Snapshot, candidate: Candidate) {
+  return candidate.sourceIds.map(id => snapshot.sources.find(source => source.id === id)).find(Boolean);
+}
+
+export function noticeArrival(snapshot: Snapshot, candidate: Candidate): string {
+  const source = noticeSource(snapshot, candidate);
+  return source?.sentAt ?? source?.importedAt ?? candidate.createdAt;
+}
 
 /** 今天 / 明天 / 昨天 / 周五 (later this week) / 10月27日. */
 export function dayWord(date: string, today: string): string {

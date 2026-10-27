@@ -1,0 +1,3 @@
+# Optional Windows desktop WeChat reader; installed in a dedicated Python environment.
+cryptography==50.0.2
+zstandard==0.25.0
