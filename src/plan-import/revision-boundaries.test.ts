@@ -34,7 +34,7 @@ function fixture() {
   const otherGoalId = seed([{ type: 'create', entity: 'goal', values: { title: '合成无关目标' } }]).changes[0]!.id;
   const courseId = seed([{ type: 'create', entity: 'course', values: { title: '合成关联课程', weekday: 3, startTime: '08:00', endTime: '09:00', firstWeek: 1, lastWeek: 1, termStart: '2030-04-15' } }]).changes[0]!.id;
   const taskId = seed([{ type: 'create', entity: 'task', values: {
-    title: '原阅读任务', description: '原有详细步骤', goalId, courseId, deadline: { date: '2030-04-20', time: '21:00' },
+    title: '原阅读任务', description: '原有详细步骤', scheduleMode: 'multiple', goalId, courseId, deadline: { date: '2030-04-20', time: '21:00' },
     reminders: { enabled: false, leadMinutes: [30], dateOnlyTime: '18:00' },
     resources: [{ id: 'synthetic-guide', kind: 'web', name: '合成讲义', url: 'https://example.com/guide' }],
   } }]).changes[0]!.id;
@@ -70,6 +70,18 @@ async function expectBlocked(f: ReturnType<typeof fixture>, plan: PlanFileInput,
 }
 
 describe('v3 revision boundaries against a real planner', () => {
+  it('requires an explicit mode when deleting a legacy multiple-slot task down to one slot', async () => {
+    const f = fixture();
+    f.repository.transact(state => { updateEntity(state, 'task', f.taskId, { scheduleMode: undefined }); });
+    const plan = { ...f.plan(), updates: [], deletions: [{ id: 'delete-slot', kind: 'block' as const, targetId: f.blockIds[0]!, expectedVersion: 1 }] };
+    await expectBlocked(f, plan, /scheduleMode/);
+    const explicit: PlanFileInput = { ...plan, updates: [{ id: 'keep-multiple', kind: 'task', targetId: f.taskId, expectedVersion: 2, values: { scheduleMode: 'multiple' } }] };
+    const preview = await f.service.preview(explicit);
+    expect(preview.rows.some(row => row.state === 'blocked')).toBe(false);
+    expect(await f.service.confirm({ token: preview.token, allowDeletions: true })).toMatchObject({ status: 'complete', applied: 2 });
+    expect(f.planner.snapshot().tasks.find(task => task.id === f.taskId)).toMatchObject({ scheduleMode: 'multiple', version: 3 });
+    expect((await f.service.preview(explicit)).rows.every(row => row.state === 'existing')).toBe(true);
+  });
   it('blocks a target version mismatch even with a fresh unchanged basis', async () => {
     const f = fixture(), plan = f.plan(); plan.updates![0]!.expectedVersion++;
     await expectBlocked(f, plan, /版本/);

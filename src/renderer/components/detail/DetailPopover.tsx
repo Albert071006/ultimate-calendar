@@ -17,12 +17,14 @@ import "./DetailPopover.css";
 import { useMobile } from '../../mobile/layout';
 import { MobileSheet } from '../../mobile/MobileSheet';
 import { ResourceSection } from '../resources/ResourcePanel';
+import { taskScheduleMode } from '../../../domain/task-scheduling';
 
 export interface DetailActions {
   edit: () => void;
   editTask: (id: string) => void;
   schedule: (id: string, blockId?: string) => void;
   scheduleRecurring?: (id: string) => void;
+  scheduleAdditional?: (id: string) => void;
   removeTask: (id: string) => void;
   exportGoal?: (id: string) => void;
 }
@@ -115,7 +117,9 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
 
   if (selection.entity === "block") {
     const block = value as Block, task = block.taskId ? snapshot.tasks.find(t => t.id === block.taskId) : undefined;
-    const taskWork = block.kind === "work" && !!task;
+    const multiple = task && taskScheduleMode(task, snapshot.blocks) === 'multiple';
+    const singleTask = task && !multiple;
+    const completed = singleTask ? block.completed && task.status === 'done' : block.completed;
     const color = task ? belongingColor(task, snapshot) : null;
     kind = block.kind === "work" ? "执行时段" : "固定活动";
     swatch = color ? { "--wf": workFill(color), "--c": color } as CSSProperties : undefined;
@@ -126,19 +130,19 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
       {task && <><dt>任务</dt><dd><button className="a2-pop-link" onClick={() => actions.editTask(task.id)}>{task.title}</button></dd></>}
       {belonging(task)}
       <dt>提醒</dt><dd>{reminderLabel(block.reminders)}</dd>
-      {taskWork ? <>
+      {multiple ? <>
         <dt>时段状态</dt><dd>{block.cancelled ? "已取消" : block.completed ? "已完成" : "未完成"}</dd>
         <dt>任务状态</dt><dd>{task!.status === "done" ? "已完成" : "未完成"}</dd>
-      </> : (block.completed || block.cancelled) && <><dt>状态</dt><dd>{block.cancelled ? "已取消" : "已完成"}</dd></>}
+      </> : <><dt>状态</dt><dd>{block.cancelled ? "已取消" : completed ? "已完成" : "未完成"}</dd></>}
     </dl>;
     const remove = () => void ui.mutate([block.recurrence
       ? { type: "cancelRecurringEvent", id: block.id, expectedVersion: block.version, scope: "single" }
       : { type: "delete", entity: "block", id: block.id, expectedVersion: block.version }]);
     footer = <>
       {!block.cancelled && <button className="ui-btn sm dark" disabled={ui.busy}
-        onClick={() => void ui.mutate([{ type: "finishBlock", id: block.id, expectedVersion: block.version, completed: !block.completed }])}>
-        <Check aria-hidden="true" />{taskWork ? block.completed ? "恢复本次未完成" : "完成本次时段" : block.completed ? "恢复未完成" : "完成"}</button>}
-      {taskWork && task && task.status !== "done" && <button className="ui-btn sm" disabled={ui.busy}
+        onClick={() => void ui.mutate([{ type: "finishBlock", id: block.id, expectedVersion: block.version, completed: !completed }])}>
+        <Check aria-hidden="true" />{multiple ? completed ? "恢复本次未完成" : "完成本次时段" : completed ? "恢复未完成" : singleTask ? "完成任务" : "完成"}</button>}
+      {multiple && task && task.status !== "done" && <button className="ui-btn sm" disabled={ui.busy}
         onClick={() => void ui.mutate([{ type: "finishTask", id: task.id, expectedVersion: task.version, completed: true }])}>完成整个任务</button>}
       {editButton}
       <span className="spacer" />
@@ -163,6 +167,7 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
     footer = editButton;
   } else if (selection.entity === "task") {
     const task = value as Task;
+    const multiple = taskScheduleMode(task, snapshot.blocks) === 'multiple';
     const arrangements = taskArrangements(snapshot, task.id);
     const timing = !arrangements.length ? taskNoticeTiming(snapshot, task.id) : null;
     const attention = task.status === "open" ? taskAttention(snapshot, task, now) : null;
@@ -196,6 +201,9 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
         onClick={() => void ui.mutate([{ type: "finishTask", id: task.id, expectedVersion: task.version, completed: true }])}><Check aria-hidden="true" />完成任务</button>}
       {editButton}
       {!arrangements.length && <button className="ui-btn sm" onClick={() => actions.schedule(task.id)}>{timing ? "安排活动" : "安排执行时段"}</button>}
+      {task.status !== "done" && arrangements.length > 0 && (multiple && actions.scheduleAdditional
+        ? <button className="ui-btn sm" onClick={() => actions.scheduleAdditional!(task.id)}>再安排一个时段</button>
+        : !multiple && <button className="ui-btn sm ghost" onClick={() => actions.editTask(task.id)}>设置多时段</button>)}
       {task.status !== "done" && actions.scheduleRecurring && <button className="ui-btn sm ghost" onClick={() => actions.scheduleRecurring!(task.id)}>重复安排</button>}
       <span className="spacer" />
       <button className="ui-btn sm ghost icon" disabled={ui.busy} aria-label={`移除 ${task.title}`} title="移除任务" onClick={() => actions.removeTask(task.id)}><Trash2 aria-hidden="true" /></button>

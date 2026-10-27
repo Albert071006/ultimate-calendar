@@ -40,10 +40,11 @@ describe('durable planner rules', () => {
     expect(p.snapshot().tasks).toHaveLength(1); expect(p.snapshot().blocks).toHaveLength(0);
     expect(buildCalendar(p.snapshot(), '2026-10-23', '2026-10-23', true)[0]).toMatchObject({ start: null, busy: false, date: '2026-10-23' });
   });
-  it('accepts a known start-only event as a default 30-minute slot and keeps task independent of work completion', () => {
+  it('accepts a known start-only event as a default 30-minute slot and keeps explicitly split work independent', () => {
     const { repository: r, planner: p, mutate } = setup(); const c = candidate(r, seed(r).id, { eventStart: '2026-10-24T14:00:00+08:00' });
     expect(mutate({ type: 'acceptCandidate', id: c.id, expectedVersion: 1 })).toMatchObject({ status: 'applied', message: '已接受，活动已加入日历：2026-10-24 14:00（默认安排30分钟，可调整），可撤销' });
     const task = p.snapshot().tasks[0]!;
+    mutate({ type: 'update', entity: 'task', id: task.id, expectedVersion: task.version, values: { scheduleMode: 'multiple' } });
     mutate({ type: 'create', entity: 'block', values: { title: '工作1', kind: 'work', taskId: task.id, start: '2026-10-23T10:00:00+08:00', end: '2026-10-23T11:00:00+08:00' } });
     mutate({ type: 'create', entity: 'block', values: { title: '工作2', kind: 'work', taskId: task.id, start: '2026-10-23T12:00:00+08:00', end: '2026-10-23T13:00:00+08:00' } });
     const b = p.snapshot().blocks.find(x => x.kind === 'work')!; mutate({ type: 'finishBlock', id: b.id, expectedVersion: 1 });
@@ -108,6 +109,16 @@ describe('durable planner rules', () => {
     mutate({ type: 'create', entity: 'block', values: { title: '另一窗口已安排', kind: 'event', taskId: task.id, start: '2026-10-23T15:30:00+08:00', end: null } });
     const before = p.snapshot(); expect(confirm(preview).status).toBe('clarification'); expect(mutate(request)).toMatchObject({ status: 'clarification', message: '任务已有固定活动，请查看现有安排，不能重复添加' }); expect(p.snapshot()).toEqual(before);
   });
+  it.each(['acceptCandidate', 'scheduleTaskEvent'] as const)('requires multiple mode before %s adds an event beside an existing work slot', type => {
+    const { repository: r, planner: p, mutate } = setup(); const source = seed(r); const original = candidate(r, source.id);
+    mutate({ type: 'acceptCandidate', id: original.id, expectedVersion: 1 }); const task = p.snapshot().tasks[0]!;
+    mutate({ type: 'create', entity: 'block', values: { title: task.title, kind: 'work', taskId: task.id, start: '2026-10-22T10:00:00+08:00', end: '2026-10-22T11:00:00+08:00' } });
+    const revision = candidate(r, source.id, { revisionOfId: original.id, eventStart: '2026-10-23T14:00:00+08:00' });
+    const before = p.snapshot();
+    const request: MutationInput = type === 'acceptCandidate' ? { type, id: revision.id, expectedVersion: 1 }
+      : { type, id: task.id, expectedVersion: task.version, values: { title: task.title, kind: 'event', taskId: task.id, start: '2026-10-23T14:00:00+08:00', end: null } };
+    expect(mutate(request)).toMatchObject({ status: 'clarification', message: expect.stringContaining('多个时段') }); expect(p.snapshot()).toEqual(before);
+  });
   it('keeps pending and ignored decisions outside busy time', () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-23T12:00:00+08:00'));
     const { repository: r, planner: p, mutate } = setup(); const c = candidate(r, seed(r).id);
@@ -147,7 +158,7 @@ describe('durable planner rules', () => {
     mutate({ type: 'acceptCandidate', id: notice.id, expectedVersion: 1 }); const task = p.snapshot().tasks[0]!;
     const duplicate = candidate(r, source.id, { duplicateOfId: notice.id }); mutate({ type: 'acceptCandidate', id: duplicate.id, expectedVersion: 1 });
     mutate({ type: 'create', entity: 'goal', values: { title: '保留目标' } }); const goal = p.snapshot().goals[0]!;
-    mutate({ type: 'update', entity: 'task', id: task.id, expectedVersion: task.version, values: { status: 'done', goalId: goal.id } });
+    mutate({ type: 'update', entity: 'task', id: task.id, expectedVersion: task.version, values: { status: 'done', goalId: goal.id, scheduleMode: 'multiple' } });
     mutate({ type: 'create', entity: 'block', values: { title: '任务执行', kind: 'work', taskId: task.id, start: '2026-10-23T10:00:00+08:00', end: '2026-10-23T11:00:00+08:00', completed: true } });
     mutate({ type: 'create', entity: 'block', values: { title: '独立安排', kind: 'event', start: '2026-10-25T16:00:00+08:00', end: null } });
     const before = p.snapshot();
@@ -279,7 +290,7 @@ describe('durable planner rules', () => {
     const { repository: r, planner: p, mutate, confirm } = setup(); const source = seed(r); const c = candidate(r, source.id, { eventStart: '2026-10-24T14:00:00+08:00', eventEnd: '2026-10-24T15:00:00+08:00' });
     mutate({ type: 'acceptCandidate', id: c.id, expectedVersion: 1 }); const t = p.snapshot().tasks[0]!;
     mutate({ type: 'create', entity: 'goal', values: { title: 'goal' } }); const g = p.snapshot().goals[0]!;
-    mutate({ type: 'update', entity: 'task', id: t.id, expectedVersion: 1, values: { goalId: g.id, status: 'done' } });
+    mutate({ type: 'update', entity: 'task', id: t.id, expectedVersion: 1, values: { goalId: g.id, status: 'done', scheduleMode: 'multiple' } });
     mutate({ type: 'create', entity: 'block', values: { title: 'session', kind: 'work', taskId: t.id, start: '2026-10-23T10:00:00+08:00', end: '2026-10-23T11:00:00+08:00' } });
     const revision = candidate(r, source.id, { revisionOfId: c.id, title: '延期报告', deadline: { date: '2026-10-30', time: null }, eventStart: '2026-10-25T14:00:00+08:00', eventEnd: null });
     const preview = mutate({ type: 'acceptCandidate', id: revision.id, expectedVersion: 1 }); expect(preview.status).toBe('preview'); expect(p.snapshot().tasks[0]!.title).toBe('报告');

@@ -118,7 +118,9 @@ export type Candidate = z.infer<typeof CandidateSchema>;
 export type CandidateInput = z.input<typeof CandidateInputSchema>;
 const taskValue = z.strictObject({ title: TitleSchema, description: text.default(''), status: z.enum(['open', 'done']).default('open'),
   deadline: DeadlineSchema.nullable().default(null), goalId: IdSchema.nullable().default(null), candidateId: IdSchema.nullable().default(null), reminders: reminder,
-  courseId: IdSchema.nullable().default(null), resources: ResourceReferencesSchema.optional() });
+  courseId: IdSchema.nullable().default(null), resources: ResourceReferencesSchema.optional(),
+  // Do not add a default: legacy backups and pending request fingerprints retain their exact shape.
+  scheduleMode: z.enum(['single', 'multiple']).optional() });
 export const TaskInputSchema = taskValue;
 export const TaskSchema = taskValue.extend(metadata);
 export type Task = z.infer<typeof TaskSchema>;

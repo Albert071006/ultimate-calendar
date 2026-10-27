@@ -43,6 +43,46 @@ async function setup(directory?: string) {
 const goalInput = (title = '虚构目标') => ({ operationId: 'goal-business-1', origin: 'manual', mutations: [{ type: 'create', entity: 'goal', values: { title } }] });
 
 describe('remote HTTP boundary', () => {
+  it('shares single-slot completion atomically across devices and keeps explicit multi-slot mode after restart', async () => {
+    let fixture = await setup();
+    const first = await fixture.pair(), second = await fixture.pair();
+    let serial = 0;
+    const rpc = async (method: string, input?: unknown, device = first, requestId = `slot-http-${++serial}`) => {
+      const response = await fixture.call(`/api/v1/rpc/${method}`, { method: 'POST', headers: device.headers,
+        body: JSON.stringify({ requestId, identity: device.session.identity, input }) });
+      expect(response.status).toBe(200); const result = await response.json(); expect(result.ok).toBe(true); return result.data;
+    };
+    const mutate = (mutations: unknown[]) => rpc('mutate', { operationId: `slot-operation-${++serial}`, origin: 'manual', confirmed: false, mutations });
+    await mutate([{ type: 'create', entity: 'task', values: { title: '合成单时段任务' } }]);
+    const taskId = fixture.service.snapshot().tasks[0]!.id;
+    const slot = (hour: string) => ({ title: '合成执行时段', kind: 'work', taskId, start: `2040-01-01T${hour}:00:00+08:00`, end: `2040-01-01T${hour}:30:00+08:00` });
+    await mutate([{ type: 'create', entity: 'block', values: slot('09') }]);
+    const block = fixture.service.snapshot().blocks[0]!;
+    const input = { operationId: 'slot-completion-once', origin: 'manual', confirmed: false,
+      mutations: [{ type: 'finishBlock', id: block.id, expectedVersion: block.version, completed: true }] };
+    const completed = await rpc('mutate', input, first, 'slot-completion-request');
+    expect(completed.status).toBe('applied');
+    const remoteSnapshot = await rpc('snapshot', undefined, second);
+    expect(remoteSnapshot.tasks[0].status).toBe('done'); expect(remoteSnapshot.blocks[0].completed).toBe(true);
+    expect(await rpc('mutate', input, first, 'slot-completion-request')).toEqual(completed);
+    expect(fixture.service.snapshot().tasks).toEqual(remoteSnapshot.tasks);
+    expect((await rpc('undo', completed.transactionId)).status).toBe('applied');
+    expect(fixture.service.snapshot().tasks[0]!.status).toBe('open'); expect(fixture.service.snapshot().blocks[0]!.completed).toBe(false);
+    expect((await mutate([{ type: 'create', entity: 'block', values: slot('10') }])).status).toBe('clarification');
+    expect(fixture.service.snapshot().blocks).toHaveLength(1);
+    await mutate([{ type: 'update', entity: 'task', id: taskId, expectedVersion: fixture.service.snapshot().tasks[0]!.version, values: { scheduleMode: 'multiple' } }]);
+    expect((await mutate([{ type: 'create', entity: 'block', values: slot('10') }])).status).toBe('applied');
+    const current = fixture.service.snapshot().blocks[0]!;
+    await mutate([{ type: 'finishBlock', id: current.id, expectedVersion: current.version, completed: true }]);
+    expect(fixture.service.snapshot().tasks[0]!.status).toBe('open');
+    const beforeRestart = fixture.service.snapshot();
+    const exported = JSON.parse((await rpc('backupExportData')).content);
+    expect(exported.planner.entities.task[0].scheduleMode).toBe('multiple');
+    await fixture.close(); fixture = await setup(fixture.folder);
+    const restored = await rpc('snapshot', undefined, second);
+    expect(restored.tasks).toEqual(beforeRestart.tasks); expect(restored.blocks).toEqual(beforeRestart.blocks);
+  });
+
   it('requires pairing, exact host/origin and CSRF; serves a narrow method allowlist', async () => {
     const { call, pair } = await setup();
     expect(await (await call('/api/v1/session')).json()).toEqual({ paired: false });

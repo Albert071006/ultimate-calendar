@@ -98,7 +98,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
     setSelected(null);
     setEditor(target);
   };
-  const { schedule, scheduleTask, scheduleRecurringTask, removeTask } = taskActionHandlers({ snapshot, ui, select: setSelected, editRecord });
+  const { schedule, scheduleTask, scheduleRecurringTask, scheduleAdditionalTask, removeTask } = taskActionHandlers({ snapshot, ui, select: setSelected, editRecord });
   const editSelected = () => {
     if (selected && ["task", "block", "goal", "course", "candidate"].includes(selected.entity))
       editRecord({ ...selected, entity: selected.entity as EditorTarget["entity"] });
@@ -108,7 +108,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
     setSourceId(null);
     openMe("ai");
   };
-  const taskActions = { select, editTask: (id: string) => editRecord({ entity: 'task', id }), schedule: scheduleTask, scheduleRecurring: scheduleRecurringTask, removeTask };
+  const taskActions = { select, editTask: (id: string) => editRecord({ entity: 'task', id }), schedule: scheduleTask, scheduleRecurring: scheduleRecurringTask, scheduleAdditional: scheduleAdditionalTask, removeTask };
   const exportGoal = planExportHost ? (id: string) => {
     const goal = snapshot?.goals.find(value => value.id === id);
     if (goal) { setSelected(null); setPlanExportGoal({ id: goal.id, title: goal.title }); }

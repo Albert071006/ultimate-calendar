@@ -5,6 +5,7 @@ import { taskAttention } from "../../task-rail";
 import { belongingColor } from "../../../domain/belonging";
 import { MoreMenu, type MenuItem } from "../shell/MoreMenu";
 import "./TaskRow.css";
+import { taskScheduleMode } from '../../../domain/task-scheduling';
 
 export interface TaskActions {
   /** Shows the task details; falls back to editing where no details are available. */
@@ -12,6 +13,7 @@ export interface TaskActions {
   editTask: (id: string) => void;
   schedule: (id: string, blockId?: string) => void;
   scheduleRecurring?: (id: string) => void;
+  scheduleAdditional?: (id: string) => void;
   removeTask: (id: string) => void;
 }
 
@@ -37,6 +39,8 @@ export function TaskRow({ task, snapshot, ui, now, today, actions }: {
   const menu: MenuItem[] = [
     ...(attention ? [{ label: arrangements.length ? "查看安排" : "安排", onSelect: () => actions.schedule(task.id) }] : []),
     { label: "编辑", onSelect: () => actions.editTask(task.id) },
+    ...(task.status !== 'done' && arrangements.length > 0 && actions.scheduleAdditional && taskScheduleMode(task, snapshot.blocks) === 'multiple'
+      ? [{ label: '再安排一个时段', onSelect: () => actions.scheduleAdditional!(task.id) }] : []),
     ...(task.status !== "done" && actions.scheduleRecurring ? [{ label: "重复安排", onSelect: () => actions.scheduleRecurring!(task.id) }] : []),
     { label: "移除", danger: true, disabled: ui.busy, ariaLabel: `移除 ${task.title}`, onSelect: () => actions.removeTask(task.id) },
   ];

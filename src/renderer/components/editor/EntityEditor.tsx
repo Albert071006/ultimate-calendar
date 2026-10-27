@@ -29,6 +29,7 @@ import { courseIsCurrent } from '../../../domain/palette';
 import { findRecord } from '../detail/records';
 import { ResourceFields, ResourceSection } from '../resources/ResourcePanel';
 import type { ResourceReference } from '../../../shared/resources';
+import { taskScheduleMode } from '../../../domain/task-scheduling';
 function Reminders({ value }: { value?: ReminderConfig }) {
   const mobile = useMobile();
   return (
@@ -128,6 +129,8 @@ export function EntityEditor({
   const [frequency, setFrequency] = useState<'none' | 'weekly' | 'biweekly' | 'odd-weeks' | 'even-weeks'>(target.recurring ? 'weekly' : 'none');
   const [selectedTaskId, setSelectedTaskId] = useState(block?.taskId ?? target.draft?.taskId ?? '');
   const schedulingTask = snapshot.tasks.find(t => t.id === selectedTaskId);
+  const additionalToSingle = entity === 'block' && schedulingTask && taskScheduleMode(schedulingTask, snapshot.blocks) === 'single'
+    && snapshot.blocks.some(value => value.taskId === schedulingTask.id && !value.cancelled && value.id !== saved?.id);
   const availableTasks = selectRailTasks(snapshot, now);
   const currentTaskId = block?.taskId ?? target.draft?.taskId;
   const currentTask = currentTaskId ? snapshot.tasks.find(t => t.id === currentTaskId) : undefined;
@@ -237,6 +240,7 @@ export function EntityEditor({
           title,
           description: s("description"),
           status: s("status"),
+          scheduleMode: data.has('multipleSlots') ? 'multiple' : 'single',
           deadline: s("deadlineDate")
             ? { date: s("deadlineDate"), time: s("deadlineTime") || null }
             : null,
@@ -386,11 +390,15 @@ export function EntityEditor({
             ? { scope, occurrenceDate: s("occurrenceDate") || undefined }
             : {}),
         } as MutationInput;
-      else if (entity === 'block' && target.draft?.noticeTaskVersion && linkedTask?.candidateId &&
+      else if (entity === 'block' && !additionalToSingle && target.draft?.noticeTaskVersion && linkedTask?.candidateId &&
                s('kind') === 'event' && s('taskId') === linkedTask.id) {
         mutation = { type: 'scheduleTaskEvent', id: linkedTask.id, expectedVersion: target.draft.noticeTaskVersion, values } as MutationInput;
       } else mutation = { type: "create", entity, values } as MutationInput;
-      const result = await ui.mutate([mutation]);
+      if (additionalToSingle && !data.has('allowMultipleSlots')) throw new Error('此任务已有一个时段。请调整原时段，或勾选“为此任务安排多个时段”后再添加。');
+      const result = await ui.mutate(additionalToSingle && schedulingTask ? [
+        { type: 'update', entity: 'task', id: schedulingTask.id, expectedVersion: schedulingTask.version, values: { scheduleMode: 'multiple' } },
+        mutation,
+      ] : [mutation]);
       if (result && result.status !== "clarification") onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : "请校对输入");
@@ -476,6 +484,12 @@ export function EntityEditor({
             />
           </label>
         </div>
+      )}
+      {entity === "task" && (
+        <label className="check">
+          <input type="checkbox" name="multipleSlots" defaultChecked={Boolean(task && taskScheduleMode(task, snapshot.blocks) === 'multiple')} />
+          安排多个时段
+        </label>
       )}
       {entity === "task" && (
         <div className="form-grid" data-more="">
@@ -575,7 +589,7 @@ export function EntityEditor({
             </select>
           </label>}
           {repeating ? <>
-            <p className="hint">将为所选任务创建固定活动，保存后先预览每次日期。每两周从开始日期当天或之后的首个所选星期开始，每隔14天重复；学期单双周按第一教学周计算。</p>
+            <p className="hint">重复安排会开启此任务的多时段模式，保存后先预览每次日期。每两周从开始日期当天或之后的首个所选星期开始，每隔14天重复；学期单双周按第一教学周计算。</p>
             <div className="form-grid">
               <label>开始日期<input type="date" name="fromDate" required defaultValue={recurrenceFrom} /></label>
               <label>结束日期<input type="date" name="untilDate" required defaultValue={recurrenceUntil} /></label>
@@ -635,8 +649,17 @@ export function EntityEditor({
               </select>
             </label>
           </div>
+          {!repeating && additionalToSingle && <label className="check">
+            <input type="checkbox" name="allowMultipleSlots" key={selectedTaskId} />
+            为此任务安排多个时段
+          </label>}
           {!repeating && <p className="hint">
-            {series ? '仅改开始时间时，每次活动保留原时长；修改结束时间会为所选范围设置相同的新时长。关联任务保持不变。' : '可直接修改结束时间选择时长。完成此时段不会自动完成任务；重叠将先预览。'}
+            {series ? '仅改开始时间时，每次活动保留原时长；修改结束时间会为所选范围设置相同的新时长。关联任务保持不变。'
+              : additionalToSingle ? '此任务已有安排；勾选后保留原时段并新增本次，否则请调整原时段。'
+                : schedulingTask ? taskScheduleMode(schedulingTask, snapshot.blocks) === 'multiple'
+                  ? '完成本次时段后，整个任务仍可继续安排；全部工作结束时再完成任务。'
+                  : '默认一个任务一个时段，完成或恢复时段会同步任务状态。'
+                : '可直接修改结束时间选择时长；重叠将先预览。'}
           </p>}
         </>
       )}
