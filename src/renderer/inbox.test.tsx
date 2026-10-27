@@ -1,21 +1,22 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { CandidateSchema, SnapshotSchema, SourceSchema, type CandidateInput, type Settings } from '../shared/contracts';
+import { CandidateSchema, SnapshotSchema, SourceSchema, type CandidateInput, type Candidate, type Settings, type Source } from '../shared/contracts';
 import type { HostCapabilities } from '../shared/client';
 import { Inbox } from './components/Inbox';
 import type { PlannerUI } from './hooks/usePlanner';
+import { MobileProvider } from './mobile/layout';
 
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 const now = '2026-10-23T12:00:00+08:00';
-const make = (id: string, extra: Partial<CandidateInput> = {}) => CandidateSchema.parse({ id, title: id, version: 1, createdAt: now, updatedAt: now, sourceIds: ['source'], ...extra });
-function view(candidates: ReturnType<typeof make>[], settings: Partial<Settings> = {}, host?: HostCapabilities) {
+const make = (id: string, extra: Partial<CandidateInput & Pick<Candidate, 'createdAt' | 'updatedAt'>> = {}) => CandidateSchema.parse({ id, title: id, version: 1, createdAt: now, updatedAt: now, sourceIds: ['source'], ...extra });
+function view(candidates: ReturnType<typeof make>[], settings: Partial<Settings> = {}, host?: HostCapabilities, options: { mobile?: boolean; sources?: Source[] } = {}) {
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date(now));
-  const snapshot = SnapshotSchema.parse({ schemaVersion: 1, sources: [SourceSchema.parse({ id: 'source', version: 1, createdAt: now, updatedAt: now, kind: 'text', text: '保留原通知', label: '合成通知群', sentAt: '2026-10-23T10:42:00+08:00', importedAt: now })], candidates, tasks: [], blocks: [], goals: [], courses: [], courseExceptions: [], preferences: [], feedback: [], settings, journal: [], tokenUsage: [], keyStatus: { configured: false, sessionOnly: false } });
+  const snapshot = SnapshotSchema.parse({ schemaVersion: 1, sources: options.sources ?? [SourceSchema.parse({ id: 'source', version: 1, createdAt: now, updatedAt: now, kind: 'text', text: '保留原通知', label: '合成通知群', sentAt: '2026-10-23T10:42:00+08:00', importedAt: now })], candidates, tasks: [], blocks: [], goals: [], courses: [], courseExceptions: [], preferences: [], feedback: [], settings, journal: [], tokenUsage: [], keyStatus: { configured: false, sessionOnly: false } });
   const mutate = vi.fn(async (_mutations: unknown[]) => ({ status: 'applied', transactionId: 'tx-1', message: '已保存' }));
   const undo = vi.fn(async (_id?: string) => {}), edit = vi.fn(), openSource = vi.fn();
   const ui = { busy: false, mutate, undo, notice: '', error: '' } as unknown as PlannerUI;
-  const result = render(<Inbox snapshot={snapshot} ui={ui} select={() => {}} edit={edit} importMessage={() => {}} openSource={openSource} host={host} />);
+  const result = render(<MobileProvider mobile={options.mobile ?? false}><Inbox snapshot={snapshot} ui={ui} select={() => {}} edit={edit} importMessage={() => {}} openSource={openSource} host={host} /></MobileProvider>);
   return { snapshot, mutate, undo, edit, openSource, ...result };
 }
 const list = () => screen.getByRole('region', { name: '通知列表' });
@@ -110,6 +111,41 @@ describe('notice detail', () => {
 });
 
 describe('tabs and archive', () => {
+  it.each([false, true])('orders processed notices and each filter newest first without reordering pending or saved data (mobile=%s)', mobile => {
+    const source = (id: string, sentAt: string | null, importedAt = now) => SourceSchema.parse({
+      id, version: 1, createdAt: now, updatedAt: now, kind: 'text', text: '合成通知', label: id, sentAt, importedAt,
+    });
+    const candidates = [
+      make('旧通知最近处理', { status: 'accepted', sourceIds: ['old'], updatedAt: now }),
+      make('待判断原先第一条', { sourceIds: ['old'] }),
+      make('缺失来源回退创建时间', { status: 'accepted', sourceIds: ['missing'], createdAt: '2026-10-20T09:00:00+08:00' }),
+      make('没有发送时间使用导入时间', { status: 'ignored', sourceIds: ['imported'], createdAt: '2026-10-18T09:00:00+08:00' }),
+      make('最新通知', { status: 'ignored', sourceIds: ['missing', 'new'], createdAt: '2026-10-18T09:00:00+08:00' }),
+      make('待判断原先第二条', { sourceIds: ['new'] }),
+      make('较新的过期通知', { sourceIds: ['new'], deadline: { date: '2026-10-22', time: '09:00' } }),
+      make('较旧的过期通知', { sourceIds: ['old'], deadline: { date: '2026-10-17', time: null } }),
+    ];
+    const originalOrder = candidates.map(candidate => candidate.id);
+    const f = view(candidates, {}, undefined, { mobile, sources: [
+      source('old', '2026-10-17T09:00:00+08:00'), source('new', '2026-10-22T09:00:00+08:00'),
+      source('imported', null, '2026-10-21T09:00:00+08:00'),
+    ] });
+    const order = () => [...list().querySelectorAll('[data-candidate-id]')].map(element => element.getAttribute('data-candidate-id'));
+    expect(order()).toEqual(['待判断原先第一条', '待判断原先第二条']);
+    tab(/^已处理/);
+    expect(order()).toEqual(['较新的过期通知', '最新通知', '没有发送时间使用导入时间', '缺失来源回退创建时间', '旧通知最近处理', '较旧的过期通知']);
+    for (const [filter, expected] of [
+      ['已接受', ['缺失来源回退创建时间', '旧通知最近处理']],
+      ['已忽略', ['最新通知', '没有发送时间使用导入时间']],
+      ['已过期', ['较新的过期通知', '较旧的过期通知']],
+    ] as const) {
+      fireEvent.click(screen.getByRole('button', { name: filter }));
+      expect(order()).toEqual(expected);
+    }
+    expect(f.snapshot.candidates.map(candidate => candidate.id)).toEqual(originalOrder);
+    expect(f.mutate).not.toHaveBeenCalled();
+  });
+
   it('counts open and postponed notices and files expired ones under processed without deciding for the user', () => {
     const f = view([
       make('已截止候选', { deadline: { date: '2026-10-22', time: null } }), make('仍可判断'),

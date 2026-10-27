@@ -1,6 +1,6 @@
 import { Check, X } from "lucide-react";
 import type { Candidate, Snapshot } from "../../../shared/contracts";
-import { arrival, dayWord } from "./format";
+import { arrival, dayWord, noticeArrival, noticeSource } from "./format";
 import { useMobile } from '../../mobile/layout';
 import { dayDistance } from "../../../domain/time";
 
@@ -24,9 +24,9 @@ function TimeLine({ candidate, today }: { candidate: Candidate; today: string })
 }
 
 export function sourceLine(snapshot: Snapshot, candidate: Candidate, today: string, missingLabel = '原文已删除') {
-  const source = candidate.sourceIds.map(id => snapshot.sources.find(value => value.id === id)).find(Boolean);
+  const source = noticeSource(snapshot, candidate);
   if (!source) return { label: missingLabel, at: "" };
-  return { label: source.label || (source.kind === "image" ? "截图" : "粘贴的消息"), at: arrival(source.sentAt ?? source.importedAt, today) };
+  return { label: source.label || (source.kind === "image" ? "截图" : "粘贴的消息"), at: arrival(noticeArrival(snapshot, candidate), today) };
 }
 
 export function InboxList({ snapshot, items, selectedId, today, quick, busy, select, decide, toast, undo }: {
