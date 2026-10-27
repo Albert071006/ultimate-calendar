@@ -24,6 +24,10 @@ import xml.etree.ElementTree as ET
 MAX_LINE = 16384
 MAX_TEXT = 990000
 
+_media_spec = importlib.util.spec_from_file_location('calendar_wechat_local_media', Path(__file__).parent / 'local_media.py')
+local_media = importlib.util.module_from_spec(_media_spec)
+_media_spec.loader.exec_module(local_media)
+
 class ReaderError(Exception):
     def __init__(self, code, message):
         super().__init__(message)
@@ -65,12 +69,28 @@ def strict_rows(tables, cursor, limit, shard_label):
     return rows[:limit], len(rows) > limit
 
 def xml_root(value):
-    if not isinstance(value, str) or len(value) > MAX_TEXT or '<!DOCTYPE' in value.upper() or '<!ENTITY' in value.upper():
-        return None
+    return local_media.parse_xml(value)
+
+def message_identity(row):
+    server_id = row['server_id']
+    return 's:' + str(server_id) if server_id and str(server_id) != '0' else 'l:' + hashlib.sha256(json.dumps([row['shard'], row['local_id'], row['create_time']], separators=(',', ':')).encode()).hexdigest()
+
+
+def media_locator(row):
+    return 'wm1:' + base64.urlsafe_b64encode(json.dumps([row['shard'], row['local_id']], separators=(',', ':')).encode()).decode()
+
+
+def parse_media_locator(value):
     try:
-        return ET.fromstring(value)
-    except ET.ParseError:
-        return None
+        if not isinstance(value, str) or not value.startswith('wm1:') or len(value) > 500:
+            raise ValueError()
+        decoded = json.loads(base64.b64decode(value[4:], altchars=b'-_', validate=True))
+        if not isinstance(decoded, list) or len(decoded) != 2 or not isinstance(decoded[0], str) or not re.fullmatch(r'message__message_\d{1,10}\.db', decoded[0]) or type(decoded[1]) is not int or not 0 < decoded[1] <= 9223372036854775807:
+            raise ValueError()
+        return tuple(decoded)
+    except (ValueError, TypeError, UnicodeError):
+        raise ReaderError('VALIDATION', '微信附件来源标识无效') from None
+
 
 def normalize_row(db, row, maps, group_id, names):
     message = db._msg_row_to_dict(row, maps)
@@ -79,7 +99,8 @@ def normalize_row(db, row, maps, group_id, names):
     content = message.get('content') or ''
     if not isinstance(content, str):
         content = '[暂不支持的消息]'
-    # Cards and references may contain readable titles; media is never presented as decoded.
+    attachment = local_media.attachment_description(row['local_type'], content)
+    # Never send original media XML (which can include decryption keys) to the calendar.
     if raw_type != 1:
         root = xml_root(content)
         if root is not None:
@@ -87,9 +108,11 @@ def normalize_row(db, row, maps, group_id, names):
             content = '\n'.join(v for v in titles if v) or ''
         elif content.lstrip().startswith('<'):
             content = ''
-        if raw_type in (3, 34, 43, 49) or not content:
+        if not attachment and (raw_type in (3, 34, 43, 49) or not content):
             content = '\n'.join(filter(None, [content, f'[{message.get("type", "附件")}：当前只读采集未读取附件内容，请在微信查看]']))
-    segments = [{'type': 'text', 'data': {'text': content[:MAX_TEXT]}}]
+    segments = [{'type': 'text', 'data': {'text': content[:MAX_TEXT]}}] if content else []
+    if attachment:
+        segments.append({'type': attachment['kind'], 'data': {'file': media_locator(row), 'name': attachment['name'], 'size': attachment['size']}})
     source = row['source']
     if isinstance(source, bytes):
         source = source.decode('utf-8', errors='replace')
@@ -98,9 +121,7 @@ def normalize_row(db, row, maps, group_id, names):
         for wxid in (root.findtext('.//atuserlist') or '').split(',')[:100]:
             if re.fullmatch(r'[A-Za-z0-9_@.-]{1,180}', wxid):
                 segments.append({'type': 'at', 'data': {'wechat': 'all' if wxid == 'notify@all' else 'wechat:' + wxid}})
-    server_id = row['server_id']
-    message_id = 's:' + str(server_id) if server_id and str(server_id) != '0' else 'l:' + hashlib.sha256(json.dumps([row['shard'], row['local_id'], row['create_time']], separators=(',', ':')).encode()).hexdigest()
-    return {'message_type': 'group', 'group_id': group_id, 'message_id': message_id,
+    return {'message_type': 'group', 'group_id': group_id, 'message_id': message_identity(row),
             'time': row['create_time'], 'user_id': 'wechat:' + sender if sender else '',
             'sender': {'nickname': names.get(sender, '')}, 'message': segments}
 
@@ -140,9 +161,11 @@ class Reader:
         self.names = {}
         self.validated_at = 0
         self.pids = ()
+        self.media = None
 
     def close(self):
         self.db = None
+        self.media = None
         self.temp.cleanup()
 
     def connect(self, account_id=None):
@@ -179,6 +202,7 @@ class Reader:
                 if not self._keys or not any('contact' in rel and self._key_works(rel) for rel in self._keys):
                     raise ReaderError('NOT_LOGGED_IN', '无法读取该微信账号，请确认已登录且微信版本受支持')
         self.db = BoundDB(account=accounts[0]['account'], workdir=self.temp.name)
+        self.media = local_media.LocalMedia(self.db, self.module, Path(self.temp.name) / 'media')
         self.pids = tuple(sorted(self.db._find_weixin_pids()))
         if not self.pids:
             raise ReaderError('NOT_LOGGED_IN', '请先登录电脑微信')
@@ -215,11 +239,11 @@ class Reader:
             conn.close()
 
     def handle(self, request):
-        if not isinstance(request, dict) or set(request) - {'id', 'action', 'accountId', 'groupId', 'cursor', 'limit'}:
+        if not isinstance(request, dict) or set(request) - {'id', 'action', 'accountId', 'groupId', 'cursor', 'limit', 'messageId', 'locatorId', 'kind'}:
             raise ReaderError('VALIDATION', '微信采集请求格式无效')
         action = request.get('action')
-        if action not in ('status', 'groups', 'history'):
-            raise ReaderError('VALIDATION', '微信采集只允许查询状态、群列表和群历史')
+        if action not in ('status', 'groups', 'history', 'media'):
+            raise ReaderError('VALIDATION', '微信采集只允许查询状态、群列表、群历史和原消息附件')
         account_id = self.verify(request.get('accountId'))
         if action == 'status':
             return {'accountId': account_id, 'nickname': self.names.get(self.db.wxid, '') or '微信账号'}
@@ -231,6 +255,32 @@ class Reader:
         group = request.get('groupId')
         if not isinstance(group, str) or group not in self.groups:
             raise ReaderError('VALIDATION', '该群不属于已连接的微信账号')
+        if action == 'media':
+            kind = request.get('kind')
+            message_id = request.get('messageId')
+            if kind not in ('image', 'file') or not isinstance(message_id, str) or not re.fullmatch(r'(?:s:-?\d{1,20}|l:[a-f0-9]{64})', message_id):
+                raise ReaderError('VALIDATION', '微信附件请求格式无效')
+            shard, local_id = parse_media_locator(request.get('locatorId'))
+            def read_media(tables):
+                rows = []
+                for conn, table in tables:
+                    if self.db._shard_label(conn) != shard:
+                        continue
+                    if not re.fullmatch(r'[A-Za-z0-9_]+', table):
+                        raise ReaderError('STORAGE', '微信消息表格式不支持')
+                    rows.extend(conn.execute('SELECT local_id,local_type,real_sender_id,create_time,message_content,source,packed_info_data,compress_content,server_id,sort_seq,? AS shard FROM "' + table + '" WHERE local_id=? LIMIT 2', (shard, local_id)).fetchall())
+                if len(rows) != 1 or message_identity(rows[0]) != message_id:
+                    raise ReaderError('NOT_FOUND', '原微信消息已变化或无法定位，请重新读取该群记录')
+                row = dict(rows[0])
+                content = self.db._msg_row_to_dict(row, {})['content']
+                attachment = local_media.attachment_description(row['local_type'], content)
+                if not attachment or attachment['kind'] != kind:
+                    raise ReaderError('VALIDATION', '附件类型与原微信消息不一致')
+                return self.media.materialize(row, content, group, kind)
+            result = self.db._run_msg_query(group, read_media)
+            if result is None:
+                raise ReaderError('NOT_FOUND', '原微信消息暂不可读取，请重新读取该群记录')
+            return result
         limit = request.get('limit', 100)
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ReaderError('VALIDATION', '微信消息分页大小无效')
@@ -268,6 +318,8 @@ def main():
                     data = reader.handle(request)
                 response = {'id': request_id, 'ok': True, 'data': data}
             except ReaderError as error:
+                response = {'id': request_id, 'ok': False, 'error': {'code': error.code, 'message': str(error)}}
+            except local_media.MediaError as error:
                 response = {'id': request_id, 'ok': False, 'error': {'code': error.code, 'message': str(error)}}
             except Exception:
                 response = {'id': request_id, 'ok': False, 'error': {'code': 'READ_FAILED', 'message': '微信本机读取失败，请检查登录状态或客户端兼容性'}}

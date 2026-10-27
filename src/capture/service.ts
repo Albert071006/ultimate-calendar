@@ -4,7 +4,7 @@ import { ImageDataUrlSchema } from '../shared/contracts';
 import { nowInstant } from '../domain/time';
 import { safeError, WorkflowError } from '../ai/deepseek';
 import { createReadOnlyBridge, detectExistingBridge, type ReadOnlyBridge, type BridgeHealth, type BridgeConfiguration, type BridgeOptions } from './bridge';
-import { downloadAttachment, AttachmentDownloadError } from './download';
+import { downloadAttachment, AttachmentDownloadError, attachmentFileName, type CaptureAttachmentLocation } from './download';
 import { EXTRACTOR_VERSION, type DocumentExtraction, type DocumentInput } from './documents';
 import { analyzeCapture } from './analysis';
 import { isAddressedElsewhere, mentionLabel } from './recipients';
@@ -14,7 +14,10 @@ import type { PriceQuote } from '../shared/account';
 import type { ModelRequestRunner } from '../ai/request-queue';
 
 type Raw = Record<string, unknown>;
-export type CaptureBridge = Pick<ReadOnlyBridge, 'start' | 'stop' | 'getGroups' | 'history' | 'rememberMessage' | 'getReferencedMessage' | 'getForward' | 'getImage' | 'getFileUrl'>;
+export type CaptureBridge = Pick<ReadOnlyBridge, 'start' | 'stop' | 'getGroups' | 'history' | 'rememberMessage' | 'getReferencedMessage' | 'getForward'> & {
+  getImage(...args: Parameters<ReadOnlyBridge['getImage']>): Promise<CaptureAttachmentLocation>;
+  getFileUrl(...args: Parameters<ReadOnlyBridge['getFileUrl']>): Promise<CaptureAttachmentLocation>;
+};
 export type CaptureBridgeFactory = (options: BridgeOptions) => CaptureBridge;
 const object = (value: unknown): Raw => value && typeof value === 'object' && !Array.isArray(value) ? value as Raw : {};
 const string = (value: unknown) => typeof value === 'string' || typeof value === 'number' ? String(value) : '';
@@ -69,6 +72,7 @@ export function createCaptureService(options: {
   let running = false; let historyRunning = false; let stopped = false; let suspended = false; let connectionGeneration = 0;
   let credentialGeneration = 0; let credentialsConfigured: boolean | null = null;
   let lastWechatPoll = 0;
+  let lastWechatMediaRetry = 0;
   let groupNames = new Map<string, string>(); let connectPromise: Promise<z.infer<typeof CaptureSnapshotSchema>> | null = null;
   function snapshot() {
     const state = health?.state, config = store.config();
@@ -204,7 +208,7 @@ export function createCaptureService(options: {
     finally { historyRunning = false; emit(); }
   }
   function remember(message: StoredCaptureMessage) {
-    bridge?.rememberMessage({ self_id: message.accountId, group_id: message.groupId, message_type: 'group', message_id: message.messageId, time: Date.parse(message.sentAt) / 1000, message: message.segments });
+    bridge?.rememberMessage({ self_id: message.accountId, group_id: message.groupId, message_type: 'group', message_id: message.sourceMessageId ?? message.messageId, time: Date.parse(message.sentAt) / 1000, message: message.segments });
   }
   async function processAttachment(message: StoredCaptureMessage, a: StoredCaptureAttachment) {
     if (a.status === 'ready' || a.status === 'deleted') return;
@@ -214,7 +218,7 @@ export function createCaptureService(options: {
     const loc = object(a.locator); const data = object(loc.data); const type = string(loc.type);
     try {
       if (a.kind === 'other') {
-        if (!bridge || !health?.online) throw Error('QQ 未在线'); remember(message);
+        if (!bridge || !health?.online) throw platform === 'wechat' ? new AttachmentDownloadError('微信未在线，连接恢复后会重试读取附件', 'failed', true) : Error('QQ 未在线'); remember(message);
         const refs = type === 'reply' ? [await bridge.getReferencedMessage(message.groupId, message.messageId, string(data.id))] : type === 'forward' ? await bridge.getForward(message.groupId, message.messageId, string(data.id)) : [data];
         const parts = refs.slice(0, 500).map((raw, index) => {
           const normalized = normalizeMessage({ ...raw, message: raw.message ?? raw.content, message_id: raw.message_id ?? `context-${index}`, group_id: message.groupId, time: raw.time ?? 0 }, message.accountId, groupNames);
@@ -226,21 +230,24 @@ export function createCaptureService(options: {
       }
       let bytes = store.readAttachmentBytes(a.id);
       if (!bytes) {
-        if (!bridge || !health?.online) throw Error('QQ 未在线'); remember(message);
+        if (!bridge || !health?.online) throw platform === 'wechat' ? new AttachmentDownloadError('微信未在线，连接恢复后会重试读取附件', 'failed', true) : Error('QQ 未在线'); remember(message);
         store.setAttachmentStatus(a.id, 'downloading'); emit();
-        const locator = a.kind === 'image' ? await bridge.getImage(message.groupId, message.messageId, string(data.file ?? data.file_id ?? data.url)) : await bridge.getFileUrl(message.groupId, message.messageId, string(data.id ?? data.file_id ?? data.file), typeof data.busid === 'number' ? data.busid : undefined);
-        bytes = await (options.downloader ?? downloadAttachment)(locator, { fileName: a.name });
+        const sourceMessageId = message.sourceMessageId ?? message.messageId;
+        const locator = a.kind === 'image' ? await bridge.getImage(message.groupId, sourceMessageId, string(data.file ?? data.file_id ?? data.url)) : await bridge.getFileUrl(message.groupId, sourceMessageId, string(data.id ?? data.file_id ?? data.file), typeof data.busid === 'number' ? data.busid : undefined);
+        const resolvedName = attachmentFileName(locator, a.name);
+        bytes = await (options.downloader ?? downloadAttachment)(locator, { fileName: resolvedName });
         if (!permitted(message.accountId, message.groupId, false)) throw new WorkflowError('CANCELLED', '来源群已取消选择，已停止附件处理');
         const saved = store.putAttachment(a.id, bytes);
+        if (resolvedName !== a.name) store.renameAttachment(a.id, resolvedName);
         const cached = saved.hash && store.findExtraction(saved.hash, EXTRACTOR_VERSION);
         if (cached) { store.saveExtraction(a.id, { extractorVersion: EXTRACTOR_VERSION, chunks: cached.chunks.map(({ id: _id, attachmentId: _attachmentId, ...c }) => c) }); return; }
       }
       store.setAttachmentStatus(a.id, 'extracting'); emit();
-      const result = await options.extract({ bytes, name: a.name });
+      const result = await options.extract({ bytes, name: store.attachment(a.id)?.name ?? a.name });
       store.saveExtraction(a.id, { extractorVersion: EXTRACTOR_VERSION, chunks: result.parts.map((p, index) => ({ ordinal: index, location: p.locator, text: p.text, imageDataUrl: p.imageDataUrl && ImageDataUrlSchema.safeParse(p.imageDataUrl).success ? p.imageDataUrl : null, status: p.imageDataUrl && !ImageDataUrlSchema.safeParse(p.imageDataUrl).success ? 'failed' : 'ready', error: p.imageDataUrl && !ImageDataUrlSchema.safeParse(p.imageDataUrl).success ? '图像格式或大小不支持，需手动查看' : null })), status: result.status === 'ready' ? 'ready' : result.status === 'encrypted' ? 'encrypted' : result.status === 'unsupported' ? 'unsupported' : 'failed', error: result.warnings.join('；').slice(0, 2000) || null });
     } catch (cause) {
-      const message = cause instanceof WorkflowError || cause instanceof AttachmentDownloadError ? cause.message : '附件下载、授权或解析未完成；请确认 QQ 在线后重试批次，或手动查看';
-      store.setAttachmentStatus(a.id, cause instanceof AttachmentDownloadError ? cause.status : 'failed', message);
+      const message = cause instanceof WorkflowError || cause instanceof AttachmentDownloadError ? cause.message : `附件下载、授权或解析未完成；请确认${platform === 'wechat' ? '微信' : ' QQ '}在线后重试批次，或手动查看`;
+      store.setAttachmentStatus(a.id, cause instanceof AttachmentDownloadError ? cause.status : 'failed', message, cause instanceof AttachmentDownloadError && cause.retryable);
     } finally { emit(); }
   }
   async function tick(force = false) {
@@ -256,6 +263,21 @@ export function createCaptureService(options: {
           if (!batch.result) for (const m of store.batchMessages(batch.id).filter(message => !isAddressedElsewhere(message))) for (const a of store.attachments(m.id)) {
             if (!store.config().analysisEnabled || stopped || suspended) throw new WorkflowError('CANCELLED', '分析已暂停');
             await processAttachment(m, a);
+          }
+          if (platform === 'wechat' && !batch.result) {
+            const unfinished = store.batchMessages(batch.id).filter(message => !isAddressedElsewhere(message)).flatMap(message => store.attachments(message.id)).filter(item => ['image', 'file'].includes(item.kind) && item.status !== 'ready');
+            if (unfinished.length) {
+              const unreadMessages = [...new Set(unfinished.map(item => item.messageId))].map(messageId => {
+                const items = unfinished.filter(item => item.messageId === messageId), retryable = items.every(item => item.retryable === true);
+                const names = items.slice(0, 3).map(item => item.name).join('、');
+                return { messageId, retryable, error: `微信附件尚未完整读取（${names}），本条消息未请求 AI，同批其他可读消息已分开处理。${retryable ? '请在微信中打开或下载附件；系统会稍后自动检查，也可重试此批。' : '请查看附件状态并处理后重试；不支持或超出大小限制的文件需手动处理。'}`.slice(0, 2000) };
+              });
+              if (store.isolateUnreadAttachments(batch.id, unreadMessages)) { emit(); continue; }
+              const retryable = unfinished.every(item => item.retryable === true) && batch.attempts.length === 0;
+              const names = unfinished.slice(0, 3).map(item => item.name).join('、');
+              store.waitForAttachments(batch.id, `微信附件尚未完整读取（${names}），本批未继续请求 AI。${retryable ? '请在微信中打开或下载附件；系统会稍后自动检查，也可重试此批。' : '请查看附件状态并处理后重试；不支持或超出大小限制的文件需手动处理。'}`.slice(0, 2000), retryable);
+              emit(); continue;
+            }
           }
           await analyzeCapture({ store, repository: options.repository, batch: store.batch(batch.id)!, getApiKey: async () => {
             const key = await options.getApiKey(); requestCredentialGeneration = credentialGeneration; return key;
@@ -292,6 +314,9 @@ export function createCaptureService(options: {
     async start() {
       stopped = false; suspended = false;
       if (!timer) timer = setInterval(() => {
+        if (platform === 'wechat' && Date.now() - lastWechatMediaRetry >= 120_000) {
+          lastWechatMediaRetry = Date.now(); store.retryWaitingAttachments();
+        }
         if (platform === 'wechat' && store.config().enabled && Date.now() - lastWechatPoll >= 120_000) {
           lastWechatPoll = Date.now();
           if (health?.online) void backfill();

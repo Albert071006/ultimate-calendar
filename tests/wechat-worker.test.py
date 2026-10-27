@@ -159,18 +159,19 @@ class NormalizationTests(unittest.TestCase):
         result = self.normalize(row)
         self.assertEqual([segment['data']['wechat'] for segment in result['message'][1:]], ['wechat:wxid_fictional', 'all'])
 
-    def test_missing_media_is_explicit_and_raw_xml_is_not_displayed(self):
+    def test_media_has_opaque_locator_and_raw_xml_is_not_displayed(self):
         row = {**self.row(), 'local_type': 3, 'message_content': '<msg><img aeskey="not-a-real-secret"/></msg>'}
-        text = self.normalize(row)['message'][0]['data']['text']
-        self.assertIn('未读取附件内容', text)
-        self.assertNotIn('aeskey', text)
+        result = self.normalize(row)
+        self.assertEqual(result['message'][0]['type'], 'image')
+        self.assertTrue(result['message'][0]['data']['file'].startswith('wm1:'))
+        self.assertNotIn('aeskey', json.dumps(result))
 
     def test_xml_entity_expansion_is_rejected(self):
         self.assertIsNone(worker.xml_root('<!DOCTYPE a [<!ENTITY value "fake">]><a>&value;</a>'))
 
     def test_malformed_xml_after_whitespace_does_not_expose_media_keys(self):
         row = {**self.row(), 'local_type': 3, 'message_content': ' \n<?xml version="1.0"?><msg><img aeskey="not-a-real-secret"/></msg>'}
-        text = self.normalize(row)['message'][0]['data']['text']
+        text = json.dumps(self.normalize(row))
         self.assertNotIn('aeskey', text)
         self.assertNotIn('not-a-real-secret', text)
 
@@ -183,6 +184,7 @@ class BoundDatabaseTests(unittest.TestCase):
             def __init__(self, account, workdir):
                 self.workdir = workdir
                 self.account = account
+                self.account_dir = workdir
             def _open(self, rel):
                 self.last_connection = Mock()
                 return self.last_connection
@@ -226,7 +228,7 @@ class BoundDatabaseTests(unittest.TestCase):
         self.assertFalse(db._try_other_accounts())
         self.assertFalse(db._select_account_by_keys({'fake-key'}))
         self.assertIsNone(db.extract_master_key())
-        self.assertEqual(list(Path(self.temp.name).iterdir()), [])
+        self.assertEqual([path.name for path in Path(self.temp.name).iterdir()], ['media'])
 
 
 class RequestTests(unittest.TestCase):

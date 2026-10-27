@@ -320,6 +320,35 @@ describe('QQ capture page', () => {
 
 
 describe('WeChat capture page', () => {
+  it.each([
+    { modalities: ['text'], message: /当前模型不支持图片输入/ },
+    { modalities: ['text', 'image'], message: /模型接口标注支持图片输入/ },
+    { modalities: null, message: /接口尚未说明图片能力/ },
+  ])('uses current model capabilities for cached WeChat media: $modalities', async ({ modalities, message }) => {
+    const f = fixture({ config: CaptureConfigSchema.parse({ platform: 'wechat', accountId: 'wechat:synthetic-user' }), platform: 'wechat' }, undefined, modalities, 'local', 'wechat');
+    expect(await screen.findByText(message)).toBeTruthy();
+    expect(screen.getByText(/电脑微信已缓存或下载的图片和文件/)).toBeTruthy();
+    expect(screen.queryByText(/当前微信采集只分析文字与卡片标题/)).toBeNull();
+    expect(f.config).not.toHaveBeenCalled(); expect(f.action).not.toHaveBeenCalled();
+  });
+  it('takes an unavailable attachment to its own batch without starting analysis or discarding paid progress', async () => {
+    const accountId = 'wechat:synthetic-user', messageId = 'wxm:synthetic-image';
+    const f = fixture({ config: CaptureConfigSchema.parse({ platform: 'wechat', accountId, groupIds: ['g1'], enabled: true }), platform: 'wechat' }, undefined, undefined, 'local', 'wechat');
+    const attachment = { id: 'wechat-image', name: '合成通知.png', kind: 'image' as const, status: 'failed' as const, size: null, error: '请在微信中打开或下载后重试', chunkCount: 0 };
+    vi.mocked(f.api.wechatCaptureMessages).mockResolvedValue({ ok: true, data: { ...oldPage, items: [{ ...oldMessage, id: messageId, accountId, attachments: [attachment] }] } });
+    vi.mocked(f.api.wechatCaptureBatches).mockResolvedValue({ ok: true, data: { items: [{ id: 'wechat-batch', operationId: 'wechat-operation', accountId, groupId: 'g1', status: 'failed', createdAt: time, updatedAt: time, messageCount: 1, attemptCount: 0, error: '等待在微信下载附件' }], total: 1, offset: 0, limit: 30 } });
+    fireEvent.click(await screen.findByRole('button', { name: /合成通知.png/ }));
+    const dialog = screen.getByRole('dialog', { name: '合成通知.png' });
+    expect(within(dialog).getByText(/先在电脑微信中打开或下载/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: '查看对应分析批次' }));
+    await waitFor(() => expect(f.api.wechatCaptureBatches).toHaveBeenCalledWith({ accountId, groupId: 'g1', messageId, offset: 0, limit: 30 }));
+    expect(screen.queryByRole('dialog')).toBeNull(); expect(f.action).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: '重试此批' }));
+    await waitFor(() => expect(f.action).toHaveBeenCalledExactlyOnceWith({ action: 'retry', batchId: 'wechat-batch' }));
+    fireEvent.click(screen.getByRole('button', { name: '返回批次列表' }));
+    await waitFor(() => expect(f.api.wechatCaptureBatches).toHaveBeenLastCalledWith({ accountId, groupId: 'g1', offset: 0, limit: 30 }));
+    expect(f.api.captureBatches).not.toHaveBeenCalled(); expect(f.api.captureAction).not.toHaveBeenCalled();
+  });
   it('uses independent WeChat routes and requires saving selected groups before starting', async () => {
     const f = fixture({ config: CaptureConfigSchema.parse({ platform: 'wechat', accountId: 'wechat:synthetic-user', groupIds: [], enabled: false }), platform: 'wechat' }, undefined, undefined, 'local', 'wechat');
     await screen.findByText('微信 已在线');

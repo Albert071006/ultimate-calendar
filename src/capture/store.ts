@@ -19,6 +19,7 @@ const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const JsonSchema = z.json();
 const MessageInputSchema = z.strictObject({
   accountId: IdSchema, groupId: IdSchema, messageId: IdSchema,
+  sourceMessageId: IdSchema.optional(),
   groupName: z.string().max(1000).default(''), senderId: IdSchema.nullable().default(null),
   senderName: z.string().max(1000).default(''), sentAt: InstantSchema,
   importedAt: InstantSchema.optional(), text: z.string().max(1_000_000).default(''),
@@ -41,6 +42,7 @@ const StoredAttachmentSchema = z.strictObject({
   kind: z.enum(['image', 'file', 'voice', 'video', 'other']),
   size: z.number().int().nonnegative().nullable(), locator: JsonSchema.nullable(),
   status: AttachmentStatusSchema, error: z.string().max(2000).nullable(),
+  retryable: z.boolean().optional(),
   hash: z.string().regex(/^[a-f0-9]{64}$/).nullable(), extractorVersion: z.string().max(500).nullable(),
 });
 export type StoredCaptureAttachment = z.infer<typeof StoredAttachmentSchema>;
@@ -64,6 +66,8 @@ const BatchSchema = z.strictObject({
   origin: z.enum(['live', 'history']).default('live'),
   attempts: z.array(AttemptSchema).max(1000), error: z.string().max(2000).nullable(),
   result: JsonSchema.nullable(), inputFingerprint: z.string().max(1000).nullable(),
+  waitingForAttachments: z.boolean().optional(),
+  contextMessageIds: z.array(IdSchema).max(1000).optional(),
 });
 export type CaptureBatch = z.infer<typeof BatchSchema>;
 const CredentialPauseSchema = z.strictObject({
@@ -353,10 +357,36 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
       const parsed = inputs.map(input => MessageInputSchema.parse(input));
       return transaction(() => {
         const active = config(); const result = { inserted: 0, duplicates: 0, ignored: 0, ids: [] as string[] };
-        for (const input of parsed) {
+        for (let input of parsed) {
           if (!ownsAccount(input.accountId) || !active.enabled || input.accountId !== active.accountId || !active.groupIds.includes(input.groupId)) { result.ignored++; continue; }
-          const id = captureMessageId(input.accountId, input.groupId, input.messageId);
-          if (message(id)) { result.duplicates++; continue; }
+          let id = captureMessageId(input.accountId, input.groupId, input.messageId);
+          const previous = message(id);
+          if (previous) {
+            result.duplicates++;
+            // Upgrade the first text-only WeChat reader without replaying paid text analysis.
+            if (platform !== 'wechat' || previous.deleted || Date.parse(previous.sentAt) !== Date.parse(input.sentAt)) continue;
+            const existing = attachments(id);
+            for (const row of db.prepare("SELECT id FROM capture_messages WHERE account_id=? AND group_id=? AND json_extract(payload,'$.sourceMessageId')=?").all(input.accountId, input.groupId, previous.sourceMessageId ?? previous.messageId)) {
+              existing.push(...attachments(row['id'] as string));
+            }
+            const key = (item: { kind: string; locator: unknown }) => json({ kind: item.kind, locator: item.locator });
+            const extra = input.attachments.filter(item => ['image', 'file'].includes(item.kind) && !existing.some(value => key(value) === key(item)));
+            if (!extra.length) continue;
+            const owner = parsePayload(db.prepare('SELECT b.payload FROM capture_batches b JOIN capture_batch_messages bm ON bm.batch_id=b.id WHERE bm.message_id=?').get(id), BatchSchema);
+            if (!owner || !owner.attempts.length && owner.result === null && ['pending', 'failed'].includes(owner.status)) {
+              for (const item of extra) saveAttachment({ id: `qqa:${digest(`${id}:media-upgrade:${key(item)}`)}`, messageId: id,
+                name: item.name, kind: item.kind, size: item.size, locator: item.locator, status: 'pending', error: null, hash: null, extractorVersion: null });
+              saveMessage({ ...previous, text: input.text, segments: input.segments });
+              if (owner?.status === 'failed') { owner.status = 'pending'; owner.error = null; owner.waitingForAttachments = false; owner.updatedAt = at; saveBatch(owner); }
+              continue;
+            }
+            const sourceMessageId = previous.sourceMessageId ?? previous.messageId;
+            const supplementalId = `media:${digest(json([sourceMessageId, extra.map(key).sort()]))}`;
+            input = { ...input, messageId: supplementalId, sourceMessageId, text: '', attachments: extra,
+              segments: input.segments.filter(raw => !!raw && typeof raw === 'object' && !Array.isArray(raw) && ['image', 'file', 'at'].includes(String(raw.type))) };
+            id = captureMessageId(input.accountId, input.groupId, supplementalId);
+            if (message(id)) continue;
+          }
           const { attachments: incoming, ...fields } = input;
           saveMessage({ ...fields, id, importedAt: input.importedAt ?? at, changed: false, deleted: false });
           for (const [index, item] of incoming.entries()) {
@@ -426,7 +456,9 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
         .map(row => parsePayload(row, StoredMessageSchema)!);
     },
     listBatches(request: CapturePageRequest = {}) {
-      const { query, where, args } = filters(request);
+      const { query, where: baseWhere, args: baseArgs } = filters({ ...request, messageId: undefined });
+      const where = request.messageId ? `${baseWhere} AND id IN (SELECT batch_id FROM capture_batch_messages WHERE message_id=?)` : baseWhere;
+      const args = request.messageId ? [...baseArgs, IdSchema.parse(request.messageId)] : baseArgs;
       const total = Number(db.prepare(`SELECT count(*) AS n FROM capture_batches ${where}`).get(...args)!['n']);
       const items = db.prepare(`SELECT payload FROM capture_batches ${where} ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?`).all(...args, query.limit, query.offset).map(row => viewBatch(parsePayload(row, BatchSchema)!));
       return CaptureBatchPageSchema.parse({ items, total, offset: query.offset, limit: query.limit });
@@ -502,7 +534,51 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
       InstantSchema.parse(at);
       const value = batch(id); if (!value || !['failed', 'uncertain'].includes(value.status)) throw Error('仅失败或响应未知的批次可手动重试');
       if (value.messageIds.some(id => message(id)?.deleted)) throw Error('原文已清理，不能重新分析');
-      value.status = 'pending'; value.error = null; value.updatedAt = at; saveBatch(value); return value;
+      value.status = 'pending'; value.error = null; value.waitingForAttachments = false; value.updatedAt = at; saveBatch(value); return value;
+    },
+    waitForAttachments(id: string, error: string, retryable: boolean, at = nowInstant()): CaptureBatch {
+      InstantSchema.parse(at); z.string().max(2000).parse(error);
+      const value = batch(id); if (!value || value.status !== 'preparing') throw Error('仅准备中的批次可等待附件');
+      value.status = 'failed'; value.error = error; value.updatedAt = at;
+      value.waitingForAttachments = retryable && value.attempts.length === 0 && value.result === null;
+      saveBatch(value); return value;
+    },
+    isolateUnreadAttachments(id: string, unread: { messageId: string; error: string; retryable: boolean }[], at = nowInstant()): boolean {
+      InstantSchema.parse(at);
+      return transaction(() => {
+        const value = batch(id);
+        if (platform !== 'wechat' || !value || value.status !== 'preparing' || value.attempts.length || value.result !== null) return false;
+        const missing = new Map(unread.map(item => [IdSchema.parse(item.messageId), { error: z.string().max(2000).parse(item.error), retryable: z.boolean().parse(item.retryable) }]));
+        if (!missing.size || [...missing.keys()].some(messageId => !value.messageIds.includes(messageId))) throw Error('等待附件的消息不属于当前批次');
+        const ready = value.messageIds.filter(messageId => !missing.has(messageId));
+        const allContext = [...new Set([...(value.contextMessageIds ?? []), ...value.messageIds])];
+        const partitions = [...missing.keys()].map(messageId => [messageId]); if (ready.length) partitions.push(ready);
+        db.prepare('DELETE FROM capture_batch_messages WHERE batch_id=?').run(id);
+        for (const [index, messageIds] of partitions.entries()) {
+          const waiting = missing.get(messageIds[0]!);
+          const nextId = index === 0 ? id : `qqb:${randomUUID()}`;
+          const next: CaptureBatch = { ...value, id: nextId, operationId: index === 0 ? value.operationId : `qq-apply:${nextId}`,
+            messageIds, contextMessageIds: allContext.filter(messageId => !messageIds.includes(messageId)).slice(0, 1000),
+            status: waiting ? 'failed' : 'pending', waitingForAttachments: waiting?.retryable ?? false,
+            updatedAt: at, error: waiting?.error ?? null };
+          saveBatch(next);
+          for (const [ordinal, messageId] of messageIds.entries()) db.prepare('INSERT INTO capture_batch_messages(batch_id,message_id,ordinal) VALUES(?,?,?)').run(nextId, messageId, ordinal);
+        }
+        return true;
+      });
+    },
+    retryWaitingAttachments(at = nowInstant()): number {
+      InstantSchema.parse(at);
+      return transaction(() => {
+        const active = config(); if (!active.analysisEnabled || !active.accountId || !active.groupIds.length) return 0;
+        let count = 0;
+        for (const row of db.prepare(`SELECT payload FROM capture_batches WHERE account_id=? AND status='failed' AND json_extract(payload,'$.waitingForAttachments')=1`).all(active.accountId)) {
+          const value = parsePayload(row, BatchSchema)!;
+          if (!active.groupIds.includes(value.groupId) || value.result !== null || value.attempts.length || value.messageIds.some(id => !message(id) || message(id)!.deleted)) continue;
+          value.status = 'pending'; value.waitingForAttachments = false; value.error = null; value.updatedAt = at; saveBatch(value); count++;
+        }
+        return count;
+      });
     },
     reanalyzeBatch(id: string, at = nowInstant()): CaptureBatch {
       InstantSchema.parse(at);
@@ -512,6 +588,7 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
         if (value.messageIds.some(id => message(id)?.deleted)) throw Error('原文已清理，不能重新分析');
         if (value.messageIds.some(id => attachments(id).some(item => item.status === 'deleted'))) throw Error('附件缓存已清理，不能重新分析不完整的资料；消息正文与已有事项仍保留');
         value.operationId = `qq-apply:${randomUUID()}`; value.result = null; value.inputFingerprint = null;
+        value.waitingForAttachments = false;
         value.status = 'pending'; value.updatedAt = at; value.error = null;
         for (const id of value.messageIds) for (const item of attachments(id)) {
           if (['failed', 'encrypted', 'too-large'].includes(item.status)) { item.status = 'pending'; item.error = null; saveAttachment(item); }
@@ -557,9 +634,15 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
       const value = attachment(id); if (!value?.hash) return null;
       const row = db.prepare('SELECT bytes FROM capture_blobs WHERE hash=?').get(value.hash); return row ? Buffer.from(row['bytes'] as Uint8Array) : null;
     },
-    setAttachmentStatus(id: string, status: StoredCaptureAttachment['status'], error: string | null = null): StoredCaptureAttachment {
+    renameAttachment(id: string, name: string): void {
+      const value = attachment(id); if (!value || value.status === 'deleted') throw Error('附件记录不存在或已删除');
+      value.name = z.string().min(1).max(1000).parse(name); saveAttachment(value);
+    },
+    setAttachmentStatus(id: string, status: StoredCaptureAttachment['status'], error: string | null = null, retryable = false): StoredCaptureAttachment {
       const value = attachment(id); if (!value) throw Error('附件记录不存在');
-      value.status = AttachmentStatusSchema.parse(status); value.error = z.string().max(2000).nullable().parse(error); saveAttachment(value); return value;
+      value.status = AttachmentStatusSchema.parse(status); value.error = z.string().max(2000).nullable().parse(error);
+      if (retryable) value.retryable = true; else delete value.retryable;
+      saveAttachment(value); return value;
     },
     saveExtraction(id: string, input: { extractorVersion: string; chunks: CaptureChunkInput[]; status?: StoredCaptureAttachment['status']; error?: string | null }): StoredCaptureAttachment {
       const value = attachment(id); if (!value || value.status === 'deleted') throw Error('附件记录不存在或已删除');

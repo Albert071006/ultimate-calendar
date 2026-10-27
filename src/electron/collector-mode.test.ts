@@ -7,6 +7,7 @@ import type { Repository } from '../storage/repository';
 import type { CaptureStore } from '../capture/store';
 import { CaptureSnapshotSchema } from '../shared/capture';
 import { SpaceSnapshotSchema } from '../shared/space';
+import { emptyAccountState } from '../shared/account';
 
 vi.mock('electron', () => ({ app: { isPackaged: false }, safeStorage: { isAsyncEncryptionAvailable: async () => true } }));
 vi.mock('../capture/documents/runtime', () => ({ createDocumentExtractor: () => { throw Error('Tests must inject document handling'); } }));
@@ -17,10 +18,13 @@ function fixture() {
   const keyGet = vi.fn(async () => 'synthetic-preserved-ai-key'), bridgeGet = vi.fn(async () => 'synthetic-preserved-bridge-key'), set = vi.fn();
   let options: Parameters<NonNullable<CollectorDependencies['createCaptureService']>>[0] | undefined, busy = false;
   const warnings: string[] = [];
+  const accountState = emptyAccountState();
+  const accountStart = vi.fn(), accountStop = vi.fn(), accountReset = vi.fn();
   const dependencies: CollectorDependencies = {
     createRepository: vi.fn(() => ({ close: repoClose }) as unknown as Repository),
     createCaptureStore: vi.fn((_path, options) => ({ close: options?.platform === 'wechat' ? vi.fn() : storeClose }) as unknown as CaptureStore),
     createDocumentExtractor: () => ({ extract: vi.fn(), dispose }),
+    createAccountService: () => ({ snapshot: () => accountState, start: accountStart, stop: accountStop, resetKey: accountReset, quote: () => null }),
     createKeyStore: path => ({ initialize: vi.fn(async () => {}), get: path.endsWith('deepseek.bin') ? keyGet : bridgeGet, set, status: () => ({ configured: true, sessionOnly: false }) }),
     createCaptureService: value => {
       if (value.platform === 'wechat') return { start: vi.fn(async () => {}), stop: vi.fn(), busy: () => false, snapshot: () => CaptureSnapshotSchema.parse({ config: {}, connection: 'disconnected', accountLabel: null, error: null, lastReceivedAt: null, credentialConfigured: false, stats: { messages: 0, attachments: 0, attachmentBytes: 0, pendingMessages: 0, batches: 0, pendingBatches: 0, uncertainBatches: 0, failedAttachments: 0 }, coverage: [] }) };
@@ -29,9 +33,25 @@ function fixture() {
     },
     fetch: async () => { throw Error('Tests must not connect real QQ or AI'); }, onWarning: code => warnings.push(code),
   };
-  return { root, dependencies, repoClose, storeClose, dispose, start, stop, keyGet, bridgeGet, set, warnings, options: () => options!, busy: (value: boolean) => { busy = value; } };
+  return { root, dependencies, repoClose, storeClose, dispose, start, stop, keyGet, bridgeGet, set, warnings, accountState, accountStart, accountStop, accountReset, options: () => options!, busy: (value: boolean) => { busy = value; } };
 }
 describe('Windows collection-only backend', () => {
+  it('shares current model capabilities with both capture services without changing the model or key', async () => {
+    const value = fixture(), original = value.dependencies.createCaptureService!;
+    const services: Parameters<NonNullable<CollectorDependencies['createCaptureService']>>[0][] = [];
+    value.dependencies.createCaptureService = options => { services.push(options); return original(options); };
+    try {
+      const mode = await startCollectorMode(value.root, value.dependencies);
+      expect(value.accountStart).toHaveBeenCalledOnce();
+      for (const service of services) expect(service.getModelInputModalities?.('synthetic-model')).toBeNull();
+      value.accountState.models.data = [{ id: 'synthetic-model', inputModalities: ['text'] }];
+      for (const service of services) expect(service.getModelInputModalities?.('synthetic-model')).toEqual(['text']);
+      value.accountState.models.data = [{ id: 'synthetic-model', inputModalities: ['text', 'image'] }];
+      for (const service of services) expect(service.getModelInputModalities?.('synthetic-model')).toEqual(['text', 'image']);
+      expect(value.set).not.toHaveBeenCalled();
+      await mode.close(); expect(value.accountStop).toHaveBeenCalledOnce();
+    } finally { rmSync(value.root, { recursive: true, force: true }); }
+  });
   it('owns cloud synchronization independently of UI subscribers and exposes only its metadata', async () => {
     const value = fixture(), original = value.dependencies.createCaptureService!;
     const snapshot = CaptureSnapshotSchema.parse({ config: {}, connection: 'disconnected', accountLabel: null, error: null, lastReceivedAt: null, credentialConfigured: true,
@@ -53,6 +73,7 @@ describe('Windows collection-only backend', () => {
       const listener = vi.fn(), unsubscribe = mode.subscribe(listener); syncOptions!.onStatusChanged!(); expect(listener).toHaveBeenCalledWith({ ...snapshot, cloudKeySync: state });
       unsubscribe(); await syncOptions!.onChanged!({ previousRevision: undefined, revision: state.revision, configured: true, sourceId: 'a'.repeat(64) });
       expect(credentialsChanged).toHaveBeenCalledExactlyOnceWith({ configured: true, revision: state.revision, sourceId: 'a'.repeat(64) });
+      expect(value.accountReset).toHaveBeenCalledOnce();
       expect(JSON.stringify(await mode.api.invoke('captureSnapshot'))).not.toContain('synthetic-cloud-exclusive-key');
       const closing = mode.close(); expect(closeSync).toHaveBeenCalledOnce(); expect(value.repoClose).not.toHaveBeenCalled(); release(); await closing;
       expect(value.repoClose).toHaveBeenCalledOnce(); expect(value.stop).toHaveBeenCalledOnce();
@@ -75,6 +96,7 @@ describe('Windows collection-only backend', () => {
       const result = await mode.api.invoke('captureSetApiKey', { key });
       expect(result).toEqual({ ok: true, data: { configured: true, sessionOnly: false } });
       expect(value.set).toHaveBeenCalledExactlyOnceWith(key);
+      expect(value.accountReset).toHaveBeenCalledOnce();
       expect(JSON.stringify(result)).not.toContain(key);
       expect(await mode.api.invoke('captureSetApiKey', { key: 123 })).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
       expect(value.set).toHaveBeenCalledTimes(1); await mode.close();

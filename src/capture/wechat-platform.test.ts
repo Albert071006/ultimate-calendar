@@ -29,6 +29,47 @@ function fixture() {
 const incoming = (accountId = wx, groupId = group, messageId = 'server:1') => ({ accountId, groupId, messageId, sentAt: at, importedAt: at, text: '明天中午提交合成材料', attachments: [{ kind: 'file' as const, name: '合成材料.txt' }] });
 
 describe('concurrent QQ and WeChat collection', () => {
+  it('enriches uncharged placeholders but keeps paid text checkpoints immutable when media arrives later', () => {
+    const f = fixture(), raw = { ...incoming(), text: '明天中午提交合成材料：请按附件要求提交', attachments: [] };
+    const id = f.wechat.ingest([raw]).ids[0]!;
+    const batch = f.wechat.sealBatches({ force: true })[0]!;
+    const media = { ...raw, attachments: [{ kind: 'file' as const, name: '材料.docx', locator: { type: 'file', data: { file: 'wm1:document' } } }], segments: [{ type: 'file', data: { file: 'wm1:document' } }] };
+    expect(f.wechat.ingest([media])).toMatchObject({ inserted: 0, duplicates: 1 });
+    expect(f.wechat.attachments(id)).toHaveLength(1);
+    expect(f.wechat.listBatches({ messageId: id }).items.map(value => value.id)).toEqual([batch.id]);
+    expect(f.qq.listBatches({ messageId: id }).items).toEqual([]);
+    f.wechat.claimBatch(); f.wechat.startAttempt(batch.id, 'paid-fingerprint'); f.wechat.saveResult(batch.id, { paid: 'unchanged' }); f.wechat.markApplied(batch.id);
+    const paid = JSON.stringify(f.wechat.batch(batch.id));
+    const second = { ...media, attachments: [...media.attachments, { kind: 'image' as const, name: '图片.png', locator: { type: 'image', data: { file: 'wm1:image' } } }], segments: [...media.segments, { type: 'image', data: { file: 'wm1:image' } }] };
+    const added = f.wechat.ingest([second]); expect(added.inserted).toBe(1);
+    const supplemental = f.wechat.message(added.ids[0]!)!;
+    expect(supplemental).toMatchObject({ sourceMessageId: raw.messageId, sentAt: raw.sentAt, text: '' });
+    expect(f.wechat.attachments(supplemental.id).map(value => value.kind)).toEqual(['image']);
+    expect(f.wechat.ingest([second])).toMatchObject({ inserted: 0, duplicates: 1 });
+    expect(JSON.stringify(f.wechat.batch(batch.id))).toBe(paid);
+    const next = f.wechat.sealBatches({ force: true })[0]!;
+    const plan = prepareAnalysis(f.wechat, next);
+    expect(plan.units).toEqual([]);
+    expect(plan.context.find(value => value.id === id)).toMatchObject({ text: raw.text, sentAt: raw.sentAt });
+    expect(f.wechat.listBatches({ messageId: supplemental.id }).items.map(value => value.id)).toEqual([next.id]);
+    expect(f.wechat.listBatches({ messageId: 'missing' }).items).toEqual([]);
+    const restored = f.wechat.exportState().state; f.wechat.replaceState(restored);
+    expect(f.wechat.message(supplemental.id)?.sourceMessageId).toBe(raw.messageId);
+    expect(JSON.stringify(f.wechat.batch(batch.id))).toBe(paid);
+  });
+
+  it('does not enrich a different sending date or automatically retry after a request was charged', () => {
+    const f = fixture(), raw = { ...incoming(), attachments: [] };
+    const id = f.wechat.ingest([raw]).ids[0]!;
+    expect(f.wechat.ingest([{ ...incoming(), sentAt: '2026-10-28T19:30:00+08:00' }])).toMatchObject({ inserted: 0, duplicates: 1 });
+    expect(f.wechat.attachments(id)).toEqual([]);
+    const batch = f.wechat.sealBatches({ force: true })[0]!;
+    f.wechat.claimBatch(); f.wechat.startAttempt(batch.id, 'charged'); f.wechat.checkpointResult(batch.id, { charged: true });
+    f.wechat.waitForAttachments(batch.id, 'missing', true);
+    expect(f.wechat.retryWaitingAttachments()).toBe(0);
+    expect(f.wechat.batch(batch.id)?.waitingForAttachments).toBe(false);
+  });
+
   it('isolates selection, reads, attachments, queues, cleanup, stats and credential pause', () => {
     const f = fixture();
     const qid = f.qq.ingest([incoming('100', '200')]).ids[0]!;

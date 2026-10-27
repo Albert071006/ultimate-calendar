@@ -50,7 +50,13 @@ export function prepareAnalysis(store: CaptureStore, batch: CaptureBatch, option
   const messages = store.batchMessages(batch.id).filter(m => !m.deleted);
   // Context is an aid, not a second copy of every long document/message in each paid request.
   let contextBudget = 20_000;
-  const context = messages.flatMap(m => {
+  const companionMessages = (batch.contextMessageIds ?? []).map(id => store.message(id)).filter(m => m && !m.deleted && m.accountId === batch.accountId && m.groupId === batch.groupId);
+  const contextMessages = new Map([...messages, ...companionMessages].flatMap(m => {
+    if (!m) return [];
+    const original = m.sourceMessageId ? store.messageByKey(m.accountId, m.groupId, m.sourceMessageId) : null;
+    return (original && !original.deleted && Date.parse(original.sentAt) === Date.parse(m.sentAt) ? [original, m] : [m]).map(value => [value.id, value] as const);
+  }));
+  const context = [...contextMessages.values()].flatMap(m => {
     if (contextBudget <= 0) return [];
     const text = m.text.slice(0, Math.min(2000, contextBudget)); contextBudget -= text.length;
     const recipient = recipientContext(m);

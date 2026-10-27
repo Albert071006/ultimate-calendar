@@ -9,6 +9,7 @@ import { createLocalWechatBridge, wechatCredentials } from './wechat-runtime';
 import { createDocumentExtractor } from '../capture/documents/runtime';
 import { createKeyStore, type AsyncEncryption } from './key-store';
 import { createModelRequestQueue } from '../ai/request-queue';
+import { createAccountService } from '../ai/account';
 import { safeError, WorkflowError } from '../ai/deepseek';
 import { CaptureSnapshotSchema, type CaptureSnapshot } from '../shared/capture';
 import { apiResultSchema, KeyStatusSchema, SetApiKeyRequestSchema, type ApiResult } from '../shared/contracts';
@@ -21,6 +22,7 @@ import { createCollectorKeySync, hasCollectorKeySyncConfiguration, requirePersis
 type CollectorKeys = Pick<ReturnType<typeof createKeyStore>, 'initialize' | 'get' | 'set' | 'status'>;
 type CollectorCapture = Pick<ReturnType<typeof createCaptureService>, 'start' | 'stop' | 'busy' | 'snapshot'> & Partial<ReturnType<typeof createCaptureService>>;
 type CollectorDocuments = Pick<ReturnType<typeof createDocumentExtractor>, 'extract' | 'dispose'>;
+type CollectorAccount = Pick<ReturnType<typeof createAccountService>, 'snapshot' | 'start' | 'stop' | 'resetKey' | 'quote'>;
 export interface CollectorDependencies {
   createRepository?: typeof createRepository;
   createCaptureStore?: typeof createCaptureStore;
@@ -28,6 +30,7 @@ export interface CollectorDependencies {
   createDocumentExtractor?(): CollectorDocuments;
   createKeyStore?(path: string, encryption: AsyncEncryption): CollectorKeys;
   createModelRequestQueue?: typeof createModelRequestQueue;
+  createAccountService?(options: Parameters<typeof createAccountService>[0]): CollectorAccount;
   encryption?: AsyncEncryption;
   fetch?: typeof fetch;
   wait?(milliseconds: number): Promise<void>;
@@ -53,6 +56,7 @@ export async function startCollectorMode(directory: string, dependencies: Collec
   let queue: ReturnType<typeof createModelRequestQueue> | undefined;
   let space: ReturnType<typeof createSpaceManager> | undefined;
   let keySync: CollectorKeySync | undefined;
+  let account: CollectorAccount | undefined;
   let activeCalls = 0;
   const subscribers = new Set<(snapshot: CaptureSnapshot) => void>();
   const close = () => {
@@ -60,6 +64,7 @@ export async function startCollectorMode(directory: string, dependencies: Collec
     closing = true;
     closePromise = (async () => {
       const syncingClosed = keySync?.close();
+      account?.stop();
       space?.stop();
       try { capture?.stop(); wechat?.stop(); } catch { warn('COLLECTOR_STOP_FAILED'); throw Error('采集尚未安全停止，数据库保持打开；请重试退出'); }
       try { documents?.dispose(); } catch { warn('COLLECTOR_DOCUMENT_DISPOSE_FAILED'); throw Error('文档处理尚未安全停止，数据库保持打开；请重试退出'); }
@@ -93,6 +98,7 @@ export async function startCollectorMode(directory: string, dependencies: Collec
     };
     keySync = (dependencies.createCollectorKeySync ?? createCollectorKeySync)({ directory, encryption, keys,
       async onChanged(value) {
+        account?.resetKey();
         await capture?.credentialsChanged?.({ configured: value.configured, revision: value.revision, sourceId: value.sourceId });
         await wechat?.credentialsChanged?.({ configured: value.configured, revision: value.revision, sourceId: value.sourceId });
         try { dependencies.onCloudKeyChanged?.(value); } catch { /* Observers cannot change the saved credential. */ }
@@ -110,16 +116,18 @@ export async function startCollectorMode(directory: string, dependencies: Collec
         cancel = () => reject(new WorkflowError('CANCELLED', '采集模式正在退出，模型请求已取消')); signal.addEventListener('abort', cancel, { once: true });
       })]); } finally { signal.removeEventListener('abort', cancel); }
     };
+    const getApiKey = async () => {
+      if (closing) throw new WorkflowError('CANCELLED', '采集模式正在退出');
+      if (keySync) return keySync.getApiKey();
+      const key = await keys.get();
+      if (!key && keys.status().loadError) throw new WorkflowError('STORAGE', '已保存密钥暂未载入，原凭据保留；请正常退出后重试');
+      return key;
+    };
+    account = (dependencies.createAccountService ?? createAccountService)({ getApiKey, fetch: cancellableFetch, isVisible: () => false });
     const captureOptions: Parameters<typeof createCaptureService>[0] = {
       store, repository, credentials: bridgeKeys, extract: documents.extract, runModel: queue.run, fetch: cancellableFetch,
-      onChanged: emitCapture,
-      getApiKey: async () => {
-        if (closing) throw new WorkflowError('CANCELLED', '采集模式正在退出');
-        if (keySync) return keySync.getApiKey();
-        const key = await keys.get();
-        if (!key && keys.status().loadError) throw new WorkflowError('STORAGE', '已保存密钥暂未载入，原凭据保留；请正常退出后重试');
-        return key;
-      },
+      onChanged: emitCapture, getApiKey, getPriceQuote: account.quote,
+      getModelInputModalities: model => account!.snapshot().models.data?.find(item => item.id === model)?.inputModalities ?? null,
     };
     capture = (dependencies.createCaptureService ?? createCaptureService)(captureOptions);
     wechat = (dependencies.createCaptureService ?? createCaptureService)({ ...captureOptions, store: wechatStore, platform: 'wechat', credentials: wechatCredentials, bridgeFactory: createLocalWechatBridge(directory), onChanged: undefined });
@@ -139,7 +147,7 @@ export async function startCollectorMode(directory: string, dependencies: Collec
       captureSetApiKey: async input => {
         if (keySync) throw new WorkflowError('CONFLICT', '本机分析密钥由云端管理，请更新云端密钥后同步');
         if (!await encryption.isAsyncEncryptionAvailable()) throw new WorkflowError('STORAGE', '本机密钥加密暂不可用，原密钥保持不变');
-        return keys.set(input.key);
+        const status = await keys.set(input.key); account?.resetKey(); return status;
       },
       captureRefreshApiKey: async () => {
         if (!keySync) throw new WorkflowError('CONFLICT', '本机尚未配置云端密钥同步');
@@ -193,6 +201,7 @@ export async function startCollectorMode(directory: string, dependencies: Collec
     await capture.start();
     await wechat.start();
     keySync?.start();
+    account.start();
     space.start();
     return {
       close, api,
