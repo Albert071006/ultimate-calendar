@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { CommandRequest, CommandResult, SelectedImage } from "../../../shared/contracts";
+import type { ApiError, CommandRequest, CommandResult, SelectedImage } from "../../../shared/contracts";
 import { operationId } from "../../calendar-layout";
 import type { PlannerUI } from "../../hooks/usePlanner";
 import type { Selection } from "../Calendar";
@@ -18,26 +18,49 @@ export type ConversationEntry = {
   image?: SelectedImage;
   /** A persisted conversation never includes image bytes. */
   imageUnavailable?: boolean;
+  /** Only a definitive pre-send failure can supply a later clarification; unknown results cannot. */
+  delivery?: 'not-sent' | 'unknown';
 };
+export type UnsentClarificationDraft = { replyId: string; text: string };
+
+/** A visible draft can be edited, but an uncertain request or an attachment must never be replayed implicitly. */
+export function canContinueUnsent(entry: ConversationEntry): boolean {
+  const request = entry.request, previous = request?.history?.at(-1);
+  return entry.status === 'failed' && entry.delivery === 'not-sent' && !!request?.text.trim()
+    && !request.image && !request.resources?.length && !needsResourcePreparation(request.text)
+    && previous?.role === 'assistant' && previous.outcome?.phase === 'clarification';
+}
+
+function failureText(error: ApiError | undefined): string {
+  if (!error) return '未能确认处理结果。请使用这条指令的重试按钮核对，不要另建重复指令。';
+  if (error.delivery === 'unknown') return `结果待核对 · ${error.message}\n请使用这条指令的重试按钮核对，不要另建重复指令。`;
+  return error.message;
+}
 
 /**
  * The assistant's conversation and command flow, shared by the desktop bar and the phone page: the user's
  * message shows at once, the reply slot says it is working, and a failed request retries only explicitly.
  */
-export function useAssistantConversation({ ui, selected, date, domain, ledgerView, initial = [], onStart }: {
+export function useAssistantConversation({ ui, selected, date, domain, ledgerView, initial = [], initialDraft, onStart }: {
   ui: PlannerUI;
   selected: Selection | null;
   date: string;
   domain?: 'ledger';
   ledgerView?: CommandRequest['ledgerView'];
   initial?: ConversationEntry[];
+  initialDraft?: UnsentClarificationDraft;
   /** Called when a request starts, e.g. to open the conversation. */
   onStart?: () => void;
 }) {
-  const [text, setText] = useState(""),
+  const [text, setText] = useState(initialDraft?.text ?? ""),
     [history, setHistory] = useState<ConversationEntry[]>(initial),
     [running, setRunning] = useState(false),
-    [resources, setResources] = useState<ResourceReference[]>([]);
+    [resources, setResources] = useState<ResourceReference[]>([]),
+    [editingReplyId, setEditingReplyId] = useState<string | undefined>(initialDraft?.replyId);
+  const composer = useRef(text);
+  composer.current = text;
+  const latestReplyId = useRef(history.at(-1)?.id);
+  latestReplyId.current = history.at(-1)?.id;
   const inFlight = useRef(false);
   const imageInput = useAssistantImage(ui, () => inFlight.current || ui.busy);
 
@@ -58,18 +81,31 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
     } catch (error) {
       inFlight.current = false; setRunning(false);
       setHistory(previous => previous.map(entry => entry.id === replyId
-        ? { ...entry, text: error instanceof Error ? error.message : '资料位置未确认，指令尚未发送。', status: 'failed', request }
+        ? { ...entry, text: error instanceof Error ? `${error.message}。指令尚未发送。` : '资料位置未确认，指令尚未发送。', status: 'failed', delivery: 'not-sent', request }
         : entry));
       return;
     }
     setHistory(previous => previous.map(entry => entry.id === replyId ? { ...entry, request: prepared } : entry));
-    const result = await ui.run(() => ui.client!.command(prepared));
+    let failure: ApiError | undefined;
+    const result = await ui.run(async () => {
+      try {
+        const response = await ui.client!.command(prepared);
+        if (!response.ok) failure = response.error;
+        return response;
+      } catch (error) {
+        // A thrown transport error cannot establish whether the server received the request.
+        failure = { code: 'NETWORK', message: error instanceof Error ? error.message : '资料服务连接中断', retryable: true, delivery: 'unknown' };
+        throw error;
+      }
+    });
     if (!result) {
       inFlight.current = false;
       setRunning(false);
-      setHistory(previous => previous.map(entry => entry.id === replyId
-        ? { ...entry, text: "未收到处理结果，可以重试这条指令。", status: "failed", request: prepared }
-        : entry));
+      const failed: ConversationEntry = { id: replyId, role: 'assistant', text: failureText(failure), status: 'failed',
+        ...(failure?.delivery ? { delivery: failure.delivery } : {}), request: prepared };
+      setHistory(previous => previous.map(entry => entry.id === replyId ? failed : entry));
+      // The complete unsent text remains visible in the editor. Nothing is silently merged into history.
+      if (canContinueUnsent(failed) && !composer.current.trim()) continueUnsent(failed);
       return;
     }
     const mutation = result.mutationResult;
@@ -129,13 +165,33 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
       })),
     };
     const replyId = `${id}:assistant`;
-    setHistory(previous => [...previous,
+    latestReplyId.current = replyId;
+    setHistory(previous => [...previous.map(entry => entry.id === editingReplyId
+      ? { ...entry, request: undefined, text: `${entry.text}\n已在后续消息中重新编辑。` } : entry),
       { id: `${id}:user`, role: "user", text, ...(image ? { image } : {}) },
       { id: replyId, role: "assistant", text: "正在处理…", status: "pending", request },
     ]);
     setText("");
+    composer.current = '';
+    setEditingReplyId(undefined);
     imageInput.removeImage();
     void execute(request, replyId);
   }
-  return { text, setText, history, running, send, resources, setResources, ...imageInput, retry: (entry: ConversationEntry) => entry.request && void execute(entry.request, entry.id) };
+  function continueUnsent(entry: ConversationEntry) {
+    if (entry.id !== latestReplyId.current || !canContinueUnsent(entry) || inFlight.current || ui.busy || imageInput.currentImage.current || resources.length) return;
+    setText(entry.request!.text);
+    composer.current = entry.request!.text;
+    setEditingReplyId(entry.id);
+    onStart?.();
+  }
+  const unsentDraft = editingReplyId && text.trim() ? { replyId: editingReplyId, text } : undefined;
+  return { text, setText, history, running, send, resources, setResources, ...imageInput, unsentDraft, continueUnsent,
+    retry: (entry: ConversationEntry) => {
+      if (!entry.request) return;
+      if (editingReplyId === entry.id) {
+        if (composer.current === entry.request.text) { setText(''); composer.current = ''; }
+        setEditingReplyId(undefined);
+      }
+      void execute(entry.request, entry.id);
+    } };
 }

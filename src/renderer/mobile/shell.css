@@ -242,6 +242,7 @@ body:has(.m-app) { margin: 0; min-width: 0; overflow: hidden; overscroll-behavio
 .m-send:active:not(:disabled) { transform: scale(.92); }
 .m-send svg { width: 22px; height: 22px; }
 .m-assistant-error { flex: none; margin: 0; padding: 8px 16px; font-size: 13.5px; color: var(--accent); background: var(--accent-soft); }
+.m-assistant-draft-hint { flex: none; padding: 8px 16px; }
 html[data-keyboard] :is(.m-assistant-compose, .m-sheet, .m-tabs-bar) { padding-bottom: 8px; }
 html[data-keyboard] .m-sheet { padding-bottom: 0; }
 

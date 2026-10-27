@@ -129,7 +129,7 @@ export function MobileApp({ client, connection, settingsPages = [], pendingView,
           )}
         </main>
         {snapshot && <Toast ui={ui} />}
-        {snapshot && <MobileAssistant ui={ui} selected={selected} date={date} domain={page === 'ledger' ? 'ledger' : undefined}
+        {snapshot && <MobileAssistant ui={ui} selected={selected} date={date} domain={page === 'ledger' ? 'ledger' : undefined} connectionStatus={connection.status}
           ledgerView={page === 'ledger' ? ledgerView : undefined} storageKey={conversationKey} open={assistantOpen} setOpen={setAssistantOpen} />}
         <nav className="m-tabs-bar" aria-label="主导航">
           {tabs.map(([id, label, Icon]) => (

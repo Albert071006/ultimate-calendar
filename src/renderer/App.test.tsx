@@ -352,7 +352,7 @@ describe("desktop workspace interaction", () => {
     const input = await screen.findByLabelText("自然语言指令");
     fireEvent.change(input, { target: { value: "明天下午安排学习" } });
     fireEvent.click(screen.getByRole("button", { name: "发送指令" }));
-    expect(await screen.findByText("连接失败，请重试")).toBeTruthy();
+    await waitFor(() => expect(container.querySelector('.message.assistant')?.textContent).toContain("连接失败，请重试"));
     expect((input as HTMLTextAreaElement).value).toBe("");
     expect(container.querySelectorAll(".message.user")).toHaveLength(1);
     expect(screen.getByText("明天下午安排学习")).toBeTruthy();

@@ -338,7 +338,12 @@ export interface PlannerService {
   undo(transactionId?: string): MutationResult;
 }
 
-export const ApiErrorSchema = z.strictObject({ code: z.enum(['VALIDATION', 'NOT_FOUND', 'CONFLICT', 'NO_API_KEY', 'NETWORK', 'RATE_LIMIT', 'AUTH', 'BALANCE', 'AI_RESPONSE', 'CANCELLED', 'STORAGE', 'INTERNAL']), message: shortText, retryable: z.boolean() });
+export const ApiErrorSchema = z.strictObject({
+  code: z.enum(['VALIDATION', 'NOT_FOUND', 'CONFLICT', 'NO_API_KEY', 'NETWORK', 'RATE_LIMIT', 'AUTH', 'BALANCE', 'AI_RESPONSE', 'CANCELLED', 'STORAGE', 'INTERNAL']),
+  message: shortText, retryable: z.boolean(),
+  /** Transport evidence only: an absent value must never be inferred to mean the operation was not sent. */
+  delivery: z.enum(['not-sent', 'unknown']).optional(),
+});
 export type ApiError = z.infer<typeof ApiErrorSchema>;
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: ApiError };
 export function apiResultSchema<T extends z.ZodType>(schema: T) {
