@@ -357,6 +357,9 @@ export function EntityEditor({
         });
         values = parsed;
       }
+      const selectedScheduleMode = data.has('allowMultipleSlots') ? 'multiple' : 'single';
+      const changeScheduleMode = entity === 'block' && schedulingTask
+        && taskScheduleMode(schedulingTask, snapshot.blocks) !== selectedScheduleMode;
       let mutation: MutationInput;
       if (entity === "candidate") {
         const v = values as Candidate;
@@ -392,11 +395,11 @@ export function EntityEditor({
         } as MutationInput;
       else if (entity === 'block' && !additionalToSingle && target.draft?.noticeTaskVersion && linkedTask?.candidateId &&
                s('kind') === 'event' && s('taskId') === linkedTask.id) {
-        mutation = { type: 'scheduleTaskEvent', id: linkedTask.id, expectedVersion: target.draft.noticeTaskVersion, values } as MutationInput;
+        mutation = { type: 'scheduleTaskEvent', id: linkedTask.id, expectedVersion: target.draft.noticeTaskVersion + (changeScheduleMode ? 1 : 0), values } as MutationInput;
       } else mutation = { type: "create", entity, values } as MutationInput;
       if (additionalToSingle && !data.has('allowMultipleSlots')) throw new Error('此任务已有一个时段。请调整原时段，或勾选“为此任务安排多个时段”后再添加。');
-      const result = await ui.mutate(additionalToSingle && schedulingTask ? [
-        { type: 'update', entity: 'task', id: schedulingTask.id, expectedVersion: schedulingTask.version, values: { scheduleMode: 'multiple' } },
+      const result = await ui.mutate(changeScheduleMode && schedulingTask ? [
+        { type: 'update', entity: 'task', id: schedulingTask.id, expectedVersion: schedulingTask.version, values: { scheduleMode: selectedScheduleMode } },
         mutation,
       ] : [mutation]);
       if (result && result.status !== "clarification") onClose();
@@ -649,9 +652,10 @@ export function EntityEditor({
               </select>
             </label>
           </div>
-          {!repeating && additionalToSingle && <label className="check">
-            <input type="checkbox" name="allowMultipleSlots" key={selectedTaskId} />
-            为此任务安排多个时段
+          {!repeating && !series && schedulingTask && <label className="check">
+            <input type="checkbox" name="allowMultipleSlots" key={selectedTaskId}
+              defaultChecked={taskScheduleMode(schedulingTask, snapshot.blocks) === 'multiple'} />
+            {additionalToSingle ? '为此任务安排多个时段' : '安排多个时段'}
           </label>}
           {!repeating && <p className="hint">
             {series ? '仅改开始时间时，每次活动保留原时长；修改结束时间会为所选范围设置相同的新时长。关联任务保持不变。'

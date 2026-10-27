@@ -77,6 +77,43 @@ describe('explicit task scheduling mode', () => {
     await screen.findByRole('alert');
     expect(mutate).not.toHaveBeenCalled();
   });
+
+  it.each(['single', 'multiple'] as const)('edits the linked task mode directly from the phone slot editor (%s)', async mode => {
+    const { ui, mutate } = fakeUI();
+    render(<MobileProvider mobile><EntityEditor target={{ entity: 'block', id: 'slot' }} snapshot={fixture(mode)} ui={ui} onClose={vi.fn()} /></MobileProvider>);
+    const checkbox = screen.getByRole('checkbox', { name: '安排多个时段' }) as HTMLInputElement;
+    expect(checkbox.closest('[data-more]')).toBeNull();
+    expect(checkbox.checked).toBe(mode === 'multiple');
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(mutate).toHaveBeenCalledOnce());
+    expect(mutate.mock.calls[0]![0]).toMatchObject([
+      { type: 'update', entity: 'task', id: 'task', expectedVersion: 1, values: { scheduleMode: mode === 'single' ? 'multiple' : 'single' } },
+      { type: 'update', entity: 'block', id: 'slot', expectedVersion: 1, values: { taskId: 'task', completed: false } },
+    ]);
+  });
+
+  it('keeps an unchanged multiple mode when only editing a slot title', async () => {
+    const { ui, mutate } = fakeUI();
+    render(<EntityEditor target={{ entity: 'block', id: 'slot' }} snapshot={fixture('multiple')} ui={ui} onClose={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('名称'), { target: { value: '改过的时段名称' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(mutate).toHaveBeenCalledOnce());
+    expect(mutate.mock.calls[0]![0]).toMatchObject([{ type: 'update', entity: 'block', id: 'slot', values: { title: '改过的时段名称' } }]);
+  });
+
+  it('uses the updated task version when explicitly opting a first notice arrangement into multiple slots', async () => {
+    const snapshot = fixture(); snapshot.blocks = []; snapshot.tasks[0]!.candidateId = 'candidate';
+    const { ui, mutate } = fakeUI();
+    render(<EntityEditor target={{ entity: 'block', draft: { date: '2026-10-25', time: '15:00', taskId: 'task', kind: 'event', noticeTaskVersion: 1 } }} snapshot={snapshot} ui={ui} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: '安排多个时段' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(mutate).toHaveBeenCalledOnce());
+    expect(mutate.mock.calls[0]![0]).toMatchObject([
+      { type: 'update', entity: 'task', id: 'task', expectedVersion: 1, values: { scheduleMode: 'multiple' } },
+      { type: 'scheduleTaskEvent', id: 'task', expectedVersion: 2, values: { taskId: 'task' } },
+    ]);
+  });
 });
 
 describe('one slot by default in both calendar shells', () => {
