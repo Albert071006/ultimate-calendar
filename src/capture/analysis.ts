@@ -192,7 +192,7 @@ function replayCandidates(completed: CompletedCapture[], batch: CaptureBatch, un
       throw new WorkflowError('CONFLICT', '已保存的关联事项已删除或来源范围改变，保留当前结果供校对，不会重新创建该事项');
     }
     const decision = reconcileCaptureCandidate(item, sources.get(unit.id)!, evidenceIds, existing,
-      [...warnings, ...(evidenceIds.some(id => byId.get(id)!.imageDataUrl) ? ['图片文字由 AI 转写，请对照原图核对'] : [])]);
+      [...warnings, ...(evidenceIds.some(id => byId.get(id)!.imageDataUrl) ? ['图片文字由 AI 转写，请对照原图核对'] : [])], [...sink.sources(), ...sources.values()]);
     if (decision.kind === 'ignore') { aliases.set(entry.id, decision.id); rememberPractice(decision.id); sink.remember?.(entry, decision.id); continue; }
     if (practice && practiceTarget) {
       // Append only the newly observed exercise to the live text. Never replay deleted steps or replace a user's edited summary.

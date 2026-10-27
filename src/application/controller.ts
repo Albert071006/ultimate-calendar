@@ -91,12 +91,12 @@ export function createController(options: ControllerOptions) {
             const saved = findEntity(state, 'source', input.sourceId); if (!saved || saved.text !== source!.text || saved.imageDataUrl !== source!.imageDataUrl || saved.sentAt !== source!.sentAt) throw new WorkflowError('CONFLICT', '分析期间来源已改变或被删除');
             const candidateIds: string[] = []; let review = false;
             // Normalize every response before writing any candidates.
-            const normalized = extracted.candidates.map(c => ({ ...normalizeCandidate(c, saved, records(state, 'candidate')), relation: c.relation }));
+            const normalized = extracted.candidates.map(c => normalizeCandidate(c, saved, records(state, 'candidate'), records(state, 'source')));
             for (const item of normalized) {
               if (item.relation.kind === 'supplement' && item.relation.candidateId) {
                 const target = findEntity(state, 'candidate', item.relation.candidateId)!;
                 if (target.status === 'ignored') { candidateIds.push(target.id); continue; }
-                const merged = supplementCandidate(target, item.values);
+                const merged = supplementCandidate(target, item.values, records(state, 'source'));
                 if (target.status === 'pending' && !merged.conflicts) {
                   updateEntity(state, 'candidate', target.id, { ...merged.values,
                     status: target.status, taskId: target.taskId, snoozedUntil: target.snoozedUntil,
