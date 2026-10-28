@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { AiApiKeySchema, AiConfigurationRevisionSchema } from './ai-configuration';
 import { RemoteIdentitySchema, type RemoteIdentity } from './remote';
+import { SettingsSchema } from './contracts';
 
 export const MAX_AI_KEY_SYNC_BYTES = 32 * 1024;
 export const AiKeySyncKeyIdSchema = z.string().regex(/^[0-9a-f]{64}$/);
@@ -16,6 +17,7 @@ export type AiKeySyncRequest = z.infer<typeof AiKeySyncRequestSchema>;
 export const AiKeySyncPlaintextSchema = z.strictObject({
   apiKey: AiApiKeySchema.nullable(),
   revision: AiConfigurationRevisionSchema,
+  settings: SettingsSchema.pick({ model: true, reasoningEffort: true }).optional(),
 });
 export type AiKeySyncPlaintext = z.infer<typeof AiKeySyncPlaintextSchema>;
 export const AiKeySyncEnvelopeSchema = z.strictObject({

@@ -6,6 +6,7 @@ import { resolve, relative, extname, isAbsolute, sep } from 'node:path';
 import { isIP } from 'node:net';
 import { z } from 'zod';
 import { LEDGER_API_HEADER, LEDGER_API_VERSION } from '../shared/ledger-compatibility';
+import { AI_SETTINGS_HEADER, AI_SETTINGS_VERSION, legacyAiSettingsResult } from '../shared/ai-reasoning';
 import { PairRequestSchema, RemoteMethodSchema, RemoteRequestSchema, RemoteSessionSchema, type RemoteDevice } from '../shared/remote';
 import type { RemoteService } from './service';
 import { RemoteFault } from './state';
@@ -180,7 +181,7 @@ export function createRemoteHttpServer(options: RemoteHttpOptions) {
           sendJson(response, 200, payload); return;
         }
         if (url.pathname === '/api/v1/ai/receiver/sync') {
-          if (method === 'POST') { sendJson(response, 200, await options.service.syncAiKeyReceiver(await body(request, MAX_AI_KEY_SYNC_BYTES), session.device.id)); return; }
+          if (method === 'POST') { sendJson(response, 200, await options.service.syncAiKeyReceiver(await body(request, MAX_AI_KEY_SYNC_BYTES), session.device.id, request.headers[AI_SETTINGS_HEADER.toLowerCase()] === AI_SETTINGS_VERSION)); return; }
           response.setHeader('Allow', 'POST');
           throw new RemoteFault(405, '此接口只接受 POST');
         }
@@ -226,12 +227,15 @@ export function createRemoteHttpServer(options: RemoteHttpOptions) {
             sendJson(response, 200, { ok: false, error: { code: 'VALIDATION', retryable: false,
               message: '账本账户功能已升级，请更新电脑端或关闭并重新打开手机日历，再查看或修改账本。原资料和配对均保留。' } }); return;
           }
-          sendJson(response, 200, await options.service.rpc(rpcMethod, input, session.device.id)); return;
+          const result = await options.service.rpc(rpcMethod, input, session.device.id, request.headers[AI_SETTINGS_HEADER.toLowerCase()] === AI_SETTINGS_VERSION);
+          sendJson(response, 200, request.headers[AI_SETTINGS_HEADER.toLowerCase()] === AI_SETTINGS_VERSION ? result : legacyAiSettingsResult(rpcMethod, result)); return;
         }
         const operationMatch = /^\/api\/v1\/operations\/([^/]+)$/.exec(url.pathname);
         if (operationMatch && method === 'GET') {
           const id = z.string().min(1).max(200).parse(decodeURIComponent(operationMatch[1]!));
-          sendJson(response, 200, options.service.state.operation(id, session.device.id)); return;
+          const receipt = options.service.state.operation(id, session.device.id);
+          sendJson(response, 200, request.headers[AI_SETTINGS_HEADER.toLowerCase()] !== AI_SETTINGS_VERSION && receipt.status === 'completed'
+            ? { ...receipt, result: legacyAiSettingsResult(receipt.method, receipt.result) } : receipt); return;
         }
         if (await options.extension?.(request, response, session)) return;
         throw new RemoteFault(404, '接口不存在');

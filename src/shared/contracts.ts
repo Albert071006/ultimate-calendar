@@ -197,6 +197,7 @@ export const PeriodSchema = z.strictObject({ period: z.number().int().min(1).max
 export const SettingsSchema = z.strictObject({
   campus: z.string().trim().max(200).default(''), locationContext: z.string().trim().max(2000).default(''),
   model: z.string().trim().min(1).max(100).default('deepseek-flash'), timezone: z.literal(TIMEZONE).default(TIMEZONE),
+  reasoningEffort: z.enum(['none', 'low', 'high', 'max']).optional(),
   showPending: z.boolean().default(true), weekStartsOn: z.literal(1).default(1), closeToTray: z.boolean().default(true),
   autoLaunch: z.boolean().default(false), remindersEnabled: z.boolean().default(true), courseReminders: z.boolean().default(false),
   taskLeadMinutes: z.array(z.number().int().min(0).max(525_600)).max(20).default([1440, 120]),

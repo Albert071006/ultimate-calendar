@@ -29,6 +29,18 @@ afterEach(async () => {
 });
 
 describe('strict original-authority HTTPS through the approved loopback connection', () => {
+  it('allows the bounded two-stage AI timeout while keeping ordinary reads capped at 30 seconds',async()=>{
+    const f=await serve((_request,response)=>response.end('{}')),value=transport(f.origin);
+    const timers=vi.spyOn(globalThis,'setTimeout');
+    try{
+      await value.fetch(f.origin+'/api/v1/rpc/command',{method:'POST',body:'{}'});
+      expect(timers.mock.calls.some(([,ms])=>ms===510_000)).toBe(true);
+      timers.mockClear();
+      await value.fetch(f.origin+'/api/v1/session');
+      expect(timers.mock.calls.some(([,ms])=>ms===30_000)).toBe(true);
+      expect(timers.mock.calls.some(([,ms])=>ms===510_000)).toBe(false);
+    }finally{timers.mockRestore();}
+  });
   it('connects to loopback without DNS while retaining Host, Origin, SNI, body and separate Set-Cookie headers', async () => {
     const seen: Array<{ host?: string; origin?: string; sni?: string | false; cookie?: string; csrf?: string | string[]; body: string }> = [];
     const f = await serve((request, response) => {

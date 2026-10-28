@@ -56,6 +56,14 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
     [sourceId, setSourceId] = useState<string | null>(null),
     [drawerOpen, setDrawerOpen] = useState(true),
     [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const previousPage = useRef(page);
+  useEffect(() => {
+    if (previousPage.current === page) return;
+    previousPage.current = page;
+    // A completed action belongs to the page where it happened. Keep errors
+    // and undo history, but do not carry its success receipt into every header.
+    ui.setNotice("");
+  }, [page, ui.setNotice]);
   const pointer = useRef<{ target: Element; at: number } | null>(null);
   useEffect(() => {
     const down = (event: PointerEvent) => { pointer.current = { target: event.target as Element, at: Date.now() }; };

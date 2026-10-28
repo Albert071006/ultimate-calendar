@@ -1,6 +1,7 @@
 /* A2 calendar: paper grid, type by shape and lightness, items by belonging color. Overrides legacy calendar rules. */
-.a2-cal-nav { display: flex; gap: 6px; }
-.a2-check { display: inline-flex; flex-direction: row; align-items: center; gap: 7px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.a2-cal-nav { display: flex; flex-shrink: 0; gap: 6px; }
+.a2-check { display: inline-flex; flex-direction: row; align-items: center; gap: 7px; font-size: 13px; color: var(--ink-2); cursor: pointer; white-space: nowrap; }
+.a2-calendar-page .ui-legend { white-space: nowrap; }
 .a2-check input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
 .a2-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .a2-calendar-page .calendar-term-week { font-family: var(--font-ui); font-size: 13px; color: var(--ink-3); background: none; padding: 0; }

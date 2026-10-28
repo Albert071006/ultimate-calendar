@@ -1,6 +1,7 @@
 import { Agent, request as httpsRequest } from 'node:https';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import { checkServerIdentity, type SecureContextOptions } from 'node:tls';
+import { AI_RPC_TIMEOUT_MS, isAiRpcPath } from '../shared/ai-reasoning';
 
 const LIMIT = 32 * 1024 * 1024;
 const transportFailure = () => new TypeError('本机 HTTPS 连接未完成；请检查已配置的 SSH 连接。');
@@ -15,8 +16,7 @@ export function createLoopbackHttpsTransport(options: { origin: string; localCon
   }
   const responseLimit = dependencies.maxResponseBytes ?? LIMIT, requestLimit = dependencies.maxRequestBytes ?? LIMIT;
   if (![responseLimit, requestLimit].every(value => Number.isSafeInteger(value) && value > 0 && value <= LIMIT)) throw Error('本机 HTTPS 传输上限无效。');
-  const timeoutMs = Math.max(1, Math.min(dependencies.timeoutMs ?? 30_000, 30_000));
-  if (!Number.isFinite(timeoutMs)) throw Error('本机 HTTPS 传输时限无效。');
+  if (dependencies.timeoutMs !== undefined && !Number.isFinite(dependencies.timeoutMs)) throw Error('本机 HTTPS 传输时限无效。');
   // Custom trust is a test dependency only; neither config nor NodeRemoteClient exposes it.
   const agent = new Agent({ keepAlive: true, maxSockets: 4, maxFreeSockets: 1, ...(dependencies.ca ? { ca: dependencies.ca } : {}) });
   const active = new Set<ClientRequest>(); let closed = false;
@@ -28,6 +28,8 @@ export function createLoopbackHttpsTransport(options: { origin: string; localCon
     if (url.origin !== origin.origin || url.username || url.password || url.hash || !url.pathname.startsWith('/api/v1/')) throw Error('本机 HTTPS 请求不能离开原资料服务。');
     if (init.redirect !== undefined && init.redirect !== 'error') throw Error('本机 HTTPS 请求不允许重定向。');
     const method = (init.method ?? 'GET').toUpperCase();
+    const limit = method === 'POST' && isAiRpcPath(url.pathname) ? AI_RPC_TIMEOUT_MS : 30_000;
+    const timeoutMs = Math.max(1, Math.min(dependencies.timeoutMs ?? limit, limit));
     if (!['GET', 'HEAD', 'POST', 'PUT', 'DELETE'].includes(method)) throw Error('不支持的本机 HTTPS 请求方法。');
     const headers = new Headers(init.headers);
     if (headers.has('host') && headers.get('host') !== url.host || headers.has('origin') && headers.get('origin') !== origin.origin) throw Error('本机 HTTPS 请求身份与原资料服务不符。');

@@ -5,6 +5,34 @@ import { DEFAULT_SETTINGS } from '../shared/contracts';
 const success = () => new Response(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
 const base = { key: 'synthetic-key', settings: DEFAULT_SETTINGS, messages: [{ role: 'user' as const, content: 'JSON' }], schema: z.strictObject({ ok: z.boolean() }), operationId: 'test', purpose: 'command' as const, now: '2026-10-22T20:00:00+08:00' };
 describe('real DeepSeek HTTP boundary', () => {
+  it.each(['network', 'body', '503'])('does not resend a paid thinking request after %s failure', async failure => {
+    let calls=0;
+    await expect(completeJson({ ...base, settings:{...base.settings,reasoningEffort:'max'}, maxAttempts:3, fetch:async()=>{
+      calls++;
+      if(failure==='network')throw Error('lost reply');
+      if(failure==='body')return new Response(new ReadableStream({start(c){c.error(Error('lost body'));}}));
+      return new Response('',{status:503});
+    }})).rejects.toMatchObject({code:'NETWORK'});
+    expect(calls).toBe(1);
+  });
+  it.each(['none', 'low', 'high', 'max'] as const)('sends the selected %s effort and parses only the final answer', async reasoningEffort => {
+    let body: any;
+    const result = await completeJson({ ...base, settings: { ...base.settings, reasoningEffort }, fetch: async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"ok":true}', reasoning_content: 'private synthetic reasoning, not JSON' }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 300, total_tokens: 310 } }));
+    } });
+    expect(body.thinking.type).toBe(reasoningEffort === 'none' ? 'disabled' : 'enabled');
+    expect(body.reasoning_effort).toBe(reasoningEffort === 'none' ? undefined : reasoningEffort);
+    expect(body.max_tokens).toBe({ none:8192, low:16384, high:32768, max:65536 }[reasoningEffort]);
+    expect(body.timeoutMs).toBeUndefined(); expect(result.value).toEqual({ ok:true }); expect(result.usage.outputTokens).toBe(300);
+  });
+  it('keeps legacy and unknown model requests compatible and defaults to thinking off', async () => {
+    for (const settings of [base.settings, { ...base.settings, model:'unknown-synthetic', reasoningEffort:'max' as const }]) {
+      await completeJson({ ...base, settings, fetch: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)); expect(body.thinking).toEqual({ type:'disabled' }); expect(body.reasoning_effort).toBeUndefined(); expect(body.max_tokens).toBe(8192); return success();
+      } });
+    }
+  });
   it('backs off twice and retries network/503 with identical body, at most three attempts', async () => {
     const bodies: string[] = [], sleeps: number[] = []; let calls = 0;
     const result = await completeJson({ ...base, sleep: async ms => { sleeps.push(ms); }, fetch: async (url, init) => { expect(url).toBe('https://api.deepseek.com/chat/completions'); bodies.push(String(init?.body)); calls++; if (calls === 1) throw Error('network secret'); if (calls === 2) return new Response('private server details', { status: 503 }); return success(); } });

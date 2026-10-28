@@ -10,7 +10,7 @@ import { privatePath, readPrivate, writePrivate } from '../remote/private-file';
 import { AiKeySyncPlaintextSchema, AiKeySyncResponseSchema, aiKeySyncAad, type AiKeySyncResponse } from '../shared/ai-key-sync';
 import { AiConfigurationRevisionSchema } from '../shared/ai-configuration';
 import { RemoteIdentitySchema } from '../shared/remote';
-import type { KeyStatus } from '../shared/contracts';
+import { type KeyStatus, type Settings } from '../shared/contracts';
 import type { AsyncEncryption } from './key-store';
 
 const ConfigSchema = z.strictObject({
@@ -40,6 +40,7 @@ export interface CollectorKeySyncOptions {
   keys: { get(): Promise<string | null>; set(key: string | null): Promise<KeyStatus>; status(): KeyStatus };
   createClient?(options: Parameters<typeof createNodeRemoteClient>[0]): SyncClient;
   onChanged?(value: CollectorKeyChange): void | Promise<void>;
+  onSettings?(settings: Pick<Settings, 'model' | 'reasoningEffort'>): void;
   onStatusChanged?(): void;
   timeoutMs?: number;
   pollMs?: number;
@@ -175,7 +176,7 @@ export function createCollectorKeySync(options: CollectorKeySyncOptions) {
       throw failure(error instanceof RemoteClientError && [401, 403, 409].includes(error.status) ? 'identity' : 'network');
     } finally { signal.removeEventListener('abort', cancel); }
     checkOpen(signal);
-    let key: string | null, revision: Revision;
+    let key: string | null, revision: Revision, settings: Pick<Settings, 'model' | 'reasoningEffort'> | undefined;
     try {
       const checked = AiKeySyncResponseSchema.parse(response), envelope = checked.envelope;
       if (!sameRemoteIdentity(checked.identity, credential!.identity) || envelope.deviceId !== credential!.deviceId || envelope.keyId !== keyId || envelope.nonce !== nonce) throw Error();
@@ -190,12 +191,13 @@ export function createCollectorKeySync(options: CollectorKeySyncOptions) {
         plaintext = Buffer.concat([decipher.update(Buffer.from(envelope.ciphertext, 'base64url')), decipher.final()]);
         const decoded = AiKeySyncPlaintextSchema.parse(JSON.parse(plaintext.toString('utf8')));
         if (decoded.revision !== envelope.revision) throw Error();
-        key = decoded.apiKey; revision = decoded.revision;
+        key = decoded.apiKey; revision = decoded.revision; settings = decoded.settings;
       } finally { symmetric.fill(0); plaintext?.fill(0); }
     } catch { throw failure('protocol'); }
     checkOpen(signal);
     // Check the revision/key relationship before touching either credential file or memory.
     if (applied && revision === current.revision && key !== appliedKey) throw failure('protocol');
+    if (settings) options.onSettings?.(settings);
     try {
       if (!await options.encryption.isAsyncEncryptionAvailable()) throw Error();
       checkOpen(signal);

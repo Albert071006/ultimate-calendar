@@ -5,6 +5,7 @@ import type { RemoteIdentity } from '../../shared/remote';
 import type { PushSubscriptionSummary } from '../../shared/push';
 import type { DeviceSummary, RecoveryArchive, RemoteClientState, RemoteController } from './types';
 import { ArchiveList } from './readable';
+import { CloudModelSettings } from './CloudModelSettings';
 
 type Tone = 'ok' | 'warn' | 'error';
 type Message = { tone: Tone; text: string } | null;
@@ -55,6 +56,7 @@ export function AiKeyPage({ controller, online }: { controller: RemoteController
   const state = !current ? (loading ? '正在读取…' : '状态未知') : current.source === 'external' ? '由服务器管理' : current.configured ? '已配置' : '未配置';
   return (
     <div className="m-settings">
+      <CloudModelSettings controller={controller} online={online} />
       <div className="m-kv"><span>DeepSeek API Key</span><b className={current?.configured ? 'ok' : ''}>{state}</b></div>
       <Note message={message} />
       {unclear && <button className="m-btn" disabled={busy || loading} onClick={() => void read(true)}>核对云端状态</button>}

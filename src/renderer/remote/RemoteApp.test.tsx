@@ -111,7 +111,7 @@ describe('remote browser shell',()=>{
     const page=within(screen.getByRole('region',{name:'手机提醒'}));
     const button=await page.findByRole('button',{name:'开启提醒'});
     expect(permission).not.toHaveBeenCalled();expect(register).not.toHaveBeenCalled();
-    expect(vi.mocked(f.controller.request).mock.calls.every(([path])=>path==='/api/v1/push'||path==='/api/v1/ai/config')).toBe(true);
+    expect(vi.mocked(f.controller.request).mock.calls.every(([path])=>path==='/api/v1/push'||path==='/api/v1/ai/config'||path==='/api/v1/rpc/snapshot')).toBe(true);
     order.length=0;
     fireEvent.click(button);
     await waitFor(()=>expect(f.controller.request).toHaveBeenCalledWith('/api/v1/push/subscribe',expect.objectContaining({showDetails:false}),'POST'));

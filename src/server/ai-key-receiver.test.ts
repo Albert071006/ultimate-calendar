@@ -84,6 +84,19 @@ function decrypt(response: AiKeySyncResponse, privateKey: KeyObject = keyPair.pr
 }
 
 describe('locally authorized encrypted AI key receivers', () => {
+  it('includes only model settings inside encrypted sync for capable clients, with no legacy shape change',async()=>{
+    const f=await setup(),device=await f.pair();f.bind(device.session.device.id);
+    const original=f.service.snapshot().settings;
+    await f.service.rpc('saveSettings',{requestId:'thinking-settings',identity:device.session.identity,input:{settings:{...original,model:'deepseek-v4-pro',reasoningEffort:'high'},expectedSettings:original}},device.session.device.id,true);
+    for(const modern of [true,false]){
+      const response=await f.call(endpoint,{method:'POST',headers:{...device.headers,...(modern?{'X-Planner-AI-Settings-Version':'1'}:{})},body:JSON.stringify(device.input())});
+      expect(response.status).toBe(200);
+      const raw=await response.text();expect(raw).not.toContain('reasoningEffort');
+      const decoded=decrypt(AiKeySyncResponseSchema.parse(JSON.parse(raw)));
+      expect(decoded.settings).toEqual(modern?{model:'deepseek-v4-pro',reasoningEffort:'high'}:undefined);
+    }
+    expect(f.transport).not.toHaveBeenCalled();
+  });
   it('requires pairing, exact origin, CSRF, explicit device binding and POST', async () => {
     const fixture = await setup(); const { call } = fixture;
     expect((await call(endpoint)).status).toBe(401);

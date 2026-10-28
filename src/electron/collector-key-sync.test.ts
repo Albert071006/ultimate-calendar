@@ -31,11 +31,11 @@ function encryption() {
   };
   return value;
 }
-function seal(input: { keyId: string; nonce: string }, key: string | null, revision: string | null, receiver: KeyObject = publicKey): AiKeySyncResponse {
+function seal(input: { keyId: string; nonce: string }, key: string | null, revision: string | null, receiver: KeyObject = publicKey, settings?: {model:string;reasoningEffort?:'none'|'low'|'high'|'max'}): AiKeySyncResponse {
   const symmetric = randomBytes(32), iv = randomBytes(12);
   const envelope = { version: 1 as const, deviceId, ...input, revision, wrappedKey: publicEncrypt({ key: receiver, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, symmetric).toString('base64url'), iv: iv.toString('base64url'), ciphertext: '', tag: '' };
   const cipher = createCipheriv('aes-256-gcm', symmetric, iv); cipher.setAAD(Buffer.from(aiKeySyncAad(identity, envelope)));
-  envelope.ciphertext = Buffer.concat([cipher.update(JSON.stringify({ apiKey: key, revision })), cipher.final()]).toString('base64url'); envelope.tag = cipher.getAuthTag().toString('base64url');
+  envelope.ciphertext = Buffer.concat([cipher.update(JSON.stringify({ apiKey: key, revision, ...(settings?{settings}:{}) })), cipher.final()]).toString('base64url'); envelope.tag = cipher.getAuthTag().toString('base64url');
   return { ok: true, identity, envelope };
 }
 async function fixture(initialReceiver = true) {
@@ -61,6 +61,17 @@ async function fixture(initialReceiver = true) {
 }
 
 describe('collector cloud-key receiver', () => {
+  it('syncs authenticated model settings with the key envelope without a full snapshot or resetting them on an old server', async () => {
+    const f=await fixture(),onSettings=vi.fn();
+    const worker=createCollectorKeySync({directory:f.root,keys:f.keys,encryption:f.encrypted,createClient:f.createClient,onSettings})!;workers.push(worker);
+    f.sync.mockImplementationOnce(async input=>seal(input,newKey,revisionA,publicKey,{model:'deepseek-v4-pro',reasoningEffort:'max'}));
+    expect(await worker.getApiKey()).toBe(newKey);
+    expect(onSettings).toHaveBeenCalledExactlyOnceWith({model:'deepseek-v4-pro',reasoningEffort:'max'});
+    await worker.refresh();expect(onSettings).toHaveBeenCalledTimes(1);
+    f.sync.mockImplementationOnce(async input=>seal(input,newKey,revisionA,publicKey,{model:'deepseek-v4-pro',reasoningEffort:'none'}));
+    await worker.refresh();expect(onSettings).toHaveBeenLastCalledWith({model:'deepseek-v4-pro',reasoningEffort:'none'});
+    expect(f.set).toHaveBeenCalledTimes(1);
+  });
   it('decrypts only the bound envelope, writes changes once and never exposes a key or cookie in status/public output', async () => {
     const f = await fixture(), worker = f.make();
     vi.stubGlobal('fetch', vi.fn(() => { throw Error('Real network forbidden'); }));
