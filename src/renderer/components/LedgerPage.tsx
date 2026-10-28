@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Download, Plus, Undo2 } from 'lucide-react';
 import type { HostCapabilities, PlannerClient } from '../../shared/client';
 import type { LedgerViewContext } from '../../shared/contracts';
-import type { LedgerAccountId, LedgerEntry } from '../../shared/ledger';
+import { ledgerAccounts, type LedgerAccountId, type LedgerEntry } from '../../shared/ledger';
 import { Modal } from './Modal';
 import { PageToolbar } from './shell/PageToolbar';
 import { MoreMenu } from './shell/MoreMenu';
@@ -73,10 +73,10 @@ export function LedgerPage({ api, host, createRequest = 0, onViewChange }: { api
     {!snapshot ? <div className="a2-ledger-empty"><div className="ui-empty center"><h4>{host ? '正在载入本地账本…' : '正在载入账本…'}</h4><div className="actions"><button className="ui-btn" onClick={() => void ledger.refresh()}>重新载入账本</button></div></div></div>
       : <section className="a2-ledger-body" role="tabpanel" aria-label={tab === 'flows' ? '收支' : '账户'}>
         {tab === 'flows' ? <Flows snapshot={snapshot} month={month} busy={busy} filter={filter} setFilter={setFilter} create={() => setEditor('new')} edit={setEditor} voidEntry={setVoidTarget} />
-          : <Accounts snapshot={snapshot} checkBalance={setBalanceAccount} showAccount={id => { setFilter({ ...noFilter, account: id }); setTab('flows'); }} />}
+          : <Accounts snapshot={snapshot} busy={busy} error={error} save={ledger.save} checkBalance={setBalanceAccount} showAccount={id => { setFilter({ ...noFilter, account: id }); setTab('flows'); }} />}
       </section>}
     {snapshot && editor && <Modal title={editor === 'new' ? '记一笔' : '更正账单'} onClose={() => { if (!busy) setEditor(null); }}><EntryEditor key={editor === 'new' ? 'new' : `${editor.id}:${editor.version}`} entry={editor === 'new' ? undefined : editor} snapshot={snapshot} busy={busy} error={error} save={ledger.save} close={() => setEditor(null)} /></Modal>}
     {voidTarget && <Modal title="作废账单" onClose={() => { if (!busy) setVoidTarget(null); }}><VoidEditor entry={voidTarget} busy={busy} error={error} save={ledger.save} close={() => setVoidTarget(null)} /></Modal>}
-    {snapshot && balanceAccount && <Modal title={`核对余额 · ${accountName(balanceAccount)}`} onClose={() => { if (!busy) setBalanceAccount(null); }}><BalanceEditor accountId={balanceAccount} snapshot={snapshot} busy={busy} error={error} save={ledger.save} close={() => setBalanceAccount(null)} /></Modal>}
+    {snapshot && balanceAccount && <Modal title={`核对余额 · ${accountName(balanceAccount, ledgerAccounts(snapshot))}`} onClose={() => { if (!busy) setBalanceAccount(null); }}><BalanceEditor accountId={balanceAccount} snapshot={snapshot} busy={busy} error={error} save={ledger.save} close={() => setBalanceAccount(null)} /></Modal>}
   </div>;
 }

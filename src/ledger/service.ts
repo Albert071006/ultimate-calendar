@@ -3,15 +3,20 @@ import type { DatabaseSync } from 'node:sqlite';
 import { openDatabase } from '../storage/database';
 import {
   DEFAULT_LEDGER_RULES, LEDGER_ACCOUNTS, LedgerDataSchema, LedgerImportPayloadSchema, LedgerMutationRequestSchema,
-  LedgerMonthSchema, LedgerQuerySchema, LedgerUndoRequestSchema, ledgerAllowanceKey, ledgerToday,
-  type LedgerData, type LedgerEntry, type LedgerImportPayload, type LedgerMutationRequest, type LedgerMutationResult,
+  LedgerMonthSchema, LedgerQuerySchema, LedgerUndoRequestSchema, ledgerAccounts, ledgerAllowanceKey, ledgerToday,
+  type LedgerAccount, type LedgerData, type LedgerEntry, type LedgerImportPayload, type LedgerMutationRequest, type LedgerMutationResult,
   type LedgerQuery, type LedgerSnapshot, type LedgerUndoRequest,
 } from '../shared/ledger';
 import { ledgerEntryMatches, summarizeLedger } from './summary';
 import { ledgerReceivable } from './receivable';
+import { isLedgerLoanKind } from '../shared/ledger-loans';
 
 export class LedgerError extends Error {
   constructor(readonly code: 'VALIDATION' | 'CONFLICT' | 'DUPLICATE' | 'STORAGE', message: string, readonly details?: unknown) { super(message); this.name = 'LedgerError'; }
+}
+/** A new mutation failed validation and its entire transaction was rolled back. */
+export class LedgerValidationRejection extends LedgerError {
+  constructor(readonly operationId: string, message: string) { super('VALIDATION', message); this.name = 'LedgerValidationRejection'; }
 }
 function emptyLedger(): LedgerData { return { revision: 0, entries: [], balanceSnapshots: [], rules: structuredClone(DEFAULT_LEDGER_RULES), audit: [], sources: [] }; }
 export function initializeLedgerDatabase(db: DatabaseSync): void {
@@ -40,11 +45,30 @@ export function replaceLedgerDatabase(db: DatabaseSync, input: LedgerData): void
 }
 const fail = (message: string): never => { throw new LedgerError('VALIDATION', message); };
 const noValue = (value: number | null) => value === 0 || value === null;
+const accountNameKey = (name: string) => name.trim().toLowerCase();
+function validateAccountDirectory(accounts: readonly LedgerAccount[]): void {
+  const ids = new Set<string>(); const names = new Set<string>();
+  for (const account of accounts) {
+    if (ids.has(account.id)) fail('账户编号重复，尚未保存'); ids.add(account.id);
+    const name = accountNameKey(account.name);
+    if (names.has(name)) fail('账户名称重复，请为不同银行卡或店铺使用独立名称'); names.add(name);
+    if (account.kind === 'family' && account.id !== 'family') fail('亲情卡仅保留原账户，不能新增亲情卡账户');
+  }
+  for (const account of LEDGER_ACCOUNTS) {
+    const saved = accounts.find(item => item.id === account.id);
+    if (!saved || saved.kind !== account.kind) fail('默认账户必须保留，已有账户类型不能改变');
+  }
+}
 
 /** Enforce money semantics at the persistence boundary, regardless of UI/model origin. */
 export function validateLedgerData(data: LedgerData): void {
+  const accounts = ledgerAccounts(data); validateAccountDirectory(accounts);
+  const accountsById = new Map(accounts.map(account => [account.id, account]));
+  const allowanceAccount = data.rules.monthlyAllowance.accountId;
+  if (allowanceAccount !== null && (!accountsById.has(allowanceAccount) || accountsById.get(allowanceAccount)!.kind === 'family')) fail('生活费入账账户不存在或不是可收款账户');
   const seenIds = new Set<string>(); const sourceKeys = new Set<string>(); const ruleKeys = new Set<string>();
   for (const entry of data.entries) {
+    if (entry.cashflows.some(flow => flow.accountId !== null && !accountsById.has(flow.accountId))) fail('资金收付引用了不存在的账户，请先创建对应银行卡或店铺账户');
     if (seenIds.has(entry.id)) fail('账目编号重复，尚未保存'); seenIds.add(entry.id);
     if (entry.sourceKey) { if (sourceKeys.has(entry.sourceKey)) fail('来源编号重复，尚未保存'); sourceKeys.add(entry.sourceKey); }
     if (entry.ruleKey) { if (ruleKeys.has(entry.ruleKey)) fail('该月份的固定收入已存在，不能重复生成'); ruleKeys.add(entry.ruleKey); }
@@ -54,7 +78,17 @@ export function validateLedgerData(data: LedgerData): void {
     if (entry.personalCents !== null && entry.personalCents > entry.amountCents) fail('个人开销不能超过实际付款；请拆分或核对金额');
     const outgoing = entry.cashflows.reduce((sum, flow) => sum + Math.max(0, -flow.deltaCents), 0);
     const incoming = entry.cashflows.reduce((sum, flow) => sum + Math.max(0, flow.deltaCents), 0);
-    if (entry.kind === 'expense' || entry.kind === 'repayment') {
+    if (isLedgerLoanKind(entry.kind)) {
+      if (entry.amountCents <= 0) fail('借款本金必须大于零');
+      if (entry.personalCents !== 0 || entry.incomeCents !== 0 || entry.assetSaleCents !== 0) fail('借款本金、还款和收回均不计个人开销、普通收入或资产变现');
+      if (entry.adjustments.length) fail('借款不能冲减消费；手续费或利息请单独记录');
+      if (entry.cashflows.some(flow => flow.accountId !== null && accountsById.get(flow.accountId)!.kind !== 'cash')) fail('借款只能使用现金账户或待确认账户，不能使用亲情卡或储值卡');
+      const incomingLoan = entry.kind === 'loan_borrow' || entry.kind === 'loan_collect';
+      if (incomingLoan ? outgoing !== 0 || incoming !== entry.amountCents : incoming !== 0 || outgoing !== entry.amountCents) fail('借款本金与账户资金收付方向或金额不一致');
+      if (entry.kind === 'loan_borrow' || entry.kind === 'loan_lend') {
+        if (entry.relatedEntryIds.length) fail('借入或借出本金不关联其他原账；还款或收回时再关联本笔借款');
+      } else if (entry.relatedEntryIds.length > 1) fail('每笔还款或收回最多关联一笔原始借款；涉及多笔本金时请分别记录');
+    } else if (entry.kind === 'expense' || entry.kind === 'repayment') {
       if (incoming !== 0 || outgoing !== entry.amountCents) fail('付款账户的支出必须与实际付款金额一致');
       if (entry.incomeCents || entry.assetSaleCents) fail('支出不能同时记为收入或资产变现');
       if (entry.kind === 'repayment' && !noValue(entry.personalCents)) fail('还款不能重复计入消费，原消费不明时只记资金支出');
@@ -63,7 +97,7 @@ export function validateLedgerData(data: LedgerData): void {
       if (!noValue(entry.personalCents) || entry.incomeCents || entry.assetSaleCents) fail('账户转账不计个人开销或收入');
       if (new Set(entry.cashflows.map(flow => flow.accountId)).size < 2) fail('转出和转入不能是同一账户');
     } else if (entry.kind === 'bonus') {
-      if (outgoing || incoming !== entry.amountCents || entry.cashflows.some(flow => !['meal', 'bakery'].includes(flow.accountId ?? ''))) fail('赠送额度只能增加储值卡余额');
+      if (outgoing || incoming !== entry.amountCents || entry.cashflows.some(flow => flow.accountId === null || accountsById.get(flow.accountId)!.kind !== 'stored')) fail('赠送额度只能增加储值卡余额');
       if (!noValue(entry.personalCents) || entry.incomeCents || entry.assetSaleCents) fail('会员赠送额度不计现金收入或消费');
     } else if (entry.kind !== 'adjustment') {
       if (outgoing || incoming !== entry.amountCents) fail('收款账户的增加必须与收款金额一致');
@@ -78,8 +112,20 @@ export function validateLedgerData(data: LedgerData): void {
   }
   const byId = new Map(data.entries.map(entry => [entry.id, entry]));
   const groups = new Map<string, { ids: Set<string>; amount: number; capacity: number }>();
+  const settledLoans = new Map<string, number>();
   for (const entry of data.entries.filter(item => !item.voided)) {
     for (const relatedId of entry.relatedEntryIds) if (!byId.has(relatedId)) fail('关联原记录不存在，请先补充原记录或保留为未关联说明');
+    if ((entry.kind === 'loan_repay' || entry.kind === 'loan_collect') && entry.relatedEntryIds.length) {
+      const original = byId.get(entry.relatedEntryIds[0]!)!;
+      const expectedKind = entry.kind === 'loan_repay' ? 'loan_borrow' : 'loan_lend';
+      if (original.voided || original.kind !== expectedKind) fail('还款须关联有效借入本金，收回须关联有效借出本金');
+      if (entry.month < original.month || (entry.date && original.date && entry.date < original.date) ||
+          (entry.occurredAt && original.occurredAt && Date.parse(entry.occurredAt) < Date.parse(original.occurredAt))) fail('还款或收回的日期、时刻不能早于原始借款');
+      if (entry.counterparty?.trim() && original.counterparty?.trim() && entry.counterparty.trim() !== original.counterparty.trim()) fail('还款或收回的对方与原始借款不一致，请核对关联记录');
+      const settled = (settledLoans.get(original.id) ?? 0) + entry.amountCents;
+      if (settled > original.amountCents) fail('累计还款或收回不能超过原始借款本金；利息或手续费请单独记录');
+      settledLoans.set(original.id, settled);
+    }
     for (const adjustment of entry.adjustments) {
       const ids = new Set(adjustment.targetEntryIds);
       if (ids.size !== adjustment.targetEntryIds.length || ids.has(entry.id)) fail('退款关联记录不能重复或指向自己');
@@ -96,6 +142,7 @@ export function validateLedgerData(data: LedgerData): void {
   }
   const snapshotIds = new Set<string>();
   for (const snapshot of data.balanceSnapshots) {
+    if (!accountsById.has(snapshot.accountId) || accountsById.get(snapshot.accountId)!.kind === 'family') fail('余额快照必须使用已有现金或储值账户，不能核对亲情卡余额');
     if (snapshotIds.has(snapshot.id)) fail('余额快照编号重复'); snapshotIds.add(snapshot.id);
     if (snapshot.asOf && ledgerToday(new Date(snapshot.asOf)) !== snapshot.date) fail('余额快照的日期和时刻不一致');
     if (new Set(snapshot.coveredEntryIds).size !== snapshot.coveredEntryIds.length) fail('余额快照覆盖编号重复');
@@ -127,6 +174,7 @@ export class LedgerService {
   snapshot(month?: string): LedgerSnapshot { return this.toSnapshot(readLedgerDatabase(this.db), month); }
   query(input: LedgerQuery = {}) {
     const query = LedgerQuerySchema.parse(input); const data = readLedgerDatabase(this.db);
+    if (query.accountId && !ledgerAccounts(data).some(account => account.id === query.accountId)) fail('查询的账户不存在');
     const month = query.month ?? ((!query.from && !query.to) ? ledgerToday(this.now()).slice(0, 7) : undefined);
     return { entries: data.entries.filter(entry => ledgerEntryMatches(entry, { ...query, month })), summary: summarizeLedger(data, query, this.now()), receivables: ledgerReceivable(data.entries, { ...query, month }) };
   }
@@ -135,25 +183,40 @@ export class LedgerService {
   }
   private transact(operationId: string, kind: string, digest: string, expectedRevision: number | undefined, month: string | undefined, apply: (data: LedgerData, at: string) => string[]): LedgerMutationResult {
     this.db.exec('BEGIN IMMEDIATE');
+    let phase: 'read' | 'apply' | 'write' | 'committed' = 'read';
     try {
       const previous = this.db.prepare('SELECT * FROM ledger_operations WHERE id=?').get(operationId) as OperationRow | undefined;
       const data = readLedgerDatabase(this.db);
       if (previous) {
         if (previous.fingerprint !== digest) throw new LedgerError('CONFLICT', '同一操作编号的内容已改变，请重新发起该操作');
         this.db.exec('COMMIT');
+        phase = 'committed';
         return { status: 'already_saved', operationId, snapshot: this.toSnapshot(data, month), entryIds: JSON.parse(previous.entry_ids) as string[], message: previous.undone ? '该操作已保存后撤销，本次重试未重复记账' : '此前已保存，本次重试未重复记账', undoAvailable: this.hasUndo() };
       }
       if (expectedRevision !== undefined && data.revision !== expectedRevision) throw new LedgerError('CONFLICT', '账本已更新，请刷新最新记录后再操作');
-      const before = JSON.stringify(data); const at = this.now().toISOString(); const entryIds = apply(data, at);
+      const before = JSON.stringify(data); const at = this.now().toISOString();
+      phase = 'apply';
+      const entryIds = apply(data, at);
       data.revision += 1; validateLedgerData(data); LedgerDataSchema.parse(data);
       const payload = JSON.stringify(data);
+      phase = 'write';
       this.db.prepare('UPDATE ledger_state SET payload=? WHERE id=1').run(payload);
       this.db.prepare('INSERT INTO ledger_operations(id,fingerprint,kind,before_payload,entry_ids,revision) VALUES(?,?,?,?,?,?)').run(operationId, digest, kind, before, JSON.stringify(entryIds), data.revision);
       if (String(this.db.prepare('SELECT payload FROM ledger_state WHERE id=1').get()!['payload']) !== payload) throw new LedgerError('STORAGE', '保存后核对失败，账本尚未完成保存');
       this.db.exec('COMMIT');
+      phase = 'committed';
       return { status: 'saved', operationId, snapshot: this.toSnapshot(data, month), entryIds, message: kind === 'undo' ? '已撤销上一次账本操作' : '已保存并核对本地账本', undoAvailable: this.hasUndo() };
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* A committed result is never retried here. */ }
+      if (phase === 'committed') throw new LedgerError('STORAGE', '账本已提交，但结果读取未完成；请核对原操作，不要重新记账');
+      try { this.db.exec('ROLLBACK'); } catch {
+        throw new LedgerError('STORAGE', '账本保存状态尚未确认，请核对原操作，不要重新记账');
+      }
+      // Only this proven, rolled-back boundary permits fresh AI analysis. Read
+      // failures, conflicts and uncertain/committed writes must retain their ID.
+      if (kind === 'mutation' && phase === 'apply') {
+        if (error instanceof LedgerError && error.code === 'VALIDATION') throw new LedgerValidationRejection(operationId, error.message);
+        if (error instanceof Error && error.name === 'ZodError') throw new LedgerValidationRejection(operationId, '账目格式不符合保存要求');
+      }
       if (error instanceof LedgerError) throw error;
       if (error instanceof Error && error.name === 'ZodError') throw new LedgerError('VALIDATION', '账目格式不正确，尚未保存', error.message);
       throw new LedgerError('STORAGE', '本地账本保存未完成，请检查文件后重试同一操作', error instanceof Error ? error.message : undefined);
@@ -172,7 +235,9 @@ export class LedgerService {
           if ((old?.version ?? null) !== change.expectedVersion) throw new LedgerError('CONFLICT', '这笔账已被修改，请打开最新记录后再更正');
           if (old?.voided) throw new LedgerError('CONFLICT', '这笔账已移除，可先撤销移除再修改');
           if (!old && !change.confirmDuplicate) {
-            const duplicate = data.entries.find(entry => !entry.voided && entry.date === change.entry.date && entry.month === change.entry.month && entry.kind === change.entry.kind && entry.amountCents === change.entry.amountCents && normalizeTitle(entry.title) === normalizeTitle(change.entry.title));
+            const duplicate = data.entries.find(entry => !entry.voided && entry.date === change.entry.date && entry.month === change.entry.month && entry.kind === change.entry.kind && entry.amountCents === change.entry.amountCents && normalizeTitle(entry.title) === normalizeTitle(change.entry.title) &&
+              (!isLedgerLoanKind(change.entry.kind) || ((entry.counterparty?.trim() ?? '') === (change.entry.counterparty?.trim() ?? '') &&
+                JSON.stringify([...new Set(entry.relatedEntryIds)].sort()) === JSON.stringify([...new Set(change.entry.relatedEntryIds)].sort()))));
             if (duplicate) throw new LedgerError('DUPLICATE', `已有相同日期、项目和金额的“${duplicate.title}”，请先确认是否确实是另一笔`, { entryIds: [duplicate.id] });
           }
           const entry: LedgerEntry = { ...change.entry, version: (old?.version ?? 0) + 1, createdAt: old?.createdAt ?? at, updatedAt: at, voided: false,
@@ -190,7 +255,16 @@ export class LedgerService {
           if (change.snapshot.date > ledgerToday(this.now())) fail('不能记录未来余额快照');
           if (change.snapshot.asOf && Date.parse(change.snapshot.asOf) > this.now().getTime()) fail('余额快照的核对时刻尚未发生，请提供已经观察到的余额');
           data.balanceSnapshots.push({ ...change.snapshot, recordedAt: at });
-          data.audit.push({ id: randomUUID(), operationId: request.operationId, at, action: '核对余额', entryIds: [], note: `${LEDGER_ACCOUNTS.find(account => account.id === change.snapshot.accountId)!.name}：${(change.snapshot.balanceCents / 100).toFixed(2)}；${change.snapshot.note}`, beforeEntries: [] });
+          const account = ledgerAccounts(data).find(account => account.id === change.snapshot.accountId) ?? fail('余额快照引用了不存在的账户');
+          data.audit.push({ id: randomUUID(), operationId: request.operationId, at, action: '核对余额', entryIds: [], note: `${account.name}：${(change.snapshot.balanceCents / 100).toFixed(2)}；${change.snapshot.note}`, beforeEntries: [] });
+        } else if (change.type === 'putAccount') {
+          const existing = ledgerAccounts(data).find(account => account.id === change.account.id);
+          if (existing && existing.kind !== change.account.kind) fail('已有账户类型不能改变，请创建独立账户');
+          if (!existing && change.account.kind === 'family') fail('亲情卡仅保留原账户，新账户只能是现金或储值账户');
+          data.accounts ??= structuredClone([...LEDGER_ACCOUNTS]);
+          const index = data.accounts.findIndex(account => account.id === change.account.id);
+          if (index < 0) data.accounts.push(change.account); else data.accounts[index] = change.account;
+          data.audit.push({ id: randomUUID(), operationId: request.operationId, at, action: existing ? '修改账户' : '新增账户', entryIds: [], note: change.account.name, beforeEntries: [] });
         } else {
           const resumed = !data.rules.monthlyAllowance.enabled && change.rules.monthlyAllowance.enabled;
           const currentMonth = ledgerToday(this.now()).slice(0, 7);
@@ -210,6 +284,7 @@ export class LedgerService {
       if (!operation) throw new LedgerError('VALIDATION', '没有可撤销的账本操作');
       const before = LedgerDataSchema.parse(JSON.parse(operation.before_payload));
       const audit = data.audit; const revision = data.revision;
+      if (before.accounts === undefined) delete data.accounts;
       Object.assign(data, before, { revision, audit });
       const entryIds = JSON.parse(operation.entry_ids) as string[];
       data.audit.push({ id: randomUUID(), operationId: request.operationId, at, action: '撤销账本操作', entryIds, note: `撤销操作 ${operation.id}`, beforeEntries: [] });
@@ -220,6 +295,20 @@ export class LedgerService {
   import(input: LedgerImportPayload, operationId: string, expectedRevision?: number): LedgerMutationResult {
     const payload = LedgerImportPayloadSchema.parse(input);
     return this.transact(operationId, 'import', fingerprint({ kind: 'import', payload }), expectedRevision, undefined, (data, at) => {
+      if (payload.accounts !== undefined) {
+        validateAccountDirectory(payload.accounts);
+        const fresh = data.accounts === undefined && !data.entries.length && !data.balanceSnapshots.length && !data.audit.length && !data.sources.length;
+        if (fresh) data.accounts = payload.accounts;
+        else {
+          const merged = structuredClone([...ledgerAccounts(data)]);
+          for (const account of payload.accounts) {
+            const existing = merged.find(item => item.id === account.id);
+            if (existing && fingerprint(existing) !== fingerprint(account)) throw new LedgerError('CONFLICT', '导入账户与现有同编号账户不同，请先核对，未覆盖账户目录');
+            if (!existing) merged.push(account);
+          }
+          validateAccountDirectory(merged); data.accounts = merged;
+        }
+      }
       const importedIds: string[] = [];
       for (const entry of payload.entries) {
         const byId = data.entries.find(existing => existing.id === entry.id);
@@ -271,8 +360,8 @@ export class LedgerService {
     return result;
   }
   exportJson(): LedgerImportPayload {
-    const { entries, balanceSnapshots, rules, audit, sources } = readLedgerDatabase(this.db);
-    return { format: 'ultimate-calendar-ledger', formatVersion: 1, entries, balanceSnapshots, rules, audit, sources };
+    const { entries, balanceSnapshots, rules, audit, sources, accounts } = readLedgerDatabase(this.db);
+    return { format: 'ultimate-calendar-ledger', formatVersion: 1, entries, balanceSnapshots, rules, audit, sources, ...(accounts !== undefined ? { accounts } : {}) };
   }
   exportCsv(month?: string): string {
     const data = readLedgerDatabase(this.db); if (month) LedgerMonthSchema.parse(month);
@@ -281,11 +370,13 @@ export class LedgerService {
       const safe = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
       return `"${safe.replace(/"/g, '""')}"`;
     };
-    const rows: Array<Array<string | number | null>> = [['编号', '日期', '月份', '日期说明', '性质', '项目', '分类', '实际金额', '原记录个人开销', '普通收入', '资产变现', '账户资金变化', '关联冲减金额', '关联原记录', '备注', '状态', '版本', '登记时间', '更正时间']];
-    for (const entry of data.entries.filter(item => !month || item.month === month)) rows.push([
+    const selected = data.entries.filter(item => !month || item.month === month);
+    const includeCounterparty = selected.some(entry => isLedgerLoanKind(entry.kind) || entry.counterparty !== undefined);
+    const rows: Array<Array<string | number | null>> = [['编号', '日期', '月份', '日期说明', '性质', '项目', '分类', '实际金额', '原记录个人开销', '普通收入', '资产变现', '账户资金变化', '关联冲减金额', '关联原记录', '备注', '状态', '版本', '登记时间', '更正时间', ...(includeCounterparty ? ['借款对方'] : [])]];
+    for (const entry of selected) rows.push([
       entry.id, entry.date, entry.month, entry.dateNote, entry.kind, entry.title, entry.category, (entry.amountCents / 100).toFixed(2), entry.personalCents === null ? null : (entry.personalCents / 100).toFixed(2), (entry.incomeCents / 100).toFixed(2), (entry.assetSaleCents / 100).toFixed(2),
-      entry.cashflows.map(flow => `${LEDGER_ACCOUNTS.find(account => account.id === flow.accountId)?.name ?? '账户待确认'} ${(flow.deltaCents / 100).toFixed(2)}`).join('；'),
-      (entry.adjustments.reduce((sum, adjustment) => sum + adjustment.amountCents, 0) / 100).toFixed(2), [...new Set([...entry.relatedEntryIds, ...entry.adjustments.flatMap(adjustment => adjustment.targetEntryIds)])].join('；'), entry.note, entry.voided ? '已移除' : '有效', entry.version, entry.createdAt, entry.updatedAt,
+      entry.cashflows.map(flow => `${ledgerAccounts(data).find(account => account.id === flow.accountId)?.name ?? '账户待确认'} ${(flow.deltaCents / 100).toFixed(2)}`).join('；'),
+      (entry.adjustments.reduce((sum, adjustment) => sum + adjustment.amountCents, 0) / 100).toFixed(2), [...new Set([...entry.relatedEntryIds, ...entry.adjustments.flatMap(adjustment => adjustment.targetEntryIds)])].join('；'), entry.note, entry.voided ? '已移除' : '有效', entry.version, entry.createdAt, entry.updatedAt, ...(includeCounterparty ? [entry.counterparty ?? ''] : []),
     ]);
     return `\uFEFF${rows.map(row => row.map(cell).join(',')).join('\r\n')}\r\n`;
   }

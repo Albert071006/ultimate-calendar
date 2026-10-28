@@ -16,8 +16,10 @@ import { normalizeCandidate, candidateFingerprint, supplementCandidate } from '.
 import { parseCourseFile, parseCsv, previewCourseRows, type SelectedCourseFile } from '../imports/courses';
 import type { PriceQuote } from '../shared/account';
 import type { ModelRequestRunner } from '../ai/request-queue';
-import type { LedgerService } from '../ledger/service';
+import { LedgerValidationRejection, type LedgerService } from '../ledger/service';
 import { LedgerIntentSchema, LedgerCommandProposalSchema } from '../shared/ledger-command';
+import { ledgerLoans } from '../shared/ledger-loans';
+import { validateLedgerQueryAccount } from '../ai/ledger-accounts';
 import { ledgerChanges, ledgerContext, ledgerMessages, ledgerQueryReply, ledgerSavedReply } from '../ai/ledger';
 import { ledgerToday } from '../shared/ledger';
 
@@ -45,7 +47,7 @@ export function createController(options: ControllerOptions) {
     const promise = (async (): Promise<ApiResult<T>> => { try { return { ok: true, data: await work(`workflow:${hash(id)}`, fingerprint) }; } catch (error) { return { ok: false, error: safeError(error) }; } finally { (options.automaticBackup ?? automaticBackup)(repository); } })();
     running.set(id, { fingerprint, promise }); void promise.finally(() => running.delete(id)); return promise;
   }
-  async function model<T>(schema: z.ZodType<T>, messages: Parameters<typeof completeJson>[0]['messages'], operationId: string, purpose: 'source' | 'command' | 'courses') {
+  async function model<T>(schema: z.ZodType<T>, messages: Parameters<typeof completeJson>[0]['messages'], operationId: string, purpose: 'source' | 'command' | 'courses', stage: '命令理解' | '账本解析' | '来源分析' | '课表识别' = purpose === 'source' ? '来源分析' : purpose === 'courses' ? '课表识别' : '命令理解') {
     const request = async () => {
       const settings = planner.snapshot().settings;
       const modalities = options.getModelInputModalities?.(settings.model);
@@ -55,6 +57,9 @@ export function createController(options: ControllerOptions) {
       try {
         const result = await completeJson({ key: await options.getApiKey(), settings, autoQuote: options.getPriceQuote?.(settings.model, settings.pricingCurrency), messages, schema, operationId: `request:${hash(operationId)}:${randomUUID()}`, purpose, now: now(), fetch: options.fetch, onUsage: usage => repository.addUsage(usage) });
         return result.value;
+      } catch (error) {
+        if (error instanceof WorkflowError && error.code === 'AI_RESPONSE') throw new WorkflowError(error.code, `${stage}失败：${error.message}`, error.retryable);
+        throw error;
       } finally { options.afterModelRequest?.(); }
     };
     return options.runModel ? options.runModel(request) : request();
@@ -162,10 +167,10 @@ export function createController(options: ControllerOptions) {
           const defaultQueryMonth = request.domain === 'ledger' ? request.ledgerView?.month ?? currentMonth : currentMonth;
           const snapshot = ledger.snapshot(defaultQueryMonth);
           const ledgerView = ledgerContext(snapshot, request, now());
-          const proposal: z.infer<typeof LedgerCommandProposalSchema> = prior?.ledgerProposal ?? { intent: await model(LedgerIntentSchema, ledgerMessages(ledgerView, request), `${input.operationId}:ledger`, 'command'), revision: snapshot.revision };
+          const proposal: z.infer<typeof LedgerCommandProposalSchema> = prior?.ledgerProposal ?? { intent: await model(LedgerIntentSchema, ledgerMessages(ledgerView, request), `${input.operationId}:ledger`, 'command', '账本解析'), revision: snapshot.revision };
           // Resolve the visible ledger range once, so a retried query stays on the
           // same month. Calendar selection never changes a transaction's date.
-          if (proposal.intent.kind === 'query' && !proposal.intent.query.month && !proposal.intent.query.from && !proposal.intent.query.to) {
+          if (proposal.intent.kind === 'query' && proposal.intent.detail !== 'loans' && !proposal.intent.query.month && !proposal.intent.query.from && !proposal.intent.query.to) {
             proposal.intent.query = { ...proposal.intent.query, month: defaultQueryMonth };
           }
           if (proposal.intent.kind === 'mutate' && !proposal.mutationRequest) {
@@ -176,7 +181,7 @@ export function createController(options: ControllerOptions) {
           repository.transact(state => save(state, id, fingerprint, { kind:'command', intent, result:null, ledgerProposal:proposal }));
           const savedReply = (result: ReturnType<LedgerService['mutate']>) => {
             const beforeAccounts = snapshot.entries.filter(entry=>result.entryIds.includes(entry.id)).flatMap(entry=>entry.cashflows.flatMap(flow=>flow.accountId ? [flow.accountId] : []));
-            const snapshotAccounts = proposal.mutationRequest?.changes.flatMap(change=>change.type === 'setBalance' ? [change.snapshot.accountId] : []) ?? [];
+            const snapshotAccounts = proposal.mutationRequest?.changes.flatMap(change=>change.type === 'setBalance' ? [change.snapshot.accountId] : change.type === 'putAccount' ? [change.account.id] : []) ?? [];
             const mainReply = ledgerSavedReply(result.snapshot,result.entryIds,result.message,[...new Set([...beforeAccounts,...snapshotAccounts])]);
             const touched = result.snapshot.entries.filter(entry=>result.entryIds.includes(entry.id));
             const related = new Set(touched.flatMap(entry=>entry.adjustments.flatMap(adjustment=>adjustment.targetEntryIds)));
@@ -188,13 +193,23 @@ export function createController(options: ControllerOptions) {
           if (proposal.intent.kind === 'clarification') reply = proposal.intent.question;
           else if (proposal.intent.kind === 'query') {
             const query = proposal.intent.query;
+            validateLedgerQueryAccount(query, snapshot, request);
             const latest = ledger.query(query);
-            reply = ledgerQueryReply(query, { ...latest, rules:ledger.snapshot(currentMonth).rules }, proposal.intent.detail);
+            const querySnapshot = ledger.snapshot(currentMonth);
+            reply = ledgerQueryReply(query, { ...latest, rules:querySnapshot.rules,
+              ...(proposal.intent.detail === 'loans' ? { loans:ledgerLoans(querySnapshot.entries), loanEntries:querySnapshot.entries } : {}) }, proposal.intent.detail);
           } else if (proposal.intent.kind === 'undo') {
             const result = ledger.undo({ operationId:`ai-ledger:${hash(input.operationId)}`,expectedRevision:proposal.revision,month:currentMonth });
             reply = savedReply(result);
           } else {
-            const result = ledger.mutate(proposal.mutationRequest!);
+            let result: ReturnType<LedgerService['mutate']>;
+            try { result = ledger.mutate(proposal.mutationRequest!); }
+            catch (error) {
+              if (error instanceof LedgerValidationRejection && error.operationId === proposal.mutationRequest!.operationId) {
+                throw new WorkflowError('AI_RESPONSE', `账本校验失败：${error.message}。本次整批账目均未保存，可重新分析。诊断：AI_LEDGER_VALIDATION`);
+              }
+              throw error;
+            }
             reply = savedReply(result);
           }
           const result: CommandResult = { reply, mutationResult:null, items:[], conversationState:{domain:'ledger',phase:proposal.intent.kind === 'clarification' ? 'clarification' : proposal.intent.kind === 'query' ? 'query' : 'saved'} };

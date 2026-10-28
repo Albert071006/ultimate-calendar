@@ -1,0 +1,24 @@
+.ledger-loans { margin: 0 0 24px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.ledger-loan-totals { display: flex; gap: 24px 48px; flex-wrap: wrap; margin: 10px 0 16px; }
+.ledger-loan-totals > div { display: flex; gap: 12px; align-items: baseline; }
+.ledger-loan-totals dt { color: var(--ink-3); }
+.ledger-loan-totals dd { margin: 0; font-size: 20px; font-variant-numeric: tabular-nums; }
+.ledger-loan-list > summary { cursor: pointer; padding: 6px 0; }
+.ledger-loan-item { border-top: 1px solid var(--line); }
+.ledger-loan-item > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; padding: 12px 0; }
+.ledger-loan-item > summary > span { min-width: 0; }
+.ledger-loan-item small { display: block; color: var(--ink-3); overflow-wrap: anywhere; margin-top: 4px; }
+.ledger-loan-item > summary > strong { flex: 0 0 auto; font-weight: 400; font-variant-numeric: tabular-nums; }
+.ledger-loan-detail { padding: 0 0 16px; }
+.ledger-loan-detail dl { display: flex; flex-wrap: wrap; gap: 10px 24px; margin: 0 0 12px; }
+.ledger-loan-detail dl > div { display: flex; gap: 8px; }
+.ledger-loan-detail dt { color: var(--ink-3); }
+.ledger-loan-detail dd { margin: 0; }
+.ledger-loan-detail ul,.ledger-loan-unlinked ul { padding-left: 20px; }
+.ledger-loan-detail li,.ledger-loan-unlinked li { margin: 8px 0; overflow-wrap: anywhere; }
+.ledger-loan-unlinked p { color: var(--ink-3); }
+.is-mobile .ledger-loan-totals { gap: 12px 24px; }
+.is-mobile .ledger-loan-totals > div { gap: 8px; }
+.is-mobile .ledger-loan-totals dd { font-size: 18px; }
+.is-mobile .ledger-loan-item > summary { flex-wrap: wrap; align-items: flex-start; }
+.is-mobile .ledger-loan-detail .ui-btn,.is-mobile .ledger-loan-unlinked .ui-btn { min-height: 40px; }

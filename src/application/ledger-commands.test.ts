@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRepository, type Repository } from '../storage/repository';
 import { createPlanner } from '../domain/planner';
-import { createLedgerService, type LedgerService } from '../ledger/service';
+import { createLedgerService, LedgerError, type LedgerService } from '../ledger/service';
 import { createController } from './controller';
 import { WorkflowError } from '../ai/deepseek';
 import { DEFAULT_LEDGER_RULES, LedgerEntryDraftSchema, LedgerEntrySchema, type LedgerEntry } from '../shared/ledger';
@@ -27,6 +27,49 @@ function importSynthetic(ledger: LedgerService, entries: LedgerEntry[]) {
   ledger.import({ format: 'ultimate-calendar-ledger', formatVersion: 1, entries, balanceSnapshots: [], rules: DEFAULT_LEDGER_RULES, audit: [], sources: [] }, 'synthetic-receivable-import');
 }
 describe('main assistant local ledger commands',()=>{
+  it('rolls back every proposed entry on business validation failure and explicitly reanalyzes with a new operation only once', async () => {
+    const corrected = { kind: 'mutate', changes: Array.from({ length: 4 }, (_, index) => ({ ...expense('alipay').changes[0]!, key: `new:${index}`, values: { ...expense('alipay').changes[0]!.values, title: `合成消费${index}` } })) };
+    const invalid = structuredClone(corrected);
+    invalid.changes[3]!.values.cashflows[0]!.deltaCents = 2000;
+    const { controller, ledger, repository, payloads } = setup([route, invalid, route, corrected]);
+    const before = ledger.snapshot();
+    const request = { operationId: 'rejected-business-batch', text: '合成四笔消费' };
+    const failed = await controller.command(request);
+    expect(failed).toMatchObject({ ok: false, error: { code: 'AI_RESPONSE', retryable: false, message: expect.stringContaining('账本校验失败') } });
+    if (failed.ok) throw Error('expected rejection');
+    expect(failed.error.message).toContain('本次整批账目均未保存');
+    expect(failed.error.message).toContain('AI_LEDGER_VALIDATION');
+    expect(ledger.snapshot()).toEqual(before);
+    expect(repository.snapshot().tokenUsage).toHaveLength(2);
+    expect(await controller.command(request)).toEqual(failed);
+    expect(payloads).toHaveLength(2);
+    const retry = { ...request, operationId: 'reanalyzed-business-batch' };
+    const saved = await controller.command(retry);
+    expect(saved).toMatchObject({ ok: true, data: { conversationState: { domain: 'ledger', phase: 'saved' } } });
+    expect(ledger.snapshot().entries).toHaveLength(4);
+    expect(ledger.snapshot().revision).toBe(before.revision + 1);
+    expect(await controller.command(retry)).toEqual(saved);
+    expect(payloads).toHaveLength(4);
+    expect(repository.snapshot().tokenUsage).toHaveLength(4);
+  });
+  it.each(['VALIDATION', 'CONFLICT', 'STORAGE'] as const)('does not reclassify an unproven %s failure as safely reanalyzable', async code => {
+    const { controller, ledger } = setup([route, expense('alipay')]);
+    vi.spyOn(ledger, 'mutate').mockImplementation(() => { throw new LedgerError(code, '合成未确认错误'); });
+    expect(await controller.command({ operationId: `unproven-${code}`, text: '合成午饭' })).toMatchObject({ ok: false, error: { code } });
+  });
+  it.each(['命令理解', '账本解析'] as const)('labels %s schema failures without saving a transaction or losing billable usage', async stage => {
+    const malformed = expense('alipay'); malformed.changes[0]!.values.amountCents = 2000.5;
+    const { controller, ledger, repository, payloads } = setup(stage === '命令理解' ? [{ kind: 'private-invalid-intent', reply: 'private model contents' }] : [route, malformed]);
+    const before = ledger.snapshot();
+    const result = await controller.command({ operationId: 'synthetic-schema-failure', text: '合成午饭20元支付宝' });
+    expect(result).toMatchObject({ ok: false, error: { code: 'AI_RESPONSE', retryable: false, message: expect.stringContaining(`${stage}失败：`) } });
+    if (result.ok) throw Error('expected schema rejection');
+    expect(result.error.message).toContain('AI_SCHEMA'); expect(result.error.message).not.toContain('private');
+    expect(ledger.snapshot().entries).toEqual(before.entries); expect(ledger.snapshot().revision).toBe(before.revision);
+    expect(payloads).toHaveLength(stage === '命令理解' ? 1 : 2);
+    expect(repository.snapshot().tokenUsage).toHaveLength(payloads.length);
+    expect(repository.snapshot().tokenUsage.every(usage => usage.totalTokens === 20)).toBe(true);
+  });
   it('continues the screenshot domain clarification with the original purchase facts and saves exactly once',async()=>{
     const clarification = {kind:'clarification',reply:'需要确认操作类型',questions:['这是记账还是安排日历事项？']};
     const {controller,ledger,intents,payloads}=setup([clarification]);
@@ -103,7 +146,8 @@ describe('main assistant local ledger commands',()=>{
     const real=ledger.mutate.bind(ledger);let didFail=false;
     vi.spyOn(ledger,'mutate').mockImplementation(input=>{const result=real(input);if(input.operationId.startsWith('ai-ledger:')&&!didFail){didFail=true;throw new WorkflowError('STORAGE','合成提交后中断');}return result;});
     const request={operationId:'retry-lunch',text:'午饭20元支付宝'};
-    expect((await controller.command(request)).ok).toBe(false);
+    expect(await controller.command(request)).toMatchObject({ ok: false, error: { code: 'STORAGE', retryable: false } });
+    expect(ledger.snapshot().entries.filter(e=>e.title==='午饭')).toHaveLength(1);
     expect((await controller.command(request)).ok).toBe(true);
     expect(payloads).toHaveLength(2);expect(ledger.snapshot().entries.filter(e=>e.title==='午饭')).toHaveLength(1);
   });

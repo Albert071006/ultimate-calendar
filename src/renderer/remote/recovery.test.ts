@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CommandRequestSchema, SnapshotSchema } from '../../shared/contracts';
+import { CommandRequestSchema, SnapshotSchema, type ApiError, type ApiResult, type CommandResult } from '../../shared/contracts';
 import { createRemoteClient } from './client';
 import { createMemoryStorage, emptyPartition, partitionKey } from './storage';
 import type { PairedSession } from './types';
@@ -11,12 +11,13 @@ const session: PairedSession = {
 };
 const snapshot = SnapshotSchema.parse({ schemaVersion: 1, sources: [], candidates: [], tasks: [], blocks: [], goals: [], courses: [], courseExceptions: [], preferences: [], feedback: [], settings: {}, journal: [], tokenUsage: [], keyStatus: { configured: true, sessionOnly: false } });
 const commandInput = () => CommandRequestSchema.parse({ operationId: crypto.randomUUID(), text: '合成查询：明天有哪些安排' });
-const commandResult = { ok: true, data: { reply: '合成查询结果', mutationResult: null, items: [] } };
+const commandResult: ApiResult<CommandResult> = { ok: true, data: { reply: '合成查询结果', mutationResult: null, items: [] } };
 const cleanup: Array<() => void> = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 async function fixture() {
   let online = true, revoked = false, loseCommand = false, sessionStatus = 200;
+  let nextCommandResult = commandResult;
   const calls: Array<{ path: string; body: Record<string, unknown> | undefined }> = [], receipts = new Map<string, unknown>();
   const sources: Array<{ close: ReturnType<typeof vi.fn>; onerror: ((event: Event) => unknown) | null; addEventListener: ReturnType<typeof vi.fn> }> = [];
   const storage = createMemoryStorage(), saved = emptyPartition(session); saved.snapshot = snapshot;
@@ -31,9 +32,9 @@ async function fixture() {
     if (url.pathname === '/api/v1/session/renew') return json(session);
     if (url.pathname === '/api/v1/rpc/snapshot') return json({ ok: true, data: snapshot });
     if (url.pathname === '/api/v1/rpc/command') {
-      receipts.set(String(body?.requestId), commandResult);
+      receipts.set(String(body?.requestId), nextCommandResult);
       if (loseCommand) { loseCommand = false; online = false; throw TypeError('Synthetic lost response after execution'); }
-      return json(commandResult);
+      return json(nextCommandResult);
     }
     if (url.pathname.startsWith('/api/v1/operations/')) {
       const requestId = url.pathname.split('/').at(-1)!;
@@ -45,10 +46,45 @@ async function fixture() {
     const source = { close: vi.fn(), onerror: null, addEventListener: vi.fn() }; sources.push(source); return source as unknown as EventSource;
   } });
   cleanup.push(() => controller.dispose());
-  return { controller, calls, sources, setOnline(value: boolean) { online = value; }, setSessionStatus(value: number) { sessionStatus = value; }, revoke() { revoked = true; }, loseNextCommand() { loseCommand = true; } };
+  return { controller, calls, sources, setCommandResult(value: ApiResult<CommandResult>) { nextCommandResult = value; }, setOnline(value: boolean) { online = value; }, setSessionStatus(value: number) { sessionStatus = value; }, revoke() { revoked = true; }, loseNextCommand() { loseCommand = true; } };
 }
 
 describe('mobile connection recovery without a browser online event', () => {
+  it.each([
+    { code: 'AI_RESPONSE', delivery: undefined, sendsAgain: true },
+    { code: 'AI_RESPONSE', delivery: 'unknown', sendsAgain: false },
+    { code: 'NETWORK', delivery: undefined, sendsAgain: false },
+    { code: 'INTERNAL', delivery: undefined, sendsAgain: false },
+  ] satisfies Array<{ code: ApiError['code']; delivery: ApiError['delivery']; sendsAgain: boolean }>)
+  ('keeps selected-resource dependencies safe after $code / $delivery (resend=$sendsAgain)', async ({ code, delivery, sendsAgain }) => {
+    const f = await fixture(); await f.controller.initialize();
+    const failed: ApiResult<CommandResult> = { ok: false, error: { code, message: '合成失败回执', retryable: false, ...(delivery ? { delivery } : {}) } };
+    f.setCommandResult(failed);
+    const original = CommandRequestSchema.parse({ ...commandInput(),
+      selected: [{ entity: 'task', id: 'synthetic-task' }],
+      resources: [{ id: 'synthetic-resource', kind: 'web', name: '合成资料', url: 'https://example.invalid/' }] });
+    expect(await f.controller.client.command(original)).toMatchObject(failed);
+    const prior = f.controller.getState().pending[0]!;
+    expect(prior.targets).toEqual(expect.arrayContaining(['synthetic-task', 'synthetic-resource']));
+    f.setCommandResult(commandResult);
+    const reanalysis = { ...original, operationId: crypto.randomUUID() };
+    const result = await f.controller.client.command(reanalysis);
+    if (sendsAgain) {
+      expect(result).toMatchObject(commandResult);
+      expect(f.controller.getState().pending).toEqual([prior]);
+      const writes = f.calls.filter(call => call.path === '/api/v1/rpc/command');
+      expect(writes).toHaveLength(2);
+      expect(writes[1]?.body?.input).toEqual(reanalysis);
+      expect(writes[1]?.body?.requestId).not.toBe(writes[0]?.body?.requestId);
+    } else {
+      expect(result).toMatchObject({ ok: false, error: { delivery: 'unknown' } });
+      expect(f.calls.filter(call => call.path === '/api/v1/rpc/command')).toHaveLength(1);
+      expect(f.controller.getState().pending[1]).toMatchObject({ status: 'blocked', dependencies: [prior.id] });
+    }
+    expect(f.controller.getState().pending[0]).toEqual(prior);
+    expect(await f.controller.client.command(original)).toMatchObject(failed);
+  });
+
   it('keeps retrying after the first SSE reconnect fails, with backoff and no business request', async () => {
     vi.useFakeTimers(); const f = await fixture(); await f.controller.initialize();
     f.setOnline(false); f.sources[0]!.onerror?.(new Event('error'));

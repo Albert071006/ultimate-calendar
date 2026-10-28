@@ -3,6 +3,7 @@ import { LedgerIntentSchema } from '../shared/ledger-command';
 import { DEFAULT_LEDGER_RULES, LedgerEntrySchema, type LedgerEntry } from '../shared/ledger';
 import { LedgerService } from '../ledger/service';
 import { ledgerChanges, ledgerContext, ledgerQueryReply, ledgerSavedReply } from './ledger';
+import { ledgerLoans } from '../shared/ledger-loans';
 
 const now = '2026-01-21T19:00:00+08:00';
 const before = '2026-01-21T18:00:00+08:00';
@@ -24,6 +25,79 @@ function mutation(value: unknown) {
 }
 
 describe('ledger AI adaptation', () => {
+  it('retains old outstanding loans ahead of recent purchases and preserves counterparty during an account-only edit', () => {
+    const original = entry({ id: 'old-loan', kind: 'loan_borrow', title: '合成旧借入', counterparty: '合成同学乙', date: '2025-11-02', month: '2025-11', amountCents: 18000, personalCents: 0, cashflows: [{ accountId: 'wechat', deltaCents: 18000 }], updatedAt: '2025-11-02T18:00:00+08:00' });
+    const { service, snapshot } = fixture([original, ...Array.from({ length: 130 }, (_, i) => entry({ id: `recent-${i}`, title: `合成近期消费${i}` }))]);
+    const context = ledgerContext(snapshot, { operationId: 'old-loan-context', text: '还合成同学乙的钱' }, now);
+    expect(context.entries.some(value => value.id === original.id)).toBe(true);
+    expect(context.openLoans).toMatchObject([{ entryId: original.id, outstandingCents: 18000 }]);
+    expect(context.loanOverview).toMatchObject({ payableCents: 18000, openCount: 1, omittedOpenCount: 0 });
+    const intent = mutation({ kind: 'mutate', changes: [{ type: 'updateEntry', id: original.id, expectedVersion: 1, patch: { cashflows: [{ accountId: 'alipay', deltaCents: 18000 }] }, note: '合成账户更正' }] });
+    const changes = ledgerChanges(intent, snapshot, { operationId: 'patch-loan-account', text: '这笔借款其实到支付宝' }, new Set(context.entries.map(value => value.id)), now);
+    const saved = service.mutate({ operationId: 'save-loan-patch', expectedRevision: snapshot.revision, changes, month: '2026-01' });
+    expect(saved.snapshot.entries.find(value => value.id === original.id)).toMatchObject({ kind: 'loan_borrow', counterparty: original.counterparty, amountCents: 18000, cashflows: [{ accountId: 'alipay', deltaCents: 18000 }] });
+  });
+
+  it('announces incomplete open-loan context instead of implying all matching debts were provided', () => {
+    const { snapshot } = fixture(Array.from({ length: 120 }, (_, i) => entry({ id: `open-${i}`, kind: 'loan_borrow', title: `合成借入${i}`, amountCents: 100, personalCents: 0, cashflows: [{ accountId: 'wechat', deltaCents: 100 }] })));
+    const context = ledgerContext(snapshot, { operationId: 'many-loans', text: '还一笔借款' }, now);
+    expect(context.loanOverview.openCount).toBe(120);
+    expect(context.loanOverview.omittedOpenCount).toBeGreaterThan(0);
+    expect(context.openLoans).toHaveLength(context.loanOverview.openCount - context.loanOverview.omittedOpenCount);
+    expect(context.entries.length).toBeLessThanOrEqual(100);
+  });
+
+  it('queries current cross-month principal balances by counterparty after settlement, and marks unlinked repayments unknown', () => {
+    const { snapshot } = fixture([
+      entry({ id: 'borrowed', kind: 'loan_borrow', title: '合成旧借款', counterparty: '合成同学甲', date: '2025-12-02', month: '2025-12', amountCents: 18000, personalCents: 0, cashflows: [{ accountId: 'wechat', deltaCents: 18000 }] }),
+      entry({ id: 'repaid', kind: 'loan_repay', title: '合成部分还款', counterparty: '合成同学甲', amountCents: 6000, personalCents: 0, cashflows: [{ accountId: 'alipay', deltaCents: -6000 }], relatedEntryIds: ['borrowed'] }),
+      entry({ id: 'lent', kind: 'loan_lend', title: '合成借出', counterparty: '合成同学乙', amountCents: 4000, personalCents: 0, cashflows: [{ accountId: 'alipay', deltaCents: -4000 }] }),
+      entry({ id: 'historical-repay', kind: 'loan_repay', title: '合成历史借款还款', counterparty: '合成同学甲', amountCents: 500, personalCents: 0, cashflows: [{ accountId: 'alipay', deltaCents: -500 }] }),
+    ]);
+    const reply = ledgerQueryReply({ search: '合成同学甲' }, { entries: [], summary: snapshot.summary, loans: ledgerLoans(snapshot.entries), loanEntries: snapshot.entries }, 'loans');
+    expect(reply).toContain('待还 ¥120.00，待收回 ¥0.00');
+    expect(reply).toContain('已归还 ¥60.00');
+    expect(reply).toContain('剩余本金未知');
+    expect(reply).toContain('未扣减任何已知借款');
+    expect(reply).not.toContain('合成同学乙');
+    const savedReply = ledgerSavedReply(snapshot, ['historical-repay'], '已保存');
+    expect(savedReply).toContain('目前待还 ¥120.00');
+    expect(savedReply).toContain('尚未关联原借款');
+  });
+
+  it('records an explicitly outgoing loan as a receivable without personal spending or income', () => {
+    const { service, snapshot } = fixture([]);
+    const intent = mutation({ kind: 'mutate', changes: [{ type: 'createEntry', key: 'new:0', values: {
+      kind: 'expense', date: '2026-01-21', month: '2026-01', title: '合成借出本金', category: '借出',
+      amountCents: 18000, personalCents: 0, cashflows: [{ accountId: 'alipay', deltaCents: -18000 }],
+      note: '本人已转给合成同学甲，待收回本金。',
+    } }] });
+    const changes = ledgerChanges(intent, snapshot, { operationId: 'outgoing-loan', text: '已从我的支付宝借给合成同学甲180元' }, new Set(), now);
+    const saved = service.mutate({ operationId: 'save-outgoing-loan', expectedRevision: snapshot.revision, changes, month: '2026-01' });
+    expect(saved.snapshot.summary).toMatchObject({ personalCents: 0, incomeCents: 0, actualPaidCents: 18000 });
+    expect(service.query({ month: '2026-01' }).receivables).toMatchObject({ cents: 18000, entryIds: saved.entryIds });
+  });
+
+  it('rejects incoming borrowed principal disguised as expense or adjustment without saving other batch entries', () => {
+    for (const kind of ['expense', 'adjustment'] as const) {
+      const { service, snapshot } = fixture([]);
+      const intent = mutation({ kind: 'mutate', changes: [
+        { type: 'createEntry', key: 'new:0', values: {
+          kind, date: '2026-01-21', month: '2026-01', title: '合成借入本金', category: '借入', amountCents: 0,
+          personalCents: 0, cashflows: [{ accountId: 'wechat', deltaCents: 18000 }], note: '本人收到借款，需要还给合成同学甲。',
+        } },
+        { type: 'createEntry', key: 'new:1', values: {
+          kind: 'expense', date: '2026-01-21', month: '2026-01', title: '合成手续费', category: '手续费', amountCents: 30,
+          personalCents: 30, cashflows: [{ accountId: 'wechat', deltaCents: -30 }],
+        } },
+      ] });
+      const changes = ledgerChanges(intent, snapshot, { operationId: `incoming-${kind}`, text: '合成同学甲借给我180元到微信，另付手续费3毛' }, new Set(), now);
+      expect(() => service.mutate({ operationId: `save-incoming-${kind}`, expectedRevision: snapshot.revision, changes, month: '2026-01' })).toThrow();
+      expect(service.snapshot('2026-01')).toEqual(snapshot);
+      expect(service.query({ month: '2026-01' }).receivables.cents).toBe(0);
+    }
+  });
+
   it('keeps omitted patch fields absent and preserves imported refund links, notes, amounts and provenance', () => {
     const refund = entry({ id: 'refund', kind: 'reimbursement', title: '合成报销', amountCents: 4000, personalCents: 0, incomeCents: 1000,
       cashflows: [{ accountId: 'wechat', deltaCents: 4000 }], adjustments: [{ targetEntryIds: ['original'], amountCents: 3000, note: '已确认部分报销' }], relatedEntryIds: ['original'],

@@ -64,11 +64,11 @@ describe('assistant images', () => {
     desktop(ui); await chooseImage(); await send();
     const first = command.mock.calls[0]![0];
     expect(screen.getByRole('img', { name: `已选图片：${image.label}` })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '重试这条指令' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '核对这条指令' })).toBeTruthy();
     fireEvent.change(screen.getByLabelText('自然语言指令'), { target: { value: '现在几点' } });
     await send();
     expect(command.mock.calls[1]![0].history).toEqual([]);
-    fireEvent.click(screen.getByRole('button', { name: '重试这条指令' }));
+    fireEvent.click(screen.getByRole('button', { name: '核对这条指令' }));
     await waitFor(() => expect(command).toHaveBeenCalledTimes(3));
     expect(command.mock.calls[2]![0]).toEqual(first);
     expect(command.mock.calls[2]![0].image).toEqual(image);
@@ -141,7 +141,7 @@ describe('assistant images', () => {
     fireEvent.change(screen.getByLabelText('选择助手图片文件'), { target: { files: [file()] } });
     await screen.findByRole('img', { name: `待发送图片：${image.label}` });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
-    await screen.findByRole('button', { name: '重试这条指令' });
+    await screen.findByRole('button', { name: '核对这条指令' });
     const stored = localStorage.getItem(props.storageKey)!;
     expect(stored).not.toContain('base64');
     expect(stored).not.toContain('operationId');
@@ -150,7 +150,7 @@ describe('assistant images', () => {
     render(<MobileAssistant {...props} />);
     expect(screen.getByText(/重新打开后如需继续看图/)).toBeTruthy();
     expect(screen.queryByRole('img')).toBeNull();
-    expect(screen.queryByRole('button', { name: '重试这条指令' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '核对这条指令' })).toBeNull();
     expect(command).toHaveBeenCalledTimes(1);
   });
 });

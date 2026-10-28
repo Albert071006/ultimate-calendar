@@ -7,9 +7,12 @@ const signedCents = z.number().int().min(-9_000_000_000_000).max(9_000_000_000_0
 export const LedgerMonthSchema = z.string().regex(/^\d{4}-(?:0[1-9]|1[0-2])$/);
 export const LedgerDateSchema = z.string().refine(value => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value, '日期必须真实存在');
 const instant = z.string().refine(value => /(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value)), '时间须包含时区');
-export const LedgerAccountIdSchema = z.enum(['alipay', 'wechat', 'cmb', 'meal', 'bakery', 'family']);
+export const LedgerAccountIdSchema = id;
 export type LedgerAccountId = z.infer<typeof LedgerAccountIdSchema>;
-export const LEDGER_ACCOUNTS: ReadonlyArray<{ id: LedgerAccountId; name: string; kind: 'cash' | 'stored' | 'family'; aliases: string[] }> = [
+export const LedgerAccountSchema = z.strictObject({ id: LedgerAccountIdSchema, name: z.string().trim().min(1).max(100),
+  kind: z.enum(['cash', 'stored', 'family']), aliases: z.array(z.string().trim().min(1).max(100)).max(100) });
+export type LedgerAccount = z.infer<typeof LedgerAccountSchema>;
+export const LEDGER_ACCOUNTS: readonly LedgerAccount[] = [
   { id: 'alipay', name: '支付宝余额', kind: 'cash', aliases: ['支付宝'] },
   { id: 'wechat', name: '微信余额', kind: 'cash', aliases: ['微信'] },
   { id: 'cmb', name: '银行卡', kind: 'cash', aliases: ['银行卡', '储蓄卡'] },
@@ -17,7 +20,8 @@ export const LEDGER_ACCOUNTS: ReadonlyArray<{ id: LedgerAccountId; name: string;
   { id: 'bakery', name: '储值会员卡', kind: 'stored', aliases: ['储值卡', '会员卡'] },
   { id: 'family', name: '亲情卡', kind: 'family', aliases: ['亲情卡'] },
 ];
-export const LedgerEntryKindSchema = z.enum(['expense', 'income', 'asset_sale', 'transfer', 'bonus', 'refund', 'reimbursement', 'aa_return', 'repayment', 'adjustment']);
+export function ledgerAccounts(data: { accounts?: readonly LedgerAccount[] }): readonly LedgerAccount[] { return data.accounts ?? LEDGER_ACCOUNTS; }
+export const LedgerEntryKindSchema = z.enum(['expense', 'income', 'asset_sale', 'transfer', 'bonus', 'refund', 'reimbursement', 'aa_return', 'repayment', 'adjustment', 'loan_borrow', 'loan_lend', 'loan_repay', 'loan_collect']);
 export type LedgerEntryKind = z.infer<typeof LedgerEntryKindSchema>;
 export const LedgerCashflowSchema = z.strictObject({ accountId: LedgerAccountIdSchema.nullable(), deltaCents: signedCents });
 export const LedgerAdjustmentSchema = z.strictObject({ targetEntryIds: z.array(id).min(1).max(100), amountCents: LedgerCentsSchema.positive(), note: text.default('') });
@@ -25,6 +29,7 @@ export const LedgerEntryDraftSchema = z.strictObject({
   id, kind: LedgerEntryKindSchema, date: LedgerDateSchema.nullable(), month: LedgerMonthSchema,
   dateNote: z.string().max(2000).default(''), occurredAt: instant.nullable().default(null),
   title: z.string().trim().min(1).max(500), category: z.string().trim().min(1).max(100),
+  counterparty: z.string().trim().max(200).optional(),
   amountCents: LedgerCentsSchema, personalCents: LedgerCentsSchema.nullable(),
   incomeCents: LedgerCentsSchema.default(0), assetSaleCents: LedgerCentsSchema.default(0),
   cashflows: z.array(LedgerCashflowSchema).max(20), adjustments: z.array(LedgerAdjustmentSchema).max(100).default([]),
@@ -36,7 +41,7 @@ export type LedgerEntryDraft = z.infer<typeof LedgerEntryDraftSchema>;
 export const LedgerEntrySchema = LedgerEntryDraftSchema.extend({ version: z.number().int().positive(), createdAt: instant, updatedAt: instant, voided: z.boolean().default(false), sameDayBalanceOrder: z.enum(['after', 'ask']).default('after') });
 export type LedgerEntry = z.infer<typeof LedgerEntrySchema>;
 export const LedgerBalanceSnapshotDraftSchema = z.strictObject({
-  id, accountId: LedgerAccountIdSchema.exclude(['family']), balanceCents: signedCents,
+  id, accountId: LedgerAccountIdSchema, balanceCents: signedCents,
   date: LedgerDateSchema, asOf: instant.nullable().default(null), coveredEntryIds: z.array(id).max(100_000),
   note: text.default(''), sourceId: id.nullable().default(null),
 });
@@ -44,7 +49,7 @@ export const LedgerBalanceSnapshotSchema = LedgerBalanceSnapshotDraftSchema.exte
 export type LedgerBalanceSnapshot = z.infer<typeof LedgerBalanceSnapshotSchema>;
 export const LedgerRulesSchema = z.strictObject({
   sameDayNewEntryOrder: z.enum(['after', 'ask']).default('after'),
-  monthlyAllowance: z.strictObject({ enabled: z.boolean(), amountCents: LedgerCentsSchema, accountId: LedgerAccountIdSchema.exclude(['family']).nullable(), startMonth: LedgerMonthSchema }),
+  monthlyAllowance: z.strictObject({ enabled: z.boolean(), amountCents: LedgerCentsSchema, accountId: LedgerAccountIdSchema.nullable(), startMonth: LedgerMonthSchema }),
   familyMonthlyLimitCents: LedgerCentsSchema, familyActualRemainingCents: LedgerCentsSchema.nullable(),
   familyRefreshDay: z.number().int().min(1).max(31).nullable(), notes: text,
 });
@@ -55,6 +60,7 @@ export type LedgerAudit = z.infer<typeof LedgerAuditSchema>;
 export const LedgerSourceSchema = z.strictObject({ id, label: z.string().max(500), importedAt: instant, content: text, checksum: z.string().max(200) });
 export const LedgerDataSchema = z.strictObject({
   revision: z.number().int().nonnegative(), entries: z.array(LedgerEntrySchema).max(100_000),
+  accounts: z.array(LedgerAccountSchema).max(1000).optional(),
   balanceSnapshots: z.array(LedgerBalanceSnapshotSchema).max(100_000), rules: LedgerRulesSchema,
   audit: z.array(LedgerAuditSchema).max(200_000), sources: z.array(LedgerSourceSchema).max(1000),
 });
@@ -77,6 +83,7 @@ export type LedgerSummary = z.infer<typeof LedgerSummarySchema>;
 export const LedgerSnapshotSchema = LedgerDataSchema.omit({ sources: true }).extend({ sources: z.array(LedgerSourceSchema.omit({ content: true })), summary: LedgerSummarySchema });
 export type LedgerSnapshot = z.infer<typeof LedgerSnapshotSchema>;
 export const LedgerChangeSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('putAccount'), account: LedgerAccountSchema }),
   z.strictObject({ type: z.literal('putEntry'), entry: LedgerEntryDraftSchema, expectedVersion: z.number().int().positive().nullable(), confirmDuplicate: z.boolean().default(false), note: text.default('') }),
   z.strictObject({ type: z.literal('voidEntry'), id, expectedVersion: z.number().int().positive(), note: text.default('') }),
   z.strictObject({ type: z.literal('setBalance'), snapshot: LedgerBalanceSnapshotDraftSchema }),
@@ -88,7 +95,7 @@ export const LedgerUndoRequestSchema = z.strictObject({ operationId: id, expecte
 export type LedgerUndoRequest = z.infer<typeof LedgerUndoRequestSchema>;
 export const LedgerMutationResultSchema = z.strictObject({ status: z.enum(['saved', 'already_saved']), operationId: id, snapshot: LedgerSnapshotSchema, entryIds: z.array(id), message: z.string(), undoAvailable: z.boolean() });
 export type LedgerMutationResult = z.infer<typeof LedgerMutationResultSchema>;
-export const LedgerImportPayloadSchema = z.strictObject({ format: z.literal('ultimate-calendar-ledger'), formatVersion: z.literal(1), entries: z.array(LedgerEntrySchema).max(100_000), balanceSnapshots: z.array(LedgerBalanceSnapshotSchema).max(100_000), rules: LedgerRulesSchema, audit: z.array(LedgerAuditSchema).default([]), sources: z.array(LedgerSourceSchema).default([]) });
+export const LedgerImportPayloadSchema = z.strictObject({ format: z.literal('ultimate-calendar-ledger'), formatVersion: z.literal(1), entries: z.array(LedgerEntrySchema).max(100_000), accounts: z.array(LedgerAccountSchema).max(1000).optional(), balanceSnapshots: z.array(LedgerBalanceSnapshotSchema).max(100_000), rules: LedgerRulesSchema, audit: z.array(LedgerAuditSchema).default([]), sources: z.array(LedgerSourceSchema).default([]) });
 export type LedgerImportPayload = z.infer<typeof LedgerImportPayloadSchema>;
 export const LedgerQuerySchema = z.strictObject({ month: LedgerMonthSchema.optional(), from: LedgerDateSchema.optional(), to: LedgerDateSchema.optional(), accountId: LedgerAccountIdSchema.optional(), category: z.string().max(100).optional(), search: z.string().max(500).optional() });
 export type LedgerQuery = z.infer<typeof LedgerQuerySchema>;

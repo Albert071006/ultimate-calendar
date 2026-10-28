@@ -1,6 +1,7 @@
 import { SnapshotSchema, type ApiResult, type ChangedEvent, type Snapshot } from '../../shared/contracts';
 import type { PlannerClient, QueuedWrite } from '../../shared/client';
 import type { LedgerSnapshot } from '../../shared/ledger';
+import { LEDGER_API_HEADER, LEDGER_API_VERSION } from '../../shared/ledger-compatibility';
 import { RemoteOperationSchema, RemoteSessionSchema, type RemoteMethod } from '../../shared/remote';
 import { remoteInputs, remoteOutputs } from '../../server/protocol';
 import { allowsOffline, captureBase, instant, localId, projectSnapshot, rebaseWrite, references, resolveAliases, writeLabel } from './queue';
@@ -21,6 +22,10 @@ const failure = (message: string, code: 'NETWORK' | 'AUTH' | 'STORAGE' | 'CONFLI
 const sameIdentity = (a: PairedSession, b: PairedSession) => a.device.id === b.device.id && a.identity.dataInstanceId === b.identity.dataInstanceId && a.identity.generation === b.identity.generation;
 const inputOperation = (input: unknown) => input && typeof input === 'object' && 'operationId' in input ? String(input.operationId) : undefined;
 const confirmedReceipt = (result: ApiResult<unknown> | undefined) => !!result?.ok && !(result.data && typeof result.data === 'object' && 'status' in result.data && ['preview', 'clarification'].includes(String(result.data.status)));
+// A rejected command analysis cannot mutate its selected records or resources. Keep its receipt,
+// but do not make another command wait forever for that failed analysis to become completed.
+const rejectedCommandAnalysis = (item: PendingWrite) => item.method === 'command' && item.status === 'failed'
+  && item.result?.ok === false && item.result.error.code === 'AI_RESPONSE' && item.result.error.delivery !== 'unknown';
 function draftEntryId(input: unknown) {
   const parsed = remoteInputs.ledgerMutate.safeParse(input);
   const change = parsed.success && parsed.data.changes.length === 1 ? parsed.data.changes[0] : undefined;
@@ -124,7 +129,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? (readOnly ? READ_TIMEOUT_MS : 60_000));
     try {
       const response = await fetcher(new URL(path, origin), { method, credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: controller.signal,
-        headers: { ...(input === undefined ? {} : { 'Content-Type': 'application/json' }), ...(method === 'GET' ? {} : { 'X-CSRF-Token': session?.csrfToken ?? '' }) },
+        headers: { ...(path.startsWith('/api/v1/rpc/ledger') ? { [LEDGER_API_HEADER]: LEDGER_API_VERSION } : {}), ...(input === undefined ? {} : { 'Content-Type': 'application/json' }), ...(method === 'GET' ? {} : { 'X-CSRF-Token': session?.csrfToken ?? '' }) },
         ...(input === undefined ? {} : { body: JSON.stringify(input) }) });
       const value: unknown = await response.json();
       if (!response.ok) {
@@ -364,7 +369,8 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
       const refs = references(input);
       item = { id: previous?.id ?? crypto.randomUUID(), requestId: crypto.randomUUID(), method, input, identity: partition!.session.identity,
         createdAt: instant(), status: 'queued', label: writeLabel(method, input), message: '待提交 · 仅保存在此手机', base: captureBase(method, input, partition!),
-        dependencies: next.queue.filter(pending => pending.id !== previous?.id && pending.targets.some(target => refs.includes(target))).map(pending => pending.id), targets: refs };
+        dependencies: next.queue.filter(pending => pending.id !== previous?.id && !rejectedCommandAnalysis(pending)
+          && pending.targets.some(target => refs.includes(target))).map(pending => pending.id), targets: refs };
       if (previous) item.dependencies = previous.dependencies;
       else if (method === 'ledgerMutate' || method === 'ledgerUndo') {
         const predecessor = next.queue.findLast(pending => pending.method === 'ledgerMutate' || pending.method === 'ledgerUndo');

@@ -3,7 +3,7 @@ import { ArrowRight, ChevronDown, ChevronUp, MessageSquare, Paperclip } from "lu
 import type { CommandRequest } from "../../../shared/contracts";
 import type { PlannerUI } from "../../hooks/usePlanner";
 import type { Selection } from "../Calendar";
-import { canContinueUnsent, useAssistantConversation } from "./assistant-conversation";
+import { assistantRetryLabel, canContinueUnsent, canReanalyze, useAssistantConversation } from "./assistant-conversation";
 import { ResourceFields } from '../resources/ResourcePanel';
 import { AssistantImageButton, AssistantImageDraft, AssistantMessageImage } from './assistant-image-input';
 
@@ -63,7 +63,8 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
                   {!ui.host?.resourceOpen && entry.resources?.filter(resource => resource.kind === 'web').map(resource =>
                     resource.kind === 'web' && <a key={resource.id} href={resource.url} target="_blank" rel="noopener noreferrer">{resource.name}</a>)}
                   {entry.status === "failed" && entry.request && <>
-                    {" "}<button className="ui-btn sm" disabled={running || imageReading || ui.busy} onClick={() => retry(entry)}>重试这条指令</button>
+                    {" "}<button className="ui-btn sm" disabled={running || imageReading || ui.busy} onClick={() => retry(entry)}>{assistantRetryLabel(entry)}</button>
+                    {canReanalyze(entry) && <small className="ui-hint">会再次请求 AI，并使用 API 额度。</small>}
                   </>}
                   {entry.id === history.at(-1)?.id && canContinueUnsent(entry) && <button className="ui-btn sm" disabled={running || imageReading || ui.busy}
                     onClick={() => { continueUnsent(entry); input.current?.focus(); }}>继续补充</button>}

@@ -1,13 +1,14 @@
 import { useState } from 'react';
 import { ChevronDown, Plus, X } from 'lucide-react';
 import { useMobile } from '../../mobile/layout';
-import { LEDGER_ACCOUNTS, type LedgerEntry, type LedgerSnapshot } from '../../../shared/ledger';
+import { ledgerAccounts, type LedgerEntry, type LedgerSnapshot } from '../../../shared/ledger';
 import { ledgerReceivable } from '../../../ledger/receivable';
 import { todayDate } from '../../calendar-layout';
 import { localDateTime } from '../../calendar-timeline';
 import { fullDay } from '../inbox/format';
 import { ledgerMoney } from './money';
-import { accountName, inKinds, kinds, timeText } from './editors';
+import { accountName, inKinds, isLoanKind, kinds, timeText } from './editors';
+import { Loans } from './Loans';
 
 export interface FlowFilter { account: string; category: string; day: string; search: string; showVoided: boolean }
 export const noFilter: FlowFilter = { account: '', category: '', day: '', search: '', showVoided: false };
@@ -77,7 +78,7 @@ export function LedgerRow({ entry, snapshot, owed, busy, onEdit, onVoid }: { ent
   const singleReduction = adjustments.filter(value => value.targetEntryIds.length === 1).reduce((sum, value) => sum + value.amountCents, 0);
   const groupReduction = adjustments.some(value => value.targetEntryIds.length > 1);
   const amountLabel = entry.kind === 'transfer' ? '转账金额' : inKinds.includes(entry.kind) ? '实际收到' : '实际支付';
-  const accounts = Array.from(new Set(entry.cashflows.map(value => accountName(value.accountId)))).join(' → ');
+  const accounts = Array.from(new Set(entry.cashflows.map(value => accountName(value.accountId, ledgerAccounts(snapshot))))).join(' → ');
   const tag = tagOf(entry, owed);
   const sign = entry.kind === 'transfer' || entry.kind === 'adjustment' ? '' : inKinds.includes(entry.kind) ? '+' : '−';
   return <details className={`a2-tx${entry.voided ? ' void' : ''}`}><summary>
@@ -89,9 +90,10 @@ export function LedgerRow({ entry, snapshot, owed, busy, onEdit, onVoid }: { ent
     <dt>{amountLabel}</dt><dd>{ledgerMoney(entry.amountCents)}</dd>
     <dt>{groupReduction ? '个人开销（组内待分摊）' : '个人开销'}</dt><dd>{ledgerMoney(entry.personalCents == null ? null : entry.personalCents - singleReduction)}</dd>
     <dt>类型</dt><dd>{kinds[entry.kind]}</dd>
+    {isLoanKind(entry.kind) && <><dt>对方</dt><dd>{entry.counterparty || '待确认'}</dd></>}
     <dt>发生日期</dt><dd>{entry.date ?? `${entry.month} · ${entry.dateNote || '日期待确认'}`}{entry.occurredAt && ` ${timeText(entry.occurredAt).slice(11)}`}</dd>
     <dt>登记时间</dt><dd>{timeText(entry.createdAt)}{entry.date && entry.date !== localDateTime(Date.parse(entry.createdAt)).slice(0, 10) ? ' · 补录' : ''}</dd>
-    <dt>账户资金变化</dt><dd>{entry.cashflows.length ? entry.cashflows.map((value, index) => <div key={index}>{accountName(value.accountId)} {value.deltaCents >= 0 ? '+' : '−'}{ledgerMoney(Math.abs(value.deltaCents))}</div>) : '不改变账户余额'}</dd>
+    <dt>账户资金变化</dt><dd>{entry.cashflows.length ? entry.cashflows.map((value, index) => <div key={index}>{accountName(value.accountId, ledgerAccounts(snapshot))} {value.deltaCents >= 0 ? '+' : '−'}{ledgerMoney(Math.abs(value.deltaCents))}</div>) : '不改变账户余额'}</dd>
     {entry.incomeCents > 0 && <><dt>普通收入</dt><dd>{ledgerMoney(entry.incomeCents)}</dd></>}
     {entry.assetSaleCents > 0 && <><dt>资产变现</dt><dd>{ledgerMoney(entry.assetSaleCents)}</dd></>}
     {entry.sourceKey && <><dt>旧账编号</dt><dd>{entry.sourceKey}</dd></>}
@@ -116,22 +118,22 @@ export function Flows({ snapshot, month, busy, filter, setFilter, create, edit, 
   const mobile = useMobile();
   const [filtersOpen, setFiltersOpen] = useState(false);
   const monthEntries = snapshot.entries.filter(entry => entry.month === month);
-  if (!monthEntries.length && mobile) return <div className="m-ib-empty">
+  if (!monthEntries.length && mobile) return <><Loans entries={snapshot.entries} busy={busy} edit={edit} /><div className="m-ib-empty">
     <p className="title">本月还没有账目</p>
     <p>也可以对生活助手说「午饭 15 元，微信付的」</p>
     <button className="m-link" onClick={create}>记一笔</button>
-  </div>;
-  if (!monthEntries.length) return <div className="a2-ledger-empty"><div className="ui-empty center">
+  </div></>;
+  if (!monthEntries.length) return <><Loans entries={snapshot.entries} busy={busy} edit={edit} /><div className="a2-ledger-empty"><div className="ui-empty center">
     <h4>本月还没有账目</h4>
     <p>点「记一笔」，或者对助手说"午饭 15 元，微信付的"。</p>
     <div className="actions"><button className="ui-btn" onClick={create}><Plus aria-hidden="true" />记一笔</button></div>
-  </div></div>;
+  </div></div></>;
   const receivable = ledgerReceivable(snapshot.entries, month), owed = new Set(receivable.entryIds);
   const { account, category, day, search, showVoided } = filter;
   const entries = monthEntries.filter(entry => (showVoided || !entry.voided)
     && (!account || (account === 'unknown' ? entry.cashflows.some(flow => flow.accountId === null) : entry.cashflows.some(flow => flow.accountId === account)))
     && (!category || entry.category === category) && (!day || entry.date === day)
-    && (!search || `${entry.title} ${entry.note} ${entry.originalText}`.toLowerCase().includes(search.toLowerCase())))
+    && (!search || `${entry.title} ${entry.counterparty ?? ''} ${entry.note} ${entry.originalText}`.toLowerCase().includes(search.toLowerCase())))
     .sort((a, b) => (b.date ?? b.month).localeCompare(a.date ?? a.month) || b.createdAt.localeCompare(a.createdAt));
   const groups = new Map<string, LedgerEntry[]>();
   for (const entry of entries) groups.set(entry.date ?? '', [...(groups.get(entry.date ?? '') ?? []), entry]);
@@ -149,11 +151,12 @@ export function Flows({ snapshot, month, busy, filter, setFilter, create, edit, 
         <div className={receivable.cents > 0 ? 'attn' : undefined}><dt>待收回</dt><dd>{ledgerMoney(receivable.cents)}</dd></div>
       </dl>
     </div> : <div className="a2-ledger-sum">
-      <Sum label="支出" cents={summary.actualPaidCents} note="实际付款，含代垫" />
+      <Sum label="支出" cents={summary.actualPaidCents} note="实际付款，含代垫、借出和还款" />
       <Sum label="个人开销" cents={summary.personalCents} note={summary.pendingPersonalCount ? `${summary.pendingPersonalCount} 笔个人承担待确认` : '扣除代垫和报销'} />
-      <Sum label="收入" cents={summary.incomeCents} note={summary.assetSaleCents ? `另有资产变现 ${ledgerMoney(summary.assetSaleCents)}` : '不含退款、返款和变现'} />
+      <Sum label="收入" cents={summary.incomeCents} note={summary.assetSaleCents ? `另有资产变现 ${ledgerMoney(summary.assetSaleCents)}` : '不含借款本金、退款、返款和变现'} />
       <Sum label="待收回" cents={receivable.cents} warn={receivable.cents > 0} note={receivable.uncertainties.length ? `${receivable.entryIds.length} 笔差额；另有 ${receivable.uncertainties.length} 项返款或承担金额待核对` : receivable.entryIds.length ? `代垫 ${receivable.entryIds.length} 笔，已扣关联返款、退款和报销` : '没有待收回的代垫'} />
     </div>}
+    <Loans entries={snapshot.entries} busy={busy} edit={edit} />
     <div className="a2-ledger-cols">
       <section aria-label="收支明细">
         <DailyBars month={month} values={summary.days} unknownDateCents={summary.uncertainDateCents} selected={day} onSelect={value => set({ day: value })} />
@@ -163,14 +166,14 @@ export function Flows({ snapshot, month, busy, filter, setFilter, create, edit, 
         <div className={`a2-ledger-filters${mobile && !filtersOpen && !account && !category && !showVoided ? ' folded' : ''}`}>
           <input aria-label="搜索项目或备注" value={search} onChange={event => set({ search: event.target.value })} placeholder={mobile ? '搜索' : '搜索项目或备注'} />
           {mobile && <button className="m-link" aria-expanded={filtersOpen} onClick={() => setFiltersOpen(value => !value)}>筛选</button>}
-          <label>账户<select value={account} onChange={event => set({ account: event.target.value })}><option value="">全部账户</option><option value="unknown">账户待确认</option>{LEDGER_ACCOUNTS.map(value => <option value={value.id} key={value.id}>{value.name}</option>)}</select></label>
+          <label>账户<select value={account} onChange={event => set({ account: event.target.value })}><option value="">全部账户</option><option value="unknown">账户待确认</option>{ledgerAccounts(snapshot).map(value => <option value={value.id} key={value.id}>{value.name}</option>)}</select></label>
           <label>分类<select value={category} onChange={event => set({ category: event.target.value })}><option value="">全部分类</option>{categories.map(value => <option key={value}>{value}</option>)}</select></label>
           <label className="a2-check"><input type="checkbox" checked={showVoided} onChange={event => set({ showVoided: event.target.checked })} />显示已作废</label>
           {filtered && <button className="ui-btn sm ghost" onClick={() => setFilter({ ...noFilter, showVoided })}>清除筛选</button>}
         </div>
         {summary.pendingAccountCount > 0 && <p className="ui-hint a2-ledger-note">{mobile ? `${summary.pendingAccountCount} 笔账户待确认，展开后可补充` : <>本月 {summary.pendingAccountCount} 笔账户待确认；展开记录，点「补充账户 / 更正」完善原笔。</>}</p>}
         {entries.length ? [...groups].map(([date, list]) => {
-          const paid = list.filter(entry => !entry.voided && (entry.kind === 'expense' || entry.kind === 'repayment')).reduce((sum, entry) => sum + entry.amountCents, 0);
+          const paid = list.filter(entry => !entry.voided && ['expense', 'repayment', 'loan_lend', 'loan_repay'].includes(entry.kind)).reduce((sum, entry) => sum + entry.amountCents, 0);
           return <div className="a2-ledger-day" key={date || 'unknown'}>
             <div className="day-h"><b>{date ? fullDay(date) : '日期待确认'}</b>{paid > 0 && <span title="当天实际支付">{ledgerMoney(paid)}</span>}</div>
             {list.map(entry => <LedgerRow key={entry.id} entry={entry} snapshot={snapshot} owed={owed} busy={busy} onEdit={() => edit(entry)} onVoid={() => voidEntry(entry)} />)}

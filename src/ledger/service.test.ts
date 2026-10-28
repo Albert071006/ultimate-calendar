@@ -1,13 +1,13 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { DEFAULT_LEDGER_RULES, LEDGER_ACCOUNTS, LedgerEntryDraftSchema, LedgerImportPayloadSchema, ledgerAllowanceKey, type LedgerEntry, type LedgerEntryDraft, type LedgerMutationRequest } from '../shared/ledger';
-import { LedgerError, LedgerService, readLedgerDatabase, replaceLedgerDatabase } from './service';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_LEDGER_RULES, LEDGER_ACCOUNTS, LedgerEntryDraftSchema, LedgerImportPayloadSchema, LedgerMonthSchema, ledgerAllowanceKey, type LedgerEntry, type LedgerEntryDraft, type LedgerMutationRequest } from '../shared/ledger';
+import { LedgerError, LedgerService, LedgerValidationRejection, readLedgerDatabase, replaceLedgerDatabase } from './service';
 import { summarizeLedger } from './summary';
 import { openDatabase } from '../storage/database';
 
 const services: LedgerService[] = [];
 const NOW = new Date('2026-10-23T12:00:00Z');
 function service(now: () => Date = () => NOW) { const result = new LedgerService(':memory:', { now }); services.push(result); return result; }
-afterEach(() => { for (const value of services.splice(0)) value.close(); });
+afterEach(() => { vi.restoreAllMocks(); for (const value of services.splice(0)) value.close(); });
 function draft(overrides: Partial<LedgerEntryDraft> = {}): LedgerEntryDraft {
   return LedgerEntryDraftSchema.parse({ id: 'lunch', kind: 'expense', date: '2026-10-23', month: '2026-10', title: '午饭', category: '餐饮', amountCents: 2000, personalCents: 2000, cashflows: [{ accountId: 'alipay', deltaCents: -2000 }], ...overrides });
 }
@@ -48,8 +48,39 @@ describe('local ledger transactions', () => {
   });
   it('rolls back the whole multi-entry operation if any entry is invalid', () => {
     const ledger = service();
-    expect(() => ledger.mutate({ operationId: 'batch', expectedRevision: 0, changes: [draft(), draft({ id: 'wrong', personalCents: 2500 })].map(entry => ({ type: 'putEntry', entry, expectedVersion: null, confirmDuplicate: false, note: '' })) })).toThrow();
-    expect(ledger.snapshot().entries).toEqual([]); expect(ledger.snapshot().revision).toBe(0);
+    const before = ledger.snapshot();
+    const request: LedgerMutationRequest = { operationId: 'batch', expectedRevision: 0, changes: [draft(), draft({ id: 'wrong', title: '合成错误支出', personalCents: 0, cashflows: [{ accountId: 'wechat', deltaCents: 2000 }] })].map(entry => ({ type: 'putEntry', entry, expectedVersion: null, confirmDuplicate: false, note: '' })) };
+    expect(() => ledger.mutate(request)).toThrow(LedgerValidationRejection);
+    expect(ledger.snapshot()).toEqual(before);
+    // A rejected transaction wrote neither entries/audit nor an operation receipt.
+    expect(ledger.mutate({ ...request, changes: request.changes.slice(0, 1) }).status).toBe('saved');
+  });
+  it.each(['schema', 'validation'] as const)('keeps a post-commit %s result failure out of the reanalysis boundary', failure => {
+    const ledger = service();
+    const request: LedgerMutationRequest = { operationId: 'committed-result-failure', expectedRevision: 0, changes: [{ type: 'putEntry', entry: draft(), expectedVersion: null, confirmDuplicate: false, note: '' }] };
+    vi.spyOn(ledger as unknown as { hasUndo(): boolean }, 'hasUndo').mockImplementationOnce(() => {
+      if (failure === 'schema') LedgerMonthSchema.parse('invalid-month');
+      throw new LedgerError('VALIDATION', '合成提交后错误');
+    });
+    let failureResult: unknown;
+    try { ledger.mutate(request); } catch (error) { failureResult = error; }
+    expect(failureResult).toMatchObject({ code: 'STORAGE', message: expect.stringContaining('账本已提交') });
+    expect(failureResult).not.toBeInstanceOf(LedgerValidationRejection);
+    expect(ledger.snapshot().entries).toHaveLength(1);
+    expect(ledger.mutate(request).status).toBe('already_saved');
+    expect(ledger.snapshot().revision).toBe(1);
+  });
+  it('does not declare validation safe to reanalyze when rollback cannot be confirmed', () => {
+    const ledger = service();
+    const db = (ledger as unknown as { db: { exec(sql: string): void } }).db;
+    const exec = db.exec.bind(db);
+    const spy = vi.spyOn(db, 'exec').mockImplementation(sql => { if (sql === 'ROLLBACK') throw Error('synthetic rollback failure'); exec(sql); });
+    let failureResult: unknown;
+    try { save(ledger, draft({ personalCents: 2500 })); } catch (error) { failureResult = error; }
+    finally { spy.mockRestore(); exec('ROLLBACK'); }
+    expect(failureResult).toMatchObject({ code: 'STORAGE', message: expect.stringContaining('状态尚未确认') });
+    expect(failureResult).not.toBeInstanceOf(LedgerValidationRejection);
+    expect(ledger.snapshot().entries).toHaveLength(0);
   });
   it('prevents stale writes and keeps undo atomic and idempotent', () => {
     const ledger = service(); save(ledger, draft());

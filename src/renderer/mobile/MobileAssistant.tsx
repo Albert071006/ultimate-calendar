@@ -3,7 +3,7 @@ import { ArrowUp, X } from 'lucide-react';
 import type { CommandRequest } from '../../shared/contracts';
 import type { PlannerUI } from '../hooks/usePlanner';
 import type { Selection } from '../components/Calendar';
-import { canContinueUnsent, useAssistantConversation, type ConversationEntry, type UnsentClarificationDraft } from '../components/shell/assistant-conversation';
+import { assistantRetryLabel, canContinueUnsent, canReanalyze, useAssistantConversation, type ConversationEntry, type UnsentClarificationDraft } from '../components/shell/assistant-conversation';
 import { AssistantImageButton, AssistantImageDraft, AssistantMessageImage } from '../components/shell/assistant-image-input';
 import type { RemoteClientState } from '../remote/types';
 
@@ -91,7 +91,10 @@ export function MobileAssistant({ ui, selected, date, domain, ledgerView, storag
             {entry.resources?.map(resource => resource.kind === 'web'
               ? <a key={resource.id} href={resource.url} target="_blank" rel="noopener noreferrer">{resource.name}</a>
               : <small key={resource.id}>{resource.name} · 需在电脑打开</small>)}
-            {entry.status === 'failed' && entry.request && <button className="m-link" disabled={running || imageReading || ui.busy} onClick={() => retry(entry)}>重试这条指令</button>}
+            {entry.status === 'failed' && entry.request && <>
+              <button className="m-link" disabled={running || imageReading || ui.busy} onClick={() => retry(entry)}>{assistantRetryLabel(entry)}</button>
+              {canReanalyze(entry) && <small>会再次请求 AI，并使用 API 额度。</small>}
+            </>}
             {entry.id === latest?.id && canContinueUnsent(entry) && <button className="m-link" disabled={running || imageReading || ui.busy}
               onClick={() => { continueUnsent(entry); input.current?.focus(); }}>继续补充</button>}
           </div>

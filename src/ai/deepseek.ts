@@ -14,7 +14,31 @@ export function safeError(error: unknown): ApiError {
     : { code: error instanceof z.ZodError ? 'VALIDATION' : 'INTERNAL', message: error instanceof z.ZodError ? `输入无效：${error.issues[0]?.message ?? ''}` : '操作未完成，请重试或检查本地数据', retryable: false };
 }
 const UsageSchema = z.object({ prompt_tokens: z.number().int().nonnegative(), completion_tokens: z.number().int().nonnegative(), total_tokens: z.number().int().nonnegative(), prompt_cache_hit_tokens: z.number().int().nonnegative().default(0) }).refine(u => u.prompt_cache_hit_tokens <= u.prompt_tokens && u.total_tokens >= u.prompt_tokens + u.completion_tokens);
-const envelope = z.object({ choices: z.array(z.object({ message: z.object({ content: z.string().min(1).max(500_000) }), finish_reason: z.literal('stop') })).length(1), usage: UsageSchema });
+const envelope = z.object({ choices: z.array(z.object({ message: z.object({ content: z.string().max(500_000).nullable(), refusal: z.string().max(500_000).nullable().optional() }), finish_reason: z.string().max(100).nullable() })).length(1), usage: UsageSchema });
+const responseFailures = {
+  AI_BODY_JSON: 'DeepSeek 的响应体不是完整 JSON',
+  AI_ENVELOPE: 'DeepSeek 的响应结构或用量信息不符合接口约定',
+  AI_EMPTY: 'DeepSeek 没有返回可用的回答内容',
+  AI_TRUNCATED: 'DeepSeek 的回答达到输出上限，内容被截断',
+  AI_REFUSED: 'DeepSeek 拒绝处理本次请求',
+  AI_UNFINISHED: 'DeepSeek 没有正常完成本次回答',
+  AI_CONTENT_JSON: 'DeepSeek 的回答内容不是有效 JSON',
+  AI_SCHEMA: 'DeepSeek 已返回 JSON，但字段或取值不符合处理约定',
+} as const;
+// Schema issue messages, union inputs and arbitrary object keys can contain private content.
+// Only fixed codes/field names are diagnostic output; never serialize a Zod issue or model value.
+const diagnosticIssueCodes = new Set(['invalid_type', 'too_big', 'too_small', 'invalid_format', 'not_multiple_of', 'unrecognized_keys', 'invalid_union', 'invalid_key', 'invalid_element', 'invalid_value', 'custom']);
+const diagnosticFields = new Set(['choices', 'message', 'content', 'refusal', 'finish_reason', 'usage', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'prompt_cache_hit_tokens',
+  'kind', 'reply', 'questions', 'query', 'detail', 'mutations', 'changes', 'type', 'key', 'values', 'patch', 'id', 'expectedVersion', 'confirmDuplicate', 'note', 'title', 'category',
+  'date', 'month', 'occurredAt', 'dateNote', 'amountCents', 'personalCents', 'incomeCents', 'assetSaleCents', 'cashflows', 'accountId', 'deltaCents', 'balanceCents', 'asOf', 'timing',
+  'adjustments', 'targetEntryIds', 'relatedEntryIds', 'snapshotPositions', 'snapshotId', 'position', 'fromDate', 'toDate', 'transactionId', 'candidates', 'sourceIds', 'sourceQuote', 'rows', 'uncertainties']);
+function responseFailure(code: keyof typeof responseFailures, error?: unknown): WorkflowError {
+  const issue = error instanceof z.ZodError ? error.issues[0] : undefined;
+  const issueCode = issue && diagnosticIssueCodes.has(issue.code) ? `/${issue.code}` : '';
+  const path = issue?.path.slice(0, 8).map(part => typeof part === 'number' && Number.isSafeInteger(part) && part >= 0 && part <= 500
+    ? String(part) : typeof part === 'string' && diagnosticFields.has(part) ? part : '字段').join('.');
+  return new WorkflowError('AI_RESPONSE', `${responseFailures[code]}；本次结果未采用。诊断：${code}${issueCode}${path ? `（${path}）` : ''}`);
+}
 export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string | ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } })[] };
 export async function completeJson<T>(options: { key: string | null; settings: Settings; messages: ChatMessage[]; schema: z.ZodType<T>; operationId: string; purpose: TokenUsage['purpose']; now: string; autoQuote?: PriceQuote | null; fetch?: typeof fetch; timeoutMs?: number; maxAttempts?: number; sleep?(ms: number): Promise<void>; onUsage?(usage: TokenUsage): void; onParsedResponse?(value: unknown): void }): Promise<{ value: T; usage: TokenUsage }> {
   if (!options.key) throw new WorkflowError('NO_API_KEY', '请先在设置中配置 DeepSeek API 密钥');
@@ -37,7 +61,7 @@ export async function completeJson<T>(options: { key: string | null; settings: S
       let responseText: string;
       try { responseText = await response.text(); }
       catch { if (attempt + 1 < attempts) continue; throw new WorkflowError('NETWORK', 'DeepSeek 响应传输中断，请重试', true); }
-      let raw: unknown; try { raw = JSON.parse(responseText); } catch { throw new WorkflowError('AI_RESPONSE', 'DeepSeek 返回的响应不是完整 JSON，请重试'); }
+      let raw: unknown; try { raw = JSON.parse(responseText); } catch { throw responseFailure('AI_BODY_JSON'); }
       const usageResult = UsageSchema.safeParse(raw && typeof raw === 'object' && 'usage' in raw ? raw.usage : null);
       let usage: TokenUsage | null = null;
       if (usageResult.success) {
@@ -46,10 +70,19 @@ export async function completeJson<T>(options: { key: string | null; settings: S
         usage = TokenUsageSchema.parse({ id: randomUUID(), operationId: options.operationId, createdAt: options.now, purpose: options.purpose, model: options.settings.model, inputTokens: u.prompt_tokens, outputTokens: u.completion_tokens, cachedInputTokens: u.prompt_cache_hit_tokens, totalTokens: u.total_tokens, ...cost });
       }
       let content: unknown;
-      try { const parsed = envelope.parse(raw); content = JSON.parse(parsed.choices[0]!.message.content); }
-      catch {
+      try {
+        const parsed = envelope.safeParse(raw);
+        if (!parsed.success) throw responseFailure('AI_ENVELOPE', parsed.error);
+        const choice = parsed.data.choices[0]!;
+        if (choice.finish_reason === 'content_filter' || choice.message.refusal?.trim()) throw responseFailure('AI_REFUSED');
+        if (choice.finish_reason === 'length') throw responseFailure('AI_TRUNCATED');
+        if (choice.finish_reason !== 'stop') throw responseFailure('AI_UNFINISHED');
+        if (!choice.message.content?.trim()) throw responseFailure('AI_EMPTY');
+        try { content = JSON.parse(choice.message.content); } catch { throw responseFailure('AI_CONTENT_JSON'); }
+      }
+      catch (error) {
         if (usage) options.onUsage?.(usage);
-        throw new WorkflowError('AI_RESPONSE', 'DeepSeek 返回空白、截断或不符合约定的 JSON，请重试或人工校对');
+        throw error;
       }
       // Capture can durably retain paid JSON before validating its references. A storage failure
       // in usage accounting/backup must not prevent that checkpoint from being saved first.
@@ -61,7 +94,7 @@ export async function completeJson<T>(options: { key: string | null; settings: S
       }
       if (usage) options.onUsage?.(usage);
       try { return { value: options.schema.parse(content), usage: usage! }; }
-      catch { throw new WorkflowError('AI_RESPONSE', 'DeepSeek 返回空白、截断或不符合约定的 JSON，请重试或人工校对'); }
+      catch (error) { throw responseFailure('AI_SCHEMA', error); }
     } finally { clearTimeout(timer); }
   }
   throw new WorkflowError('NETWORK', 'DeepSeek 请求失败', true);

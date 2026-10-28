@@ -340,10 +340,11 @@ describe("desktop workspace interaction", () => {
       { role: "assistant", text: "标题已修改" },
     ]);
   });
-  it("retries a failed command in its original message using the same operation and preserving a new draft", async () => {
+  it("checks a legacy failed command in its original message using the same operation and preserving a new draft", async () => {
     const { api } = fixture();
     vi.mocked(api.command).mockResolvedValueOnce({
       ok: false,
+      // Legacy callers do not report delivery. This cannot authorize fresh analysis.
       error: { code: "NETWORK", message: "连接失败，请重试", retryable: true },
     });
     let finish!: (result: ApiResult<CommandResult>) => void;
@@ -356,8 +357,11 @@ describe("desktop workspace interaction", () => {
     expect((input as HTMLTextAreaElement).value).toBe("");
     expect(container.querySelectorAll(".message.user")).toHaveLength(1);
     expect(screen.getByText("明天下午安排学习")).toBeTruthy();
+    expect(api.command).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "重新分析" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "重新发送" })).toBeNull();
     fireEvent.change(input, { target: { value: "另一个正在写的想法" } });
-    fireEvent.click(screen.getByRole("button", { name: "重试这条指令" }));
+    fireEvent.click(screen.getByRole("button", { name: "核对这条指令" }));
     expect(api.command).toHaveBeenCalledTimes(2);
     expect(vi.mocked(api.command).mock.calls[1]![0]).toEqual(vi.mocked(api.command).mock.calls[0]![0]);
     expect(container.querySelectorAll(".message.user")).toHaveLength(1);
@@ -366,7 +370,7 @@ describe("desktop workspace interaction", () => {
     expect(api.command).toHaveBeenCalledTimes(2);
     await act(async () => finish({ ok: true, data: { reply: "已收到原指令", items: [], mutationResult: null } }));
     expect(screen.getByText("已收到原指令")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "重试这条指令" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "核对这条指令" })).toBeNull();
     expect((input as HTMLTextAreaElement).value).toBe("另一个正在写的想法");
     expect(container.querySelectorAll(".message.user")).toHaveLength(1);
   });
@@ -379,13 +383,16 @@ describe("desktop workspace interaction", () => {
     const input = await screen.findByLabelText("自然语言指令");
     fireEvent.change(input, { target: { value: "尚未完成的修改请求" } });
     fireEvent.click(screen.getByRole("button", { name: "发送指令" }));
-    await screen.findByRole("button", { name: "重试这条指令" });
+    await screen.findByRole("button", { name: "核对这条指令" });
+    expect(api.command).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "重新分析" })).toBeNull();
     fireEvent.change(input, { target: { value: "查明天的安排" } });
     fireEvent.click(screen.getByRole("button", { name: "发送指令" }));
     await screen.findByText("第二条已收到");
+    expect(api.command).toHaveBeenCalledTimes(2);
     expect(vi.mocked(api.command).mock.calls[1]![0].history).toEqual([]);
     expect(vi.mocked(api.command).mock.calls[1]![0].operationId).not.toBe(vi.mocked(api.command).mock.calls[0]![0].operationId);
-    expect(screen.getByRole("button", { name: "重试这条指令" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "核对这条指令" })).toBeTruthy();
   });
   it("forwards the original expense facts when a short reply clarifies bookkeeping after navigation and refresh", async () => {
     const { api } = fixture();
@@ -487,17 +494,20 @@ describe("desktop workspace interaction", () => {
     await screen.findByText(clarification);
     fireEvent.change(screen.getByLabelText('自然语言指令'), { target: { value: '记账' } });
     fireEvent.click(screen.getByRole('button', { name: '发送指令' }));
-    await screen.findByRole('button', { name: '重试这条指令' });
+    await screen.findByRole('button', { name: '核对这条指令' });
+    expect(api.command).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('button', { name: '重新分析' })).toBeNull();
     fireEvent.change(screen.getByLabelText('自然语言指令'), { target: { value: '先查今天的安排' } });
     fireEvent.click(screen.getByRole('button', { name: '发送指令' }));
     await screen.findByText('查询完成');
+    expect(api.command).toHaveBeenCalledTimes(3);
     expect(vi.mocked(api.command).mock.calls[2]![0].history).toEqual([
       { role: 'user', text: 'vpn14 支付宝' },
       { role: 'assistant', text: clarification, outcome: clarificationState },
     ]);
     expect(vi.mocked(api.command).mock.calls[2]![0].operationId)
       .not.toBe(vi.mocked(api.command).mock.calls[1]![0].operationId);
-    expect(screen.getByRole('button', { name: '重试这条指令' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '核对这条指令' })).toBeTruthy();
   });
   it("submits a date-only task with independently editable reminder settings", async () => {
     const { api, mutate } = fixture();
