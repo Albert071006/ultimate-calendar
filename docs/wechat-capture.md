@@ -1,6 +1,6 @@
 # Windows 微信群采集
 
-0.6.0 的两个 Windows 桌面版都可以选择微信群，自动收集本机消息，并把文字、已下载图片和文档交给日历的任务提炼流程。手机端查看同步后的事项，不运行微信采集器。
+0.7.0 的两个 Windows 桌面版都可以选择微信群，自动收集本机消息，并把文字、已下载图片和文档交给日历的任务提炼流程。手机端查看同步后的事项，不运行微信采集器。
 
 这是可选的本机只读适配器，**需要单独配置 Python 读取环境**；日历安装包没有捆绑 Python 或 FFmpeg。未配置时，日历其他功能正常使用，微信页会提示“组件尚未配置”。支持 Windows 64 位、已登录的微信 4.x；微信数据库格式可能随客户端版本变化，不能保证所有版本均兼容。
 
@@ -12,13 +12,13 @@
 
 ## 2. 下载配置脚本
 
-在 PowerShell 运行以下命令，从本项目固定的 0.6.0 发布标签下载脚本和依赖清单。也可以直接下载该版本源码，用其中的 `scripts/wechat/setup.ps1` 和 `requirements.txt`。
+在 PowerShell 运行以下命令，从本项目固定的 0.7.0 发布标签下载脚本和依赖清单。也可以直接下载该版本源码，用其中的 `scripts/wechat/setup.ps1` 和 `requirements.txt`。
 
 ```powershell
-$setupDirectory = 'C:\Software\UltimateCalendarWeChat\setup-0.6.0'
+$setupDirectory = 'C:\Software\UltimateCalendarWeChat\setup-0.7.0'
 New-Item -ItemType Directory -Force -Path $setupDirectory | Out-Null
-Invoke-WebRequest 'https://raw.githubusercontent.com/Albert071006/ultimate-calendar/v0.6.0/scripts/wechat/setup.ps1' -OutFile (Join-Path $setupDirectory 'setup.ps1')
-Invoke-WebRequest 'https://raw.githubusercontent.com/Albert071006/ultimate-calendar/v0.6.0/scripts/wechat/requirements.txt' -OutFile (Join-Path $setupDirectory 'requirements.txt')
+Invoke-WebRequest 'https://raw.githubusercontent.com/Albert071006/ultimate-calendar/v0.7.0/scripts/wechat/setup.ps1' -OutFile (Join-Path $setupDirectory 'setup.ps1')
+Invoke-WebRequest 'https://raw.githubusercontent.com/Albert071006/ultimate-calendar/v0.7.0/scripts/wechat/requirements.txt' -OutFile (Join-Path $setupDirectory 'requirements.txt')
 ```
 
 可先在文本编辑器查看脚本。然后从托盘正常退出日历，把下一条命令中的 Python 路径改为自己的实际安装位置。无需退出或重启微信、QQ。
@@ -26,13 +26,13 @@ Invoke-WebRequest 'https://raw.githubusercontent.com/Albert071006/ultimate-calen
 **纯本地桌面版：**
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\Software\UltimateCalendarWeChat\setup-0.6.0\setup.ps1' -Edition Local -PythonPath 'C:\Software\Python\python.exe'
+powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\Software\UltimateCalendarWeChat\setup-0.7.0\setup.ps1' -Edition Local -PythonPath 'C:\Software\Python\python.exe'
 ```
 
 **服务器版的 Windows 客户端：**
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\Software\UltimateCalendarWeChat\setup-0.6.0\setup.ps1' -Edition Server -PythonPath 'C:\Software\Python\python.exe'
+powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\Software\UltimateCalendarWeChat\setup-0.7.0\setup.ps1' -Edition Server -PythonPath 'C:\Software\Python\python.exe'
 ```
 
 `ExecutionPolicy Bypass` 只作用于这次 PowerShell 进程，不修改系统执行策略。安装过程需要联网下载 Python 依赖。若选择的 `C:\Software` 目录不可写，可以用 `-RuntimeDirectory` 指定自己可写的独立目录。
@@ -51,7 +51,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\Software\UltimateCalenda
 若已有独立的 64 位 Python，并安装了 `requirements.txt` 中的依赖，可跳过虚拟环境创建和依赖下载：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\Software\UltimateCalendarWeChat\setup-0.6.0\setup.ps1' -Edition Local -PythonPath 'C:\Software\UltimateCalendarWeChat\calendar-runtime\Scripts\python.exe' -UseExistingRuntime
+powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\Software\UltimateCalendarWeChat\setup-0.7.0\setup.ps1' -Edition Local -PythonPath 'C:\Software\UltimateCalendarWeChat\calendar-runtime\Scripts\python.exe' -UseExistingRuntime
 ```
 
 同时使用两个日历版本时，第二次执行改成另一个 `-Edition`，加 `-UseExistingRuntime` 并指向同一个虚拟环境的 `Scripts\python.exe`；两份资料与采集设置仍各自独立。高级用户的 `--planner-profile` 独立资料目录可用 `-DataDirectory` 明确指定，不要指向其他版本或其他人的资料目录。
