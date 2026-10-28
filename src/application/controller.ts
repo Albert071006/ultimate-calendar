@@ -16,7 +16,7 @@ import { normalizeCandidate, candidateFingerprint, supplementCandidate } from '.
 import { parseCourseFile, parseCsv, previewCourseRows, type SelectedCourseFile } from '../imports/courses';
 import type { PriceQuote } from '../shared/account';
 import type { ModelRequestRunner } from '../ai/request-queue';
-import type { LedgerService } from '../ledger/service';
+import { LedgerValidationRejection, type LedgerService } from '../ledger/service';
 import { LedgerIntentSchema, LedgerCommandProposalSchema } from '../shared/ledger-command';
 import { ledgerChanges, ledgerContext, ledgerMessages, ledgerQueryReply, ledgerSavedReply } from '../ai/ledger';
 import { ledgerToday } from '../shared/ledger';
@@ -197,7 +197,14 @@ export function createController(options: ControllerOptions) {
             const result = ledger.undo({ operationId:`ai-ledger:${hash(input.operationId)}`,expectedRevision:proposal.revision,month:currentMonth });
             reply = savedReply(result);
           } else {
-            const result = ledger.mutate(proposal.mutationRequest!);
+            let result: ReturnType<LedgerService['mutate']>;
+            try { result = ledger.mutate(proposal.mutationRequest!); }
+            catch (error) {
+              if (error instanceof LedgerValidationRejection && error.operationId === proposal.mutationRequest!.operationId) {
+                throw new WorkflowError('AI_RESPONSE', `账本校验失败：${error.message}。本次整批账目均未保存，可重新分析。诊断：AI_LEDGER_VALIDATION`);
+              }
+              throw error;
+            }
             reply = savedReply(result);
           }
           const result: CommandResult = { reply, mutationResult:null, items:[], conversationState:{domain:'ledger',phase:proposal.intent.kind === 'clarification' ? 'clarification' : proposal.intent.kind === 'query' ? 'query' : 'saved'} };

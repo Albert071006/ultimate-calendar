@@ -24,6 +24,39 @@ function mutation(value: unknown) {
 }
 
 describe('ledger AI adaptation', () => {
+  it('records an explicitly outgoing loan as a receivable without personal spending or income', () => {
+    const { service, snapshot } = fixture([]);
+    const intent = mutation({ kind: 'mutate', changes: [{ type: 'createEntry', key: 'new:0', values: {
+      kind: 'expense', date: '2026-01-21', month: '2026-01', title: '合成借出本金', category: '借出',
+      amountCents: 18000, personalCents: 0, cashflows: [{ accountId: 'alipay', deltaCents: -18000 }],
+      note: '本人已转给合成同学甲，待收回本金。',
+    } }] });
+    const changes = ledgerChanges(intent, snapshot, { operationId: 'outgoing-loan', text: '已从我的支付宝借给合成同学甲180元' }, new Set(), now);
+    const saved = service.mutate({ operationId: 'save-outgoing-loan', expectedRevision: snapshot.revision, changes, month: '2026-01' });
+    expect(saved.snapshot.summary).toMatchObject({ personalCents: 0, incomeCents: 0, actualPaidCents: 18000 });
+    expect(service.query({ month: '2026-01' }).receivables).toMatchObject({ cents: 18000, entryIds: saved.entryIds });
+  });
+
+  it('rejects incoming borrowed principal disguised as expense or adjustment without saving other batch entries', () => {
+    for (const kind of ['expense', 'adjustment'] as const) {
+      const { service, snapshot } = fixture([]);
+      const intent = mutation({ kind: 'mutate', changes: [
+        { type: 'createEntry', key: 'new:0', values: {
+          kind, date: '2026-01-21', month: '2026-01', title: '合成借入本金', category: '借入', amountCents: 0,
+          personalCents: 0, cashflows: [{ accountId: 'wechat', deltaCents: 18000 }], note: '本人收到借款，需要还给合成同学甲。',
+        } },
+        { type: 'createEntry', key: 'new:1', values: {
+          kind: 'expense', date: '2026-01-21', month: '2026-01', title: '合成手续费', category: '手续费', amountCents: 30,
+          personalCents: 30, cashflows: [{ accountId: 'wechat', deltaCents: -30 }],
+        } },
+      ] });
+      const changes = ledgerChanges(intent, snapshot, { operationId: `incoming-${kind}`, text: '合成同学甲借给我180元到微信，另付手续费3毛' }, new Set(), now);
+      expect(() => service.mutate({ operationId: `save-incoming-${kind}`, expectedRevision: snapshot.revision, changes, month: '2026-01' })).toThrow();
+      expect(service.snapshot('2026-01')).toEqual(snapshot);
+      expect(service.query({ month: '2026-01' }).receivables.cents).toBe(0);
+    }
+  });
+
   it('keeps omitted patch fields absent and preserves imported refund links, notes, amounts and provenance', () => {
     const refund = entry({ id: 'refund', kind: 'reimbursement', title: '合成报销', amountCents: 4000, personalCents: 0, incomeCents: 1000,
       cashflows: [{ accountId: 'wechat', deltaCents: 4000 }], adjustments: [{ targetEntryIds: ['original'], amountCents: 3000, note: '已确认部分报销' }], relatedEntryIds: ['original'],

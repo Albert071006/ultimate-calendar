@@ -13,6 +13,10 @@ import { ledgerReceivable } from './receivable';
 export class LedgerError extends Error {
   constructor(readonly code: 'VALIDATION' | 'CONFLICT' | 'DUPLICATE' | 'STORAGE', message: string, readonly details?: unknown) { super(message); this.name = 'LedgerError'; }
 }
+/** A new mutation failed validation and its entire transaction was rolled back. */
+export class LedgerValidationRejection extends LedgerError {
+  constructor(readonly operationId: string, message: string) { super('VALIDATION', message); this.name = 'LedgerValidationRejection'; }
+}
 function emptyLedger(): LedgerData { return { revision: 0, entries: [], balanceSnapshots: [], rules: structuredClone(DEFAULT_LEDGER_RULES), audit: [], sources: [] }; }
 export function initializeLedgerDatabase(db: DatabaseSync): void {
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('ledger_state','ledger_operations')").all();
@@ -135,25 +139,40 @@ export class LedgerService {
   }
   private transact(operationId: string, kind: string, digest: string, expectedRevision: number | undefined, month: string | undefined, apply: (data: LedgerData, at: string) => string[]): LedgerMutationResult {
     this.db.exec('BEGIN IMMEDIATE');
+    let phase: 'read' | 'apply' | 'write' | 'committed' = 'read';
     try {
       const previous = this.db.prepare('SELECT * FROM ledger_operations WHERE id=?').get(operationId) as OperationRow | undefined;
       const data = readLedgerDatabase(this.db);
       if (previous) {
         if (previous.fingerprint !== digest) throw new LedgerError('CONFLICT', '同一操作编号的内容已改变，请重新发起该操作');
         this.db.exec('COMMIT');
+        phase = 'committed';
         return { status: 'already_saved', operationId, snapshot: this.toSnapshot(data, month), entryIds: JSON.parse(previous.entry_ids) as string[], message: previous.undone ? '该操作已保存后撤销，本次重试未重复记账' : '此前已保存，本次重试未重复记账', undoAvailable: this.hasUndo() };
       }
       if (expectedRevision !== undefined && data.revision !== expectedRevision) throw new LedgerError('CONFLICT', '账本已更新，请刷新最新记录后再操作');
-      const before = JSON.stringify(data); const at = this.now().toISOString(); const entryIds = apply(data, at);
+      const before = JSON.stringify(data); const at = this.now().toISOString();
+      phase = 'apply';
+      const entryIds = apply(data, at);
       data.revision += 1; validateLedgerData(data); LedgerDataSchema.parse(data);
       const payload = JSON.stringify(data);
+      phase = 'write';
       this.db.prepare('UPDATE ledger_state SET payload=? WHERE id=1').run(payload);
       this.db.prepare('INSERT INTO ledger_operations(id,fingerprint,kind,before_payload,entry_ids,revision) VALUES(?,?,?,?,?,?)').run(operationId, digest, kind, before, JSON.stringify(entryIds), data.revision);
       if (String(this.db.prepare('SELECT payload FROM ledger_state WHERE id=1').get()!['payload']) !== payload) throw new LedgerError('STORAGE', '保存后核对失败，账本尚未完成保存');
       this.db.exec('COMMIT');
+      phase = 'committed';
       return { status: 'saved', operationId, snapshot: this.toSnapshot(data, month), entryIds, message: kind === 'undo' ? '已撤销上一次账本操作' : '已保存并核对本地账本', undoAvailable: this.hasUndo() };
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch { /* A committed result is never retried here. */ }
+      if (phase === 'committed') throw new LedgerError('STORAGE', '账本已提交，但结果读取未完成；请核对原操作，不要重新记账');
+      try { this.db.exec('ROLLBACK'); } catch {
+        throw new LedgerError('STORAGE', '账本保存状态尚未确认，请核对原操作，不要重新记账');
+      }
+      // Only this proven, rolled-back boundary permits fresh AI analysis. Read
+      // failures, conflicts and uncertain/committed writes must retain their ID.
+      if (kind === 'mutation' && phase === 'apply') {
+        if (error instanceof LedgerError && error.code === 'VALIDATION') throw new LedgerValidationRejection(operationId, error.message);
+        if (error instanceof Error && error.name === 'ZodError') throw new LedgerValidationRejection(operationId, '账目格式不符合保存要求');
+      }
       if (error instanceof LedgerError) throw error;
       if (error instanceof Error && error.name === 'ZodError') throw new LedgerError('VALIDATION', '账目格式不正确，尚未保存', error.message);
       throw new LedgerError('STORAGE', '本地账本保存未完成，请检查文件后重试同一操作', error instanceof Error ? error.message : undefined);
