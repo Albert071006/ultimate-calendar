@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ChevronDown, Plus, X } from 'lucide-react';
 import { useMobile } from '../../mobile/layout';
-import { LEDGER_ACCOUNTS, type LedgerEntry, type LedgerSnapshot } from '../../../shared/ledger';
+import { ledgerAccounts, type LedgerEntry, type LedgerSnapshot } from '../../../shared/ledger';
 import { ledgerReceivable } from '../../../ledger/receivable';
 import { todayDate } from '../../calendar-layout';
 import { localDateTime } from '../../calendar-timeline';
@@ -78,7 +78,7 @@ export function LedgerRow({ entry, snapshot, owed, busy, onEdit, onVoid }: { ent
   const singleReduction = adjustments.filter(value => value.targetEntryIds.length === 1).reduce((sum, value) => sum + value.amountCents, 0);
   const groupReduction = adjustments.some(value => value.targetEntryIds.length > 1);
   const amountLabel = entry.kind === 'transfer' ? '转账金额' : inKinds.includes(entry.kind) ? '实际收到' : '实际支付';
-  const accounts = Array.from(new Set(entry.cashflows.map(value => accountName(value.accountId)))).join(' → ');
+  const accounts = Array.from(new Set(entry.cashflows.map(value => accountName(value.accountId, ledgerAccounts(snapshot))))).join(' → ');
   const tag = tagOf(entry, owed);
   const sign = entry.kind === 'transfer' || entry.kind === 'adjustment' ? '' : inKinds.includes(entry.kind) ? '+' : '−';
   return <details className={`a2-tx${entry.voided ? ' void' : ''}`}><summary>
@@ -93,7 +93,7 @@ export function LedgerRow({ entry, snapshot, owed, busy, onEdit, onVoid }: { ent
     {isLoanKind(entry.kind) && <><dt>对方</dt><dd>{entry.counterparty || '待确认'}</dd></>}
     <dt>发生日期</dt><dd>{entry.date ?? `${entry.month} · ${entry.dateNote || '日期待确认'}`}{entry.occurredAt && ` ${timeText(entry.occurredAt).slice(11)}`}</dd>
     <dt>登记时间</dt><dd>{timeText(entry.createdAt)}{entry.date && entry.date !== localDateTime(Date.parse(entry.createdAt)).slice(0, 10) ? ' · 补录' : ''}</dd>
-    <dt>账户资金变化</dt><dd>{entry.cashflows.length ? entry.cashflows.map((value, index) => <div key={index}>{accountName(value.accountId)} {value.deltaCents >= 0 ? '+' : '−'}{ledgerMoney(Math.abs(value.deltaCents))}</div>) : '不改变账户余额'}</dd>
+    <dt>账户资金变化</dt><dd>{entry.cashflows.length ? entry.cashflows.map((value, index) => <div key={index}>{accountName(value.accountId, ledgerAccounts(snapshot))} {value.deltaCents >= 0 ? '+' : '−'}{ledgerMoney(Math.abs(value.deltaCents))}</div>) : '不改变账户余额'}</dd>
     {entry.incomeCents > 0 && <><dt>普通收入</dt><dd>{ledgerMoney(entry.incomeCents)}</dd></>}
     {entry.assetSaleCents > 0 && <><dt>资产变现</dt><dd>{ledgerMoney(entry.assetSaleCents)}</dd></>}
     {entry.sourceKey && <><dt>旧账编号</dt><dd>{entry.sourceKey}</dd></>}
@@ -166,7 +166,7 @@ export function Flows({ snapshot, month, busy, filter, setFilter, create, edit, 
         <div className={`a2-ledger-filters${mobile && !filtersOpen && !account && !category && !showVoided ? ' folded' : ''}`}>
           <input aria-label="搜索项目或备注" value={search} onChange={event => set({ search: event.target.value })} placeholder={mobile ? '搜索' : '搜索项目或备注'} />
           {mobile && <button className="m-link" aria-expanded={filtersOpen} onClick={() => setFiltersOpen(value => !value)}>筛选</button>}
-          <label>账户<select value={account} onChange={event => set({ account: event.target.value })}><option value="">全部账户</option><option value="unknown">账户待确认</option>{LEDGER_ACCOUNTS.map(value => <option value={value.id} key={value.id}>{value.name}</option>)}</select></label>
+          <label>账户<select value={account} onChange={event => set({ account: event.target.value })}><option value="">全部账户</option><option value="unknown">账户待确认</option>{ledgerAccounts(snapshot).map(value => <option value={value.id} key={value.id}>{value.name}</option>)}</select></label>
           <label>分类<select value={category} onChange={event => set({ category: event.target.value })}><option value="">全部分类</option>{categories.map(value => <option key={value}>{value}</option>)}</select></label>
           <label className="a2-check"><input type="checkbox" checked={showVoided} onChange={event => set({ showVoided: event.target.checked })} />显示已作废</label>
           {filtered && <button className="ui-btn sm ghost" onClick={() => setFilter({ ...noFilter, showVoided })}>清除筛选</button>}

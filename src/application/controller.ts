@@ -19,6 +19,7 @@ import type { ModelRequestRunner } from '../ai/request-queue';
 import { LedgerValidationRejection, type LedgerService } from '../ledger/service';
 import { LedgerIntentSchema, LedgerCommandProposalSchema } from '../shared/ledger-command';
 import { ledgerLoans } from '../shared/ledger-loans';
+import { validateLedgerQueryAccount } from '../ai/ledger-accounts';
 import { ledgerChanges, ledgerContext, ledgerMessages, ledgerQueryReply, ledgerSavedReply } from '../ai/ledger';
 import { ledgerToday } from '../shared/ledger';
 
@@ -180,7 +181,7 @@ export function createController(options: ControllerOptions) {
           repository.transact(state => save(state, id, fingerprint, { kind:'command', intent, result:null, ledgerProposal:proposal }));
           const savedReply = (result: ReturnType<LedgerService['mutate']>) => {
             const beforeAccounts = snapshot.entries.filter(entry=>result.entryIds.includes(entry.id)).flatMap(entry=>entry.cashflows.flatMap(flow=>flow.accountId ? [flow.accountId] : []));
-            const snapshotAccounts = proposal.mutationRequest?.changes.flatMap(change=>change.type === 'setBalance' ? [change.snapshot.accountId] : []) ?? [];
+            const snapshotAccounts = proposal.mutationRequest?.changes.flatMap(change=>change.type === 'setBalance' ? [change.snapshot.accountId] : change.type === 'putAccount' ? [change.account.id] : []) ?? [];
             const mainReply = ledgerSavedReply(result.snapshot,result.entryIds,result.message,[...new Set([...beforeAccounts,...snapshotAccounts])]);
             const touched = result.snapshot.entries.filter(entry=>result.entryIds.includes(entry.id));
             const related = new Set(touched.flatMap(entry=>entry.adjustments.flatMap(adjustment=>adjustment.targetEntryIds)));
@@ -192,6 +193,7 @@ export function createController(options: ControllerOptions) {
           if (proposal.intent.kind === 'clarification') reply = proposal.intent.question;
           else if (proposal.intent.kind === 'query') {
             const query = proposal.intent.query;
+            validateLedgerQueryAccount(query, snapshot, request);
             const latest = ledger.query(query);
             const querySnapshot = ledger.snapshot(currentMonth);
             reply = ledgerQueryReply(query, { ...latest, rules:querySnapshot.rules,

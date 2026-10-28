@@ -1,3 +1,3 @@
-/** Loan entries require clients that understand principal and settlement kinds. */
-export const LEDGER_API_VERSION = '2';
+/** Dynamic accounts require clients that read the ledger's own account catalog. */
+export const LEDGER_API_VERSION = '3';
 export const LEDGER_API_HEADER = 'X-Planner-Ledger-Version';

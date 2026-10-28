@@ -81,6 +81,11 @@
 .a2-ledger-account-list .bal { font-family: var(--font-time); font-size: 14.5px; font-weight: 600; }
 .a2-ledger-account-list .meta { font-size: 12px; color: var(--ink-3); }
 .a2-ledger-account-list .meta b { font-weight: 500; color: var(--warn); }
+.a2-ledger-account-list .name,.a2-ledger-account-list .meta { overflow-wrap: anywhere; }
+.a2-ledger-account-list .meta small { display: block; margin-top: 4px; font: inherit; }
+.a2-ledger-account-list .ledger-account-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.is-mobile .a2-ledger-account-list .row .ledger-account-actions { grid-column: 1/-1; justify-self: start; padding: 6px 0; }
+.is-mobile .m-ledger .a2-ledger-account-list .ledger-account-actions .ui-btn { min-height: 40px; font-size: 15px; }
 .a2-ledger-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .a2-ledger-table th, .a2-ledger-table td { padding: 9px 8px 9px 0; text-align: left; border-bottom: 1px solid var(--line); line-height: 1.6; }
 .a2-ledger-table th { font-weight: 500; color: var(--ink-3); border-bottom-color: var(--ink); }

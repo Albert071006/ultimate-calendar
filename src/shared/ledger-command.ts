@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { LedgerAccountIdSchema, LedgerBalanceSnapshotDraftSchema, LedgerDateSchema, LedgerEntryDraftSchema, LedgerMutationRequestSchema, LedgerQuerySchema, LedgerRulesSchema } from './ledger';
+import { LedgerAccountIdSchema, LedgerAccountSchema, LedgerBalanceSnapshotDraftSchema, LedgerDateSchema, LedgerEntryDraftSchema, LedgerMutationRequestSchema, LedgerQuerySchema, LedgerRulesSchema } from './ledger';
 
 const entryValues = LedgerEntryDraftSchema.omit({ id: true, sourceId: true, sourceKey: true, ruleKey: true, originalText: true });
 // Zod 4 applies an inner default even underneath .optional(). A patch must leave
@@ -15,10 +15,11 @@ const entryPatch = entryValues.partial().extend({
   note: entryValues.shape.note.removeDefault().optional(),
 });
 export const LedgerAIChangeSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('createAccount'), key: z.string().regex(/^new-account:\d+$/), name: LedgerAccountSchema.shape.name, kind: z.enum(['cash', 'stored']), aliases: LedgerAccountSchema.shape.aliases.max(30).default([]) }),
   z.strictObject({ type: z.literal('createEntry'), key: z.string().regex(/^new:\d+$/), values: entryValues, confirmDuplicate: z.boolean().default(false) }),
   z.strictObject({ type: z.literal('updateEntry'), id: z.string().min(1).max(200), expectedVersion: z.number().int().positive(), patch: entryPatch, note: z.string().max(2000) }),
   z.strictObject({ type: z.literal('voidEntry'), id: z.string().min(1).max(200), expectedVersion: z.number().int().positive(), note: z.string().max(2000) }),
-  z.strictObject({ type: z.literal('setBalance'), accountId: LedgerAccountIdSchema.exclude(['family']), balanceCents: LedgerBalanceSnapshotDraftSchema.shape.balanceCents, date: LedgerDateSchema, asOf: LedgerBalanceSnapshotDraftSchema.shape.asOf, timing: z.enum(['current', 'historical']).default('historical'), note: z.string().max(2000) }),
+  z.strictObject({ type: z.literal('setBalance'), accountId: LedgerAccountIdSchema, balanceCents: LedgerBalanceSnapshotDraftSchema.shape.balanceCents, date: LedgerDateSchema, asOf: LedgerBalanceSnapshotDraftSchema.shape.asOf, timing: z.enum(['current', 'historical']).default('historical'), note: z.string().max(2000) }),
   z.strictObject({ type: z.literal('updateRules'), patch: LedgerRulesSchema.partial().extend({ sameDayNewEntryOrder: LedgerRulesSchema.shape.sameDayNewEntryOrder.removeDefault().optional() }), note: z.string().max(2000) }),
 ]);
 

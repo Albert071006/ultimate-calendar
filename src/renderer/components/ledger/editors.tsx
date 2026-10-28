@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { LEDGER_ACCOUNTS, LedgerEntryDraftSchema, type LedgerAccountId, type LedgerEntry, type LedgerEntryKind, type LedgerMutationRequest, type LedgerSnapshot } from '../../../shared/ledger';
+import { ledgerAccounts, LedgerEntryDraftSchema, type LedgerAccount, type LedgerAccountId, type LedgerEntry, type LedgerEntryKind, type LedgerMutationRequest, type LedgerSnapshot } from '../../../shared/ledger';
 import { isLedgerLoanKind as isLoanKind, ledgerLoans } from '../../../shared/ledger-loans';
 import { operationId, todayDate } from '../../calendar-layout';
 import { localDateTime } from '../../calendar-timeline';
@@ -8,7 +8,7 @@ import { ledgerMoney } from './money';
 export type Change = LedgerMutationRequest['changes'][number];
 export type Save = (changes: Change[]) => Promise<boolean>;
 export const kinds: Record<LedgerEntryKind, string> = { expense: '消费', income: '普通收入', asset_sale: '资产变现', transfer: '账户转账', bonus: '赠送额度', refund: '退款', reimbursement: '费用报销', aa_return: 'AA / 代垫返款', loan_borrow: '借入', loan_lend: '借出', loan_repay: '归还借款', loan_collect: '收回借款', repayment: '其他还款（信用卡等）', adjustment: '个人开销调整' };
-export const accountName = (id: LedgerAccountId | null) => LEDGER_ACCOUNTS.find(value => value.id === id)?.name ?? '账户待确认';
+export const accountName = (id: LedgerAccountId | null, accounts: readonly LedgerAccount[]) => accounts.find(value => value.id === id)?.name ?? '账户待确认';
 export const timeText = (value: string | null | undefined) => value ? localDateTime(Date.parse(value)).replace('T', ' ') : '时点未明确';
 export const inKinds: LedgerEntryKind[] = ['income', 'asset_sale', 'bonus', 'refund', 'reimbursement', 'aa_return', 'loan_borrow', 'loan_collect'];
 export { isLoanKind };
@@ -20,11 +20,12 @@ export const parseMoney = (value: string, name: string, signed = false) => {
   return amount;
 };
 
-export function AccountSelect({ value, onChange, label, excludeFamily = false, cashOnly = false }: { value: string; onChange: (value: string) => void; label: string; excludeFamily?: boolean; cashOnly?: boolean }) {
-  return <label>{label}<select value={value} onChange={event => onChange(event.target.value)}><option value="">账户待确认</option>{LEDGER_ACCOUNTS.filter(account => (!excludeFamily || account.id !== 'family') && (!cashOnly || account.kind === 'cash')).map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>;
+export function AccountSelect({ value, onChange, label, accounts, excludeFamily = false, cashOnly = false }: { value: string; onChange: (value: string) => void; label: string; accounts: readonly LedgerAccount[]; excludeFamily?: boolean; cashOnly?: boolean }) {
+  return <label>{label}<select value={value} onChange={event => onChange(event.target.value)}><option value="">账户待确认</option>{accounts.filter(account => (!excludeFamily || account.kind !== 'family') && (!cashOnly || account.kind === 'cash')).map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>;
 }
 
 export function EntryEditor({ entry, snapshot, busy, error, save, close }: { entry?: LedgerEntry; snapshot: LedgerSnapshot; busy: boolean; error: string; save: (changes: Change[]) => Promise<boolean>; close: () => void }) {
+  const accounts = ledgerAccounts(snapshot);
   const [entryId] = useState(entry?.id ?? operationId());
   const [kind, setKind] = useState<LedgerEntryKind>(entry?.kind ?? 'expense'), [title, setTitle] = useState(entry?.title ?? ''), [category, setCategory] = useState(entry?.category ?? '餐饮');
   const [date, setDate] = useState(entry?.date ?? todayDate()), [unknownDate, setUnknownDate] = useState(entry ? !entry.date : false), [month, setMonth] = useState(entry?.month ?? todayDate().slice(0, 7)), [dateNote, setDateNote] = useState(entry?.dateNote ?? '');
@@ -42,7 +43,7 @@ export function EntryEditor({ entry, snapshot, busy, error, save, close }: { ent
   const changeKind = (next: LedgerEntryKind) => {
     if (next === kind) return;
     setKind(next); setRelated([]); setReduction('0'); setCounterparty('');
-    if (isLoanKind(next)) { setCategory('借款'); if (account && !LEDGER_ACCOUNTS.some(value => value.id === account && value.kind === 'cash')) setAccount(''); }
+    if (isLoanKind(next)) { setCategory('借款'); if (account && !accounts.some(value => value.id === account && value.kind === 'cash')) setAccount(''); }
   };
   const linkedKind = ['refund', 'reimbursement', 'aa_return', 'adjustment'].includes(kind);
   const canAdjust = ['refund', 'reimbursement', 'adjustment'].includes(kind);
@@ -55,7 +56,7 @@ export function EntryEditor({ entry, snapshot, busy, error, save, close }: { ent
       const reductionCents = canAdjust ? parseMoney(reduction || '0', '冲减金额') : 0;
       if (reductionCents && !related.length) throw new Error('冲减个人开销时，请选择原消费；原消费不在账本中则保持冲减为 0。');
       if (loanKind && amountCents <= 0) throw new Error('借款本金须大于 0。');
-      if (loanKind && account && !LEDGER_ACCOUNTS.some(value => value.id === account && value.kind === 'cash')) throw new Error('借款请选择现金账户或保留账户待确认。');
+      if (loanKind && account && !accounts.some(value => value.id === account && value.kind === 'cash')) throw new Error('借款请选择现金账户或保留账户待确认。');
       if (settlingLoan && related.length && !loanOrigins.some(value => value.id === related[0])) throw new Error('请选择方向对应的原借款。');
       if (settlingLoan && selectedLoan && amountCents > selectedLoan.outstandingCents) throw new Error('还收本金超过这笔借款的剩余金额；利息或手续费请另记一笔。');
       const draft = LedgerEntryDraftSchema.parse({
@@ -71,7 +72,7 @@ export function EntryEditor({ entry, snapshot, busy, error, save, close }: { ent
   };
   return <form className="editor-form ledger-form" onSubmit={event => void submit(event)}><div className="form-grid"><label>类型<select value={kind} onChange={event => changeKind(event.target.value as LedgerEntryKind)}>{Object.entries(kinds).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label><label>项目<input required maxLength={500} value={title} onChange={event => setTitle(event.target.value)} /></label><label>分类<input required maxLength={100} value={category} onChange={event => setCategory(event.target.value)} list="ledger-category-options" /><datalist id="ledger-category-options">{Array.from(new Set(['餐饮', '交通', '购物', '软件服务', '水费', '生活费', '借款', ...snapshot.entries.map(value => value.category)])).map(value => <option key={value} value={value} />)}</datalist></label><label>{unknownDate ? '发生月份' : '发生日期'}<input required type={unknownDate ? 'month' : 'date'} value={unknownDate ? month : date} onChange={event => unknownDate ? setMonth(event.target.value) : setDate(event.target.value)} /></label></div>
     <label className="ledger-checkbox"><input type="checkbox" checked={unknownDate} onChange={event => setUnknownDate(event.target.checked)} />仅确定月份，日期待确认</label>{unknownDate && <label>日期说明<input value={dateNote} onChange={event => setDateNote(event.target.value)} placeholder="例如：10 月 4 日或 5 日" /></label>}
-    {kind !== 'adjustment' && <div className="form-grid"><label>{kind === 'transfer' ? '转账金额（元）' : inKinds.includes(kind) ? '实际收到（元）' : '实际支付（元）'}<input required inputMode="decimal" value={amount} onChange={event => setAmount(event.target.value)} placeholder="0.00" /></label>{kind === 'expense' && <label>个人开销（元）<input inputMode="decimal" disabled={personalUnknown} value={personalTouched ? personal : amount} onChange={event => { setPersonalTouched(true); setPersonal(event.target.value); }} placeholder={personalUnknown ? '待确认' : '只计自己承担的部分'} /></label>}<AccountSelect label={kind === 'transfer' ? '转出账户' : inKinds.includes(kind) ? '收款账户' : '支付账户'} value={account} onChange={setAccount} cashOnly={loanKind} />{kind === 'transfer' && <AccountSelect label="转入账户" value={toAccount} onChange={setToAccount} />}{kind === 'reimbursement' && <label>其中已确认的额外收入（元）<input inputMode="decimal" value={extraIncome} onChange={event => setExtraIncome(event.target.value)} /></label>}</div>}
+    {kind !== 'adjustment' && <div className="form-grid"><label>{kind === 'transfer' ? '转账金额（元）' : inKinds.includes(kind) ? '实际收到（元）' : '实际支付（元）'}<input required inputMode="decimal" value={amount} onChange={event => setAmount(event.target.value)} placeholder="0.00" /></label>{kind === 'expense' && <label>个人开销（元）<input inputMode="decimal" disabled={personalUnknown} value={personalTouched ? personal : amount} onChange={event => { setPersonalTouched(true); setPersonal(event.target.value); }} placeholder={personalUnknown ? '待确认' : '只计自己承担的部分'} /></label>}<AccountSelect label={kind === 'transfer' ? '转出账户' : inKinds.includes(kind) ? '收款账户' : '支付账户'} value={account} onChange={setAccount} accounts={accounts} cashOnly={loanKind} />{kind === 'transfer' && <AccountSelect label="转入账户" value={toAccount} onChange={setToAccount} accounts={accounts} />}{kind === 'reimbursement' && <label>其中已确认的额外收入（元）<input inputMode="decimal" value={extraIncome} onChange={event => setExtraIncome(event.target.value)} /></label>}</div>}
     {loanKind && <fieldset><legend>借款本金</legend><label>对方（可留空）<input maxLength={200} value={counterparty} onChange={event => setCounterparty(event.target.value)} placeholder="姓名或便于区分的称呼" /></label>
       {settlingLoan && <><label>{kind === 'loan_repay' ? '对应原借入' : '对应原借出'}<select value={related[0] ?? ''} onChange={event => { const id = event.target.value; setRelated(id ? [id] : []); const original = loanOrigins.find(value => value.id === id); setCounterparty(original?.counterparty ?? ''); }}><option value="">未关联原借款</option>{loanOrigins.map(value => { const remaining = loanBalances.items.find(item => item.entryId === value.id)?.outstandingCents ?? 0; return <option key={value.id} value={value.id}>{value.date ?? value.month} · {value.counterparty || '对方待确认'} · {value.title} · 剩余 {ledgerMoney(remaining)}</option>; })}</select></label><p className="ledger-form-note">{selectedLoan ? <>这笔本金剩余 {ledgerMoney(selectedLoan.outstandingCents)}，可分次归还或收回。</> : '未关联时仅记录本次真实资金收付，剩余欠款未知；不会抵扣其他借款。'}</p></>}
       <p className="ledger-form-note">这里只记本金，不计个人开销或普通收入。利息、手续费请分别记消费或收入。</p>
@@ -99,6 +100,7 @@ export function BalanceEditor({ accountId, snapshot, busy, error, save, close }:
     const amount = parseMoney(balance, '余额', true), instant = `${asOf}${asOf.length === 16 ? ':00' : ''}+08:00`;
     if (!asOf || !Number.isFinite(Date.parse(instant))) throw new Error('请填写快照时点。');
     const coveredEntryIds = snapshot.entries.filter(entry => !entry.voided && entry.cashflows.some(flow => flow.accountId === accountId) && (entry.occurredAt ? Date.parse(entry.occurredAt) <= Date.parse(instant) : entry.date && (entry.date < asOf.slice(0, 10) || includeDay && entry.date === asOf.slice(0, 10)))).map(entry => entry.id);
-    void save([{ type: 'setBalance', snapshot: { id, accountId: accountId as Exclude<LedgerAccountId, 'family'>, balanceCents: amount, date: asOf.slice(0, 10), asOf: instant, coveredEntryIds, note, sourceId: null } }]).then(saved => { if (saved) close(); });
+    if (!ledgerAccounts(snapshot).some(account => account.id === accountId && account.kind !== 'family')) throw new Error('请选择可核对余额的现金或储值账户。');
+    void save([{ type: 'setBalance', snapshot: { id, accountId, balanceCents: amount, date: asOf.slice(0, 10), asOf: instant, coveredEntryIds, note, sourceId: null } }]).then(saved => { if (saved) close(); });
   } catch (value) { setFormError(value instanceof Error ? value.message : '请检查内容。'); } }}><p className="ledger-form-note">填写你实际看到的余额。这是余额快照，不会当成收入；已覆盖的历史交易不会再次扣除。</p><div className="form-grid"><label>账户实际余额（元）<input required inputMode="decimal" value={balance} onChange={event => setBalance(event.target.value)} /></label><label>余额对应时点（北京时间）<input required type="datetime-local" step={1} value={asOf} onChange={event => setAsOf(event.target.value)} /></label></div>{!!dayEntries.length && <><label className="ledger-checkbox"><input type="checkbox" checked={includeDay} onChange={event => setIncludeDay(event.target.checked)} />这份余额已包含当天全部 {dayEntries.length} 笔未标具体时刻的已记交易</label><p className="ledger-form-note">不勾选时保留这些同日交易的先后关系待核对，不假定已扣或未扣。</p></>}<label>快照备注<textarea rows={2} value={note} onChange={event => setNote(event.target.value)} /></label>{(formError || error) && <p role="alert" className="error">{formError || error}</p>}<footer className="form-footer"><button type="button" disabled={busy} onClick={close}>取消</button><button disabled={busy} className="primary">保存余额快照</button></footer></form>;
 }

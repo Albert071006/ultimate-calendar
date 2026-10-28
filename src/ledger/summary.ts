@@ -1,4 +1,4 @@
-import { LEDGER_ACCOUNTS, LedgerQuerySchema, ledgerToday, type LedgerData, type LedgerEntry, type LedgerQuery, type LedgerSummary } from '../shared/ledger';
+import { ledgerAccounts, LedgerQuerySchema, ledgerToday, type LedgerData, type LedgerEntry, type LedgerQuery, type LedgerSummary } from '../shared/ledger';
 
 export function ledgerEntryMatches(entry: LedgerEntry, query: LedgerQuery): boolean {
   if (entry.voided) return false;
@@ -12,7 +12,7 @@ export function ledgerEntryMatches(entry: LedgerEntry, query: LedgerQuery): bool
 }
 
 /** Integer-only derived views; model-generated balances are never accepted as calculations. */
-export function summarizeLedger(data: Pick<LedgerData, 'entries' | 'balanceSnapshots'>, input: LedgerQuery = {}, now = new Date()): LedgerSummary {
+export function summarizeLedger(data: Pick<LedgerData, 'entries' | 'balanceSnapshots' | 'accounts'>, input: LedgerQuery = {}, now = new Date()): LedgerSummary {
   const query = LedgerQuerySchema.parse(input);
   const month = query.month ?? query.from?.slice(0, 7) ?? ledgerToday(now).slice(0, 7);
   const effectiveQuery = (query.from || query.to) ? query : { ...query, month };
@@ -48,7 +48,7 @@ export function summarizeLedger(data: Pick<LedgerData, 'entries' | 'balanceSnaps
   let excludedUncertainDateCents = uncertainOutsideRange.reduce((sum, entry) => sum + (entry.personalCents ?? 0), 0);
   const excludedIds = new Set(uncertainOutsideRange.map(entry => entry.id));
   for (const receipt of live) for (const adjustment of receipt.adjustments) if (adjustment.targetEntryIds.every(id => excludedIds.has(id))) excludedUncertainDateCents -= adjustment.amountCents;
-  const accounts = LEDGER_ACCOUNTS.map(account => {
+  const accounts = ledgerAccounts(data).map(account => {
     const snapshots = data.balanceSnapshots.filter(snapshot => snapshot.accountId === account.id).sort((a, b) => b.date.localeCompare(a.date) || (b.asOf ?? b.recordedAt).localeCompare(a.asOf ?? a.recordedAt) || b.recordedAt.localeCompare(a.recordedAt));
     const snapshot = snapshots[0];
     let balanceCents: number | null = account.kind === 'family' || !snapshot ? null : snapshot.balanceCents;
@@ -91,7 +91,7 @@ export function summarizeLedger(data: Pick<LedgerData, 'entries' | 'balanceSnaps
   return { month, from: query.from ?? null, to: query.to ?? null,
     actualPaidCents: selected.filter(entry => entry.kind === 'expense' || entry.kind === 'repayment' || entry.kind === 'loan_lend' || entry.kind === 'loan_repay').reduce((sum, entry) => sum + entry.amountCents, 0),
     personalCents, incomeCents: selected.reduce((sum, entry) => sum + entry.incomeCents, 0), assetSaleCents: selected.reduce((sum, entry) => sum + entry.assetSaleCents, 0),
-    familyUsageCents: accounts.find(account => account.id === 'family')!.recordedUsageCents,
+    familyUsageCents: accounts.filter(account => account.kind === 'family').reduce((sum, account) => sum + account.recordedUsageCents, 0),
     pendingPersonalCount: selected.filter(entry => entry.kind === 'expense' && entry.personalCents === null).length,
     pendingAccountCount: selected.filter(entry => entry.cashflows.some(flow => flow.accountId === null && flow.deltaCents !== 0)).length,
     uncertainDateCents, excludedUncertainDateCents, unallocatedAdjustmentCents, cashBalanceCents: balanceTotal('cash'), storedBalanceCents: balanceTotal('stored'), accounts,

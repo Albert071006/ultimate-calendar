@@ -219,12 +219,12 @@ export function createRemoteHttpServer(options: RemoteHttpOptions) {
         if (rpcMatch && method === 'POST') {
           const rpcMethod = RemoteMethodSchema.parse(rpcMatch[1]);
           const input = RemoteRequestSchema.parse(await body(request, options.maxBodyBytes ?? (rpcMethod === 'restorePreview' ? MAX_CLOUD_EXPORT_WIRE_BYTES + 64 * 1024 : 15 * 1024 * 1024)));
-          // An old ledger UI cannot parse new loan kinds. Reject before any write,
+          // An old ledger UI cannot parse dynamic accounts. Reject before any write,
           // with a normal business error instead of a response that looks offline.
           if (['ledgerSnapshot', 'ledgerMutate', 'ledgerUndo'].includes(rpcMethod)
             && request.headers[LEDGER_API_HEADER.toLowerCase()] !== LEDGER_API_VERSION) {
             sendJson(response, 200, { ok: false, error: { code: 'VALIDATION', retryable: false,
-              message: '账本借款功能已升级，请更新电脑端或关闭并重新打开手机日历，再查看或修改账本。原资料和配对均保留。' } }); return;
+              message: '账本账户功能已升级，请更新电脑端或关闭并重新打开手机日历，再查看或修改账本。原资料和配对均保留。' } }); return;
           }
           sendJson(response, 200, await options.service.rpc(rpcMethod, input, session.device.id)); return;
         }
