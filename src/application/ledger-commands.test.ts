@@ -27,6 +27,19 @@ function importSynthetic(ledger: LedgerService, entries: LedgerEntry[]) {
   ledger.import({ format: 'ultimate-calendar-ledger', formatVersion: 1, entries, balanceSnapshots: [], rules: DEFAULT_LEDGER_RULES, audit: [], sources: [] }, 'synthetic-receivable-import');
 }
 describe('main assistant local ledger commands',()=>{
+  it.each(['命令理解', '账本解析'] as const)('labels %s schema failures without saving a transaction or losing billable usage', async stage => {
+    const malformed = expense('alipay'); malformed.changes[0]!.values.amountCents = 2000.5;
+    const { controller, ledger, repository, payloads } = setup(stage === '命令理解' ? [{ kind: 'private-invalid-intent', reply: 'private model contents' }] : [route, malformed]);
+    const before = ledger.snapshot();
+    const result = await controller.command({ operationId: 'synthetic-schema-failure', text: '合成午饭20元支付宝' });
+    expect(result).toMatchObject({ ok: false, error: { code: 'AI_RESPONSE', retryable: false, message: expect.stringContaining(`${stage}失败：`) } });
+    if (result.ok) throw Error('expected schema rejection');
+    expect(result.error.message).toContain('AI_SCHEMA'); expect(result.error.message).not.toContain('private');
+    expect(ledger.snapshot().entries).toEqual(before.entries); expect(ledger.snapshot().revision).toBe(before.revision);
+    expect(payloads).toHaveLength(stage === '命令理解' ? 1 : 2);
+    expect(repository.snapshot().tokenUsage).toHaveLength(payloads.length);
+    expect(repository.snapshot().tokenUsage.every(usage => usage.totalTokens === 20)).toBe(true);
+  });
   it('continues the screenshot domain clarification with the original purchase facts and saves exactly once',async()=>{
     const clarification = {kind:'clarification',reply:'需要确认操作类型',questions:['这是记账还是安排日历事项？']};
     const {controller,ledger,intents,payloads}=setup([clarification]);

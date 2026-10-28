@@ -31,6 +31,56 @@ describe('real DeepSeek HTTP boundary', () => {
   it('rejects truncated finish reason even when JSON happens to parse and records known billable usage', async () => {
     const usage: number[] = []; await expect(completeJson({ ...base, onUsage: u => { usage.push(u.totalTokens); }, fetch: async () => new Response(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'length' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } })) })).rejects.toMatchObject({ code: 'AI_RESPONSE' }); expect(usage).toEqual([15]);
   });
+  it.each([
+    { name: 'blank content', choice: { message: { content: ' \n\t' }, finish_reason: 'stop' }, code: 'AI_EMPTY' },
+    { name: 'null content', choice: { message: { content: null }, finish_reason: 'stop' }, code: 'AI_EMPTY' },
+    { name: 'truncated content', choice: { message: { content: '{"ok":true}' }, finish_reason: 'length' }, code: 'AI_TRUNCATED' },
+    { name: 'filtered response', choice: { message: { content: null }, finish_reason: 'content_filter' }, code: 'AI_REFUSED' },
+    { name: 'explicit refusal', choice: { message: { content: null, refusal: 'private refusal contents' }, finish_reason: 'stop' }, code: 'AI_REFUSED' },
+    { name: 'unexpected finish reason', choice: { message: { content: '{"ok":true}' }, finish_reason: 'private finish reason' }, code: 'AI_UNFINISHED' },
+    { name: 'malformed content JSON', choice: { message: { content: '{private invalid model contents' }, finish_reason: 'stop' }, code: 'AI_CONTENT_JSON' },
+    { name: 'malformed envelope', choice: { message: { content: { private: 'private response contents' } }, finish_reason: 'stop' }, code: 'AI_ENVELOPE' },
+  ])('classifies $name without exposing data, checkpointing incomplete output or retrying a paid response', async ({ choice, code }) => {
+    let calls = 0; const usage: number[] = [], saved: unknown[] = [];
+    let error: unknown;
+    try {
+      await completeJson({ ...base, onUsage: item => { usage.push(item.totalTokens); }, onParsedResponse: value => { saved.push(value); },
+        fetch: async () => { calls++; return new Response(JSON.stringify({ choices: [choice], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } })); } });
+    } catch (cause) { error = cause; }
+    expect(error).toMatchObject({ code: 'AI_RESPONSE', retryable: false, message: expect.stringContaining(code) });
+    expect(String(error)).not.toMatch(/private|synthetic-key/);
+    expect(calls).toBe(1); expect(usage).toEqual([15]); expect(saved).toEqual([]);
+  });
+  it('separates invalid response JSON and invalid usage without inventing usage or retrying', async () => {
+    for (const [body, code] of [
+      ['private non-JSON response contents', 'AI_BODY_JSON'],
+      [JSON.stringify({ choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }], usage: { prompt_tokens: 'private account value' } }), 'AI_ENVELOPE'],
+    ] as const) {
+      let calls = 0; const usage: unknown[] = [];
+      await expect(completeJson({ ...base, onUsage: value => { usage.push(value); }, fetch: async () => { calls++; return new Response(body); } }))
+        .rejects.toMatchObject({ code: 'AI_RESPONSE', message: expect.stringContaining(code) });
+      expect(calls).toBe(1); expect(usage).toEqual([]);
+    }
+  });
+  it('reports schema issue codes and fixed field paths but never dynamic keys, values or validation messages', async () => {
+    const privateValue = 'private-secret-value', privateKey = 'private-person@example.invalid';
+    const cases = [
+      { schema: z.object({ changes: z.array(z.object({ values: z.object({ amountCents: z.number().int() }) })) }), value: { changes: [{ values: { amountCents: privateValue } }] }, path: 'changes.0.values.amountCents' },
+      { schema: z.record(z.string(), z.number()), value: { [privateKey]: privateValue }, path: '字段' },
+      { schema: z.strictObject({ ok: z.boolean() }), value: { ok: true, [privateKey]: privateValue }, path: 'unrecognized_keys' },
+      { schema: z.unknown().refine(() => false, { message: privateValue, path: [privateKey] }), value: privateValue, path: 'custom' },
+    ];
+    for (const item of cases) {
+      let calls = 0; const usage: number[] = [], order: string[] = []; let error: unknown;
+      try {
+        await completeJson({ ...base, schema: item.schema, onParsedResponse: () => { order.push('parsed'); }, onUsage: value => { order.push('usage'); usage.push(value.totalTokens); },
+          fetch: async () => { calls++; return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(item.value) }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } })); } });
+      } catch (cause) { error = cause; }
+      expect(error).toMatchObject({ code: 'AI_RESPONSE', message: expect.stringContaining('AI_SCHEMA') });
+      expect(String(error)).toContain(item.path); expect(String(error)).not.toMatch(/private|example\.invalid|synthetic-key/);
+      expect(calls).toBe(1); expect(usage).toEqual([15]); expect(order).toEqual(['parsed', 'usage']);
+    }
+  });
   it('delivers parsed paid content before schema rejection without retrying', async () => {
     const saved: unknown[] = []; let calls = 0;
     await expect(completeJson({ ...base, schema: z.strictObject({ required: z.string() }),

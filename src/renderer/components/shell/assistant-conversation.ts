@@ -20,6 +20,8 @@ export type ConversationEntry = {
   imageUnavailable?: boolean;
   /** Only a definitive pre-send failure can supply a later clarification; unknown results cannot. */
   delivery?: 'not-sent' | 'unknown';
+  /** Keep the structured failure code; never infer safe replay from localized error text. */
+  errorCode?: ApiError['code'];
 };
 export type UnsentClarificationDraft = { replyId: string; text: string };
 
@@ -31,9 +33,21 @@ export function canContinueUnsent(entry: ConversationEntry): boolean {
     && previous?.role === 'assistant' && previous.outcome?.phase === 'clarification';
 }
 
+/** Only a confirmed model-response failure precedes command mutations and can start a new analysis. */
+export function canReanalyze(entry: ConversationEntry): boolean {
+  return entry.status === 'failed' && !!entry.request && entry.errorCode === 'AI_RESPONSE'
+    && entry.delivery !== 'unknown' && entry.delivery !== 'not-sent';
+}
+
+export function assistantRetryLabel(entry: ConversationEntry): string {
+  if (entry.delivery === 'unknown') return '查询处理结果';
+  if (entry.delivery === 'not-sent') return '重新发送';
+  return canReanalyze(entry) ? '重新分析' : '核对这条指令';
+}
+
 function failureText(error: ApiError | undefined): string {
-  if (!error) return '未能确认处理结果。请使用这条指令的重试按钮核对，不要另建重复指令。';
-  if (error.delivery === 'unknown') return `结果待核对 · ${error.message}\n请使用这条指令的重试按钮核对，不要另建重复指令。`;
+  if (!error) return '未能确认处理结果。请查询这条指令的处理结果，不要另建重复指令。';
+  if (error.delivery === 'unknown') return `结果待核对 · ${error.message}\n请查询这条指令的处理结果，不要另建重复指令。`;
   return error.message;
 }
 
@@ -102,7 +116,8 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
       inFlight.current = false;
       setRunning(false);
       const failed: ConversationEntry = { id: replyId, role: 'assistant', text: failureText(failure), status: 'failed',
-        ...(failure?.delivery ? { delivery: failure.delivery } : {}), request: prepared };
+        ...(failure?.delivery ? { delivery: failure.delivery } : {}),
+        ...(failure ? { errorCode: failure.code } : { delivery: 'unknown' }), request: prepared };
       setHistory(previous => previous.map(entry => entry.id === replyId ? failed : entry));
       // The complete unsent text remains visible in the editor. Nothing is silently merged into history.
       if (canContinueUnsent(failed) && !composer.current.trim()) continueUnsent(failed);
@@ -187,11 +202,14 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
   const unsentDraft = editingReplyId && text.trim() ? { replyId: editingReplyId, text } : undefined;
   return { text, setText, history, running, send, resources, setResources, ...imageInput, unsentDraft, continueUnsent,
     retry: (entry: ConversationEntry) => {
-      if (!entry.request) return;
+      if (entry.status !== 'failed' || !entry.request || inFlight.current || imageInput.reading.current || ui.busy) return;
       if (editingReplyId === entry.id) {
         if (composer.current === entry.request.text) { setText(''); composer.current = ''; }
         setEditingReplyId(undefined);
       }
-      void execute(entry.request, entry.id);
+      // Keep the exact original history/attachments. Unknown outcomes still query the same operation;
+      // a confirmed AI response failure needs a new ID to avoid replaying its cached failure receipt.
+      const request = canReanalyze(entry) ? { ...entry.request, operationId: operationId() } : entry.request;
+      void execute(request, entry.id);
     } };
 }

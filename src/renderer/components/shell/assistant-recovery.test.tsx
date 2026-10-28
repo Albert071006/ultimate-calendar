@@ -5,7 +5,11 @@ import { SnapshotSchema, type ApiResult, type CommandRequest, type CommandResult
 import type { PlannerClient } from '../../../shared/client';
 import { usePlanner } from '../../hooks/usePlanner';
 import { MobileAssistant } from '../../mobile/MobileAssistant';
-import { canContinueUnsent, type ConversationEntry } from './assistant-conversation';
+import { Assistant } from './Assistant';
+import { assistantRetryLabel, canContinueUnsent, canReanalyze, type ConversationEntry } from './assistant-conversation';
+import { createRemoteClient } from '../../remote/client';
+import { createMemoryStorage } from '../../remote/storage';
+import type { PairedSession } from '../../remote/types';
 
 afterEach(() => { cleanup(); localStorage.clear(); });
 const snapshot = SnapshotSchema.parse({ schemaVersion: 1, sources: [], candidates: [], tasks: [], blocks: [], goals: [], courses: [],
@@ -16,6 +20,7 @@ const success: ApiResult<CommandResult> = { ok: true, data: { reply: '已处理�
   conversationState: { domain: 'calendar', phase: 'saved' } } };
 const notSent: ApiResult<CommandResult> = { ok: false, error: { code: 'NETWORK', message: '连接资料服务失败，这条指令尚未发送。', retryable: true, delivery: 'not-sent' } };
 const unknown: ApiResult<CommandResult> = { ok: false, error: { code: 'NETWORK', message: '原请求结果尚未确认。', retryable: true, delivery: 'unknown' } };
+const invalidResponse: ApiResult<CommandResult> = { ok: false, error: { code: 'AI_RESPONSE', message: '合成模型字段不符合要求。', retryable: false } };
 
 function fixture() {
   const command = vi.fn<(request: CommandRequest) => Promise<ApiResult<CommandResult>>>(async () => success);
@@ -26,6 +31,9 @@ function fixture() {
 function Phone({ api, storageKey, connectionStatus }: { api: PlannerClient; storageKey?: string; connectionStatus?: 'online' | 'offline' | 'connecting' }) {
   const ui = usePlanner(api);
   return <MobileAssistant ui={ui} selected={null} date="2026-10-27" open setOpen={vi.fn()} storageKey={storageKey} connectionStatus={connectionStatus} />;
+}
+function Desktop({ api }: { api: PlannerClient }) {
+  return <Assistant ui={usePlanner(api)} selected={null} date="2026-10-27" />;
 }
 const input = () => screen.getByLabelText('对生活助手说') as HTMLTextAreaElement;
 async function send(text: string) {
@@ -52,7 +60,7 @@ describe('assistant connection failures and visible continuation', () => {
     const request = command.mock.calls[2]![0];
     expect(request.text).toBe('28号中午，新的一场');
     expect(request.history!.map(entry => entry.text)).toEqual(['明天中午12:00-13:45到滋兰苑集合', '是另一次集合吗？']);
-    expect(screen.queryByRole('button', { name: '重试这条指令' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '重新发送' })).toBeNull();
     expect(input().value).toBe('');
   });
 
@@ -92,7 +100,7 @@ describe('assistant connection failures and visible continuation', () => {
     expect(input().value).toBe('');
     expect(screen.queryByRole('button', { name: '继续补充' })).toBeNull();
     const original = command.mock.calls[1]![0];
-    fireEvent.click(screen.getByRole('button', { name: '重试这条指令' }));
+    fireEvent.click(screen.getByRole('button', { name: '查询处理结果' }));
     await waitFor(() => expect(command).toHaveBeenCalledTimes(3));
     expect(command.mock.calls[2]![0]).toEqual(original);
   });
@@ -122,7 +130,7 @@ describe('assistant connection failures and visible continuation', () => {
     first.unmount();
     render(<Phone api={api} storageKey={storageKey} />);
     expect(input().value).toBe('28号中午');
-    expect(screen.queryByRole('button', { name: '重试这条指令' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '重新发送' })).toBeNull();
     await send(`${input().value}，新的一场`);
     expect(command.mock.calls[2]![0].text).toBe('28号中午，新的一场');
   });
@@ -144,7 +152,7 @@ describe('assistant connection failures and visible continuation', () => {
     await send('新增合成安排');
     expect(screen.getByText('已处理这次请求。')).toBeTruthy();
     expect(screen.getByRole('alert').textContent).toContain('已收到处理结果，但最新资料刷新失败');
-    expect(screen.queryByRole('button', { name: '重试这条指令' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /重新分析|重新发送|查询处理结果|核对这条指令/ })).toBeNull();
     expect(command).toHaveBeenCalledOnce();
   });
 
@@ -155,5 +163,105 @@ describe('assistant connection failures and visible continuation', () => {
     expect(screen.getByText('正在连接资料服务…')).toBeTruthy();
     view.rerender(<Phone api={api} connectionStatus="online" />);
     expect(screen.queryByText('正在连接资料服务…')).toBeNull();
+  });
+
+  it.each(['phone', 'desktop'] as const)('reanalyses a confirmed AI failure once with a fresh operation and the original context on %s', async surface => {
+    const { api, command } = fixture(); command.mockResolvedValueOnce(invalidResponse);
+    render(surface === 'phone' ? <Phone api={api} /> : <Desktop api={api} />);
+    const composer = screen.getByLabelText(surface === 'phone' ? '对生活助手说' : '自然语言指令');
+    const submit = async (text: string) => {
+      fireEvent.change(composer, { target: { value: text } });
+      fireEvent.click(screen.getByRole('button', { name: surface === 'phone' ? '发送' : '发送指令' }));
+      await waitFor(() => expect(screen.queryAllByText('正在处理…')).toHaveLength(0));
+    };
+    await submit('合成消费12元，支付宝');
+    expect(screen.getByText('会再次请求 AI，并使用 API 额度。')).toBeTruthy();
+    const original = command.mock.calls[0]![0];
+    await submit('之后的另一个独立查询');
+    let resolve!: (result: ApiResult<CommandResult>) => void;
+    command.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const retry = screen.getByRole('button', { name: '重新分析' });
+    fireEvent.click(retry); fireEvent.click(retry);
+    await waitFor(() => expect(command).toHaveBeenCalledTimes(3));
+    const retried = command.mock.calls[2]![0];
+    expect(retried.operationId).not.toBe(original.operationId);
+    expect(retried).toEqual({ ...original, operationId: retried.operationId });
+    expect(JSON.stringify(retried)).not.toContain('之后的另一个独立查询');
+    await act(async () => resolve(success));
+    expect(screen.queryByRole('button', { name: '重新分析' })).toBeNull();
+    expect(command).toHaveBeenCalledTimes(3);
+  });
+
+  it('prioritizes unknown delivery over an AI code and never guesses replay permission from text', async () => {
+    const { api, command } = fixture();
+    command.mockResolvedValueOnce({ ok: false, error: { code: 'AI_RESPONSE', message: '合成结果未知', retryable: true, delivery: 'unknown' } });
+    render(<Phone api={api} />); await send('合成待核对消费');
+    expect(screen.queryByRole('button', { name: '重新分析' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '查询处理结果' }));
+    await waitFor(() => expect(command).toHaveBeenCalledTimes(2));
+    expect(command.mock.calls[1]![0]).toEqual(command.mock.calls[0]![0]);
+    const legacy: ConversationEntry = { id: 'old', role: 'assistant', status: 'failed', text: 'DeepSeek 返回空白、截断或不符合约定的 JSON', request: command.mock.calls[0]![0] };
+    expect(canReanalyze(legacy)).toBe(false);
+    expect(assistantRetryLabel(legacy)).toBe('核对这条指令');
+  });
+
+  it('resends a definitely unsent request with its existing operation id', async () => {
+    const { api, command } = fixture(); command.mockResolvedValueOnce(notSent);
+    render(<Phone api={api} />); await send('合成未发送指令');
+    fireEvent.click(screen.getByRole('button', { name: '重新发送' }));
+    await waitFor(() => expect(command).toHaveBeenCalledTimes(2));
+    expect(command.mock.calls[1]![0]).toEqual(command.mock.calls[0]![0]);
+  });
+
+  it('keeps only the failure code across a phone reopen, without persisting or replaying a reanalysis request', async () => {
+    const { api, command } = fixture(); command.mockResolvedValueOnce(invalidResponse);
+    const storageKey = 'synthetic-assistant-ai-failure';
+    const first = render(<Phone api={api} storageKey={storageKey} />);
+    await send('合成消费12元，支付宝');
+    const saved = localStorage.getItem(storageKey)!;
+    expect(JSON.parse(saved).entries.at(-1)).toMatchObject({ status: 'failed', errorCode: 'AI_RESPONSE' });
+    expect(saved).not.toContain('operationId');
+    expect(JSON.parse(saved).entries.at(-1).request).toBeUndefined();
+    first.unmount(); render(<Phone api={api} storageKey={storageKey} />);
+    expect(screen.queryByRole('button', { name: '重新分析' })).toBeNull();
+    expect(command).toHaveBeenCalledOnce();
+  });
+
+  it('bypasses the original failed receipt only after an explicit reanalysis through the real remote client', async () => {
+    const origin = 'https://synthetic-assistant.example';
+    const session: PairedSession = { paired: true,
+      identity: { protocolVersion: 1, dataInstanceId: '11111111-1111-4111-8111-111111111111', generation: 1 },
+      device: { id: '22222222-2222-4222-8222-222222222222', name: 'Synthetic assistant phone' },
+      csrfToken: 'synthetic-csrf', aiConfigured: true };
+    const writes: Array<{ requestId: string; input: CommandRequest }> = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+      if (path === '/api/v1/session') return json(session);
+      if (path === '/api/v1/rpc/snapshot') return json({ ok: true, data: snapshot });
+      if (path === '/api/v1/rpc/command') {
+        writes.push(JSON.parse(String(init?.body)));
+        return json(writes.length === 1 ? invalidResponse : success);
+      }
+      throw Error('Unexpected synthetic request: ' + path);
+    };
+    const remote = createRemoteClient({ origin, storage: createMemoryStorage(), fetch: fetcher,
+      events: () => ({ close: vi.fn(), addEventListener: vi.fn() }) as unknown as EventSource });
+    try {
+      await remote.initialize(); render(<Phone api={remote.client} />);
+      await send('合成矿泉水2元，银行卡');
+      expect(writes).toHaveLength(1);
+      // Repeating the original request is a receipt lookup, not permission to bill another model call.
+      expect(await remote.client.command(writes[0]!.input)).toMatchObject(invalidResponse);
+      expect(writes).toHaveLength(1);
+      fireEvent.click(screen.getByRole('button', { name: '重新分析' }));
+      await screen.findByText('已处理这次请求。');
+      expect(writes).toHaveLength(2);
+      expect(writes[1]!.requestId).not.toBe(writes[0]!.requestId);
+      expect(writes[1]!.input.operationId).not.toBe(writes[0]!.input.operationId);
+      expect(writes[1]!.input).toEqual({ ...writes[0]!.input, operationId: writes[1]!.input.operationId });
+      expect(remote.getState().pending).toHaveLength(1);
+      expect(remote.getState().pending[0]).toMatchObject({ status: 'failed', result: invalidResponse });
+    } finally { remote.dispose(); }
   });
 });

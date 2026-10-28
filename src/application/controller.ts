@@ -45,7 +45,7 @@ export function createController(options: ControllerOptions) {
     const promise = (async (): Promise<ApiResult<T>> => { try { return { ok: true, data: await work(`workflow:${hash(id)}`, fingerprint) }; } catch (error) { return { ok: false, error: safeError(error) }; } finally { (options.automaticBackup ?? automaticBackup)(repository); } })();
     running.set(id, { fingerprint, promise }); void promise.finally(() => running.delete(id)); return promise;
   }
-  async function model<T>(schema: z.ZodType<T>, messages: Parameters<typeof completeJson>[0]['messages'], operationId: string, purpose: 'source' | 'command' | 'courses') {
+  async function model<T>(schema: z.ZodType<T>, messages: Parameters<typeof completeJson>[0]['messages'], operationId: string, purpose: 'source' | 'command' | 'courses', stage: '命令理解' | '账本解析' | '来源分析' | '课表识别' = purpose === 'source' ? '来源分析' : purpose === 'courses' ? '课表识别' : '命令理解') {
     const request = async () => {
       const settings = planner.snapshot().settings;
       const modalities = options.getModelInputModalities?.(settings.model);
@@ -55,6 +55,9 @@ export function createController(options: ControllerOptions) {
       try {
         const result = await completeJson({ key: await options.getApiKey(), settings, autoQuote: options.getPriceQuote?.(settings.model, settings.pricingCurrency), messages, schema, operationId: `request:${hash(operationId)}:${randomUUID()}`, purpose, now: now(), fetch: options.fetch, onUsage: usage => repository.addUsage(usage) });
         return result.value;
+      } catch (error) {
+        if (error instanceof WorkflowError && error.code === 'AI_RESPONSE') throw new WorkflowError(error.code, `${stage}失败：${error.message}`, error.retryable);
+        throw error;
       } finally { options.afterModelRequest?.(); }
     };
     return options.runModel ? options.runModel(request) : request();
@@ -162,7 +165,7 @@ export function createController(options: ControllerOptions) {
           const defaultQueryMonth = request.domain === 'ledger' ? request.ledgerView?.month ?? currentMonth : currentMonth;
           const snapshot = ledger.snapshot(defaultQueryMonth);
           const ledgerView = ledgerContext(snapshot, request, now());
-          const proposal: z.infer<typeof LedgerCommandProposalSchema> = prior?.ledgerProposal ?? { intent: await model(LedgerIntentSchema, ledgerMessages(ledgerView, request), `${input.operationId}:ledger`, 'command'), revision: snapshot.revision };
+          const proposal: z.infer<typeof LedgerCommandProposalSchema> = prior?.ledgerProposal ?? { intent: await model(LedgerIntentSchema, ledgerMessages(ledgerView, request), `${input.operationId}:ledger`, 'command', '账本解析'), revision: snapshot.revision };
           // Resolve the visible ledger range once, so a retried query stays on the
           // same month. Calendar selection never changes a transaction's date.
           if (proposal.intent.kind === 'query' && !proposal.intent.query.month && !proposal.intent.query.from && !proposal.intent.query.to) {
