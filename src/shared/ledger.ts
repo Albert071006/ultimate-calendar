@@ -17,7 +17,7 @@ export const LEDGER_ACCOUNTS: ReadonlyArray<{ id: LedgerAccountId; name: string;
   { id: 'bakery', name: '储值会员卡', kind: 'stored', aliases: ['储值卡', '会员卡'] },
   { id: 'family', name: '亲情卡', kind: 'family', aliases: ['亲情卡'] },
 ];
-export const LedgerEntryKindSchema = z.enum(['expense', 'income', 'asset_sale', 'transfer', 'bonus', 'refund', 'reimbursement', 'aa_return', 'repayment', 'adjustment']);
+export const LedgerEntryKindSchema = z.enum(['expense', 'income', 'asset_sale', 'transfer', 'bonus', 'refund', 'reimbursement', 'aa_return', 'repayment', 'adjustment', 'loan_borrow', 'loan_lend', 'loan_repay', 'loan_collect']);
 export type LedgerEntryKind = z.infer<typeof LedgerEntryKindSchema>;
 export const LedgerCashflowSchema = z.strictObject({ accountId: LedgerAccountIdSchema.nullable(), deltaCents: signedCents });
 export const LedgerAdjustmentSchema = z.strictObject({ targetEntryIds: z.array(id).min(1).max(100), amountCents: LedgerCentsSchema.positive(), note: text.default('') });
@@ -25,6 +25,7 @@ export const LedgerEntryDraftSchema = z.strictObject({
   id, kind: LedgerEntryKindSchema, date: LedgerDateSchema.nullable(), month: LedgerMonthSchema,
   dateNote: z.string().max(2000).default(''), occurredAt: instant.nullable().default(null),
   title: z.string().trim().min(1).max(500), category: z.string().trim().min(1).max(100),
+  counterparty: z.string().trim().max(200).optional(),
   amountCents: LedgerCentsSchema, personalCents: LedgerCentsSchema.nullable(),
   incomeCents: LedgerCentsSchema.default(0), assetSaleCents: LedgerCentsSchema.default(0),
   cashflows: z.array(LedgerCashflowSchema).max(20), adjustments: z.array(LedgerAdjustmentSchema).max(100).default([]),

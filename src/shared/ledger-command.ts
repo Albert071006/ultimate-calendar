@@ -23,7 +23,7 @@ export const LedgerAIChangeSchema = z.discriminatedUnion('type', [
 ]);
 
 export const LedgerIntentSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('query'), query: LedgerQuerySchema, detail: z.enum(['summary', 'entries', 'balances', 'receivables']).default('summary') }),
+  z.strictObject({ kind: z.literal('query'), query: LedgerQuerySchema, detail: z.enum(['summary', 'entries', 'balances', 'receivables', 'loans']).default('summary') }),
   z.strictObject({ kind: z.literal('mutate'), changes: z.array(LedgerAIChangeSchema).min(1).max(50) }),
   z.strictObject({ kind: z.literal('undo') }),
   z.strictObject({ kind: z.literal('clarification'), question: z.string().trim().min(1).max(2000) }),

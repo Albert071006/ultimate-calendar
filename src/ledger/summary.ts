@@ -7,7 +7,7 @@ export function ledgerEntryMatches(entry: LedgerEntry, query: LedgerQuery): bool
   if (query.to && (!entry.date || entry.date > query.to)) return false;
   if (query.accountId && !entry.cashflows.some(flow => flow.accountId === query.accountId)) return false;
   if (query.category && entry.category !== query.category) return false;
-  if (query.search && !`${entry.title}\n${entry.note}\n${entry.originalText}`.toLowerCase().includes(query.search.toLowerCase())) return false;
+  if (query.search && !`${entry.title}\n${entry.note}\n${entry.originalText}\n${entry.counterparty ?? ''}`.toLowerCase().includes(query.search.toLowerCase())) return false;
   return true;
 }
 
@@ -89,7 +89,7 @@ export function summarizeLedger(data: Pick<LedgerData, 'entries' | 'balanceSnaps
     return group.some(account => account.balanceCents === null) ? null : group.reduce((sum, account) => sum + account.balanceCents!, 0);
   };
   return { month, from: query.from ?? null, to: query.to ?? null,
-    actualPaidCents: selected.filter(entry => entry.kind === 'expense' || entry.kind === 'repayment').reduce((sum, entry) => sum + entry.amountCents, 0),
+    actualPaidCents: selected.filter(entry => entry.kind === 'expense' || entry.kind === 'repayment' || entry.kind === 'loan_lend' || entry.kind === 'loan_repay').reduce((sum, entry) => sum + entry.amountCents, 0),
     personalCents, incomeCents: selected.reduce((sum, entry) => sum + entry.incomeCents, 0), assetSaleCents: selected.reduce((sum, entry) => sum + entry.assetSaleCents, 0),
     familyUsageCents: accounts.find(account => account.id === 'family')!.recordedUsageCents,
     pendingPersonalCount: selected.filter(entry => entry.kind === 'expense' && entry.personalCents === null).length,

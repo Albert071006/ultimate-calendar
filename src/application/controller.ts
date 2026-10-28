@@ -18,6 +18,7 @@ import type { PriceQuote } from '../shared/account';
 import type { ModelRequestRunner } from '../ai/request-queue';
 import { LedgerValidationRejection, type LedgerService } from '../ledger/service';
 import { LedgerIntentSchema, LedgerCommandProposalSchema } from '../shared/ledger-command';
+import { ledgerLoans } from '../shared/ledger-loans';
 import { ledgerChanges, ledgerContext, ledgerMessages, ledgerQueryReply, ledgerSavedReply } from '../ai/ledger';
 import { ledgerToday } from '../shared/ledger';
 
@@ -168,7 +169,7 @@ export function createController(options: ControllerOptions) {
           const proposal: z.infer<typeof LedgerCommandProposalSchema> = prior?.ledgerProposal ?? { intent: await model(LedgerIntentSchema, ledgerMessages(ledgerView, request), `${input.operationId}:ledger`, 'command', '账本解析'), revision: snapshot.revision };
           // Resolve the visible ledger range once, so a retried query stays on the
           // same month. Calendar selection never changes a transaction's date.
-          if (proposal.intent.kind === 'query' && !proposal.intent.query.month && !proposal.intent.query.from && !proposal.intent.query.to) {
+          if (proposal.intent.kind === 'query' && proposal.intent.detail !== 'loans' && !proposal.intent.query.month && !proposal.intent.query.from && !proposal.intent.query.to) {
             proposal.intent.query = { ...proposal.intent.query, month: defaultQueryMonth };
           }
           if (proposal.intent.kind === 'mutate' && !proposal.mutationRequest) {
@@ -192,7 +193,9 @@ export function createController(options: ControllerOptions) {
           else if (proposal.intent.kind === 'query') {
             const query = proposal.intent.query;
             const latest = ledger.query(query);
-            reply = ledgerQueryReply(query, { ...latest, rules:ledger.snapshot(currentMonth).rules }, proposal.intent.detail);
+            const querySnapshot = ledger.snapshot(currentMonth);
+            reply = ledgerQueryReply(query, { ...latest, rules:querySnapshot.rules,
+              ...(proposal.intent.detail === 'loans' ? { loans:ledgerLoans(querySnapshot.entries), loanEntries:querySnapshot.entries } : {}) }, proposal.intent.detail);
           } else if (proposal.intent.kind === 'undo') {
             const result = ledger.undo({ operationId:`ai-ledger:${hash(input.operationId)}`,expectedRevision:proposal.revision,month:currentMonth });
             reply = savedReply(result);

@@ -1,6 +1,7 @@
 import { SnapshotSchema, type ApiResult, type ChangedEvent, type Snapshot } from '../../shared/contracts';
 import type { PlannerClient, QueuedWrite } from '../../shared/client';
 import type { LedgerSnapshot } from '../../shared/ledger';
+import { LEDGER_API_HEADER, LEDGER_API_VERSION } from '../../shared/ledger-compatibility';
 import { RemoteOperationSchema, RemoteSessionSchema, type RemoteMethod } from '../../shared/remote';
 import { remoteInputs, remoteOutputs } from '../../server/protocol';
 import { allowsOffline, captureBase, instant, localId, projectSnapshot, rebaseWrite, references, resolveAliases, writeLabel } from './queue';
@@ -128,7 +129,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? (readOnly ? READ_TIMEOUT_MS : 60_000));
     try {
       const response = await fetcher(new URL(path, origin), { method, credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: controller.signal,
-        headers: { ...(input === undefined ? {} : { 'Content-Type': 'application/json' }), ...(method === 'GET' ? {} : { 'X-CSRF-Token': session?.csrfToken ?? '' }) },
+        headers: { ...(path.startsWith('/api/v1/rpc/ledger') ? { [LEDGER_API_HEADER]: LEDGER_API_VERSION } : {}), ...(input === undefined ? {} : { 'Content-Type': 'application/json' }), ...(method === 'GET' ? {} : { 'X-CSRF-Token': session?.csrfToken ?? '' }) },
         ...(input === undefined ? {} : { body: JSON.stringify(input) }) });
       const value: unknown = await response.json();
       if (!response.ok) {
