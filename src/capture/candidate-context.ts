@@ -23,11 +23,14 @@ export function captureCandidateContext(candidate: Candidate, sources: Source[])
 }
 
 /** Bound the whole summaries, rather than truncating an event's conditions or repeating old images. */
-export function recentCaptureCandidates(candidates: Candidate[], sources: Source[], scope: Scope, preferred: ReadonlySet<string> = new Set()): Candidate[] {
+export function recentCaptureCandidates(candidates: Candidate[], sources: Source[], scope: Scope, preferred: ReadonlySet<string> = new Set(), contextMessageIds: ReadonlySet<string> = new Set()): Candidate[] {
   const byId = new Map(sources.map(source => [source.id, source]));
   const latest = (candidate: Candidate) => Math.max(...candidate.sourceIds.map(id => Date.parse(byId.get(id)?.sentAt ?? '') || 0));
+  // A prior notice explicitly present in this request's context should not lose
+  // its target ID merely because unrelated pending cards fill the bounded list.
+  const inContext = (candidate: Candidate) => candidate.sourceIds.some(id => contextMessageIds.has(byId.get(id)?.captureRef?.messageId ?? ''));
   const priority = { pending: 0, accepted: 1, ignored: 2 };
-  const scoped = candidatesInCaptureScope(candidates, sources, scope).sort((a, b) => Number(preferred.has(b.id)) - Number(preferred.has(a.id)) || priority[a.status] - priority[b.status] || latest(b) - latest(a) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const scoped = candidatesInCaptureScope(candidates, sources, scope).sort((a, b) => Number(preferred.has(b.id)) - Number(preferred.has(a.id)) || Number(inContext(b)) - Number(inContext(a)) || priority[a.status] - priority[b.status] || latest(b) - latest(a) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   const selected: Candidate[] = []; let budget = 40_000;
   for (const candidate of scoped) {
     const size = JSON.stringify(captureCandidateContext(candidate, sources)).length;

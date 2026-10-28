@@ -14,6 +14,8 @@ import { CaptureExtractionSchema, captureRequestSchema, captureEntries, supporti
 import { createAttachmentDeduplicator, attachmentEvidenceUnits } from './attachment-deduplication';
 import { createPracticeClassifier } from './document-practice';
 import { shouldSuppressPassiveQuestion } from './qa-actionability';
+import { normalizeCaptureResponseTimes } from './response-time';
+import { assertArrivalFollowup } from './arrival-followup';
 export { attachmentEvidenceUnits } from './attachment-deduplication';
 
 export const ANALYSIS_VERSION = 'qq-v2';
@@ -244,10 +246,12 @@ function stagedCandidates(completed: CompletedCapture[], batch: CaptureBatch, un
   }, documentGrouping, qaRecipients);
   return { candidates: [...staged.values()], sources: [...evidence.values()], preferred };
 }
-function validateResponse(value: CaptureExtraction, units: AnalysisUnit[], existing: Candidate[], requestedCandidateIds?: string[]) {
+function validateResponse(value: CaptureExtraction, units: AnalysisUnit[], existing: Candidate[], requestedCandidateIds: string[] | undefined, context: Checkpoint['context']) {
   for (const candidate of value.candidates) {
-    if (candidate.sourceIds.length !== 1 || !units.some(unit => unit.id === candidate.sourceIds[0])) throw new WorkflowError('AI_RESPONSE', 'AI 引用了当前分片之外的来源，请手动重试或校对');
+    const unit = units.find(unit => unit.id === candidate.sourceIds[0]);
+    if (candidate.sourceIds.length !== 1 || !unit) throw new WorkflowError('AI_RESPONSE', 'AI 引用了当前分片之外的来源，请手动重试或校对');
     if (candidate.relation.candidateId && !(requestedCandidateIds ?? existing.map(item => item.id)).includes(candidate.relation.candidateId)) throw new WorkflowError('AI_RESPONSE', 'AI 引用了未知候选 ID，请人工校对');
+    assertArrivalFollowup({ candidate, unit, context, existingCandidates: existing });
   }
 }
 /** Durable checkpoints precede every subsequent paid request; requests never retry implicitly. */
@@ -293,13 +297,13 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
       const pending = checkpoint.pendingResponse!;
       let value: CaptureExtraction;
       try {
-        const parsed = requestSchema.safeParse(pending.value);
+        const parsed = requestSchema.safeParse(normalizeCaptureResponseTimes(pending.value, settings.timezone));
         if (!parsed.success) throw new WorkflowError('AI_RESPONSE', '回答的主来源、补充来源或字段不符合当前分片要求');
         value = parsed.data;
         const state = repository.read();
         const staged = stagedCandidates(checkpoint.completed, batch, actualUnits, eligible, checkpoint.warnings, state, planFingerprint, checkpoint.documentGrouping === 1, questionRecipients(checkpoint));
-        const existing = recentCaptureCandidates(staged.candidates, staged.sources, batch, staged.preferred);
-        validateResponse(value, eligibleUnits, existing, pending.candidateIds);
+        const existing = recentCaptureCandidates(staged.candidates, staged.sources, batch, staged.preferred, new Set(checkpoint.context.map(message => message.id)));
+        validateResponse(value, eligibleUnits, existing, pending.candidateIds, checkpoint.context);
         stagedCandidates([...checkpoint.completed, { key, value }], batch, actualUnits, eligible, checkpoint.warnings, state, planFingerprint, checkpoint.documentGrouping === 1, questionRecipients(checkpoint));
       } catch (cause) {
         const code = cause instanceof WorkflowError ? cause.code : 'AI_RESPONSE';
@@ -323,7 +327,7 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
       if (!options.canContinue()) throw new WorkflowError('CANCELLED', '分析已暂停，已完成的分片结果保留；恢复分析后继续');
       const state = repository.read();
       const staged = stagedCandidates(checkpoint.completed, batch, actualUnits, eligible, checkpoint.warnings, state, planFingerprint, checkpoint.documentGrouping === 1, questionRecipients(checkpoint));
-      const existing = recentCaptureCandidates(staged.candidates, staged.sources, batch, staged.preferred);
+      const existing = recentCaptureCandidates(staged.candidates, staged.sources, batch, staged.preferred, new Set(checkpoint.context.map(message => message.id)));
       const messages = batchMessages(eligibleUnits, checkpoint.context, existing, checkpoint.warnings, profile, recipients, staged.sources);
       store.startAttempt(batch.id, hashInput({ planFingerprint, key }));
       try {
