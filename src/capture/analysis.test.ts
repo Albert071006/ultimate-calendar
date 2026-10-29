@@ -25,6 +25,12 @@ function candidate(sourceId: string): ExtractedCandidate {
 function response(value: unknown) { return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } })); }
 const options = (store: CaptureStore, repository: Repository) => ({ store, repository, getApiKey: async () => 'synthetic', canContinue: () => true });
 describe('capture analysis and durable candidate application', () => {
+  it('refreshes the cloud model before preparing an unpaid batch and uses the latest effort after key sync',async()=>{
+    const {store,repository,batch}=setup();let refreshed=0,calls=0;
+    await analyzeCapture({...options(store,repository),batch:batch(),refreshModelSettings:async()=>{refreshed++;repository.saveSettings({...repository.snapshot().settings,model:'deepseek-v4-pro',reasoningEffort:'low'});},getApiKey:async()=>{repository.saveSettings({...repository.snapshot().settings,reasoningEffort:'high'});return 'synthetic';},fetch:async(_url,init)=>{
+      calls++;expect(JSON.parse(String(init?.body))).toMatchObject({model:'deepseek-v4-pro',thinking:{type:'enabled'},reasoning_effort:'high',max_tokens:32768});return response({candidates:[]});
+    }});expect(refreshed).toBe(1);expect(calls).toBe(1);
+  });
   it('keeps ordinary, self and all notifications but excludes another recipient within the same batch', async () => {
     const { store, repository, batch, message: ordinary } = setup();
     const imported = ['999', '100', 'all'].map((qq, index) => store.ingest([{
@@ -83,7 +89,7 @@ describe('capture analysis and durable candidate application', () => {
     };
     store.startAttempt(saved.id, 'legacy-paid-request'); store.checkpointResult(saved.id, oldResult);
     let calls = 0;
-    await analyzeCapture({ ...options(store, repository), batch: store.batch(saved.id)!, fetch: async () => { calls++; return response({ candidates: [] }); } });
+    await analyzeCapture({ ...options(store, repository), batch: store.batch(saved.id)!, refreshModelSettings:async()=>{throw Error('Paid checkpoint must not depend on cloud refresh');}, fetch: async () => { calls++; return response({ candidates: [] }); } });
     expect(calls).toBe(0); expect(store.batch(saved.id)?.attempts).toHaveLength(1);
     const snapshot = repository.snapshot();
     expect(snapshot.candidates).toHaveLength(1);

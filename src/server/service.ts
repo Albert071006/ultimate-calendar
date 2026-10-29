@@ -8,7 +8,7 @@ import { createController, type ControllerOptions } from '../application/control
 import { createModelRequestQueue } from '../ai/request-queue';
 import { createAccountService } from '../ai/account';
 import { safeError, WorkflowError } from '../ai/deepseek';
-import { type ApiResult, type ChangedEvent, type Snapshot } from '../shared/contracts';
+import { SettingsSchema, type ApiResult, type ChangedEvent, type Snapshot } from '../shared/contracts';
 import { RemoteIdentitySchema, REMOTE_READ_METHODS, type RemoteRequest, type RemoteMethod } from '../shared/remote';
 import { sharedSettings } from '../shared/cloud-management';
 import { remoteInputs, remoteOutputs } from './protocol';
@@ -142,7 +142,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
   const maintenance = setInterval(() => { try { cleanupEvidence(); backup(); } catch (error) { options.onBackupError?.(error); } }, 60 * 60_000); maintenance.unref();
   const emit = (reason: ChangedEvent['reason']) => { for (const listener of listeners) { try { listener({ reason }); } catch { /* a disconnected observer cannot reject a committed operation */ } } };
   const restore = createCloudRestore({ repository, ledger, state, backup: () => backup(true), hasPendingWrites: () => running.size > 0 });
-  async function invoke(method: RemoteMethod, input: unknown, deviceId: string): Promise<unknown> {
+  async function invoke(method: RemoteMethod, input: unknown, deviceId: string, modernAiSettings: boolean): Promise<unknown> {
     switch (method) {
       case 'snapshot': return { ok: true, data: { ...planner.snapshot(), keyStatus: { configured: !!await getApiKey(), sessionOnly: false } } };
       case 'mutate': { const result = planner.mutate(remoteInputs.mutate.parse(input)); if (result.status === 'applied') emit('mutation'); return { ok: true, data: result }; }
@@ -158,8 +158,14 @@ export function createRemoteService(options: RemoteServiceOptions) {
         const request = remoteInputs.saveSettings.parse(input);
         const pending = settingsWrites.then(async () => {
           const current = planner.snapshot().settings;
-          if (JSON.stringify(sharedSettings(current)) !== JSON.stringify(sharedSettings(request.expectedSettings))) throw new WorkflowError('CONFLICT', '共享设置已被其他设备修改，请刷新后重新核对');
-          const result = await controller.saveSettings({ settings: { ...request.settings, closeToTray: current.closeToTray, autoLaunch: current.autoLaunch } });
+          // An old settings form cannot display or change the optional reasoning field.
+          // Preserve it on legacy saves instead of silently resetting a newer choice.
+          const preserveEffort = (settings: typeof current) => settings.reasoningEffort === undefined && current.reasoningEffort !== undefined
+            ? { ...settings, reasoningEffort: current.reasoningEffort } : settings;
+          const comparable = (settings: typeof current) => sharedSettings(SettingsSchema.parse({ ...settings, reasoningEffort: settings.reasoningEffort ?? 'none' }));
+          const expected = modernAiSettings ? request.expectedSettings : preserveEffort(request.expectedSettings);
+          if (JSON.stringify(comparable(current)) !== JSON.stringify(comparable(expected))) throw new WorkflowError('CONFLICT', '共享设置已被其他设备修改，请刷新后重新核对');
+          const result = await controller.saveSettings({ settings: { ...preserveEffort(request.settings), closeToTray: current.closeToTray, autoLaunch: current.autoLaunch } });
           if (result.ok) emit('settings'); return result;
         });
         settingsWrites = pending.catch(() => {}); return pending;
@@ -196,7 +202,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
       const identity = state.identity();
       return { ok: true as const, identity, configuration: await aiConfiguration.status() };
     },
-    async syncAiKeyReceiver(input: unknown, deviceId: string) {
+    async syncAiKeyReceiver(input: unknown, deviceId: string, modernAiSettings = false) {
       const request = AiKeySyncRequestSchema.parse(input);
       const check = () => {
         if (lifecycle !== 'running') throw new RemoteFault(503, '服务正在退出');
@@ -207,7 +213,8 @@ export function createRemoteService(options: RemoteServiceOptions) {
       // This is one atomic snapshot, never separate status() and getApiKey() reads.
       const snapshot = await aiConfiguration.readForReceiver();
       check();
-      return aiKeyReceiver.seal(deviceId, request, snapshot);
+      const settings = planner.snapshot().settings;
+      return aiKeyReceiver.seal(deviceId, request, { ...snapshot, ...(modernAiSettings ? { settings: { model: settings.model, ...(settings.reasoningEffort !== undefined ? { reasoningEffort: settings.reasoningEffort } : {}) } } : {}) });
     },
     async setAiConfiguration(input: unknown) {
       if (lifecycle !== 'running') throw new RemoteFault(503, '服务正在退出');
@@ -236,7 +243,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
       const result = importDistilled(repository, request); emit('import'); backup(true); return result;
     },
     subscribe(listener: (event: ChangedEvent) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-    async rpc(method: RemoteMethod, request: RemoteRequest, deviceId: string): Promise<unknown> {
+    async rpc(method: RemoteMethod, request: RemoteRequest, deviceId: string, modernAiSettings = false): Promise<unknown> {
       if (lifecycle !== 'running') throw new RemoteFault(503, '服务正在退出，请稍后重试原请求');
       const identity = RemoteIdentitySchema.parse(request.identity);
       if (JSON.stringify(identity) !== JSON.stringify(state.identity())) throw new RemoteFault(409, '资料实例或恢复代际已改变，请刷新并核对待提交内容');
@@ -247,7 +254,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
       // receipts (nor may it store an uploaded backup in a request journal).
       if ((REMOTE_READ_METHODS as readonly RemoteMethod[]).includes(method) || method === 'restoreConfirm') {
         let result: unknown;
-        try { result = await invoke(method, input, deviceId); } catch (error) { result = { ok: false, error: safeError(error) }; }
+        try { result = await invoke(method, input, deviceId, modernAiSettings); } catch (error) { result = { ok: false, error: safeError(error) }; }
         if (method !== 'restoreConfirm') {
           if (lifecycle !== 'running') throw new RemoteFault(503, '服务正在退出，请重新读取资料');
           if (JSON.stringify(identity) !== JSON.stringify(state.identity())) throw new RemoteFault(409, '读取期间资料代际已改变，旧结果已丢弃，请重新连接核对');
@@ -269,7 +276,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
       const promise = (async () => {
         try {
           let raw: unknown;
-          try { raw = await invoke(method, input, deviceId); } catch (error) { raw = { ok: false, error: safeError(error) } satisfies ApiResult<never>; }
+          try { raw = await invoke(method, input, deviceId, modernAiSettings); } catch (error) { raw = { ok: false, error: safeError(error) } satisfies ApiResult<never>; }
           const result = remoteOutputs[method].parse(redactEvidence(raw));
           state.complete(request.requestId, result);
           backup(true);

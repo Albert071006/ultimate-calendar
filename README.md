@@ -4,18 +4,18 @@
 
 **推荐使用「终极日历本地版」：下载安装即可使用，无需部署服务器、注册日历账号或进行设备配对。** 资料保存在自己的电脑上；需要 AI 时，填写自己的 DeepSeek API Key，由本机直接调用。它只提供桌面端，没有手机端或跨设备同步。
 
-[下载本地版 0.7.0（Windows x64）](https://github.com/Albert071006/ultimate-calendar/releases/download/v0.7.0/UltimateCalendar-Local-Setup-0.7.0.exe) · [服务器版与手机端 0.7.0](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.7.0) · [反馈问题](https://github.com/Albert071006/ultimate-calendar/issues)
+[下载本地版 0.8.0（Windows x64）](https://github.com/Albert071006/ultimate-calendar/releases/download/v0.8.0/UltimateCalendar-Local-Setup-0.8.0.exe) · [服务器版与手机端 0.8.0](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.8.0) · [反馈问题](https://github.com/Albert071006/ultimate-calendar/issues)
 
 | 版本 | 适合谁 | 资料与 AI |
 | --- | --- | --- |
-| [本地版](https://github.com/Albert071006/ultimate-calendar/releases/tag/v0.7.0) | 只在 Windows 电脑使用，下载安装即可 | 资料在本机，AI 由本机调用自己的 DeepSeek API Key |
-| [服务器版与手机端](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.7.0) | 希望手机与电脑共用资料，愿意维护常在线服务器 | 资料在自己的服务器，AI 由服务器调用，手机通过 HTTPS 网页/PWA 使用 |
+| [本地版](https://github.com/Albert071006/ultimate-calendar/releases/tag/v0.8.0) | 只在 Windows 电脑使用，下载安装即可 | 资料在本机，AI 由本机调用自己的 DeepSeek API Key |
+| [服务器版与手机端](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.8.0) | 希望手机与电脑共用资料，愿意维护常在线服务器 | 资料在自己的服务器，AI 由服务器调用，手机通过 HTTPS 网页/PWA 使用 |
 
 ## 开始使用
 
 1. 下载 `UltimateCalendar-Local-Setup-*.exe`，按提示安装并打开「终极日历本地版」。使用安装包不需要安装 Node.js。
 2. 直接添加日程、任务、课表和账目。这些手动功能不需要 API Key，也不依赖网络。
-3. 如需 AI 助手，在「我的 → AI 与费用」保存自己的 DeepSeek API Key，然后选择可用模型。AI 请求需要联网，费用由自己的 API 账户承担。
+3. 如需 AI 助手，在「我的 → AI 与费用」保存自己的 DeepSeek API Key，选择模型及支持的思考强度后保存设置。AI 请求需要联网，费用由自己的 API 账户承担。
 4. 如需自动整理 QQ 群通知，可另行配置本机 OneBot 兼容桥接服务，再在「QQ 采集」中连接并选择群。也可以只使用手动导入消息。
 5. 如需微信采集，先按[微信配置指南](docs/wechat-capture.md)配置独立 Python 运行时，再在「我的 → 微信采集」连接、选择群并启用。Python、微信客户端及可选的 FFmpeg 不包含在安装包中。
 
@@ -25,8 +25,8 @@
 
 - **日历和课表**：按分钟安排、拖动和调整时段，支持教学周、节次、单双周与重复活动。
 - **任务和目标**：普通任务默认只安排一个时段，完成或恢复该时段时同步任务状态。需要分次执行时，明确勾选「安排多个时段」；多时段任务保留各时段与整项任务的独立完成状态。
-- **生活助手**：用中文查询和修改安排、任务及账目，支持添加或粘贴图片；需核对的操作先展示预览。区分模型响应与交易校验错误，确定结果未采用时可主动重新分析；结果未知时先核对回执。图片分析取决于所选模型是否支持视觉输入。
-- **通知整理**：从手动导入、本机 QQ 或微信采集的消息、图片与文件中提取事项，先进入待判断列表，再由你接受、忽略或稍后决定。不同日期消息中的「明天」按各自发送日期解析。
+- **生活助手**：用中文查询和修改安排、任务及账目，支持添加或粘贴图片；需核对的操作先展示预览。支持的模型可选关闭、低、高、最高思考强度，默认关闭。区分模型响应与交易校验错误，确定结果未采用时可主动重新分析；结果未知时先核对回执。图片分析取决于所选模型是否支持视觉输入。
+- **通知整理**：从手动导入、本机 QQ 或微信采集的消息、图片与文件中提取事项，先进入待判断列表，再由你接受、忽略或稍后决定。不同日期消息中的「明天」按各自发送日期解析；本机采集的晚到补充须关联可验证的原事项，避免把原因课程变成新活动。
 - **账本与借款**：分别记录实际付款与个人开销，支持 AA、代垫、退款、报销、转账及 CSV 导出；借入、借出、归还和收回本金单独统计，支持部分、跨月结清，并显示待还、待收和每笔剩余。
 - **独立账户**：在「账单 → 账户」新增银行、支付余额或店铺储值账户，编辑名称与别名；同银行多卡可用尾号区分。新账户余额未知，需要时再核对余额，不虚构初始金额或自动改归历史流水。
 - **资料关联**：给任务和日程关联网页、电脑文件与文件夹，查看仍保留在本机的通知原文和附件。
@@ -35,7 +35,7 @@
 
 QQ 与微信采集都是需另行配置的可选功能。微信只读采集已同步到电脑的消息及已缓存、下载的附件，不自动操作微信下载；未就绪附件独立等待，不拖住其他消息。语音、视频不做内容分析。提醒需要日历进程保持运行，关机、休眠或退出期间不能即时通知。附件格式与其他边界见[本地版说明](docs/local-desktop.md)。
 
-**升级到 0.7.0 前请备份。** 新增借款和自定义账户数据不受旧版支持，使用后不要直接换回旧程序读取同一份资料。服务器用户需一起升级后端、Windows 标准版，并重新打开或刷新手机页面；保留资料、凭据与配对，不要通过清空数据处理升级提示。详见[本地版发布说明](docs/release-notes/0.7.0.md)和[服务器版发布说明](docs/release-notes/server-0.7.0.md)。
+**升级到 0.8.0 前请备份。** 保存新版思考设置后，旧程序可能无法读取这些设置；之前版本的借款和自定义账户兼容限制也仍适用，回退前须核对数据与程序版本。服务器用户需一起升级后端、Windows 标准版，并重新打开或刷新手机页面；保留资料、凭据与配对，不要通过清空数据处理升级提示。详见[本地版发布说明](docs/release-notes/0.8.0.md)和[服务器版发布说明](docs/release-notes/server-0.8.0.md)。
 
 ## 数据与隐私
 
@@ -87,11 +87,11 @@ npm run smoke
 
 ## 服务器版与手机端
 
-[服务器版 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.7.0) 单独提供 `UltimateCalendar-Server-Mobile-0.7.0.tar.gz`，内含已构建的 Node 后端、手机网页、systemd 配置、NGINX 示例与部署说明。你需要自行部署并维护常在线的 Linux 云服务器，项目不提供公共托管账号。目标服务器安装 Node.js 24 后即可运行部署包，无需再执行 `npm ci`；管理员还需配置域名、HTTPS 和持久资料目录。
+[服务器版 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.8.0) 单独提供 `UltimateCalendar-Server-Mobile-0.8.0.tar.gz`，内含已构建的 Node 后端、手机网页、systemd 配置、NGINX 示例与部署说明。你需要自行部署并维护常在线的 Linux 云服务器，项目不提供公共托管账号。目标服务器安装 Node.js 24 后即可运行部署包，无需再执行 `npm ci`；管理员还需配置域名、HTTPS 和持久资料目录。
 
 部署后，手机打开自己的 HTTPS 地址，输入服务器生成的一次性码配对，再添加到主屏幕。服务器持续运行时，Windows 电脑可以关机；服务器停机或不可达时，共享读写与 AI 会受影响。每个服务实例是一套共享资料，适合自己或可信设备使用。
 
-同一 Release 还提供可选 Windows 标准版 `UltimateCalendar-Setup-0.7.0.exe`，可配置为连接该服务器；独立本地版不会连接服务器。两种桌面版分别安装、保存资料和更新，标准版继续使用 `latest.yml`。
+同一 Release 还提供可选 Windows 标准版 `UltimateCalendar-Setup-0.8.0.exe`，可配置为连接该服务器；独立本地版不会连接服务器。两种桌面版分别安装、保存资料和更新，标准版继续使用 `latest.yml`。
 
 [Linux 部署与手机使用步骤](docs/server-mobile-deployment.md) · [Windows 连接说明](docs/windows-cloud-mode.md) · [自托管开发与接口说明](docs/self-hosted.md)
 

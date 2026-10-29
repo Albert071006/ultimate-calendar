@@ -57,6 +57,15 @@ function fixture(settings: Partial<SettingsValue> = {}, initial = readyState(), 
 }
 
 describe('DeepSeek account settings', () => {
+  it('saves thinking effort explicitly without changing the model or other settings', async () => {
+    const f = fixture(); await screen.findByText('12.345678');
+    expect((screen.getByLabelText('思考强度') as HTMLSelectElement).value).toBe('none');
+    fireEvent.change(screen.getByLabelText('思考强度'), { target:{ value:'high' } });
+    expect(f.saveSettings).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name:'保存全部设置' }));
+    await waitFor(() => expect(f.saveSettings).toHaveBeenCalledOnce());
+    expect(f.snapshot.settings).toMatchObject({ model:'deepseek-flash', reasoningEffort:'high' });
+  });
   it('groups account, rates and usage together and keeps infrequent settings collapsed without losing saved values', async () => {
     const f = fixture({ campus: '示例大学北校区', termStart: '2026-08-31', termWeeks: 20,
       periodMap: [{ period: 1, startTime: '08:30', endTime: '09:15' }], locationContext: '合成地点背景',

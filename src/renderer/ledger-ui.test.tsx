@@ -6,6 +6,7 @@ import { DEFAULT_LEDGER_RULES, LEDGER_ACCOUNTS, LedgerEntrySchema, LedgerSnapsho
 import { todayDate } from './calendar-layout';
 import { LedgerPage } from './components/LedgerPage';
 import { LedgerRulesSettings } from './components/ledger/Rules';
+import { MobileProvider } from './mobile/layout';
 
 afterEach(cleanup);
 const today = todayDate(), month = today.slice(0, 7), stamp = `${today}T12:00:00+08:00`;
@@ -177,6 +178,98 @@ describe('local ledger UI', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存记账规则' }));
     await waitFor(() => expect(f.ledgerMutate).toHaveBeenCalledTimes(1));
     expect(f.ledgerMutate.mock.calls[0]![0].changes).toEqual([{ type: 'updateRules', note: '以后先核对余额先后', rules: { ...f.snapshot.rules, sameDayNewEntryOrder: 'ask' } }]);
+  });
+});
+
+describe('bookkeeping rule drafts', () => {
+  const refreshLabel = '额度刷新日（1–31，可留空）';
+  it('keeps an unsaved family refresh day across navigation and saves it without a mandatory reason', async () => {
+    const f = fixture('rules'); await screen.findByLabelText(refreshLabel);
+    fireEvent.change(screen.getByLabelText(refreshLabel), { target: { value: '1' } });
+    expect(f.ledgerMutate).not.toHaveBeenCalled();
+    expect(screen.getByText(/有未保存的修改/)).toBeTruthy();
+    f.rerender(<div>其他页面</div>); f.rerender(<LedgerRulesSettings api={f.api} />);
+    expect(await screen.findByLabelText(refreshLabel)).toHaveProperty('value', '1');
+    expect(screen.queryByText('记账口径')).toBeNull();
+    expect(screen.queryByText('账户名称与别名')).toBeNull();
+    f.ledgerMutate.mockImplementation(async request => {
+      const change = request.changes[0]!; if (change.type !== 'updateRules') throw Error('Unexpected mutation');
+      const saved = { ...f.snapshot, revision: 2, rules: change.rules };
+      f.ledgerSnapshot.mockResolvedValue({ ok: true, data: saved });
+      return { ok: true, data: { status: 'saved', operationId: request.operationId, snapshot: saved, entryIds: [], message: '记账规则已保存', undoAvailable: true } };
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存记账规则' }));
+    await waitFor(() => expect(f.ledgerMutate).toHaveBeenCalledTimes(1));
+    expect(f.ledgerMutate.mock.calls[0]![0].changes).toEqual([{ type: 'updateRules', rules: { ...f.snapshot.rules, familyRefreshDay: 1 }, note: '在记账设置中更新规则' }]);
+    await screen.findByText('当前显示的是已保存的记账规则。');
+    f.rerender(<div>其他页面</div>); f.rerender(<LedgerRulesSettings api={f.api} />);
+    expect(await screen.findByLabelText(refreshLabel)).toHaveProperty('value', '1');
+    expect(f.ledgerMutate).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves edited fields while adopting unrelated rules updated on another device', async () => {
+    const f = fixture('rules'); await screen.findByLabelText(refreshLabel);
+    fireEvent.change(screen.getByLabelText(refreshLabel), { target: { value: '1' } });
+    f.rerender(<div>其他页面</div>);
+    const updated = { ...f.snapshot, revision: 2, rules: { ...f.snapshot.rules, familyMonthlyLimitCents: 90000, notes: '另一设备更新的约定' } };
+    f.ledgerSnapshot.mockResolvedValue({ ok: true, data: updated });
+    f.rerender(<LedgerRulesSettings api={f.api} />);
+    expect(await screen.findByLabelText(refreshLabel)).toHaveProperty('value', '1');
+    expect(screen.getByLabelText('每月约定额度（元）')).toHaveProperty('value', '900.00');
+    expect(screen.getByLabelText('补充记账规则')).toHaveProperty('value', updated.rules.notes);
+    fireEvent.click(screen.getByRole('button', { name: '保存记账规则' }));
+    await waitFor(() => expect(f.ledgerMutate).toHaveBeenCalledTimes(1));
+    expect(f.ledgerMutate.mock.calls[0]![0]).toMatchObject({ expectedRevision: 2, changes: [{ type: 'updateRules', rules: { ...updated.rules, familyRefreshDay: 1 } }] });
+  });
+
+  it('keeps a phone draft pending until a saved snapshot confirms a queued write', async () => {
+    const f = fixture('rules'); await screen.findByLabelText(refreshLabel);
+    f.rerender(<div>其他页面</div>);
+    const queued = vi.fn(async () => ({ ok: true as const, data: { status: 'queued' as const, requestId: 'synthetic-rule-request', message: '已暂存，等待同步' } }));
+    const client = { ...f.api, ledgerMutate: queued };
+    const page = <MobileProvider mobile><LedgerRulesSettings api={client} /></MobileProvider>;
+    f.rerender(page);
+    fireEvent.change(await screen.findByLabelText('每月刷新日'), { target: { value: '1' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存记账规则' }));
+    await screen.findByText('已暂存，等待同步');
+    expect(screen.getByText(/有未保存的修改/)).toBeTruthy();
+    expect(screen.queryByText('当前显示的是已保存的记账规则。')).toBeNull();
+    f.rerender(<div>其他页面</div>); f.rerender(page);
+    expect(await screen.findByLabelText('每月刷新日')).toHaveProperty('value', '1');
+    expect(screen.getByText(/有未保存的修改/)).toBeTruthy();
+    const saved = { ...f.snapshot, revision: 2, rules: { ...f.snapshot.rules, familyRefreshDay: 1 } };
+    f.ledgerSnapshot.mockResolvedValue({ ok: true, data: saved });
+    f.rerender(<div>其他页面</div>); f.rerender(page);
+    expect(await screen.findByLabelText('每月刷新日')).toHaveProperty('value', '1');
+    expect(screen.getByText('当前显示的是已保存的记账规则。')).toBeTruthy();
+    expect(queued).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains edits after a rejected save and discards only the local draft on request', async () => {
+    const f = fixture('rules'); await screen.findByLabelText(refreshLabel);
+    f.ledgerMutate.mockResolvedValue({ ok: false, error: { code: 'VALIDATION', message: '合成保存失败', retryable: false } });
+    fireEvent.change(screen.getByLabelText(refreshLabel), { target: { value: '1' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存记账规则' }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', '合成保存失败');
+    f.rerender(<div>其他页面</div>); f.rerender(<LedgerRulesSettings api={f.api} />);
+    expect(await screen.findByLabelText(refreshLabel)).toHaveProperty('value', '1');
+    fireEvent.click(screen.getByRole('button', { name: '放弃未保存修改' }));
+    expect(screen.getByLabelText(refreshLabel)).toHaveProperty('value', '');
+    expect(f.ledgerMutate).toHaveBeenCalledTimes(1);
+    f.rerender(<div>其他页面</div>); f.rerender(<LedgerRulesSettings api={f.api} />);
+    expect(await screen.findByLabelText(refreshLabel)).toHaveProperty('value', '');
+  });
+
+  it('validates the refresh day without saving and does not leak drafts to another connection', async () => {
+    const f = fixture('rules'); await screen.findByLabelText(refreshLabel);
+    fireEvent.change(screen.getByLabelText(refreshLabel), { target: { value: '32' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存记账规则' }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', '刷新日填写 1–31，未知则留空。');
+    expect(f.ledgerMutate).not.toHaveBeenCalled();
+    f.unmount();
+    const other = fixture('rules');
+    expect(await screen.findByLabelText(refreshLabel)).toHaveProperty('value', '');
+    expect(other.ledgerMutate).not.toHaveBeenCalled();
   });
 });
 

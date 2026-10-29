@@ -4,6 +4,7 @@ import { TokenUsageSchema, type ApiError, type Settings, type TokenUsage } from 
 import type { PriceQuote } from '../shared/account';
 import { estimateCost } from './costs';
 import { LedgerError } from '../ledger/service';
+import { reasoningRequest } from '../shared/ai-reasoning';
 
 export class WorkflowError extends Error {
   constructor(readonly code: ApiError['code'], message: string, readonly retryable = false) { super(message); }
@@ -42,11 +43,13 @@ function responseFailure(code: keyof typeof responseFailures, error?: unknown): 
 export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string | ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } })[] };
 export async function completeJson<T>(options: { key: string | null; settings: Settings; messages: ChatMessage[]; schema: z.ZodType<T>; operationId: string; purpose: TokenUsage['purpose']; now: string; autoQuote?: PriceQuote | null; fetch?: typeof fetch; timeoutMs?: number; maxAttempts?: number; sleep?(ms: number): Promise<void>; onUsage?(usage: TokenUsage): void; onParsedResponse?(value: unknown): void }): Promise<{ value: T; usage: TokenUsage }> {
   if (!options.key) throw new WorkflowError('NO_API_KEY', '请先在设置中配置 DeepSeek API 密钥');
-  const body = JSON.stringify({ model: options.settings.model, messages: options.messages, response_format: { type: 'json_object' }, thinking: { type: 'disabled' }, max_tokens: 8192, stream: false });
-  const attempts = Math.max(1, Math.min(3, options.maxAttempts ?? 3));
+  const { timeoutMs, ...reasoning } = reasoningRequest(options.settings);
+  const body = JSON.stringify({ model: options.settings.model, messages: options.messages, response_format: { type: 'json_object' }, ...reasoning, stream: false });
+  // A lost thinking response may already have been billed. Never resend it automatically.
+  const attempts = reasoning.thinking.type === 'enabled' ? 1 : Math.max(1, Math.min(3, options.maxAttempts ?? 3));
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (attempt) await (options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))(250 * 2 ** (attempt - 1));
-    const abort = new AbortController(); const timer = setTimeout(() => abort.abort(), options.timeoutMs ?? 45_000);
+    const abort = new AbortController(); const timer = setTimeout(() => abort.abort(), options.timeoutMs ?? timeoutMs);
     try {
       let response: Response;
       try { response = await (options.fetch ?? fetch)('https://api.deepseek.com/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${options.key}` }, body, signal: abort.signal }); }

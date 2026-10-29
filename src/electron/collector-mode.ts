@@ -97,6 +97,12 @@ export async function startCollectorMode(directory: string, dependencies: Collec
       for (const listener of subscribers) try { listener(CaptureSnapshotSchema.parse(checked)); } catch { /* Isolate UI observers. */ }
     };
     keySync = (dependencies.createCollectorKeySync ?? createCollectorKeySync)({ directory, encryption, keys,
+      onSettings(settings) {
+        const current = repository!.snapshot().settings;
+        if (current.model !== settings.model || (current.reasoningEffort ?? 'none') !== (settings.reasoningEffort ?? 'none')) {
+          repository!.saveSettings({ ...current, model: settings.model, reasoningEffort: settings.reasoningEffort ?? 'none' });
+        }
+      },
       async onChanged(value) {
         account?.resetKey();
         await capture?.credentialsChanged?.({ configured: value.configured, revision: value.revision, sourceId: value.sourceId });
@@ -125,6 +131,7 @@ export async function startCollectorMode(directory: string, dependencies: Collec
     };
     account = (dependencies.createAccountService ?? createAccountService)({ getApiKey, fetch: cancellableFetch, isVisible: () => false });
     const captureOptions: Parameters<typeof createCaptureService>[0] = {
+      refreshModelSettings: () => keySync?.refresh() ?? Promise.resolve(),
       store, repository, credentials: bridgeKeys, extract: documents.extract, runModel: queue.run, fetch: cancellableFetch,
       onChanged: emitCapture, getApiKey, getPriceQuote: account.quote,
       getModelInputModalities: model => account!.snapshot().models.data?.find(item => item.id === model)?.inputModalities ?? null,

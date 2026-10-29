@@ -12,6 +12,7 @@ import { createPushHttpExtension } from './push-http';
 import { LedgerEntryDraftSchema, LedgerSnapshotSchema } from '../shared/ledger';
 import { ledgerLoans } from '../shared/ledger-loans';
 import { LEDGER_API_HEADER, LEDGER_API_VERSION } from '../shared/ledger-compatibility';
+import { AI_SETTINGS_HEADER, AI_SETTINGS_VERSION } from '../shared/ai-reasoning';
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -46,6 +47,30 @@ async function setup(directory?: string) {
 const goalInput = (title = '虚构目标') => ({ operationId: 'goal-business-1', origin: 'manual', mutations: [{ type: 'create', entity: 'goal', values: { title } }] });
 
 describe('remote HTTP boundary', () => {
+  it('shares effort with new clients while legacy reads, saves and replayed receipts preserve it', async () => {
+    const f = await setup(), device = await f.pair(); let sequence=0;
+    const rpc = async (method:string,input?:unknown,modern=true,id=`reasoning-${++sequence}`) => {
+      const response=await f.call(`/api/v1/rpc/${method}`,{method:'POST',headers:{...device.headers,...(modern?{[AI_SETTINGS_HEADER]:AI_SETTINGS_VERSION}:{})},body:JSON.stringify({requestId:id,identity:device.session.identity,input})});
+      expect(response.status).toBe(200);return response.json();
+    };
+    const initial=(await rpc('snapshot')).data.settings;
+    expect(initial.reasoningEffort).toBeUndefined();
+    const request={settings:{...initial,reasoningEffort:'max'},expectedSettings:initial};
+    expect((await rpc('saveSettings',request,true,'effort-set')).data.reasoningEffort).toBe('max');
+    expect((await rpc('snapshot')).data.settings.reasoningEffort).toBe('max');
+    expect(await rpc('saveSettings',{settings:{...initial,reasoningEffort:'none',campus:'stale modern form'},expectedSettings:initial})).toMatchObject({ok:false,error:{code:'CONFLICT'}});
+    expect((await rpc('snapshot')).data.settings.reasoningEffort).toBe('max');
+    const legacy=(await rpc('snapshot',undefined,false)).data.settings;
+    expect(legacy.reasoningEffort).toBeUndefined();
+    expect(await rpc('saveSettings',{settings:{...legacy,campus:'合成校园'},expectedSettings:legacy},false,'legacy-save')).toMatchObject({ok:true,data:{campus:'合成校园'}});
+    const after=(await rpc('snapshot')).data.settings;
+    expect(after).toMatchObject({campus:'合成校园',reasoningEffort:'max'});
+    const receipt=await f.call('/api/v1/operations/legacy-save',{headers:device.headers});
+    expect((await receipt.json()).result.data.reasoningEffort).toBeUndefined();
+    expect((await rpc('saveSettings',request,false,'effort-set')).data.reasoningEffort).toBeUndefined();
+    expect((await rpc('snapshot')).data.settings.reasoningEffort).toBe('max');
+    expect((await rpc('saveSettings',{settings:{...after,reasoningEffort:'none'},expectedSettings:after})).data.reasoningEffort).toBe('none');
+  });
   it('shares independent account catalogs across devices, backup and restart, rejecting version 2 before a write', async () => {
     let fixture = await setup();
     const desktop = await fixture.pair(), mobile = await fixture.pair();

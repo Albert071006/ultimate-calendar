@@ -14,6 +14,9 @@ import { CaptureExtractionSchema, captureRequestSchema, captureEntries, supporti
 import { createAttachmentDeduplicator, attachmentEvidenceUnits } from './attachment-deduplication';
 import { createPracticeClassifier } from './document-practice';
 import { shouldSuppressPassiveQuestion } from './qa-actionability';
+import { normalizeCaptureResponseTimes } from './response-time';
+import { assertArrivalFollowup } from './arrival-followup';
+import { reasoningRequest } from '../shared/ai-reasoning';
 export { attachmentEvidenceUnits } from './attachment-deduplication';
 
 export const ANALYSIS_VERSION = 'qq-v2';
@@ -244,19 +247,23 @@ function stagedCandidates(completed: CompletedCapture[], batch: CaptureBatch, un
   }, documentGrouping, qaRecipients);
   return { candidates: [...staged.values()], sources: [...evidence.values()], preferred };
 }
-function validateResponse(value: CaptureExtraction, units: AnalysisUnit[], existing: Candidate[], requestedCandidateIds?: string[]) {
+function validateResponse(value: CaptureExtraction, units: AnalysisUnit[], existing: Candidate[], requestedCandidateIds: string[] | undefined, context: Checkpoint['context']) {
   for (const candidate of value.candidates) {
-    if (candidate.sourceIds.length !== 1 || !units.some(unit => unit.id === candidate.sourceIds[0])) throw new WorkflowError('AI_RESPONSE', 'AI 引用了当前分片之外的来源，请手动重试或校对');
+    const unit = units.find(unit => unit.id === candidate.sourceIds[0]);
+    if (candidate.sourceIds.length !== 1 || !unit) throw new WorkflowError('AI_RESPONSE', 'AI 引用了当前分片之外的来源，请手动重试或校对');
     if (candidate.relation.candidateId && !(requestedCandidateIds ?? existing.map(item => item.id)).includes(candidate.relation.candidateId)) throw new WorkflowError('AI_RESPONSE', 'AI 引用了未知候选 ID，请人工校对');
+    assertArrivalFollowup({ candidate, unit, context, existingCandidates: existing });
   }
 }
 /** Durable checkpoints precede every subsequent paid request; requests never retry implicitly. */
-export async function analyzeCapture(options: { store: CaptureStore; repository: Repository; batch: CaptureBatch; getApiKey(): Promise<string | null>; getPriceQuote?(model: string, currency: 'CNY' | 'USD'): PriceQuote | null; getModelInputModalities?(model: string): string[] | null; runModel?: ModelRequestRunner; afterRequest?(): void; onProgress?(): void; canContinue(): boolean; fetch?: typeof fetch }): Promise<void> {
+export async function analyzeCapture(options: { store: CaptureStore; repository: Repository; batch: CaptureBatch; getApiKey(): Promise<string | null>; refreshModelSettings?(): Promise<void>; getPriceQuote?(model: string, currency: 'CNY' | 'USD'): PriceQuote | null; getModelInputModalities?(model: string): string[] | null; runModel?: ModelRequestRunner; afterRequest?(): void; onProgress?(): void; canContinue(): boolean; fetch?: typeof fetch }): Promise<void> {
   const { store, repository, batch } = options;
   if (batch.status === 'result-ready' || batch.status === 'applied') { applyCaptureResult(store, repository, batch, options.onProgress); return; }
-  const settings = repository.snapshot().settings;
   const prior = CheckpointSchema.safeParse(batch.result);
   if (batch.result !== null && !prior.success) throw new WorkflowError('STORAGE', '已保存的分片进度无法读取，已停止继续付费；请核对后选择重新分析');
+  // Saved paid output is local work and must remain resumable without cloud/key access.
+  if (!prior.success) await options.refreshModelSettings?.();
+  const settings = repository.snapshot().settings;
   const prepared = prior.success ? null : prepareAnalysis(store, batch);
   const plan = prior.success ? prior.data : { ...prepared!, units: prepared!.units.map(saveUnit) };
   const actualUnits = prior.success ? hydrateUnits(store, batch, prior.data).units : prepared!.units;
@@ -293,13 +300,13 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
       const pending = checkpoint.pendingResponse!;
       let value: CaptureExtraction;
       try {
-        const parsed = requestSchema.safeParse(pending.value);
+        const parsed = requestSchema.safeParse(normalizeCaptureResponseTimes(pending.value, settings.timezone));
         if (!parsed.success) throw new WorkflowError('AI_RESPONSE', '回答的主来源、补充来源或字段不符合当前分片要求');
         value = parsed.data;
         const state = repository.read();
         const staged = stagedCandidates(checkpoint.completed, batch, actualUnits, eligible, checkpoint.warnings, state, planFingerprint, checkpoint.documentGrouping === 1, questionRecipients(checkpoint));
-        const existing = recentCaptureCandidates(staged.candidates, staged.sources, batch, staged.preferred);
-        validateResponse(value, eligibleUnits, existing, pending.candidateIds);
+        const existing = recentCaptureCandidates(staged.candidates, staged.sources, batch, staged.preferred, new Set(checkpoint.context.map(message => message.id)));
+        validateResponse(value, eligibleUnits, existing, pending.candidateIds, checkpoint.context);
         stagedCandidates([...checkpoint.completed, { key, value }], batch, actualUnits, eligible, checkpoint.warnings, state, planFingerprint, checkpoint.documentGrouping === 1, questionRecipients(checkpoint));
       } catch (cause) {
         const code = cause instanceof WorkflowError ? cause.code : 'AI_RESPONSE';
@@ -320,14 +327,18 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
       if (repository.snapshot().settings.model !== settings.model) throw new WorkflowError('CONFLICT', '排队期间已更改模型，尚未发出此请求；请使用当前模型重读资料');
       if (JSON.stringify(locationProfile(repository.snapshot().settings)) !== JSON.stringify(profile)) throw new WorkflowError('CONFLICT', '排队期间校园背景已改变，尚未发出此请求；请核对设置后重试或重读资料');
       const apiKey = await options.getApiKey(); if (!apiKey) throw new WorkflowError('NO_API_KEY', '请在设置中配置 DeepSeek 密钥后，手动重试本批次');
+      const currentSettings = repository.snapshot().settings;
+      if (currentSettings.model !== settings.model) throw new WorkflowError('CONFLICT', '云端模型已变化，尚未发出请求；请核对后重读资料');
+      // Effort changes affect the next paid request, never a saved response or its receipt hash.
+      const requestSettings = { ...settings, reasoningEffort: currentSettings.reasoningEffort };
       if (!options.canContinue()) throw new WorkflowError('CANCELLED', '分析已暂停，已完成的分片结果保留；恢复分析后继续');
       const state = repository.read();
       const staged = stagedCandidates(checkpoint.completed, batch, actualUnits, eligible, checkpoint.warnings, state, planFingerprint, checkpoint.documentGrouping === 1, questionRecipients(checkpoint));
-      const existing = recentCaptureCandidates(staged.candidates, staged.sources, batch, staged.preferred);
+      const existing = recentCaptureCandidates(staged.candidates, staged.sources, batch, staged.preferred, new Set(checkpoint.context.map(message => message.id)));
       const messages = batchMessages(eligibleUnits, checkpoint.context, existing, checkpoint.warnings, profile, recipients, staged.sources);
       store.startAttempt(batch.id, hashInput({ planFingerprint, key }));
       try {
-        await completeJson({ key: apiKey, settings, messages, schema: z.json(), operationId: 'qq-request:' + randomUUID(), purpose: 'source', now: nowInstant(), maxAttempts: 1, timeoutMs: 90_000, autoQuote: options.getPriceQuote?.(settings.model, settings.pricingCurrency), fetch: options.fetch, onUsage: usage => repository.addUsage(usage),
+        await completeJson({ key: apiKey, settings: requestSettings, messages, schema: z.json(), operationId: 'qq-request:' + randomUUID(), purpose: 'source', now: nowInstant(), maxAttempts: 1, timeoutMs: Math.max(90_000, reasoningRequest(requestSettings).timeoutMs), autoQuote: options.getPriceQuote?.(settings.model, settings.pricingCurrency), fetch: options.fetch, onUsage: usage => repository.addUsage(usage),
           onParsedResponse(value) {
             checkpoint.pendingResponse = { key, value: z.json().parse(value), candidateIds: existing.map(candidate => candidate.id) };
             store.savePendingResponse(batch.id, checkpoint);

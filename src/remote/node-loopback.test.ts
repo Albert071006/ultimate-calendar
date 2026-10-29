@@ -11,7 +11,7 @@ it('uses and disposes the explicit loopback HTTPS transport while retaining the 
   const client = createNodeRemoteClient({ origin, localConnectAddress: '127.0.0.1', credentials: { read: () => ({ version: 1, origin, identity, deviceId, cookie: '__Host-planner_session=synthetic' }), write: vi.fn() } });
   expect(factory).toHaveBeenCalledExactlyOnceWith({ origin, localConnectAddress: '127.0.0.1' });
   expect(await client.getSession()).toEqual({ identity, deviceId, aiConfigured: false });
-  expect(fetcher).toHaveBeenCalledWith(origin + '/api/v1/session', expect.objectContaining({ redirect: 'error', headers: { Origin: origin, Cookie: '__Host-planner_session=synthetic' } }));
+  expect(fetcher).toHaveBeenCalledWith(origin + '/api/v1/session', expect.objectContaining({ redirect: 'error', headers: { Origin: origin, Cookie: '__Host-planner_session=synthetic', 'X-Planner-AI-Settings-Version': '1' } }));
   client.close(); expect(close).toHaveBeenCalledOnce();
 });
 

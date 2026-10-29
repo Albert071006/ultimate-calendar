@@ -50,6 +50,9 @@ it('puts saved feedback beside the page title without adding a separate status r
   expect(notice.getAttribute('title')).toBe('已保存，可撤销');
   expect(container.querySelector('.workspace-status')).toBeNull();
   expect((screen.getByRole('button', { name: '撤销上次操作' }) as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(within(screen.getByRole('navigation', { name: '主导航' })).getByRole('button', { name: '日历' }));
+  await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+  expect((screen.getByRole('button', { name: '撤销上次操作' }) as HTMLButtonElement).disabled).toBe(false);
 });
 
 it.each([

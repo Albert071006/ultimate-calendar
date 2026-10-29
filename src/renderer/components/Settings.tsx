@@ -12,6 +12,7 @@ import type { AppUpdates } from '../hooks/useAppUpdates';
 import { SoftwareUpdate } from './SoftwareUpdate';
 import { SpaceManagement } from './SpaceManagement';
 import { CloudApiKeySettings } from './CloudApiKeySettings';
+import { reasoningOptions, supportsReasoningEffort, type ReasoningEffort } from '../../shared/ai-reasoning';
 import './Settings.css';
 export type SettingsSection = "ai" | "term" | "reminders" | "data" | "update";
 
@@ -46,6 +47,7 @@ function LocalSettings({
   const expectedSettings = useRef(s);
   const account = useAccount(ui.host);
   const [model, setModel] = useState(s.model),
+    [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(s.reasoningEffort ?? 'none'),
     [manualModel, setManualModel] = useState(false),
     [pricingMode, setPricingMode] = useState(s.pricingMode),
     [pricingCurrency, setPricingCurrency] = useState(s.pricingCurrency),
@@ -59,6 +61,7 @@ function LocalSettings({
       setModelNotice('已切换模型，手动单价已停用。需要覆盖官方价格时，请为新模型重新填写。');
     }
     setModel(next);
+    if (!supportsReasoningEffort(next)) setReasoningEffort('none');
   }
   const [error, setError] = useState(""),
     [restore, setRestore] = useState<Extract<
@@ -90,6 +93,7 @@ function LocalSettings({
         campus: get("campus"),
         locationContext: get("locationContext"),
         model: get("model"),
+        ...(s.reasoningEffort !== undefined || reasoningEffort !== 'none' ? { reasoningEffort } : {}),
         showPending: data.has("showPending"),
         closeToTray: data.has("closeToTray"),
         autoLaunch: data.has("autoLaunch"),
@@ -208,6 +212,10 @@ function LocalSettings({
           </div>
           <button type="button" onClick={() => setManualModel(value => !value)}>{manualModel ? '收起手动填写' : '手动填写模型名称'}</button>
           {manualModel && <label>模型名称<input required value={model} onChange={e => changeModel(e.target.value)} maxLength={100} /></label>}
+          <label>思考强度<select value={reasoningEffort} disabled={!supportsReasoningEffort(model)} onChange={e => setReasoningEffort(e.target.value as ReasoningEffort)}>
+            {reasoningOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select></label>
+          <p className="fine-print">{supportsReasoningEffort(model) ? '思考强度越高，通常耗时和用量越多。保存后用于生活助手、资料提炼和课表识别；云端模式也同步到本机群采集。' : '当前手填模型未确认支持强度调节，保持原来的非思考请求方式。'}</p>
           {modelInfo && <p className="hint">上下文：{modelInfo.contextWindow?.toLocaleString() ?? '接口未提供'} · 最大输出：{modelInfo.maxOutputTokens?.toLocaleString() ?? '接口未提供'}
             {modelInfo.inputModalities?.length ? ` · 输入：${modelInfo.inputModalities.map(value => ({ text: '文本', image: '图片' }[value] ?? value)).join('、')}` : ''}</p>}
           <AccountResourceStatus resource={account.state?.models} label="模型列表" staleAfter={6 * 3_600_000} />

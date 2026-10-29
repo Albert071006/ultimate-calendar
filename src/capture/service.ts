@@ -57,6 +57,7 @@ export function createCaptureService(options: {
   getApiKey(): Promise<string | null>; extract(input: DocumentInput, signal?: AbortSignal): Promise<DocumentExtraction>;
   getPriceQuote?(model: string, currency: 'CNY' | 'USD'): PriceQuote | null;
   getModelInputModalities?(model: string): string[] | null;
+  refreshModelSettings?(): Promise<void>;
   runModel?: ModelRequestRunner;
   afterModelRequest?(): void; onChanged?(value: z.infer<typeof CaptureSnapshotSchema>): void; onPlannerChanged?(): void;
   bridgeFactory?: CaptureBridgeFactory; downloader?: typeof downloadAttachment;
@@ -281,7 +282,7 @@ export function createCaptureService(options: {
           }
           await analyzeCapture({ store, repository: options.repository, batch: store.batch(batch.id)!, getApiKey: async () => {
             const key = await options.getApiKey(); requestCredentialGeneration = credentialGeneration; return key;
-          }, getPriceQuote: options.getPriceQuote, getModelInputModalities: options.getModelInputModalities, runModel: options.runModel, afterRequest: options.afterModelRequest, onProgress: options.onPlannerChanged, fetch: options.fetch, canContinue: () => permitted(batch.accountId, batch.groupId, false) && store.config().analysisEnabled });
+          }, refreshModelSettings: options.refreshModelSettings, getPriceQuote: options.getPriceQuote, getModelInputModalities: options.getModelInputModalities, runModel: options.runModel, afterRequest: options.afterModelRequest, onProgress: options.onPlannerChanged, fetch: options.fetch, canContinue: () => permitted(batch.accountId, batch.groupId, false) && store.config().analysisEnabled });
           options.onPlannerChanged?.();
         } catch (cause) {
           const current = store.batch(batch.id); if (!current) continue;

@@ -28,7 +28,9 @@ server {
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_cache off;
-        proxy_read_timeout 180s;
+        # AI operations may make two 240 s model calls; allow the 510 s RPC
+        # deadline plus a margin for a controlled response without proxy retries.
+        proxy_read_timeout 540s;
         proxy_send_timeout 60s;
         # Do not retry an accepted write against another process/upstream.
         proxy_next_upstream off;
