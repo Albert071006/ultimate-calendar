@@ -1,14 +1,14 @@
 import { useState, type CSSProperties } from "react";
 import { ArrowRight, Plus } from "lucide-react";
-import type { CalendarItem, Snapshot, Task } from "../../../shared/contracts";
+import type { CalendarItem, Snapshot } from "../../../shared/contracts";
 import type { PlannerUI } from "../../hooks/usePlanner";
 import type { EditorTarget } from "../../components/editor/EntityEditor";
 import { buildCalendar } from "../../../domain/calendar";
 import { belongingColor } from "../../../domain/belonging";
-import { taskDeadlineEnd } from "../../../domain/unscheduled";
 import { effectiveActivityEnd } from "../../../domain/activity-duration";
 import { dayDistance } from "../../../domain/time";
 import { selectRailTasks } from "../../task-rail";
+import { groupTodayTasks, todayTaskGroupNames as groupNames } from "../../today-tasks";
 import { todayDate } from "../../calendar-layout";
 import { PageToolbar } from "../../components/shell/PageToolbar";
 import { useCurrentTime } from "../../hooks/useCurrentTime";
@@ -28,17 +28,6 @@ export function longDate(date: string) {
   return new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "long", day: "numeric", weekday: "long" })
     .format(new Date(`${date}T12:00:00+08:00`)).replace(/(日)(星期)/, "$1 $2");
 }
-
-/** Groups by deadline relative to today and the Monday-based week. */
-function groupOf(task: Task, today: string, now: number): "over" | "today" | "week" | "later" | "none" {
-  const end = taskDeadlineEnd(task);
-  if (end === null) return "none";
-  if (end <= now) return "over";
-  if (task.deadline!.date === today) return "today";
-  const weekday = (new Date(`${today}T12:00:00+08:00`).getUTCDay() + 6) % 7;
-  return dayDistance(today, task.deadline!.date) <= 6 - weekday ? "week" : "later";
-}
-const groupNames = { over: "已逾期", today: "今天", week: "本周", later: "以后", none: "无截止", done: "已完成" } as const;
 
 export function Today({ snapshot, ui, pendingCount, create, openInbox, openCandidate, openRecord, goCalendar, ...actions }: TaskActions & {
   snapshot: Snapshot; ui: PlannerUI; pendingCount: number;
@@ -62,9 +51,7 @@ export function Today({ snapshot, ui, pendingCount, create, openInbox, openCandi
   // "待完成" hides fixed activities already attended or cancelled; "全部" keeps every task.
   const open = filter === "all" ? snapshot.tasks.filter(task => task.status === "open") : selectRailTasks(snapshot, now);
   const done = snapshot.tasks.filter(task => task.status === "done");
-  const grouped = (["over", "today", "week", "later", "none"] as const)
-    .map(key => [key, open.filter(task => groupOf(task, today, now) === key)] as const)
-    .filter(([, list]) => list.length);
+  const grouped = groupTodayTasks(snapshot, open, today, now);
   const groups = filter === "open" ? grouped : filter === "done" ? (done.length ? [["done", done] as const] : []) : [...grouped, ...(done.length ? [["done", done] as const] : [])];
 
   const decide = (candidateId: string, type: "acceptCandidate" | "ignoreCandidate") => {

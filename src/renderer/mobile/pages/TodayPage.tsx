@@ -5,26 +5,14 @@ import type { PlannerUI } from '../../hooks/usePlanner';
 import type { Selection } from '../../components/Calendar';
 import type { TaskActions } from '../../components/tasks/TaskRow';
 import { buildCalendar } from '../../../domain/calendar';
-import { taskDeadlineEnd } from '../../../domain/unscheduled';
 import { effectiveActivityEnd } from '../../../domain/activity-duration';
-import { dayDistance } from '../../../domain/time';
 import { selectRailTasks, taskAttention } from '../../task-rail';
+import { groupTodayTasks, todayTaskGroupNames as groupNames, type TodayTaskGroup as Group } from '../../today-tasks';
 import { taskArrangements, taskArrangementSummary, taskNoticeTiming, taskNoticeSummary } from '../../task-schedule';
 import { teachingWeek } from '../../pages/today/Today';
 import { todayDate } from '../../calendar-layout';
 import { clock, itemColor, shortDate, weekdayName } from '../item-style';
 
-type Group = 'over' | 'today' | 'week' | 'later' | 'none' | 'done';
-const groupNames: Record<Group, string> = { over: '已逾期', today: '今天', week: '本周', later: '以后', none: '无截止', done: '已完成' };
-
-function groupOf(task: Task, today: string, now: number): Exclude<Group, 'done'> {
-  const end = taskDeadlineEnd(task);
-  if (end === null) return 'none';
-  if (end <= now) return 'over';
-  if (task.deadline!.date === today) return 'today';
-  const weekday = (new Date(`${today}T12:00:00+08:00`).getUTCDay() + 6) % 7;
-  return dayDistance(today, task.deadline!.date) <= 6 - weekday ? 'week' : 'later';
-}
 const endOf = (item: CalendarItem) => Date.parse(item.start ? effectiveActivityEnd(item.start, item.end) : `${item.date}T23:59:59+08:00`);
 const minutesLabel = (minutes: number) => minutes < 1 ? '即将开始' : minutes < 60 ? `${minutes} 分钟后` : `${Math.floor(minutes / 60)} 小时${minutes % 60 ? ` ${minutes % 60} 分` : ''}后`;
 
@@ -49,8 +37,7 @@ export function TodayPage({ snapshot, ui, now, pendingCount, unscheduledCount, s
 
   const openTasks = selectRailTasks(snapshot, now);
   const done = snapshot.tasks.filter(task => task.status === 'done');
-  const grouped = (['over', 'today', 'week', 'later', 'none'] as const)
-    .map(key => [key, openTasks.filter(task => groupOf(task, today, now) === key)] as const).filter(([, list]) => list.length);
+  const grouped = groupTodayTasks(snapshot, openTasks, today, now);
   const groups: (readonly [Group, Task[]])[] = [...grouped, ...(showDone && done.length ? [['done', done] as const] : [])];
   // A group label is only worth showing when it separates one group from another.
   const labelled = grouped.length > 1 || grouped.some(([key]) => key === 'over');
