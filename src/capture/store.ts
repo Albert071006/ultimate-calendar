@@ -5,7 +5,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 import { IdSchema, InstantSchema } from '../shared/contracts';
 import {
-  AttachmentStatusSchema, CaptureBatchPageSchema, CaptureCleanupRequestSchema, CaptureConfigSchema,
+  AttachmentStatusSchema, CAPTURE_BATCH_WAIT_SECONDS, CaptureBatchPageSchema, CaptureCleanupRequestSchema, CaptureConfigSchema,
   CaptureMessagePageSchema, CapturePageRequestSchema, CaptureStatsSchema, GroupCoverageSchema,
   type AttachmentSummary, type CaptureBatchView, type CaptureCleanupRequest, type CaptureConfig,
   type CaptureMessageView, type CapturePageRequest, type GroupCoverage,
@@ -429,7 +429,7 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
             const values = rows.map(row => parsePayload(row, StoredMessageSchema)!);
             if (!values.length) break;
             const oldest = values[0]!;
-            if (!options.force && Date.parse(at) - Date.parse(oldest.importedAt) < active.intervalSeconds * 1000) break;
+            if (!options.force && Date.parse(at) - Date.parse(oldest.importedAt) < CAPTURE_BATCH_WAIT_SECONDS * 1000) break;
             const id = `qqb:${randomUUID()}`;
             const value: CaptureBatch = { id, operationId: `qq-apply:${id}`, accountId: active.accountId, groupId,
               status: 'pending', origin, createdAt: at, updatedAt: at, messageIds: values.map(item => item.id), attempts: [], error: null, result: null, inputFingerprint: null };
@@ -471,7 +471,8 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
         const preferred = turn % 4 === 3 ? 'history' : 'live';
         const value = parsePayload(db.prepare(`SELECT payload FROM capture_batches WHERE account_id=? AND group_id IN (${active.groupIds.map(() => '?').join(',')})
           AND status IN ('pending','result-ready') ORDER BY CASE WHEN status='result-ready' THEN 0 ELSE 1 END,
-          CASE WHEN coalesce(json_extract(payload,'$.origin'),'live')=? THEN 0 ELSE 1 END,created_at,rowid LIMIT 1`).get(active.accountId, ...active.groupIds, preferred), BatchSchema);
+          CASE WHEN coalesce(json_extract(payload,'$.origin'),'live')=? THEN 0 ELSE 1 END,
+          julianday(json_extract(payload,'$.updatedAt')),created_at,rowid LIMIT 1`).get(active.accountId, ...active.groupIds, preferred), BatchSchema);
         if (!value) return null;
         if (value.status === 'pending') {
           value.status = 'preparing'; value.updatedAt = at; saveBatch(value);
@@ -507,6 +508,17 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
         if (inputFingerprint !== undefined) value.inputFingerprint = inputFingerprint;
         const attempt = value.attempts.at(-1); if (attempt?.status === 'requesting') { attempt.status = 'succeeded'; attempt.finishedAt = at; }
         saveBatch(value); return value;
+      });
+    },
+    /** Rotate only a committed partial checkpoint; never discard or retry an unresolved paid request. */
+    yieldBatch(id: string, at = nowInstant()): CaptureBatch {
+      InstantSchema.parse(at);
+      return transaction(() => {
+        const value = batch(id), result = value?.result;
+        if (!value || value.status !== 'preparing' || !result || typeof result !== 'object' || Array.isArray(result)
+          || !Array.isArray(result.completed) || !result.completed.length || result.pendingResponse || result.final !== false
+          || value.attempts.at(-1)?.status === 'requesting') throw Error('仅已保存分片进度的准备中批次可让出队列');
+        value.status = 'pending'; value.updatedAt = at; value.error = null; saveBatch(value); return value;
       });
     },
     /** Retain paid JSON before reference validation; the request is not successful until promoted. */

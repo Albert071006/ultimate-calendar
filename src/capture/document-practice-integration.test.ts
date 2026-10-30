@@ -173,7 +173,7 @@ describe('document practice grouping across durable incremental responses', () =
   });
 
   it('leaves a legacy checkpoint without the strategy marker unchanged', async () => {
-    const f = fixture(), prepared = prepareAnalysis(f.store, f.batch, { deduplicateAttachments: false, documentGrouping: false, passiveQuestionFilter: false });
+    const f = fixture(), prepared = prepareAnalysis(f.store, f.batch, { deduplicateAttachments: false, documentGrouping: false, passiveQuestionFilter: false, noticeFirst: false });
     const units = prepared.units.map(({ text, imageDataUrl, ...unit }) => ({ ...unit, textHash: hashInput(text), imageHash: imageDataUrl ? hashInput(imageDataUrl) : null }));
     const profile = locationProfile(f.repository.snapshot().settings), profileFingerprint = profile.campus || profile.locationContext ? { userProfile: profile } : {};
     const completed = [0, 30, 60].map((offset, index) => {

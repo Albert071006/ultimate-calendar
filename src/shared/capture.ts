@@ -6,6 +6,9 @@ export type CapturePlatform = z.infer<typeof CapturePlatformSchema>;
 export const capturePlatform = (accountId: string | null | undefined): CapturePlatform => accountId?.startsWith('wechat:') ? 'wechat' : 'qq';
 export const capturePlatformLabel = (platform: CapturePlatform) => platform === 'wechat' ? '微信' : 'QQ';
 
+/** Coalesce nearby arrivals without postponing the first message behind ongoing traffic. */
+export const CAPTURE_BATCH_WAIT_SECONDS = 15;
+
 /** Bridge credentials never belong to this transport contract. */
 export const LoopbackEndpointSchema = z.string().max(2000).refine(value => {
   try {
@@ -21,7 +24,9 @@ export const CaptureConfigSchema = z.strictObject({
   accountId: IdSchema.nullable().default(null), groupIds: z.array(IdSchema).max(100).default([]),
   endpoint: LoopbackEndpointSchema.default('ws://127.0.0.1:43131'),
   flavor: z.enum(['napcat', 'snowluma']).default('napcat'),
-  historyDays: z.literal(7).default(7), intervalSeconds: z.literal(120).default(120),
+  historyDays: z.literal(7).default(7),
+  // Legacy persisted field kept for compatibility; batching now uses CAPTURE_BATCH_WAIT_SECONDS.
+  intervalSeconds: z.literal(120).default(120),
 }).refine(value => new Set(value.groupIds).size === value.groupIds.length, '群选择不能重复')
   .refine(value => value.accountId !== null || (!value.enabled && value.groupIds.length === 0), '启用采集或选择群之前需要确认账号')
   .refine(value => !value.accountId || !value.platform || capturePlatform(value.accountId) === value.platform, '采集账号与平台不匹配');

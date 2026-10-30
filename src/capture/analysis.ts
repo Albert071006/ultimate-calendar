@@ -33,6 +33,7 @@ const CheckpointSchema = z.strictObject({ version: z.literal(2), planFingerprint
   pendingResponse: z.strictObject({ key: z.string(), value: z.json(), candidateIds: z.array(z.string()).optional() }).optional(),
   attachmentDedupe: z.literal(1).optional(), documentGrouping: z.literal(1).optional(),
   passiveQuestionFilter: z.literal(1).optional(),
+  noticeFirst: z.literal(1).optional(),
 });
 type Checkpoint = z.infer<typeof CheckpointSchema>;
 type Plan = Omit<Checkpoint, 'units' | 'planFingerprint' | 'completed' | 'final' | 'pendingResponse'> & { units: AnalysisUnit[] };
@@ -41,7 +42,27 @@ function splitText(text: string, size = 16_000): string[] {
   for (let start = 0; start < text.length; start += size) result.push(text.slice(start, start + size));
   return result;
 }
-export function prepareAnalysis(store: CaptureStore, batch: CaptureBatch, options: { deduplicateAttachments?: boolean; documentGrouping?: boolean; passiveQuestionFilter?: boolean } = {}): Plan {
+/** Keep original paragraphs on disk, but avoid one AI source per tiny document paragraph. */
+function compactAttachmentText(units: AnalysisUnit[]): AnalysisUnit[] {
+  const result: AnalysisUnit[] = []; let pending: AnalysisUnit[] = []; let length = 0;
+  const flush = () => {
+    if (!pending.length) return;
+    const first = pending[0]!, last = pending.at(-1)!;
+    result.push(pending.length === 1 ? first : { ...first,
+      id: `qqs:${hashInput(['document-text-v1', pending.map(unit => unit.id)])}`,
+      text: pending.map(unit => unit.text).join('\n'),
+      locator: `${first.locator} ～ ${last.locator}`.slice(0, 1000) });
+    pending = []; length = 0;
+  };
+  for (const unit of units) {
+    // Only adjacent prose paragraphs: pages, slides, sheets and quoted-message times stay separate.
+    if (unit.imageDataUrl || !/ · 正文\/段落 \d+$/.test(unit.locator)) { flush(); result.push(unit); continue; }
+    if (pending.length && (length + 1 + unit.text.length > 16_000 || pending[0]!.sentAt !== unit.sentAt)) flush();
+    length += (pending.length ? 1 : 0) + unit.text.length; pending.push(unit);
+  }
+  flush(); return result;
+}
+export function prepareAnalysis(store: CaptureStore, batch: CaptureBatch, options: { deduplicateAttachments?: boolean; documentGrouping?: boolean; passiveQuestionFilter?: boolean; noticeFirst?: boolean } = {}): Plan {
   const units: AnalysisUnit[] = []; const warnings: string[] = [];
   const deduplicate = options.deduplicateAttachments !== false ? createAttachmentDeduplicator() : (_attachment: unknown, _message: unknown, values: AnalysisUnit[]) => values;
   let textBytes = 0, imageBytes = 0;
@@ -93,19 +114,21 @@ export function prepareAnalysis(store: CaptureStore, batch: CaptureBatch, option
         for (const [index, text] of splitText(c.text).entries()) if (text.trim() || c.imageDataUrl) addAttachment({ ...base, sentAt: a.kind === 'other' ? c.sentAt ?? '' : c.sentAt ?? m.sentAt, id: `qqs:${hashInput([m.id, a.id, c.ordinal, index])}`, attachmentId: a.id, locator: `${a.name} · ${c.location}${index ? ` · 分段 ${index + 1}` : ''}`.slice(0, 1000), text, imageDataUrl: index === 0 ? c.imageDataUrl : null });
       }
       // Another message or companion attachment can change the assignment's context.
-      for (const unit of attachments.length === 1 ? deduplicate(a, m, attachmentUnits, messages[messageIndex - 1]?.id ?? null) : attachmentUnits) add(unit);
+      const packed = options.noticeFirst === false ? attachmentUnits : compactAttachmentText(attachmentUnits);
+      for (const unit of attachments.length === 1 ? deduplicate(a, m, packed, messages[messageIndex - 1]?.id ?? null) : packed) add(unit);
     }
   }
   return { version: 2, units, context: [...priorContext, ...context], warnings: [...new Set(warnings)].slice(0, 90),
     ...(options.deduplicateAttachments !== false ? { attachmentDedupe: 1 as const } : {}),
     ...(options.documentGrouping !== false ? { documentGrouping: 1 as const } : {}),
-    ...(options.passiveQuestionFilter !== false ? { passiveQuestionFilter: 1 as const } : {}) };
+    ...(options.passiveQuestionFilter !== false ? { passiveQuestionFilter: 1 as const } : {}),
+    ...(options.noticeFirst !== false ? { noticeFirst: 1 as const } : {}) };
 }
 function saveUnit({ text, imageDataUrl, ...unit }: AnalysisUnit): z.infer<typeof SavedUnitSchema> {
   return { ...unit, textHash: hashInput(text), imageHash: imageDataUrl ? hashInput(imageDataUrl) : null };
 }
 function hydrateUnits(store: CaptureStore, batch: CaptureBatch, checkpoint: Checkpoint): { units: AnalysisUnit[]; warnings: string[] } {
-  const plan = prepareAnalysis(store, batch, { deduplicateAttachments: checkpoint.attachmentDedupe === 1, documentGrouping: checkpoint.documentGrouping === 1, passiveQuestionFilter: checkpoint.passiveQuestionFilter === 1 }); const current = new Map(plan.units.map(unit => [unit.id, unit]));
+  const plan = prepareAnalysis(store, batch, { deduplicateAttachments: checkpoint.attachmentDedupe === 1, documentGrouping: checkpoint.documentGrouping === 1, passiveQuestionFilter: checkpoint.passiveQuestionFilter === 1, noticeFirst: checkpoint.noticeFirst === 1 }); const current = new Map(plan.units.map(unit => [unit.id, unit]));
   const units = checkpoint.units.map(saved => {
     const unit = current.get(saved.id);
     if (!unit || hashInput(saveUnit(unit)) !== hashInput(saved)) throw new WorkflowError('CONFLICT', '批次原文或附件分片已变化，请核对后选择重读资料；不会自动重复付费');
@@ -113,10 +136,11 @@ function hydrateUnits(store: CaptureStore, batch: CaptureBatch, checkpoint: Chec
   });
   return { units, warnings: plan.warnings };
 }
-function groups(units: AnalysisUnit[]): AnalysisUnit[][] {
+function groups(units: AnalysisUnit[], noticeFirst = false): AnalysisUnit[][] {
   const result: AnalysisUnit[][] = []; let next: AnalysisUnit[] = []; let chars = 0; let images = 0; let imageBytes = 0;
-  for (const unit of units) {
-    if (next.length && (chars + unit.text.length > 40_000 || images + Number(!!unit.imageDataUrl) > 4 || imageBytes + (unit.imageDataUrl?.length ?? 0) > 24 * 1024 * 1024 || next.length >= 30)) { result.push(next); next = []; chars = images = imageBytes = 0; }
+  const ordered = noticeFirst ? [...units.filter(unit => !unit.attachmentId), ...units.filter(unit => unit.attachmentId)] : units;
+  for (const unit of ordered) {
+    if (next.length && (noticeFirst && !!next[0]!.attachmentId !== !!unit.attachmentId || chars + unit.text.length > 40_000 || images + Number(!!unit.imageDataUrl) > 4 || imageBytes + (unit.imageDataUrl?.length ?? 0) > 24 * 1024 * 1024 || next.length >= 30)) { result.push(next); next = []; chars = images = imageBytes = 0; }
     next.push(unit); chars += unit.text.length; images += Number(!!unit.imageDataUrl); imageBytes += unit.imageDataUrl?.length ?? 0;
   }
   if (next.length) result.push(next); return result;
@@ -150,11 +174,11 @@ type CaptureSink = {
   remember?(entry: CaptureEntry, id: string | null): void;
 };
 /** Replay saved results in order, resolving durable aliases identically for preview and commit. */
-function replayCandidates(completed: CompletedCapture[], batch: CaptureBatch, units: AnalysisUnit[], eligible: (unit: AnalysisUnit) => boolean, warnings: string[], sink: CaptureSink, documentGrouping = false, qaRecipients?: RecipientContexts): Set<string> {
+function replayCandidates(completed: CompletedCapture[], batch: CaptureBatch, units: AnalysisUnit[], eligible: (unit: AnalysisUnit) => boolean, warnings: string[], sink: CaptureSink, documentGrouping = false, qaRecipients?: RecipientContexts, noticeFirst = false): Set<string> {
   const entries = captureEntries(completed, batch.operationId);
   const byId = new Map(units.map(unit => [unit.id, unit]));
   const sources = new Map(units.map(unit => [unit.id, virtualSource(unit)]));
-  const byGroup = new Map(groups(units).map(group => [hashInput(group.map(unit => unit.id)), new Map(group.filter(eligible).map(unit => [unit.id, sources.get(unit.id)!]))]));
+  const byGroup = new Map(groups(units, noticeFirst).map(group => [hashInput(group.map(unit => unit.id)), new Map(group.filter(eligible).map(unit => [unit.id, sources.get(unit.id)!]))]));
   const aliases = new Map<string, string>(); const touched = new Set<string>();
   const classifyPractice = documentGrouping ? createPracticeClassifier(units.filter(eligible)) : () => null;
   const practiceTargets = new Map<string, string>(), practiceMembers = new Map<string, Set<string>>();
@@ -230,7 +254,7 @@ function entryReceipt(state: StoredState, entry: CaptureEntry, planFingerprint: 
   if (entities.length > 1 || entities.some(entity => !CandidateSchema.safeParse(entity).success)) throw new WorkflowError('STORAGE', '分片候选映射回执无效');
   return { id: entities[0]?.id ?? null };
 }
-function stagedCandidates(completed: CompletedCapture[], batch: CaptureBatch, units: AnalysisUnit[], eligible: (unit: AnalysisUnit) => boolean, warnings: string[], state: StoredState, planFingerprint: string, documentGrouping = false, qaRecipients?: RecipientContexts) {
+function stagedCandidates(completed: CompletedCapture[], batch: CaptureBatch, units: AnalysisUnit[], eligible: (unit: AnalysisUnit) => boolean, warnings: string[], state: StoredState, planFingerprint: string, documentGrouping = false, qaRecipients?: RecipientContexts, noticeFirst = false) {
   const existing = records(state, 'candidate'), sources = records(state, 'source');
   const staged = new Map(existing.map(candidate => [candidate.id, candidate]));
   const evidence = new Map(sources.map(source => [source.id, source]));
@@ -244,7 +268,7 @@ function stagedCandidates(completed: CompletedCapture[], batch: CaptureBatch, un
         version: (original?.version ?? 0) + 1, createdAt: original?.createdAt ?? batch.createdAt, updatedAt: batch.createdAt });
       staged.set(candidate.id, candidate); return candidate.id;
     },
-  }, documentGrouping, qaRecipients);
+  }, documentGrouping, qaRecipients, noticeFirst);
   return { candidates: [...staged.values()], sources: [...evidence.values()], preferred };
 }
 function validateResponse(value: CaptureExtraction, units: AnalysisUnit[], existing: Candidate[], requestedCandidateIds: string[] | undefined, context: Checkpoint['context']) {
@@ -256,7 +280,7 @@ function validateResponse(value: CaptureExtraction, units: AnalysisUnit[], exist
   }
 }
 /** Durable checkpoints precede every subsequent paid request; requests never retry implicitly. */
-export async function analyzeCapture(options: { store: CaptureStore; repository: Repository; batch: CaptureBatch; getApiKey(): Promise<string | null>; refreshModelSettings?(): Promise<void>; getPriceQuote?(model: string, currency: 'CNY' | 'USD'): PriceQuote | null; getModelInputModalities?(model: string): string[] | null; runModel?: ModelRequestRunner; afterRequest?(): void; onProgress?(): void; canContinue(): boolean; fetch?: typeof fetch }): Promise<void> {
+export async function analyzeCapture(options: { store: CaptureStore; repository: Repository; batch: CaptureBatch; getApiKey(): Promise<string | null>; refreshModelSettings?(): Promise<void>; getPriceQuote?(model: string, currency: 'CNY' | 'USD'): PriceQuote | null; getModelInputModalities?(model: string): string[] | null; runModel?: ModelRequestRunner; afterRequest?(): void; onProgress?(): void; canContinue(): boolean; fetch?: typeof fetch; requestBudget?: number }): Promise<void> {
   const { store, repository, batch } = options;
   if (batch.status === 'result-ready' || batch.status === 'applied') { applyCaptureResult(store, repository, batch, options.onProgress); return; }
   const prior = CheckpointSchema.safeParse(batch.result);
@@ -277,13 +301,19 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
   const planFingerprint = hashInput({ version: ANALYSIS_VERSION, model: settings.model, ...profileFingerprint,
     ...(plan.attachmentDedupe === 1 ? { attachmentDedupe: 1 } : {}), ...(plan.documentGrouping === 1 ? { documentGrouping: 1 } : {}),
     ...(plan.passiveQuestionFilter === 1 ? { passiveQuestionFilter: 1 } : {}),
+    ...(plan.noticeFirst === 1 ? { noticeFirst: 1 } : {}),
     units: plan.units, context: plan.context, warnings: plan.warnings });
   if (prior.success && prior.data.planFingerprint !== planFingerprint) throw new WorkflowError('CONFLICT', '模型、校园背景或输入已变化；请恢复本批次原设置后重试，或明确选择重读资料；不会自动重复付费');
   const checkpoint: Checkpoint = prior.success ? prior.data : { ...plan, planFingerprint, completed: [], final: false };
   if (!checkpoint.pendingResponse) store.checkpointResult(batch.id, checkpoint);
   applyCaptureProgress(repository, batch, checkpoint, actualUnits, eligible, checkpoint.warnings, options.onProgress);
-  const requests = groups(actualUnits);
+  // Preserve old group keys/paid receipts; only prioritize pending replay, then notice groups.
+  const requests = groups(actualUnits, checkpoint.noticeFirst === 1).sort((a, b) => {
+    const rank = (group: AnalysisUnit[]) => hashInput(group.map(unit => unit.id)) === checkpoint.pendingResponse?.key ? 0 : group.some(unit => !unit.attachmentId) ? 1 : 2;
+    return rank(a) - rank(b);
+  });
   const runModel: ModelRequestRunner = options.runModel ?? (work => work());
+  let paidRequests = 0;
   for (const units of requests) {
     const key = hashInput(units.map(u => u.id));
     if (checkpoint.completed.some(c => c.key === key)) continue;
@@ -304,10 +334,10 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
         if (!parsed.success) throw new WorkflowError('AI_RESPONSE', '回答的主来源、补充来源或字段不符合当前分片要求');
         value = parsed.data;
         const state = repository.read();
-        const staged = stagedCandidates(checkpoint.completed, batch, actualUnits, eligible, checkpoint.warnings, state, planFingerprint, checkpoint.documentGrouping === 1, questionRecipients(checkpoint));
+        const staged = stagedCandidates(checkpoint.completed, batch, actualUnits, eligible, checkpoint.warnings, state, planFingerprint, checkpoint.documentGrouping === 1, questionRecipients(checkpoint), checkpoint.noticeFirst === 1);
         const existing = recentCaptureCandidates(staged.candidates, staged.sources, batch, staged.preferred, new Set(checkpoint.context.map(message => message.id)));
         validateResponse(value, eligibleUnits, existing, pending.candidateIds, checkpoint.context);
-        stagedCandidates([...checkpoint.completed, { key, value }], batch, actualUnits, eligible, checkpoint.warnings, state, planFingerprint, checkpoint.documentGrouping === 1, questionRecipients(checkpoint));
+        stagedCandidates([...checkpoint.completed, { key, value }], batch, actualUnits, eligible, checkpoint.warnings, state, planFingerprint, checkpoint.documentGrouping === 1, questionRecipients(checkpoint), checkpoint.noticeFirst === 1);
       } catch (cause) {
         const code = cause instanceof WorkflowError ? cause.code : 'AI_RESPONSE';
         const message = cause instanceof WorkflowError ? cause.message : '回答未通过当前事项校验';
@@ -322,6 +352,9 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
       if (!options.canContinue()) throw new WorkflowError('CANCELLED', '分析已暂停，已保存的回答保留');
       promoteResponse(); continue;
     }
+    if (paidRequests >= Math.max(1, options.requestBudget ?? Infinity)) {
+      store.yieldBatch(batch.id); return;
+    }
     await runModel(async () => {
       if (!options.canContinue()) throw new WorkflowError('CANCELLED', '分析已暂停，已完成的分片结果保留；恢复分析后继续');
       if (repository.snapshot().settings.model !== settings.model) throw new WorkflowError('CONFLICT', '排队期间已更改模型，尚未发出此请求；请使用当前模型重读资料');
@@ -333,10 +366,11 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
       const requestSettings = { ...settings, reasoningEffort: currentSettings.reasoningEffort };
       if (!options.canContinue()) throw new WorkflowError('CANCELLED', '分析已暂停，已完成的分片结果保留；恢复分析后继续');
       const state = repository.read();
-      const staged = stagedCandidates(checkpoint.completed, batch, actualUnits, eligible, checkpoint.warnings, state, planFingerprint, checkpoint.documentGrouping === 1, questionRecipients(checkpoint));
+      const staged = stagedCandidates(checkpoint.completed, batch, actualUnits, eligible, checkpoint.warnings, state, planFingerprint, checkpoint.documentGrouping === 1, questionRecipients(checkpoint), checkpoint.noticeFirst === 1);
       const existing = recentCaptureCandidates(staged.candidates, staged.sources, batch, staged.preferred, new Set(checkpoint.context.map(message => message.id)));
       const messages = batchMessages(eligibleUnits, checkpoint.context, existing, checkpoint.warnings, profile, recipients, staged.sources);
       store.startAttempt(batch.id, hashInput({ planFingerprint, key }));
+      paidRequests++;
       try {
         await completeJson({ key: apiKey, settings: requestSettings, messages, schema: z.json(), operationId: 'qq-request:' + randomUUID(), purpose: 'source', now: nowInstant(), maxAttempts: 1, timeoutMs: Math.max(90_000, reasoningRequest(requestSettings).timeoutMs), autoQuote: options.getPriceQuote?.(settings.model, settings.pricingCurrency), fetch: options.fetch, onUsage: usage => repository.addUsage(usage),
           onParsedResponse(value) {
@@ -391,7 +425,7 @@ function applyCaptureProgress(repository: Repository, batch: CaptureBatch, resul
           state.operations.push({ id, fingerprint, result: { entities: [source] } }); return source.id;
         },
         write(decision) { return decision.kind === 'update' ? updateEntity(state, 'candidate', decision.id, decision.values).id : newEntity(state, 'candidate', decision.values).id; },
-      }, result.documentGrouping === 1, questionRecipients(result));
+      }, result.documentGrouping === 1, questionRecipients(result), result.noticeFirst === 1);
       state.operations.push({ id: receiptId, fingerprint, result: { entities: [] } }); return true;
     });
     if (committed) { changed = true; onProgress?.(); }

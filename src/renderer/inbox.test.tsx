@@ -216,7 +216,7 @@ describe('empty inbox', () => {
   it('reports when capture last heard and when postponed notices return', async () => {
     view([make('稍后再看', { snoozedUntil: '2026-10-24T09:00:00+08:00' })], {}, capture(true));
     expect(screen.getByRole('heading', { name: '都处理完了' })).toBeTruthy();
-    expect(await screen.findByText(/QQ 采集上次收到消息 11:52 · 每 2 分钟检查一次/)).toBeTruthy();
+    expect(await screen.findByText(/QQ 采集上次收到消息 11:52 · 合批等待 15 秒，随后排队分析/)).toBeTruthy();
     expect(screen.getByText(/稍后决定的 1 条，最早明天 09:00 回到这里/)).toBeTruthy();
   });
 

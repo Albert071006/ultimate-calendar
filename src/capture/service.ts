@@ -258,6 +258,8 @@ export function createCaptureService(options: {
     try {
       store.sealBatches({ force, maxMessages: 20 });
       for (let n = 0; n < 5 && !stopped && !suspended && store.config().analysisEnabled; n++) {
+        // Messages that arrived during the previous AI request can join the next turn.
+        if (n > 0) store.sealBatches({ maxMessages: 20 });
         const batch = store.claimBatch(); if (!batch) break; emit();
         let requestCredentialGeneration = credentialGeneration;
         try {
@@ -280,10 +282,15 @@ export function createCaptureService(options: {
               emit(); continue;
             }
           }
-          await analyzeCapture({ store, repository: options.repository, batch: store.batch(batch.id)!, getApiKey: async () => {
+          await analyzeCapture({ store, repository: options.repository, batch: store.batch(batch.id)!, requestBudget: 1, getApiKey: async () => {
             const key = await options.getApiKey(); requestCredentialGeneration = credentialGeneration; return key;
-          }, refreshModelSettings: options.refreshModelSettings, getPriceQuote: options.getPriceQuote, getModelInputModalities: options.getModelInputModalities, runModel: options.runModel, afterRequest: options.afterModelRequest, onProgress: options.onPlannerChanged, fetch: options.fetch, canContinue: () => permitted(batch.accountId, batch.groupId, false) && store.config().analysisEnabled });
-          options.onPlannerChanged?.();
+          }, refreshModelSettings: options.refreshModelSettings, getPriceQuote: options.getPriceQuote, getModelInputModalities: options.getModelInputModalities, runModel: options.runModel, afterRequest: () => {
+            options.afterModelRequest?.();
+            // Queue notices collected during this request before the partial batch yields its turn.
+            store.sealBatches({ maxMessages: 20 });
+          }, onProgress: options.onPlannerChanged, fetch: options.fetch, canContinue: () => permitted(batch.accountId, batch.groupId, false) && store.config().analysisEnabled });
+          // Partial commits already notify through onProgress; a yield alone changes no planner data.
+          if (store.batch(batch.id)?.status === 'applied') options.onPlannerChanged?.();
         } catch (cause) {
           const current = store.batch(batch.id); if (!current) continue;
           const message = safeError(cause).message;

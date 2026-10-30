@@ -128,16 +128,30 @@ describe('capture store', () => {
     expect(store.message(result.ids[0]!)!.segments).toHaveLength(1);
     expect(store.attachments(result.ids[0]!)[0]!.locator).toMatchObject({ path: 'C:/private.docx' });
   });
-  it('seals at the first two-minute deadline even during continuing traffic and fixes membership', () => {
+  it('seals after 15 seconds from the first arrival despite legacy config and continuing traffic', () => {
+    const before = '2026-10-23T12:00:14+08:00', deadline = '2026-10-23T12:00:15+08:00';
     const store = make(); enabled(store); store.ingest([incoming('m1')]);
-    expect(store.sealBatches({ now: t1 })).toEqual([]);
-    store.ingest([incoming('m2', { importedAt: t1 })]);
-    const [batch] = store.sealBatches({ now: t2 }); expect(batch!.messageIds).toHaveLength(2);
-    store.ingest([incoming('m3', { importedAt: t2 })]);
-    expect(store.batch(batch!.id)!.messageIds).toEqual(batch!.messageIds); expect(store.sealBatches({ now: t2 })).toEqual([]);
-    const [next] = store.sealBatches({ now: t2, force: true }); expect(next!.messageIds).toHaveLength(1);
-    expect(store.sealBatches({ now: t2, force: true })).toEqual([]);
+    expect(store.config().intervalSeconds).toBe(120);
+    expect(store.sealBatches({ now: before })).toEqual([]);
+    store.ingest([incoming('m2', { importedAt: before })]);
+    const [batch] = store.sealBatches({ now: deadline }); expect(batch!.messageIds).toHaveLength(2);
+    store.ingest([incoming('m3', { importedAt: deadline })]);
+    expect(store.batch(batch!.id)!.messageIds).toEqual(batch!.messageIds); expect(store.sealBatches({ now: deadline })).toEqual([]);
+    const [next] = store.sealBatches({ now: deadline, force: true }); expect(next!.messageIds).toHaveLength(1);
+    expect(store.sealBatches({ now: deadline, force: true })).toEqual([]);
     expect(store.listBatches().total).toBe(2);
+  });
+  it('uses arrival time for historical messages and preserves the service batch limit after restart', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qq-batch-wait-')); dirs.push(dir); const path = join(dir, 'planner.sqlite');
+    let store = make(path); enabled(store);
+    store.ingest(Array.from({ length: 21 }, (_, index) => incoming(`history-${index}`, { origin: 'history', sentAt: '2026-10-20T12:00:00+08:00' })));
+    close(store); store = make(path);
+    expect(store.config().intervalSeconds).toBe(120);
+    expect(store.sealBatches({ now: '2026-10-23T12:00:14+08:00', maxMessages: 20 })).toEqual([]);
+    const batches = store.sealBatches({ now: '2026-10-23T12:00:15+08:00', maxMessages: 20 });
+    expect(batches.map(batch => batch.messageIds.length)).toEqual([20, 1]);
+    expect(batches.every(batch => batch.origin === 'history')).toBe(true);
+    expect(store.batchMessages(batches[0]!.id).every(message => message.sentAt === '2026-10-20T12:00:00+08:00')).toBe(true);
   });
   it('keeps individual send dates while limiting batch size and separating accounts/groups', () => {
     const store = make(); enabled(store);

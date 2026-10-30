@@ -4,7 +4,7 @@
 
 ## 下载与首次使用
 
-在[本地版 0.8.0 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/v0.8.0) 下载 `UltimateCalendar-Local-Setup-0.8.0.exe`。安装后从「终极日历本地版」快捷方式启动。安装包已包含日历桌面运行环境，无需 Node.js；可选微信采集的 Python 运行时需另行配置。服务器版另有独立 Release，不是使用本地版的前置条件。
+在[本地版 0.8.1 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/v0.8.1) 下载 `UltimateCalendar-Local-Setup-0.8.1.exe`。安装后从「终极日历本地版」快捷方式启动。安装包已包含日历桌面运行环境，无需 Node.js；可选微信采集的 Python 运行时需另行配置。服务器版另有独立 Release，不是使用本地版的前置条件。
 
 首次打开即可手动创建日程、任务、课表及账目，不需要注册日历账号、填写服务器地址或配置 API Key。新资料没有预置私人课表、账单或群名单；周期收入默认关闭，需要时自行设置。
 
@@ -72,7 +72,7 @@ API Key 和桥接令牌由 Electron 的系统加密存储保护。系统加密�
 
 更新只更新本地版程序，保留本地版资料和凭据。更新前应用会检查是否有正在处理的操作并准备备份；无需重新填写正常保存的 Key。应用内更新和 GitHub 下载需要联网，但日历服务器不参与。
 
-**0.8.0 兼容要求：** 保存新版思考设置后，旧程序可能无法读取同一份设置；之前版本的借款和自定义账户兼容限制也仍适用。升级前备份，正常退出应用后再安装。需要回退或恢复时，先核对备份与程序版本兼容性，并保留升级后新增记录；不要删除数据库或清空资料。版本功能见[0.8.0 发布说明](release-notes/0.8.0.md)。
+**0.8.1 兼容要求：** 本版保留旧分析进度，新生成的采集检查点包含新版规则，回退前须核对进行中批次。自 0.8.0 引入的思考设置，以及此前借款和自定义账户的兼容限制仍适用；旧程序可能无法读取这些资料。升级前备份，正常退出应用后再安装。需要回退或恢复时，先核对备份与程序版本兼容性，并保留升级后新增记录；不要删除数据库或清空资料。版本功能见[0.8.1 发布说明](release-notes/0.8.1.md)。
 
 ## 从源码构建
 
@@ -92,4 +92,4 @@ npm run package:local
 npm run dev:local -- --planner-profile="$env:TEMP\ultimate-calendar-dev"
 ```
 
-测试请使用虚构日历、账目和模拟桥接，勿填写真实密钥。需要手机与电脑共用资料时，另见[服务器版与手机端 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.8.0)及[Linux 部署指南](server-mobile-deployment.md)。
+测试请使用虚构日历、账目和模拟桥接，勿填写真实密钥。需要手机与电脑共用资料时，另见[服务器版与手机端 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.8.1)及[Linux 部署指南](server-mobile-deployment.md)。

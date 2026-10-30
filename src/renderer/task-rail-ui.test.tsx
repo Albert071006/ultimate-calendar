@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, within } from '@testing-library/react';
 import { BlockSchema, CandidateSchema, SnapshotSchema, SourceSchema, TaskSchema, type Snapshot } from '../shared/contracts';
 import { Today } from './pages/today/Today';
+import { TodayPage } from './mobile/pages/TodayPage';
 import type { PlannerUI } from './hooks/usePlanner';
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -24,6 +25,28 @@ function attentionLabel(row: HTMLElement) { return row.querySelector('.task-atte
 function item(container: HTMLElement, id: string) { return container.querySelector<HTMLElement>(`[data-task-id="${id}"]`)!; }
 
 describe('unfinished task attention', () => {
+  it('shows today activities before distant deadlines in both layouts and keeps all-filter ordering', () => {
+    const now = Date.parse('2026-10-23T11:00:00+08:00');
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const snapshot = fixture();
+    snapshot.tasks = [
+      { id: 'exam', title: '下月考试', deadline: { date: '2026-11-26', time: null } },
+      { id: 'noon', title: '中午集合' }, { id: 'none', title: '时间待定的任务' },
+    ].map(task => TaskSchema.parse({ ...metadata, ...task }));
+    snapshot.blocks.push(BlockSchema.parse({ ...metadata, id: 'meeting', title: '中午集合', taskId: 'noon', kind: 'event', start: '2026-10-23T12:00:00+08:00', end: null }));
+    const view = lists(snapshot);
+    expect(titles(view.page)).toEqual(['中午集合', '下月考试', '时间待定的任务']);
+    expect(item(view.page, 'noon').closest('.a2-group')?.classList.contains('today')).toBe(true);
+    fireEvent.click(within(view.page).getByRole('button', { name: '全部' }));
+    expect(titles(view.page)).toEqual(['中午集合', '下月考试', '时间待定的任务']);
+    const mobile = render(<TodayPage snapshot={snapshot} ui={{ busy: false } as PlannerUI} now={now} pendingCount={0} unscheduledCount={0}
+      select={vi.fn()} openCandidate={vi.fn()} openInbox={vi.fn()} openUnscheduled={vi.fn()} createTask={vi.fn()}
+      actions={{ editTask: vi.fn(), schedule: vi.fn(), removeTask: vi.fn() }} />).container;
+    expect([...mobile.querySelectorAll('[data-task-id]')].map(row => row.getAttribute('data-task-id'))).toEqual(['noon', 'exam', 'none']);
+    expect(item(mobile, 'noon').closest('.m-group')?.classList.contains('group-today')).toBe(true);
+    expect(view.mutate).not.toHaveBeenCalled();
+  });
+
   it('retains overdue tasks in deadline order with direct deadline editing and keeps completed history separate', () => {
     vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-23T16:00:00+08:00'));
     const snapshot = fixture();
@@ -68,14 +91,14 @@ describe('unfinished task attention', () => {
     for (const container of view.containers) expect(container.querySelectorAll('[data-attention]')).toHaveLength(0);
     act(() => { vi.advanceTimersByTime(31_000); });
     for (const container of view.containers) {
-      expect(titles(container)).toEqual(snapshot.tasks.map(task => task.title));
+      expect(titles(container)).toEqual(['五点结束的会议', '五点截止', '只有开始时间的活动']);
       expect(item(container, 'deadline').dataset.attention).toBe('overdue');
       expect(item(container, 'meeting').dataset.attention).toBe('ended');
       expect(item(container, 'point').dataset.attention).toBeUndefined();
     }
     vi.setSystemTime(new Date('2026-10-23T17:15:00+08:00')); fireEvent.focus(window);
     for (const container of view.containers) {
-      expect(titles(container)).toEqual(snapshot.tasks.map(task => task.title));
+      expect(titles(container)).toEqual(['五点结束的会议', '只有开始时间的活动', '五点截止']);
       expect(item(container, 'point').dataset.attention).toBe('ended');
     }
     expect(snapshot).toEqual(before); expect(view.mutate).not.toHaveBeenCalled(); expect(view.removeTask).not.toHaveBeenCalled();
@@ -90,7 +113,7 @@ describe('unfinished task attention', () => {
     snapshot.blocks.push(BlockSchema.parse({ ...metadata, id: 'past-work', title: '报告写作时段', taskId: 'work', kind: 'work', start: '2026-10-22T19:00:00+08:00', end: '2026-10-22T20:00:00+08:00' }));
     const before = structuredClone(snapshot), view = lists(snapshot);
     for (const container of view.containers) {
-      expect(titles(container)).toEqual(['周四活动室开会', '继续写报告']);
+      expect(titles(container)).toEqual(['继续写报告', '周四活动室开会']);
       expect(item(container, 'meeting').dataset.attention).toBe('ended');
       const work = item(container, 'work');
       expect(work.dataset.attention).toBe('ended');
