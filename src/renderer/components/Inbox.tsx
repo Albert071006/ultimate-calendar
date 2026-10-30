@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronLeft, History, Import, Plus } from "lucide-react";
 import type { Candidate, Snapshot } from "../../shared/contracts";
-import type { CaptureSnapshot } from "../../shared/capture";
+import { CAPTURE_BATCH_WAIT_SECONDS, type CaptureSnapshot } from "../../shared/capture";
 import type { HostCapabilities } from "../../shared/client";
 import type { PlannerUI } from "../hooks/usePlanner";
 import { displayInstant } from "../calendar-layout";
@@ -26,7 +26,7 @@ type Tab = "pending" | "snoozed" | "done";
 type DoneFilter = "all" | "accepted" | "ignored" | "expired";
 const sourceStatus = { saved: "已保存，待分析", processing: "处理中", failed: "分析失败", succeeded: "分析完成", "needs-review": "需要校对" } as const;
 
-/** QQ capture's last arrival and polling interval, when capture is set up on this computer. */
+/** QQ capture's last arrival, when capture is set up on this computer. */
 function useCaptureStatus(host: HostCapabilities | undefined) {
   const [status, setStatus] = useState<CaptureSnapshot | null>(null);
   useEffect(() => {
@@ -179,7 +179,7 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
       setSelectedId(id);
     }} /></DetailFrame>;
   const waiting = <>
-    {capture && <>QQ 采集{capture.lastReceivedAt ? `上次收到消息 ${arrival(capture.lastReceivedAt, today)}` : "已开启"} · 每 {capture.config.intervalSeconds / 60} 分钟检查一次<br /></>}
+    {capture && <>QQ 采集{capture.lastReceivedAt ? `上次收到消息 ${arrival(capture.lastReceivedAt, today)}` : "已开启"} · 合批等待 {CAPTURE_BATCH_WAIT_SECONDS} 秒，随后排队分析<br /></>}
     {snoozedList.length > 0 && `稍后决定的 ${snoozedList.length} 条，最早${dayWord(snoozedList[0]!.snoozedUntil!.slice(0, 10), today)} ${snoozedList[0]!.snoozedUntil!.slice(11, 16)} 回到这里。`}
   </>;
 

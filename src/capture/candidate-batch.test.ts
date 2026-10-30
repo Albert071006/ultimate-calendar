@@ -52,6 +52,49 @@ describe('capture-only event reconciliation', () => {
     expect(original.location).toBe('服务台');
   });
 
+  it.each(['pending', 'accepted'] as const)('keeps overflowing evidence as a linked review without altering the %s original', status => {
+    const target = { ...original, status, sourceIds: Array.from({ length: 90 }, (_, index) => `saved-evidence-${index}`) };
+    const before = structuredClone(target);
+    const incomingSources = [source.id, ...Array.from({ length: 29 }, (_, index) => `new-evidence-${index}`)];
+    const result = reconcileCaptureCandidate({ ...candidate, relation: { kind: 'supplement', candidateId: target.id } }, source, incomingSources, [target], []);
+    expect(result).toMatchObject({ kind: 'create', values: { title: target.title, revisionOfId: target.id, duplicateOfId: null,
+      status: 'pending', taskId: null, sourceIds: incomingSources, action: candidate.action, sourceQuote: candidate.sourceQuote } });
+    if (result.kind !== 'create') throw Error('Expected a linked review');
+    expect(CandidateSchema.safeParse({ ...result.values, id: 'linked-review', version: 1, createdAt: at, updatedAt: at }).success).toBe(true);
+    expect(new Set([...target.sourceIds, ...result.values.sourceIds]).size).toBe(120);
+    expect(target).toEqual(before);
+    expect(reconcileCaptureCandidate(candidate, source, incomingSources, [{ ...target, status: 'ignored' }], [])).toEqual({ kind: 'ignore', id: target.id });
+  });
+
+  it('still merges all evidence at the existing 100-source boundary', () => {
+    const target = { ...original, sourceIds: Array.from({ length: 70 }, (_, index) => `saved-evidence-${index}`) };
+    const incomingSources = [source.id, ...Array.from({ length: 29 }, (_, index) => `new-evidence-${index}`)];
+    const result = reconcileCaptureCandidate(candidate, source, incomingSources, [target], []);
+    expect(result.kind).toBe('update');
+    if (result.kind !== 'update') throw Error('Expected additive merge');
+    expect(result.values.sourceIds).toEqual([...target.sourceIds, ...incomingSources]);
+  });
+
+  it('adds later fragments to an open continuation but preserves accepted continuations', () => {
+    const target = { ...original, sourceIds: Array.from({ length: 90 }, (_, index) => `saved-evidence-${index}`) };
+    const incomingSources = [source.id, ...Array.from({ length: 29 }, (_, index) => `new-evidence-${index}`)];
+    const first = reconcileCaptureCandidate(candidate, source, incomingSources, [target], []);
+    if (first.kind !== 'create') throw Error('Expected linked review');
+    const continuation = CandidateSchema.parse({ ...first.values, id: 'continuation', version: 1, createdAt: at, updatedAt: at });
+    const nextSource = { ...source, id: 'later-source', text: '领取时请核对奖品数量' };
+    const nextSources = [nextSource.id, ...Array.from({ length: 29 }, (_, index) => `later-evidence-${index}`)];
+    const next = { ...candidate, sourceIds: [nextSource.id], sourceQuote: nextSource.text, action: nextSource.text };
+    const result = reconcileCaptureCandidate(next, nextSource, nextSources, [target, continuation], []);
+    expect(result).toMatchObject({ kind: 'update', id: continuation.id, values: {
+      revisionOfId: target.id, sourceIds: [...incomingSources, ...nextSources], sourceQuote: continuation.sourceQuote,
+    } });
+    if (result.kind !== 'update') throw Error('Expected additive continuation');
+    expect(result.values.action).toContain(candidate.action); expect(result.values.action).toContain(next.action);
+    expect(reconcileCaptureCandidate(next, nextSource, nextSources, [target, { ...continuation, status: 'accepted' }], []))
+      .toMatchObject({ kind: 'create', values: { revisionOfId: target.id, sourceIds: nextSources } });
+    expect(target.sourceIds).toHaveLength(90); expect(continuation.sourceIds).toEqual(incomingSources);
+  });
+
   it('uses response-local event keys and durable distinct aliases without modifying saved responses', () => {
     const item = { ...candidate, eventKey: 'prize', relation: { kind: 'new' as const, candidateId: null } };
     const completed = [{ key: 'first-request', value: { candidates: [item, item] } }, { key: 'second-request', value: { candidates: [item] } }];

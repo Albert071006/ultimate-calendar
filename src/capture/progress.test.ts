@@ -49,7 +49,7 @@ function savedResponse(f: ReturnType<typeof fixture>) {
   return (f.store.batch(f.batch.id)!.result as unknown as { pendingResponse?: { key: string; value: unknown }; completed: unknown[] });
 }
 function legacyCheckpoint(f: ReturnType<typeof fixture>, batch: CaptureBatch, final = false) {
-  const prepared = prepareAnalysis(f.store, batch, { deduplicateAttachments: false, documentGrouping: false, passiveQuestionFilter: false });
+  const prepared = prepareAnalysis(f.store, batch, { deduplicateAttachments: false, documentGrouping: false, passiveQuestionFilter: false, noticeFirst: false });
   const units = prepared.units.map(({ text, imageDataUrl, ...unit }) => ({ ...unit, textHash: hashInput(text), imageHash: imageDataUrl ? hashInput(imageDataUrl) : null }));
   const profile = locationProfile(f.repository.snapshot().settings);
   const profileFingerprint = profile.campus || profile.locationContext ? { userProfile: profile } : {};

@@ -64,15 +64,23 @@ describe('QQ batch event evidence and incremental candidate application', () => 
     f.store.saveExtraction(f.store.attachments(imageMessage)[0]!.id, { extractorVersion: 'synthetic', chunks: [{ ordinal: 0, location: '图片',
       text: '', imageDataUrl: 'data:image/png;base64,AAAA', status: 'ready', error: null }] });
     const textMessage = f.message('safety-text', '请遵守上图电动车及宿舍消防安全规定', 1);
-    const batch = f.seal();
+    const batch = f.seal(); let calls = 0;
     await analyzeCapture({ ...options(f), batch, fetch: async (_url, request) => {
-      const sent = input(request);
-      const image = sent.units.find(unit => unit.messageId === imageMessage)!;
-      const text = sent.units.find(unit => unit.messageId === textMessage)!;
+      calls++; const sent = input(request);
+      expect(sent.units).toHaveLength(1);
+      if (calls === 1) {
+        const text = sent.units[0]!;
+        expect(text).toMatchObject({ messageId: textMessage, attachmentId: null });
+        return response([extracted(text.id, text.text, { title: '遵守电动车及宿舍消防安全规定', action: '遵守通知中的消防安全规定' })]);
+      }
+      const image = sent.units[0]!;
+      expect(image.messageId).toBe(imageMessage); expect(image.attachmentId).not.toBeNull();
+      expect(sent.existingCandidates[0]!.id).toBe(f.repository.snapshot().candidates[0]!.id);
       return response([extracted(image.id, '禁止电动车进入宿舍充电', { title: '遵守电动车及宿舍消防安全规定', action: '禁止电动车进入宿舍充电',
-        supportingSources: [{ sourceId: text.id, quote: text.text }] })]);
+        relation: { kind: 'supplement', candidateId: sent.existingCandidates[0]!.id } })]);
     } });
     const snapshot = f.repository.snapshot();
+    expect(calls).toBe(2);
     expect(snapshot.candidates).toHaveLength(1);
     expect(snapshot.candidates[0]!.sourceIds).toHaveLength(2);
     expect(new Set(snapshot.sources.map(source => source.captureRef?.messageId))).toEqual(new Set([imageMessage, textMessage]));
@@ -102,27 +110,30 @@ describe('QQ batch event evidence and incremental candidate application', () => 
     expect(f.repository.snapshot().sources).toEqual(snapshot.sources); expect(calls).toBe(1);
   });
 
-  it.each(['supplement', 'duplicate'] as const)('lets a later %s see the saved table event and retains all 32 referenced sources', async kind => {
+  it.each(['supplement', 'duplicate'] as const)('lets later attachment %s see the saved notice and retains all 32 referenced sources', async kind => {
     const f = fixture(); const { batch, followup } = tableBatch(f); let calls = 0;
     await analyzeCapture({ ...options(f), batch, fetch: async (_url, request) => {
       calls++; const sent = input(request);
       if (calls === 1) {
-        expect(sent.units).toHaveLength(30);
+        expect(sent.units).toHaveLength(1);
+        expect(sent.units[0]).toMatchObject({ messageId: followup, attachmentId: null });
         return response([extracted(sent.units[0]!.id, sent.units[0]!.text, {
-          supportingSources: sent.units.slice(1).map(unit => ({ sourceId: unit.id, quote: unit.text })),
+          action: '携带校园卡领取奖品', conditions: ['携带校园卡'],
         })]);
       }
       expect(f.repository.snapshot().candidates).toHaveLength(1);
       expect(sent.existingCandidates).toHaveLength(1);
       expect(sent.existingCandidates[0]!.id).toBe(f.repository.snapshot().candidates[0]!.id);
       expect(sent.existingCandidates[0]!.id).not.toMatch(/^qq-stage:/);
-      const text = sent.units.find(unit => unit.messageId === followup)!;
-      return response([extracted(text.id, text.text, { title: '名单中的获奖同学领取奖品', action: '携带校园卡领取奖品', conditions: ['携带校园卡'],
+      expect(sent.units).toHaveLength(calls === 2 ? 30 : 1);
+      expect(sent.units.every(unit => unit.attachmentId !== null && unit.messageId !== followup)).toBe(true);
+      const primary = sent.units[0]!;
+      return response([extracted(primary.id, primary.text, { title: '名单中的获奖同学领取奖品', action: '获奖名单中的同学领取奖品',
         relation: { kind, candidateId: sent.existingCandidates[0]!.id },
-        supportingSources: sent.units.filter(unit => unit.id !== text.id).map(unit => ({ sourceId: unit.id, quote: unit.text })),
+        supportingSources: sent.units.slice(1).map(unit => ({ sourceId: unit.id, quote: unit.text })),
       })]);
     } });
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
     const snapshot = f.repository.snapshot();
     expect(snapshot.candidates).toHaveLength(1); expect(snapshot.sources).toHaveLength(32);
     expect(snapshot.candidates[0]!.sourceIds).toHaveLength(32);
@@ -130,28 +141,44 @@ describe('QQ batch event evidence and incremental candidate application', () => 
     expect(snapshot.candidates[0]!.sourceIds.some(id => id.startsWith('qq-stage:'))).toBe(false);
   });
 
-  it('reopens the checkpoint with the same saved ID and never repeats its successful paid request', async () => {
+  it('reopens the checkpoint with the same saved ID and never repeats its successful paid requests', async () => {
     const f = fixture(); const { batch, followup } = tableBatch(f); let calls = 0, savedId = '';
     await expect(analyzeCapture({ ...options(f), batch, fetch: async (_url, request) => {
       calls++; const sent = input(request);
-      if (calls === 1) return response([extracted(sent.units[0]!.id, sent.units[0]!.text)]);
+      if (calls === 1) {
+        expect(sent.units).toHaveLength(1); expect(sent.units[0]).toMatchObject({ messageId: followup, attachmentId: null });
+        return response([extracted(sent.units[0]!.id, sent.units[0]!.text, { action: '携带校园卡领取奖品', conditions: ['携带校园卡'] })]);
+      }
       savedId = sent.existingCandidates[0]!.id;
       expect(savedId).toBe(f.repository.snapshot().candidates[0]!.id);
-      expect(savedId).not.toMatch(/^qq-stage:/); throw Error('synthetic interrupted connection');
+      expect(savedId).not.toMatch(/^qq-stage:/);
+      expect(sent.units.every(unit => unit.attachmentId !== null)).toBe(true);
+      if (calls === 2) {
+        expect(sent.units).toHaveLength(30);
+        return response([extracted(sent.units[0]!.id, sent.units[0]!.text, { relation: { kind: 'supplement', candidateId: savedId },
+          supportingSources: sent.units.slice(1).map(unit => ({ sourceId: unit.id, quote: unit.text })),
+        })]);
+      }
+      expect(sent.units).toHaveLength(1); throw Error('synthetic interrupted connection');
     } })).rejects.toMatchObject({ code: 'NETWORK' });
-    expect(calls).toBe(2); expect(f.repository.snapshot().candidates).toHaveLength(1);
+    expect(calls).toBe(3); expect(f.repository.snapshot().candidates).toHaveLength(1);
     expect(f.repository.snapshot().candidates[0]).toMatchObject({ id: savedId, status: 'pending' });
+    expect(f.repository.snapshot().candidates[0]!.sourceIds).toHaveLength(31);
     f.reopen(); f.store.retryBatch(batch.id);
     await analyzeCapture({ ...options(f), batch: f.store.claimBatch()!, fetch: async (_url, request) => {
       calls++; const sent = input(request);
-      expect(sent.units).toHaveLength(2); expect(sent.existingCandidates[0]!.id).toBe(savedId);
-      const text = sent.units.find(unit => unit.messageId === followup)!;
-      return response([extracted(text.id, text.text, { action: '携带校园卡领取奖品', relation: { kind: 'supplement', candidateId: savedId } })]);
+      expect(sent.units).toHaveLength(1); expect(sent.existingCandidates[0]!.id).toBe(savedId);
+      const page = sent.units[0]!;
+      expect(page.attachmentId).not.toBeNull(); expect(page.text).toContain('第 31 页'); expect(page.messageId).not.toBe(followup);
+      return response([extracted(page.id, page.text, { relation: { kind: 'supplement', candidateId: savedId } })]);
     } });
     const snapshot = f.repository.snapshot();
-    expect(calls).toBe(3); expect(snapshot.tokenUsage).toHaveLength(2);
-    expect(snapshot.candidates).toHaveLength(1); expect(snapshot.candidates[0]!.sourceIds).toHaveLength(2);
+    expect(calls).toBe(4); expect(snapshot.tokenUsage).toHaveLength(3);
+    expect(snapshot.candidates).toHaveLength(1); expect(snapshot.candidates[0]!.sourceIds).toHaveLength(32);
+    expect(snapshot.sources).toHaveLength(32); expect(snapshot.candidates[0]!.conditions).toContain('携带校园卡');
     expect(f.store.batch(batch.id)?.status).toBe('applied');
+    applyCaptureResult(f.store, f.repository, f.store.batch(batch.id)!);
+    expect(f.repository.snapshot().candidates).toEqual(snapshot.candidates); expect(f.repository.snapshot().sources).toEqual(snapshot.sources);
   });
 
   it('does not merge unrelated same-title new events with different times', async () => {

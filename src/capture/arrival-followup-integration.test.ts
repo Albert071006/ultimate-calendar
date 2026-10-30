@@ -34,7 +34,7 @@ const options = (f: ReturnType<typeof fixture>, batch = f.batch) => ({ store: f.
 
 describe('arrival follow-up checkpoints and event preservation', () => {
   it('recovers a cached timezone-less original notice locally and replays it without duplicate records', async () => {
-    const f = fixture(), prepared = prepareAnalysis(f.store, f.batch);
+    const f = fixture(), prepared = prepareAnalysis(f.store, f.batch, { noticeFirst: false });
     const units = prepared.units.map(({ text, imageDataUrl, ...unit }) => ({ ...unit, textHash: hashInput(text), imageHash: imageDataUrl ? hashInput(imageDataUrl) : null }));
     const raw = { candidates: [f.original] }, before = structuredClone(raw);
     const checkpoint = { ...prepared, units, planFingerprint: hashInput({ version: ANALYSIS_VERSION, model: f.repository.snapshot().settings.model,

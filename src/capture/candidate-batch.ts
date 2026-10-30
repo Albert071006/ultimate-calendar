@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { ExtractedCandidateSchema, type ExtractedCandidate } from '../ai/schemas';
 import { WorkflowError } from '../ai/deepseek';
-import { CandidateSchema, IdSchema, type Candidate, type CandidateInput, type Source } from '../shared/contracts';
+import { CandidateInputSchema, CandidateSchema, IdSchema, type Candidate, type CandidateInput, type Source } from '../shared/contracts';
 import { candidateFingerprint, normalizeCandidate, supplementCandidate } from '../imports/messages';
 import { candidateDatesConflict, hasExplicitReschedule } from '../domain/candidate-dates';
 
@@ -60,6 +60,8 @@ export function supportingEvidence(entry: CaptureEntry, available: ReadonlyMap<s
 }
 
 export type CaptureDecision = { kind: 'ignore'; id: string } | { kind: 'update'; id: string; values: Partial<CandidateInput> } | { kind: 'create'; values: CandidateInput };
+const evidenceContinuation = '原通知的来源较多，本次补充单独保留；请结合关联原通知核对，全部原文仍保留。';
+const exceedsEvidenceLimit = (left: string[], right: string[]) => new Set([...left, ...right]).size > 100;
 
 /** Both staged context and the final transaction use these exact same additive decisions. */
 export function reconcileCaptureCandidate(item: ExtractedCandidate, source: Source, sourceIds: string[], existing: Candidate[], warnings: string[], sources: Source[] = []): CaptureDecision {
@@ -74,6 +76,24 @@ export function reconcileCaptureCandidate(item: ExtractedCandidate, source: Sour
   const uncertainties = [...new Set([...(normalized.values.uncertainties ?? []), ...warnings])].slice(0, 100);
   const values = { ...normalized.values, sourceIds, uncertainties };
   if ((item.relation.kind === 'supplement' || item.relation.kind === 'revision') && target && normalized.duplicate?.id !== target.id) {
+    if (exceedsEvidenceLimit(target.sourceIds, sourceIds)) {
+      // A saved, valid model response may exceed the entity limit only after combining
+      // it with prior fragments. Keep both complete sets of evidence through a linked
+      // review instead of discarding sources, widening the schema or paying again.
+      if (item.relation.kind === 'supplement') for (const continuation of existing) {
+        if (continuation.status !== 'pending' || continuation.revisionOfId !== target.id
+          || !continuation.uncertainties.includes(evidenceContinuation)
+          || exceedsEvidenceLimit(continuation.sourceIds, sourceIds)) continue;
+        const merged = supplementCandidate(continuation, values, evidenceSources);
+        if (!merged.conflicts) return { kind: 'update', id: continuation.id, values: { ...merged.values,
+          sourceQuote: continuation.sourceQuote, status: continuation.status, taskId: continuation.taskId,
+          snoozedUntil: continuation.snoozedUntil, duplicateOfId: continuation.duplicateOfId, revisionOfId: target.id } };
+      }
+      return { kind: 'create', values: CandidateInputSchema.parse({ ...values,
+        title: item.relation.kind === 'revision' ? values.title : target.title,
+        revisionOfId: target.id, duplicateOfId: null, status: 'pending', taskId: null,
+        uncertainties: uncertainties.length < 100 ? [...uncertainties, evidenceContinuation] : uncertainties }) };
+    }
     const merged = supplementCandidate(target, values, evidenceSources);
     if (item.relation.kind === 'supplement' && target.status === 'pending' && !merged.conflicts) {
       return { kind: 'update', id: target.id, values: { ...merged.values, sourceQuote: target.sourceQuote,

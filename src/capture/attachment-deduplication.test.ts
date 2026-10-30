@@ -134,7 +134,7 @@ describe('batch-local attachment deduplication', () => {
     });
 
   it('resumes a legacy duplicate checkpoint with the original grouping and zero new requests', async () => {
-    const f = fixture(), prepared = prepareAnalysis(f.store, f.batch, { deduplicateAttachments: false, documentGrouping: false, passiveQuestionFilter: false });
+    const f = fixture(), prepared = prepareAnalysis(f.store, f.batch, { deduplicateAttachments: false, documentGrouping: false, passiveQuestionFilter: false, noticeFirst: false });
     expect(prepared.units).toHaveLength(40);
     expect(prepared.attachmentDedupe).toBeUndefined(); expect(prepared.documentGrouping).toBeUndefined();
     const units = prepared.units.map(({ text, imageDataUrl, ...identity }) => ({ ...identity, textHash: hashInput(text), imageHash: imageDataUrl ? hashInput(imageDataUrl) : null }));

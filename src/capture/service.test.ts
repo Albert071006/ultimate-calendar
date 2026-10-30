@@ -33,6 +33,35 @@ async function setup(fetcher: typeof fetch = async () => { throw Error('AI must 
   return { service, store, repository, send, actions };
 }
 describe('capture orchestration against real local OneBot websocket', () => {
+  it('lets another group collected during a long attachment run before the next attachment request', async () => {
+    const order: string[] = [];
+    let collectNotice: (() => void) | undefined;
+    const { service, store } = await setup(async (_url, request) => {
+      const messages = JSON.parse(String(request?.body)).messages;
+      const input = JSON.parse(messages.find((message: { role: string }) => message.role === 'user').content[0].text);
+      order.push(input.units[0].groupId);
+      if (order.length === 1) collectNotice!();
+      return successfulAnalysis();
+    }, {}, request => request.action === 'get_group_list'
+      ? [{ group_id: '200', group_name: '合成资料群' }, { group_id: '300', group_name: '合成通知群' }] : undefined);
+    await service.configure({ ...store.config(), enabled: true, groupIds: ['200', '300'] });
+    const old = fromUnix(Date.now() / 1000 - 60)!;
+    const messageId = store.ingest([{ accountId: '100', groupId: '200', messageId: 'long-document', sentAt: old,
+      text: '', attachments: [{ name: 'synthetic.docx', kind: 'file' }] }], old).ids[0]!;
+    store.saveExtraction(store.attachments(messageId)[0]!.id, { extractorVersion: 'synthetic', status: 'ready',
+      chunks: Array.from({ length: 61 }, (_, ordinal) => ({ ordinal, location: `段落 ${ordinal}`, text: `合成资料 ${ordinal}`,
+        status: 'ready' as const, error: null, imageDataUrl: null })) });
+    collectNotice = () => {
+      const arrived = fromUnix(Date.now() / 1000 - 20)!;
+      store.ingest([{ accountId: '100', groupId: '300', messageId: 'new-notice', text: '明天交报告', sentAt: arrived }], arrived);
+    };
+    store.saveConfig({ ...store.config(), analysisEnabled: true });
+    service.action({ action: 'analyze' });
+    await waitFor(() => !service.busy() && store.listBatches().items.filter(batch => batch.status === 'applied').length === 2);
+    expect(order).toEqual(['200', '300', '200', '200']);
+    expect(store.listBatches().items.every(batch => batch.status === 'applied')).toBe(true);
+    expect(store.listBatches().items.reduce((count, batch) => count + store.batch(batch.id)!.attempts.length, 0)).toBe(4);
+  });
   it('automatically resumes known credential failures with a new key without retrying uncertain work', async () => {
     let valid = false;
     const fetcher = vi.fn(async () => valid ? successfulAnalysis() : new Response(JSON.stringify({ error: { message: 'invalid key' } }), { status: 401 }));
