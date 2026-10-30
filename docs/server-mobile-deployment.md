@@ -19,9 +19,9 @@ flowchart LR
 
 示例 unit 使用 `/usr/local/bin/node`。先运行 `/usr/local/bin/node --version` 核对；若实际 Node 24 位于其他路径，修改 unit 的 `ExecStart`，并相应替换本文命令。域名 DNS 应指向服务器；云安全组和防火墙只为网站开放所需的 80/443，资料服务的 3210 端口保持仅回环访问。
 
-从[服务器版与手机端 0.8.0 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.8.0) 下载并上传到服务器同一工作目录：
+从[服务器版与手机端 0.8.1 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.8.1) 下载并上传到服务器同一工作目录：
 
-- `UltimateCalendar-Server-Mobile-0.8.0.tar.gz`
+- `UltimateCalendar-Server-Mobile-0.8.1.tar.gz`
 - `SHA256SUMS-server.txt`
 
 部署包包含 `dist-server/cli.mjs`、`web/` 手机静态页、`scripts/retain-web-assets.mjs` 升级辅助工具、`deploy/server-mobile/ultimate-calendar.service`、`deploy/nginx.conf.example`、许可及说明。包不包含数据库、API Key、配对凭据、证书或任何人的私人资料。
@@ -35,8 +35,8 @@ set -eu
 sha256sum -c SHA256SUMS-server.txt
 
 stage_dir=$(mktemp -d)
-tar -xzf UltimateCalendar-Server-Mobile-0.8.0.tar.gz -C "$stage_dir"
-bundle_dir="$stage_dir/UltimateCalendar-Server-Mobile-0.8.0"
+tar -xzf UltimateCalendar-Server-Mobile-0.8.1.tar.gz -C "$stage_dir"
+bundle_dir="$stage_dir/UltimateCalendar-Server-Mobile-0.8.1"
 test -f "$bundle_dir/dist-server/cli.mjs"
 test -f "$bundle_dir/web/index.html"
 
@@ -46,11 +46,11 @@ getent passwd ultimate-calendar-server >/dev/null || \
     --shell /usr/sbin/nologin ultimate-calendar-server
 
 sudo install -d -o root -g root -m 0755 /opt/ultimate-calendar-server/releases
-sudo test ! -e /opt/ultimate-calendar-server/releases/0.8.0
-sudo cp -R "$bundle_dir" /opt/ultimate-calendar-server/releases/0.8.0
-sudo chown -R root:root /opt/ultimate-calendar-server/releases/0.8.0
-sudo chmod -R u=rwX,go=rX /opt/ultimate-calendar-server/releases/0.8.0
-sudo ln -s /opt/ultimate-calendar-server/releases/0.8.0 /opt/ultimate-calendar-server/current
+sudo test ! -e /opt/ultimate-calendar-server/releases/0.8.1
+sudo cp -R "$bundle_dir" /opt/ultimate-calendar-server/releases/0.8.1
+sudo chown -R root:root /opt/ultimate-calendar-server/releases/0.8.1
+sudo chmod -R u=rwX,go=rX /opt/ultimate-calendar-server/releases/0.8.1
+sudo ln -s /opt/ultimate-calendar-server/releases/0.8.1 /opt/ultimate-calendar-server/current
 
 sudo install -d -o ultimate-calendar-server -g ultimate-calendar-server -m 0700 \
   /var/lib/ultimate-calendar-server \
@@ -107,7 +107,7 @@ sudoedit /etc/nginx/conf.d/ultimate-calendar-server.conf
 
 把所有 `calendar.example.invalid` 替换成自己的域名，并将 `ssl_certificate`、`ssl_certificate_key` 改为真实证书路径。保留代理目标 `http://127.0.0.1:3210`、原始 Host/Origin、Cookie，以及关闭缓冲和写请求重试的设置。页面和 `/api/` 应通过同一个 HTTPS 域名提供，不要单独给 API 换域名。
 
-0.8.0 的 AI RPC 最长等待 510 秒，以覆盖复杂指令的两次串行思考调用。模板将 `proxy_read_timeout` 设为 `540s`，为 RPC 留出传输余量；升级已有 NGINX 或使用其他代理时，也要核对该等待上限，避免请求仍在处理时提前返回超时。继续保留 `proxy_next_upstream off`，不要让代理自动重放写入或收费 AI 请求。
+自 0.8.0 起，AI RPC 最长等待 510 秒，以覆盖复杂指令的两次串行思考调用。模板将 `proxy_read_timeout` 设为 `540s`，为 RPC 留出传输余量；升级已有 NGINX 或使用其他代理时，也要核对该等待上限，避免请求仍在处理时提前返回超时。继续保留 `proxy_next_upstream off`，不要让代理自动重放写入或收费 AI 请求。
 
 ```sh
 sudo nginx -t
@@ -142,17 +142,17 @@ AI 请求从服务器直连 DeepSeek，需服务器出站网络和账户额度�
 
 ## 6. 可选 Windows 客户端与群消息采集
 
-同一服务器 Release 提供 `UltimateCalendar-Setup-0.8.0.exe`，这是支持云连接的 Windows 标准版。独立的 `UltimateCalendar-Local-Setup-0.8.0.exe` 始终使用本机资料，不连接此服务。
+同一服务器 Release 提供 `UltimateCalendar-Setup-0.8.1.exe`，这是支持云连接的 Windows 标准版。独立的 `UltimateCalendar-Local-Setup-0.8.1.exe` 始终使用本机资料，不连接此服务。
 
-Windows 标准版需单独生成配对码，配置自己的 HTTPS 地址、独立云 profile 和受保护的配对码文件。具体字段和启动命令见包内 `docs/windows-cloud-mode.md`，或[在线 Windows 连接说明](https://github.com/Albert071006/ultimate-calendar/blob/server-v0.8.0/docs/windows-cloud-mode.md)。已有本机或云端资料不会因安装而自动迁移。
+Windows 标准版需单独生成配对码，配置自己的 HTTPS 地址、独立云 profile 和受保护的配对码文件。具体字段和启动命令见包内 `docs/windows-cloud-mode.md`，或[在线 Windows 连接说明](https://github.com/Albert071006/ultimate-calendar/blob/server-v0.8.1/docs/windows-cloud-mode.md)。已有本机或云端资料不会因安装而自动迁移。
 
-QQ 自动采集是可选扩展，仍需 Windows 上自己的 QQ 客户端和 OneBot 兼容桥。采集、原文、附件和提炼在电脑处理，可另配摘要桥上传提炼结果；服务器本身不登录 QQ。电脑关机后会暂停新的 QQ 采集，但不影响服务器已有日历和账本。配置方法见[QQ 摘要桥说明](https://github.com/Albert071006/ultimate-calendar/blob/server-v0.8.0/docs/qq-cloud-bridge.md)。
+QQ 自动采集是可选扩展，仍需 Windows 上自己的 QQ 客户端和 OneBot 兼容桥。采集、原文、附件和提炼在电脑处理，可另配摘要桥上传提炼结果；服务器本身不登录 QQ。电脑关机后会暂停新的 QQ 采集，但不影响服务器已有日历和账本。配置方法见[QQ 摘要桥说明](https://github.com/Albert071006/ultimate-calendar/blob/server-v0.8.1/docs/qq-cloud-bridge.md)。
 
-标准版也可在 Windows 上配置微信只读采集，支持选群、已同步的消息及已下载的图片和文件。微信客户端、独立 Python 依赖和可选 FFmpeg 不随安装包提供，按[微信配置指南](https://github.com/Albert071006/ultimate-calendar/blob/server-v0.8.0/docs/wechat-capture.md)完成设置。微信的原文与附件同样留在采集电脑；手机不会直接连接微信，Linux 服务器也不登录微信。电脑关机后暂停新的微信采集。
+标准版也可在 Windows 上配置微信只读采集，支持选群、已同步的消息及已下载的图片和文件。微信客户端、独立 Python 依赖和可选 FFmpeg 不随安装包提供，按[微信配置指南](https://github.com/Albert071006/ultimate-calendar/blob/server-v0.8.1/docs/wechat-capture.md)完成设置。微信的原文与附件同样留在采集电脑；手机不会直接连接微信，Linux 服务器也不登录微信。电脑关机后暂停新的微信采集。
 
 ## 7. 备份、升级与恢复
 
-**升级到 0.8.0 时，后端、Windows 标准版和手机页面需要一起更新。** 保存新版思考设置后，旧后端或旧桌面程序可能无法读取同一份设置；之前版本的借款和自定义账户兼容限制仍适用。先备份并正常停止服务，再更新后端与手机静态资源，同时更新 Windows 客户端；手机关闭旧页面后重新打开或刷新。保留数据、凭据、设备配对和环境配置，无需清空手机资料或重新填写有效 Key。旧客户端会保留已有思考配置，但不能调整新选项。具体功能见[0.8.0 发布说明](release-notes/server-0.8.0.md)。
+**升级到 0.8.1：** 本版的手机排序需要新的静态页面，采集提速需要新的 Windows 标准版。按本节更新服务器部署包和手机资源，正常退出后更新 Windows 客户端；保留数据、凭据、设备配对和环境配置，手机重新打开或刷新即可，无需清空资料或重填有效 Key。新采集检查点使用新版规则，回退前须核对进行中批次。0.8.0 引入的思考设置，以及此前借款和自定义账户的兼容限制继续适用；从更早版本升级时需协调更新各端。具体功能见[0.8.1 发布说明](release-notes/server-0.8.1.md)。
 
 服务写入及定期维护会生成安全 JSON 备份，保留正式日程、任务、课表、账本及关联，移除原始消息和图片。备份不包含 AI Key、设备会话或推送私钥；仍含私人资料，建议另存到受保护的备份位置。
 
@@ -173,13 +173,13 @@ sudo systemctl start ultimate-calendar-server.service
 
 ```sh
 sudo /usr/local/bin/node \
-  /opt/ultimate-calendar-server/releases/0.8.0/scripts/retain-web-assets.mjs \
-  /opt/ultimate-calendar-server/releases/0.8.0/web \
+  /opt/ultimate-calendar-server/releases/0.8.1/scripts/retain-web-assets.mjs \
+  /opt/ultimate-calendar-server/releases/0.8.1/web \
   /opt/ultimate-calendar-server/current/web
 ```
 
 它只补充指纹资源，不替换新版首页或 worker；同名资源内容不一致时停止，须先核对原因。保留后不要重新生成离线清单。还需复制旧版本作为回退目录，按包内 `docs/backend-operations.md` 的手机静态资源升级规则向该副本补充新版资源。原子切换目录本身不能替代资源保留，也无需清空手机配对或待提交草稿。
 
-保留旧代码目录可供回退；只有存储格式兼容时才能单独回退代码。保留静态资源只解决页面加载，不能让旧程序理解新增的思考设置或账本格式。保存新版思考设置，或使用之前版本新增的借款、自定义账户后，回退必须先核对数据与目标版本兼容性，并保护升级后的新增记录。需要恢复安全 JSON 时，使用全新或空资料目录，保留原资料供核对，不能直接覆盖运行库；恢复后需重新配对和配置 Key。这是明确的数据恢复流程，不是处理页面更新提示的方法。完整运行、资源预算和恢复契约见[服务运维说明](https://github.com/Albert071006/ultimate-calendar/blob/server-v0.8.0/docs/backend-operations.md)。
+保留旧代码目录可供回退；只有存储格式兼容时才能单独回退代码。保留静态资源只解决页面加载，不能让旧程序理解新增的思考设置或账本格式。保存新版思考设置，或使用之前版本新增的借款、自定义账户后，回退必须先核对数据与目标版本兼容性，并保护升级后的新增记录。需要恢复安全 JSON 时，使用全新或空资料目录，保留原资料供核对，不能直接覆盖运行库；恢复后需重新配对和配置 Key。这是明确的数据恢复流程，不是处理页面更新提示的方法。完整运行、资源预算和恢复契约见[服务运维说明](https://github.com/Albert071006/ultimate-calendar/blob/server-v0.8.1/docs/backend-operations.md)。
 
 本指南和发布包提供可审阅的配置与操作步骤。构建及隔离测试不代表已在你的 Linux、域名、证书或手机上完成部署验收。

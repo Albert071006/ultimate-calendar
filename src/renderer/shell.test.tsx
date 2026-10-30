@@ -39,7 +39,7 @@ it('offers five sections with the pending count and keeps the assistant to one l
   expect(container.querySelector('.a2-assist-panel')).toBeNull();
 });
 
-it('lays out today as a timeline beside deadline-grouped tasks', () => {
+it('lays out today as a timeline beside tasks grouped by arrangement or deadline', () => {
   const snapshot = empty();
   snapshot.courses.push(CourseSchema.parse({ ...metadata, id: 'english', title: '大学英语', weekday: 4, startTime: '10:05', endTime: '11:40', firstWeek: 1, lastWeek: 18, termStart: '2026-08-31', color: '#b4416a' }));
   snapshot.tasks.push(...[
@@ -59,7 +59,7 @@ it('lays out today as a timeline beside deadline-grouped tasks', () => {
   expect(items[1]!.textContent).toContain('40 分钟后');
   expect(items[1]!.style.getPropertyValue('--c')).toBe('#b4416a');
   expect(container.querySelector('.a2-tl-now')!.nextElementSibling).toBe(items[1]);
-  expect([...container.querySelectorAll('.a2-group h3')].map(h => h.textContent)).toEqual(['已逾期 1', '今天 1', '本周 1', '以后 1', '无截止 1']);
+  expect([...container.querySelectorAll('.a2-group h3')].map(h => h.textContent)).toEqual(['已过时间 1', '今天 2', '本周 1', '以后 1']);
   expect(screen.queryByRole('button', { name: /条通知等你判断/ })).toBeNull();
 });
 
