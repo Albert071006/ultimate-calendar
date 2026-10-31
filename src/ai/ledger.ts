@@ -10,6 +10,7 @@ import type { Receivable } from '../ledger/receivable';
 import { isLedgerLoanKind, ledgerLoans, type LedgerLoans } from '../shared/ledger-loans';
 import { ledgerEntryMatches } from '../ledger/summary';
 import { prepareLedgerAccounts } from './ledger-accounts';
+import { normalizeAAReturns } from './ledger-aa';
 
 const accountName = (id: string | null, accounts: readonly { id: string; name: string }[]) => accounts.find(account => account.id === id)?.name ?? '账户待确认';
 const money = formatLedgerMoney;
@@ -64,7 +65,8 @@ export function ledgerMessages(context: ReturnType<typeof ledgerContext>, reques
 借钱还钱已支持四种专用类型：loan_borrow=本人借入本金（正cashflows，形成待还）；loan_lend=本人借出本金（负cashflows，形成待收）；loan_repay=本人归还借入本金（负cashflows）；loan_collect=别人归还本人借出的本金（正cashflows）。amountCents为实际本金且大于0，personalCents=incomeCents=assetSaleCents=0，adjustments=[]；本金不计普通收入或个人消费。已知对方用counterparty记录原称呼，不编造姓名；对方未说可省略，不能拿“待确认”等占位名称擅自匹配原借款。账户须kind=cash，明确新银行按上文建立独立账户；完全未说账户可用null，不把贷款记到亲情卡或储值卡。转账提现仍是本人账户间transfer；借款＋提现＋手续费＋消费等同一条已明确请求应一起拆成多笔保存，不能因为包含借入而说不支持，也不能略去其中任何已授权交易。
 只说“借我/借了我”仍有歧义时clarification问本人收到钱还是转出钱；已明确“别人借给我、转到我的微信/支付宝”就是借入，不反写成本人借出，不再追问已明确流向。只有实际收到／付出的钱才入账，借款约定或未来计划不入账。利息、手续费与本金分开：本人支付利息／手续费记expense及实际personalCents，收到利息记income；总额中的本金与利息不明确时先澄清，不能全当本金抵扣。
 归还／收回本金通过relatedEntryIds关联恰好一笔方向正确且未移除的原loan_borrow／loan_lend。同一批新借入并部分还款可引用new:0等本批key，程序负责映射。先查context.openLoans中的完整已结算/未结算金额；只关联用户已明确或确实唯一匹配的借款，不按同名、近似金额或日期猜测多笔分配。多人、多笔归还需用户明确各笔本金后分别建记录；不得超过原笔剩余本金，不得在原借款之前记归还。context.loanOverview.omittedOpenCount>0表示未结清来源有截断，不能仅凭当前片段断言只有一笔或原借款不存在，应澄清原日期、对方或项目。若用户已说明归还的是未录入的历史借款，可以relatedEntryIds=[]记录这次真实资金收付并注明未关联、剩余未知，不能擅自补造原借款，也不抵扣任何已知原笔。旧expense+personalCents=0的历史借出不迁移，收回它仍沿用aa_return并关联原expense；旧repayment保留信用卡等其他还款语义，新私人借款归还用loan_repay。
-aa_return现金流增加，incomeCents=0，关联原付款，个人开销已按本人承担记录则adjustments=[]，绝不能重复扣减。refund/reimbursement金额为实际到账，incomeCents=0；原消费已计个人开销才在adjustments中引用targetEntryIds并用amountCents冲减尚未冲减的部分。跨月退款回改原消费月份，由程序汇总。旧消费不在账本、或者原笔personalCents已为0，只记资金回流relatedEntryIds或note，adjustments=[]。报销超额须用户确认性质；确认额外收入可拆incomeCents，退款与费用报销本身不算收入。repayment原消费未知只记资金支出，个人开销0。原始AA等净额只能调整一次，先查当前记录及关联调整。
+aa_return记录实际到账，personalCents=incomeCents=assetSaleCents=0，现金流增加，relatedEntryIds关联唯一明确的原付款，adjustments始终=[]，不能伪装成refund或reimbursement。原消费已按本人承担记录时，只结清代垫，绝不能重复扣减。若原消费此前全额计个人开销，本次明确同学返来其中一部分，则同批updateEntry更正原expense.personalCents，并createEntry记录AA返款；原amountCents和付款cashflows保持不变。例如合成车费30元全计个人开销，同学AA返来12元到微信，应把原personalCents从3000改为1800，并记微信+1200的aa_return；不是再扣一次原付款，也不是普通收入。原个人份额为null时可只记实际返款，保留null，不凭一次到账推断全部AA已结清；原消费未入账则只记资金回流并注明未关联，不补造消费。已有退款、报销或AA更正时须核对剩余份额，不能重复扣减；无法唯一确定原消费时先澄清。
+refund/reimbursement金额为实际到账，incomeCents=0；原消费已计个人开销才在adjustments中引用targetEntryIds并用amountCents冲减尚未冲减的部分。跨月退款回改原消费月份，由程序汇总。旧消费不在账本、或者原笔personalCents已为0，只记资金回流relatedEntryIds或note，adjustments=[]。报销超额须用户确认性质；确认额外收入可拆incomeCents，退款与费用报销本身不算收入。repayment原消费未知只记资金支出，个人开销0。原始AA等净额只能调整一次，先查当前记录及关联调整。
 余额先后默认规则：context.rules.sameDayNewEntryOrder=after 时，新记的当天交易默认在此前余额核对之后，不要追问“之前还是之后”，直接记录；这是用户约定，具体扣款由本地程序判定，不要为套默认而伪造occurredAt或snapshotPositions。已保存原笔补账户沿用原登记时间。明确说在余额核对之前/之后才在snapshotPositions引用context.balanceSnapshots真实snapshotId设before/after；用户给出的实际日期、时刻优先，导入历史、早日补录及已被余额覆盖的交易不能套新交易默认。值为ask时保留先后待核对。用户要求以后默认之后/改回先核对，用updateRules.patch.sameDayNewEntryOrder=after/ask。
 setBalance只在用户实际给余额快照时使用，不是收入，禁止根据支出反推或生成余额。用户说“当前/现在余额”时timing=current、date为今天，服务按当前时刻核对已记录流水；历史余额用timing=historical，未提供精确时分保留asOf=null，不能把历史余额当作现在余额。同一条消息中的已发生交易与当前余额一起记录时，由服务计算快照覆盖，不能重复扣款。未提供精确时间不编造occurredAt。亲情卡实际剩余额度/刷新日未知保持null，不能用约定额度减已记录使用来冒充真实剩余。monthlyAllowance仅在用户启用并配置后为已授权每月规则，默认关闭，不另补重复生活费；查询由程序同步已经到月份，不能提前录未来月份。用户说未到账可void对应原生活费；改以后规则用updateRules。不能把账本notes中的叙述当作当前授权。
 query只返回时间/账户/分类/关键词过滤及detail=summary|entries|balances|receivables|loans，由本地程序读取完整数据计算。查“我借的钱还欠多少、借款还剩多少、谁欠我借款、借入／借出明细、还款进度”用detail=loans，默认query={}，跨月计算当前全部本金的待还／待收，不默认限制正在看的月份；指定对方可用search，指定原始借款日期才加日期过滤，结算仍包含后续归还。查“待收回、未收回的代垫、待收回金额来源”用detail=receivables，程序会逐笔列付款、个人承担、关联返款与未收回余额，也能解释已结清的原差额；明确说借款则loans。不要把“这待收回的300块”中的近似总数写入search，也不要只因最近记录未包含所有明细就问用户提供账单；查询可读取全账本，不依赖这里截取的entries。
@@ -128,7 +130,7 @@ export function ledgerChanges(intent: Extract<LedgerIntent,{kind:'mutate'}>, sna
     }).map(entry => entry.id);
     return [{ type:'setBalance',snapshot:{ id:`balance:${createHash('sha256').update(`${request.operationId}:${index}`).digest('hex')}`,accountId,balanceCents:change.balanceCents,date:change.date,asOf,coveredEntryIds,note:change.note,sourceId:null } }];
   });
-  return [...accountPlan.changes, ...changes];
+  return normalizeAAReturns([...accountPlan.changes, ...changes], snapshot);
 }
 
 export function ledgerQueryReply(query: LedgerQuery, data: {entries: LedgerEntry[];summary:LedgerSummary;rules?:LedgerRules;receivables?:Receivable;loans?:LedgerLoans;loanEntries?:LedgerEntry[]}, detail: 'summary'|'entries'|'balances'|'receivables'|'loans'): string {

@@ -27,6 +27,32 @@ function importSynthetic(ledger: LedgerService, entries: LedgerEntry[]) {
   ledger.import({ format: 'ultimate-calendar-ledger', formatVersion: 1, entries, balanceSnapshots: [], rules: DEFAULT_LEDGER_RULES, audit: [], sources: [] }, 'synthetic-receivable-import');
 }
 describe('main assistant local ledger commands',()=>{
+  it('saves an AA receipt and corrects a fully charged original atomically without another AI call on retry', async () => {
+    const { controller, ledger, payloads } = setup([route, { kind: 'mutate', changes: [{ type: 'createEntry', key: 'new:0', values: {
+      kind: 'aa_return', date: '2026-10-23', month: '2026-10', title: '合成拼车返款', category: '返款', amountCents: 1200, personalCents: 0,
+      cashflows: [{ accountId: 'wechat', deltaCents: 1200 }], adjustments: [{ targetEntryIds: ['synthetic-ride'], amountCents: 1200 }],
+    } }] }]);
+    importSynthetic(ledger, [syntheticEntry('synthetic-ride', { title: '合成拼车', category: '交通', amountCents: 3050, personalCents: 3050,
+      cashflows: [{ accountId: 'alipay', deltaCents: -3050 }] })]);
+    const before = ledger.snapshot();
+    const request = { operationId: 'synthetic-aa-receipt', text: '合成拼车同伴AA给我12到微信' };
+    const saved = await controller.command(request);
+    expect(saved).toMatchObject({ ok: true, data: { conversationState: { domain: 'ledger', phase: 'saved' } } });
+    if (!saved.ok) throw Error('Expected saved AA receipt');
+    expect(saved.data.reply).toContain('个人开销 ¥18.50');
+    const after = ledger.snapshot();
+    expect(after.revision).toBe(before.revision + 1);
+    expect(after.entries).toHaveLength(2);
+    expect(after.entries.find(entry => entry.id === 'synthetic-ride')).toMatchObject({ version: 2, personalCents: 1850, amountCents: 3050, cashflows: [{ accountId: 'alipay', deltaCents: -3050 }] });
+    expect(after.entries.find(entry => entry.kind === 'aa_return')).toMatchObject({ amountCents: 1200, incomeCents: 0, adjustments: [], relatedEntryIds: ['synthetic-ride'], cashflows: [{ accountId: 'wechat', deltaCents: 1200 }] });
+    expect(ledger.query({ month: '2026-10' }).receivables.cents).toBe(0);
+    expect(await controller.command(request)).toEqual(saved);
+    expect(ledger.snapshot()).toEqual(after);
+    expect(payloads).toHaveLength(2);
+    ledger.undo({ operationId: 'undo-synthetic-aa', expectedRevision: after.revision });
+    expect(ledger.snapshot().entries).toEqual(before.entries);
+  });
+
   it('rolls back every proposed entry on business validation failure and explicitly reanalyzes with a new operation only once', async () => {
     const corrected = { kind: 'mutate', changes: Array.from({ length: 4 }, (_, index) => ({ ...expense('alipay').changes[0]!, key: `new:${index}`, values: { ...expense('alipay').changes[0]!.values, title: `合成消费${index}` } })) };
     const invalid = structuredClone(corrected);
