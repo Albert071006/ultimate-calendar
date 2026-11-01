@@ -92,6 +92,7 @@ function LocalSettings({
         ...s,
         campus: get("campus"),
         locationContext: get("locationContext"),
+        personalContext: get("personalContext"),
         model: get("model"),
         ...(s.reasoningEffort !== undefined || reasoningEffort !== 'none' ? { reasoningEffort } : {}),
         showPending: data.has("showPending"),
@@ -473,8 +474,10 @@ function LocalSettings({
           <div className="settings-disclosure-body">
             <div className="settings-campus-grid">
               <section><h4>个人校园背景</h4><label>学校与校区<input name="campus" maxLength={200} defaultValue={s.campus} placeholder="例如：学校名称、所在校区" /></label>
+          <label>个人身份与职责补充<textarea name="personalContext" maxLength={2000} rows={4} defaultValue={s.personalContext ?? ''} placeholder="可选填姓名、学号、班级、职务、所属组织及负责事项。例如：某班学习委员；某社团宣传部成员，负责活动报名。支持多个身份分行填写。" /></label>
+          <p className="hint">辅助核对名单及判断新消息是否与你有关；同名时可用学号辅助区分。相关性不明确的事项仍保留待判断。修改后用于新的分析，不会自动付费重读已有消息。</p>
           <label>地点理解补充<textarea name="locationContext" maxLength={2000} rows={3} defaultValue={s.locationContext} placeholder="可填写常用校园地点简称的背景" /></label>
-          <p className="hint">用于理解消息中的校园地点；保留原文名称，不补造楼号或房间。留空时不假定你的学校。修改后用于新的分析，不会自动付费重读已有消息。</p></section>
+          <p className="hint">用于理解消息中的校园地点；保留原文名称，不补造楼号或房间。留空时不假定你的学校。</p></section>
               <section><h4>教学周与节次</h4><div className="form-grid">
             <label>
               第一教学周周一

@@ -84,6 +84,24 @@ function decrypt(response: AiKeySyncResponse, privateKey: KeyObject = keyPair.pr
 }
 
 describe('locally authorized encrypted AI key receivers', () => {
+  it('syncs the complete profile only to capable collectors, including a full-length encrypted context', async () => {
+    const f = await setup(), device = await f.pair(); f.bind(device.session.device.id);
+    const original = f.service.snapshot().settings;
+    const userProfile = { campus: '合'.repeat(200), locationContext: '校'.repeat(2000), personalContext: '职'.repeat(2000) };
+    expect(await f.service.rpc('saveSettings', { requestId: 'profile-sync-settings', identity: device.session.identity,
+      input: { settings: { ...original, ...userProfile }, expectedSettings: original } }, device.session.device.id, true, true))
+      .toMatchObject({ ok: true });
+    for (const profile of [true, false]) {
+      const response = await f.call(endpoint, { method: 'POST', headers: { ...device.headers, 'X-Planner-AI-Settings-Version': '1',
+        ...(profile ? { 'X-Planner-Profile-Settings-Version': '1' } : {}) }, body: JSON.stringify(device.input()) });
+      expect(response.status).toBe(200);
+      const raw = await response.text(); expect(raw).not.toContain('personalContext'); expect(raw).not.toContain('职');
+      const decoded = decrypt(AiKeySyncResponseSchema.parse(JSON.parse(raw)));
+      expect(decoded.settings?.userProfile).toEqual(profile ? userProfile : undefined);
+    }
+    expect(f.transport).not.toHaveBeenCalled();
+  });
+
   it('includes only model settings inside encrypted sync for capable clients, with no legacy shape change',async()=>{
     const f=await setup(),device=await f.pair();f.bind(device.session.device.id);
     const original=f.service.snapshot().settings;
@@ -188,7 +206,7 @@ describe('locally authorized encrypted AI key receivers', () => {
       [{ ...initial, nonce: 'x'.repeat(43) }, 400], [{ ...initial, nonce: `${initial.nonce}=` }, 400],
       [{ ...initial, nonce: randomBytes(31).toString('base64url') }, 400], [{ ...initial, keyId: '0'.repeat(64) }, 403],
       [{ ...initial, publicKeySpki }, 400], [{ ...initial, identity: { ...initial.identity, dataInstanceId: randomUUID() } }, 409],
-      [{ ...initial, nonce: 'x'.repeat(33 * 1024) }, 413],
+      [{ ...initial, nonce: 'x'.repeat(65 * 1024) }, 413],
     ] as const) {
       const response = await fixture.call(endpoint, { method: 'POST', headers: device.headers, body: JSON.stringify(input) });
       expect(response.status).toBe(status); expect(await response.text()).not.toContain(keyA);

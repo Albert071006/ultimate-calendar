@@ -13,6 +13,8 @@ import { LedgerEntryDraftSchema, LedgerSnapshotSchema } from '../shared/ledger';
 import { ledgerLoans } from '../shared/ledger-loans';
 import { LEDGER_API_HEADER, LEDGER_API_VERSION } from '../shared/ledger-compatibility';
 import { AI_SETTINGS_HEADER, AI_SETTINGS_VERSION } from '../shared/ai-reasoning';
+import { PROFILE_SETTINGS_HEADER, PROFILE_SETTINGS_VERSION } from '../shared/profile-settings';
+import { SettingsSchema } from '../shared/contracts';
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -47,6 +49,53 @@ async function setup(directory?: string) {
 const goalInput = (title = '虚构目标') => ({ operationId: 'goal-business-1', origin: 'manual', mutations: [{ type: 'create', entity: 'goal', values: { title } }] });
 
 describe('remote HTTP boundary', () => {
+  it('persists personal context across restart, protects it from old forms, and keeps old responses parseable', async () => {
+    let f = await setup(); const device = await f.pair(); let sequence = 0;
+    const rpc = async (method: string, input?: unknown, modern = true, id = `profile-${++sequence}`) => {
+      const response = await f.call(`/api/v1/rpc/${method}`, { method: 'POST', headers: { ...device.headers,
+        [AI_SETTINGS_HEADER]: AI_SETTINGS_VERSION, ...(modern ? { [PROFILE_SETTINGS_HEADER]: PROFILE_SETTINGS_VERSION } : {}) },
+      body: JSON.stringify({ requestId: id, identity: device.session.identity, input }) });
+      expect(response.status).toBe(200); return response.json();
+    };
+    const initial = (await rpc('snapshot')).data.settings;
+    expect(initial.personalContext).toBe('');
+    const legacySchema = SettingsSchema.omit({ personalContext: true });
+    expect(legacySchema.safeParse((await rpc('snapshot', undefined, false)).data.settings).success).toBe(true);
+    const personalContext = '合成志愿者协会干事，负责活动签到；不是体育队成员。';
+    expect(await rpc('saveSettings', { settings: { ...initial, personalContext }, expectedSettings: initial }, true, 'profile-set'))
+      .toMatchObject({ ok: true, data: { personalContext } });
+    const oldForm = (await rpc('snapshot', undefined, false)).data.settings;
+    expect(oldForm).not.toHaveProperty('personalContext'); expect(legacySchema.safeParse(oldForm).success).toBe(true);
+    const oldSave = { settings: { ...oldForm, campus: '合成校区' }, expectedSettings: oldForm };
+    expect((await rpc('saveSettings', oldSave, false, 'old-profile-form')).ok).toBe(true);
+    // Retrying a queued old request after client upgrade must keep its receipt identity.
+    expect(await rpc('saveSettings', oldSave, true, 'old-profile-form')).toMatchObject({ ok: true, data: { personalContext } });
+    expect(await rpc('saveSettings', { settings: { ...initial, personalContext: '过期草稿' }, expectedSettings: initial }))
+      .toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    const receipt = await f.call('/api/v1/operations/profile-set', { headers: { ...device.headers, [AI_SETTINGS_HEADER]: AI_SETTINGS_VERSION } });
+    expect((await receipt.json()).result.data).not.toHaveProperty('personalContext');
+    await f.close(); f = await setup(f.folder);
+    const after = (await rpc('snapshot')).data.settings;
+    expect(after).toMatchObject({ campus: '合成校区', personalContext });
+    expect((await rpc('saveSettings', { settings: { ...after, personalContext: '' }, expectedSettings: after })).data.personalContext).toBe('');
+  });
+
+  it('replays a pre-profile settings receipt without rewriting it or clearing newer context', async () => {
+    const f = await setup(), device = await f.pair();
+    const legacy = SettingsSchema.omit({ personalContext: true }).parse({});
+    const input = { settings: { ...legacy, campus: '旧表单校区' }, expectedSettings: legacy }, requestId = 'pre-profile-receipt';
+    const fingerprint = createHash('sha256').update(JSON.stringify({ method: 'saveSettings', identity: device.session.identity, input })).digest('hex');
+    f.service.state.begin(requestId, device.session.device.id, 'saveSettings', fingerprint);
+    f.service.state.complete(requestId, { ok: true, data: input.settings });
+    const response = await f.call('/api/v1/rpc/saveSettings', { method: 'POST', headers: { ...device.headers,
+      [AI_SETTINGS_HEADER]: AI_SETTINGS_VERSION, [PROFILE_SETTINGS_HEADER]: PROFILE_SETTINGS_VERSION },
+    body: JSON.stringify({ requestId, identity: device.session.identity, input }) });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, data: { campus: '旧表单校区', personalContext: '' } });
+    expect(f.service.snapshot().settings.campus).toBe('');
+    expect(f.service.state.operation(requestId, device.session.device.id)).toMatchObject({ result: { data: input.settings } });
+  });
+
   it('shares effort with new clients while legacy reads, saves and replayed receipts preserve it', async () => {
     const f = await setup(), device = await f.pair(); let sequence=0;
     const rpc = async (method:string,input?:unknown,modern=true,id=`reasoning-${++sequence}`) => {

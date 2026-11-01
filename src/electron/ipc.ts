@@ -1,7 +1,7 @@
 import { requests, responses, methods, type Method } from './protocol';
 import { imageDataUrlValid } from './files';
 import { safeError } from '../ai/deepseek';
-import type { ApiError, ApiResult, CommandRequest } from '../shared/contracts';
+import { commandImages, type ApiError, type ApiResult, type CommandRequest } from '../shared/contracts';
 export interface Caller { senderId: number; frameId: number; url: string }
 export function trustedCaller(actual: Caller | null, expected: Caller | null): boolean {
   return !!actual && !!expected && actual.senderId === expected.senderId && actual.frameId === expected.frameId && actual.url === expected.url;
@@ -18,7 +18,7 @@ export async function dispatchRequest(method: string, input: unknown, actual: Ca
   if (typeof image === 'string' && !imageDataUrlValid(image)) return failure('VALIDATION', '图片内容与 PNG/JPEG 类型不符');
   if (name === 'command') {
     const request = body as CommandRequest;
-    const images = [request.image, ...(request.history ?? []).map(entry => entry.image)];
+    const images = [request, ...(request.history ?? [])].flatMap(commandImages);
     if (images.some(image => image && !imageDataUrlValid(image.imageDataUrl))) return failure('VALIDATION', '图片内容与 PNG/JPEG 类型不符');
   }
   try {

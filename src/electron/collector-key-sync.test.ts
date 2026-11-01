@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { createCollectorKeySync, requirePersistentEncryption } from './collector-key-sync';
 import { createKeyStore, type AsyncEncryption } from './key-store';
 import { writePrivate } from '../remote/private-file';
-import { aiKeySyncAad, type AiKeySyncResponse } from '../shared/ai-key-sync';
+import { aiKeySyncAad, type AiKeySyncResponse, type AiKeySyncPlaintext } from '../shared/ai-key-sync';
 
 const identity = { protocolVersion: 1 as const, dataInstanceId: '11111111-1111-4111-8111-111111111111', generation: 1 };
 const deviceId = '22222222-2222-4222-8222-222222222222', revisionA = '33333333-3333-4333-8333-333333333333', revisionB = '44444444-4444-4444-8444-444444444444';
@@ -31,7 +31,7 @@ function encryption() {
   };
   return value;
 }
-function seal(input: { keyId: string; nonce: string }, key: string | null, revision: string | null, receiver: KeyObject = publicKey, settings?: {model:string;reasoningEffort?:'none'|'low'|'high'|'max'}): AiKeySyncResponse {
+function seal(input: { keyId: string; nonce: string }, key: string | null, revision: string | null, receiver: KeyObject = publicKey, settings?: AiKeySyncPlaintext['settings']): AiKeySyncResponse {
   const symmetric = randomBytes(32), iv = randomBytes(12);
   const envelope = { version: 1 as const, deviceId, ...input, revision, wrappedKey: publicEncrypt({ key: receiver, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, symmetric).toString('base64url'), iv: iv.toString('base64url'), ciphertext: '', tag: '' };
   const cipher = createCipheriv('aes-256-gcm', symmetric, iv); cipher.setAAD(Buffer.from(aiKeySyncAad(identity, envelope)));
@@ -61,6 +61,20 @@ async function fixture(initialReceiver = true) {
 }
 
 describe('collector cloud-key receiver', () => {
+  it('accepts profile-only changes under an unchanged key and never exposes profile text in status', async () => {
+    const f = await fixture(), onSettings = vi.fn();
+    const worker = createCollectorKeySync({ directory: f.root, keys: f.keys, encryption: f.encrypted, createClient: f.createClient, onSettings })!;
+    workers.push(worker);
+    const userProfile = { campus: '合成大学', locationContext: '合成地点', personalContext: '合成社团活动负责人。'.repeat(100) };
+    for (const personalContext of [userProfile.personalContext, '']) {
+      const settings = { model: 'deepseek-flash', userProfile: { ...userProfile, personalContext } };
+      f.sync.mockImplementationOnce(async input => seal(input, newKey, revisionA, publicKey, settings));
+      await worker.refresh(); expect(onSettings).toHaveBeenLastCalledWith(settings);
+    }
+    expect(f.set).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(worker.status())).not.toContain('合成');
+  });
+
   it('syncs authenticated model settings with the key envelope without a full snapshot or resetting them on an old server', async () => {
     const f=await fixture(),onSettings=vi.fn();
     const worker=createCollectorKeySync({directory:f.root,keys:f.keys,encryption:f.encrypted,createClient:f.createClient,onSettings})!;workers.push(worker);

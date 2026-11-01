@@ -51,6 +51,32 @@ async function meItem(label) {
   assert(await evaluate(`(() => { const button = Array.from(document.querySelectorAll('nav[aria-label="我的"] button')).find(b => b.textContent.trim() === ${JSON.stringify(label)}); button?.click(); return !!button; })()`), `我的 menu lost ${label}`);
 }
 async function until(expression, tries = 50, interval = 100) { for (let i = 0; i < tries; i++) { if (await evaluate(expression)) return true; await wait(interval); } return false; }
+async function verifyAssistantPanel() {
+  assert(!(await evaluate('window.planner.snapshot()')).data.keyStatus.configured, 'Scroll test must never use a provider Key');
+  for (let index = 0; index < 7; index++) {
+    const text = `合成聊天滚动检查 ${index}：` + '这段文字只用于隔离界面的历史滚动检查。'.repeat(35);
+    await evaluate(`(() => { const input = document.querySelector('.a2-assist-bar textarea'); input.focus(); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, ${JSON.stringify(text)}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await wait(30);
+    await evaluate(`document.querySelector('.a2-assist-bar').requestSubmit()`);
+    assert(await until(`document.querySelectorAll('.a2-assist-panel .message.user').length === ${index + 1} && document.querySelectorAll('.a2-assist-panel .message.assistant').length === ${index + 1} && !document.querySelector('.a2-assist-panel [aria-busy="true"]')`), 'Synthetic conversation did not finish its local no-Key validation');
+  }
+  const metrics = () => evaluate(`(() => { const panel = document.querySelector('.a2-assist-panel'), thread = panel.querySelector('.conversation'), grip = panel.querySelector('.a2-assist-resize'); const rect = thread.getBoundingClientRect(), handle = grip.getBoundingClientRect(); return { height: panel.getBoundingClientRect().height, scroll: thread.scrollTop, content: thread.scrollHeight, visible: thread.clientHeight, messages: thread.querySelectorAll('.message').length, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, gripX: handle.x + handle.width / 2, gripY: handle.y + handle.height / 2 }; })()`);
+  const before = await metrics();
+  assert(before.content > before.visible && before.scroll > 0, 'Chat history did not form a real scroll container');
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseWheel', x: before.x, y: before.y, deltaX: 0, deltaY: -260 });
+  assert(await until(`document.querySelector('.a2-assist-panel .conversation').scrollTop < ${before.scroll - 80}`), 'Mouse wheel did not scroll the real conversation');
+  const scrolled = await metrics();
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: scrolled.gripX, y: scrolled.gripY });
+  await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x: scrolled.gripX, y: scrolled.gripY, button: 'left', clickCount: 1 });
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: scrolled.gripX, y: scrolled.gripY - 100, buttons: 1 });
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: scrolled.gripX, y: scrolled.gripY - 100, button: 'left', clickCount: 1 });
+  await wait(50);
+  const resized = await metrics();
+  assert(resized.height >= scrolled.height + 60 && resized.messages === scrolled.messages, 'Pointer resize failed or lost chat history');
+  assert(resized.scroll + resized.visible < resized.content - 40, 'Resizing forced old-history reading to the latest reply');
+  await writeFile(join(profile, 'assistant-resized.png'), Buffer.from((await cdp('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+  await evaluate(`document.querySelector('button[aria-label="收起对话"]').click()`);
+}
 async function stop() {
   if (child && child.exitCode === null && ws?.readyState === WebSocket.OPEN) {
     try { await evaluate('setTimeout(() => window.close(), 50); true'); } catch {}
@@ -128,7 +154,9 @@ try {
   await writeFile(join(profile, 'settings-overview.png'), Buffer.from((await cdp('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
   await meItem('学期与节次');
   assert(await until('!document.querySelector(".settings-campus").hidden && document.querySelector(".settings-campus").open', 50, 50), 'Term section did not open its campus settings');
+  assert(await evaluate(`!!document.querySelector('textarea[name="personalContext"][maxlength="2000"]') && typeof window.planner.selectCommandDocuments === 'function' && !!document.querySelector('input[aria-label="选择助手图片文件"][multiple]')`), 'Personal context or assistant attachment controls missing from the packaged app');
   await writeFile(join(profile, 'settings-campus.png'), Buffer.from((await cdp('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+  await verifyAssistantPanel();
   await meItem('软件更新');
   assert(await until('!!document.querySelector(".settings-page .software-update") && document.querySelector(".settings-page .software-version").textContent.includes("v")', 50, 50), 'Software update section missing its version');
   await nav('日历');
@@ -314,9 +342,12 @@ try {
   assert(!(await readFile(join(profile, 'credentials', 'deepseek.bin'))).includes(Buffer.from(secret)), 'Credential file contains plaintext');
   const snapshot = await evaluate('window.planner.snapshot()'); assert(!JSON.stringify(snapshot).includes(secret), 'Snapshot leaked credential');
   assert(!JSON.stringify(await evaluate('window.planner.accountSnapshot()')).includes(secret), 'Account status leaked credential');
-  await evaluate(`window.planner.saveSettings({settings:{...(${JSON.stringify(snapshot.data.settings)}),closeToTray:false}})`);
+  const personalContext = '姓名：合成同学；学号：SYN-SMOKE-001；职务：示例协会资料组组长';
+  const savedSettings = await evaluate(`window.planner.saveSettings({settings:{...(${JSON.stringify(snapshot.data.settings)}),closeToTray:false,personalContext:${JSON.stringify(personalContext)}}})`);
+  assert(savedSettings.ok && savedSettings.data.personalContext === personalContext, 'Personal context failed real IPC persistence');
   assert(await stop(), 'Application did not quit gracefully before restart'); await connect();
   const reopened = await evaluate('window.planner.snapshot()'); assert(reopened.ok && reopened.data.tasks[0]?.title === '合成验收任务（隔离测试）' && reopened.data.keyStatus.configured, `Restart persistence/decryption failed (ok=${reopened.ok}, tasks=${reopened.data?.tasks?.length}, keyConfigured=${reopened.data?.keyStatus?.configured}, profile=${profile})`);
+  assert(reopened.data.settings.personalContext === personalContext, 'Personal context lost after packaged app restart');
   const reopenedLedger = await evaluate(`window.planner.ledgerSnapshot({month:${JSON.stringify(ledgerMonth)}})`);
   assert(reopenedLedger.ok && reopenedLedger.data.entries.filter(entry => entry.id === ledgerDraft.id).length === 1 && reopenedLedger.data.entries.find(entry => entry.id === ledgerDraft.id).cashflows[0].accountId === 'alipay' && reopenedLedger.data.summary.personalCents === initialPersonalCents + 1200 && reopenedLedger.data.summary.accounts.find(account => account.id === 'alipay').balanceCents === 8000, 'Ledger entries, personal totals, snapshots, or corrected account failed restart persistence');
   // Exercise recovery through the real main process and sandbox IPC using only this temporary credential.

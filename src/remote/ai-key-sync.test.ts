@@ -14,7 +14,7 @@ describe('encrypted receiver transport',()=>{
     try{expect(await f.client.syncAiKeyReceiver(input)).toEqual({ok:true,identity,envelope});
       expect(f.fetcher.mock.calls[1]?.[0]).toBe(origin+'/api/v1/ai/receiver/sync');
       const request=(f.fetcher.mock.calls[1] as unknown as [string,RequestInit])[1];
-      expect(request).toMatchObject({redirect:'error',method:'POST',headers:{Origin:origin,Cookie:credential.cookie,'X-CSRF-Token':'synthetic-csrf'}});
+      expect(request).toMatchObject({redirect:'error',method:'POST',headers:{Origin:origin,Cookie:credential.cookie,'X-CSRF-Token':'synthetic-csrf','X-Planner-Profile-Settings-Version':'1'}});
       expect(JSON.parse(String(request.body))).toEqual({...input,identity});expect(f.write).not.toHaveBeenCalled();
     }finally{f.client.close();}
   });
@@ -31,6 +31,6 @@ describe('encrypted receiver transport',()=>{
     try{await expect(f.client.syncAiKeyReceiver(input)).rejects.not.toThrow('synthetic-secret');expect(f.fetcher).toHaveBeenCalledTimes(2);expect(f.write).not.toHaveBeenCalled();}finally{f.client.close();}
   });
   it('rejects oversized success responses',async()=>{
-    const f=fixture(()=>json({ok:true,padding:'x'.repeat(33*1024)}));try{await expect(f.client.syncAiKeyReceiver(input)).rejects.toMatchObject({status:502});}finally{f.client.close();}
+    const f=fixture(()=>json({ok:true,padding:'x'.repeat(65*1024)}));try{await expect(f.client.syncAiKeyReceiver(input)).rejects.toMatchObject({status:502});}finally{f.client.close();}
   });
 });

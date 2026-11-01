@@ -6,13 +6,17 @@ import { createController } from './controller';
 import { WorkflowError } from '../ai/deepseek';
 import { DEFAULT_LEDGER_RULES, LedgerEntryDraftSchema, LedgerEntrySchema, type LedgerEntry } from '../shared/ledger';
 import type { CommandRequest } from '../shared/contracts';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const at = '2026-10-23T21:30:00+08:00';
 const disposables: Array<Repository|LedgerService> = [];
-afterEach(()=>{for(const item of disposables.splice(0))item.close();vi.restoreAllMocks();});
+const temporaryDirectories: string[] = [];
+afterEach(()=>{for(const item of disposables.splice(0))item.close();for(const directory of temporaryDirectories.splice(0))rmSync(directory,{recursive:true,force:true});vi.restoreAllMocks();});
 const envelope = (intent:unknown) => new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(intent)},finish_reason:'stop'}],usage:{prompt_tokens:10,completion_tokens:10,total_tokens:20}}),{status:200});
-function setup(intents: unknown[]) {
-  const repository = createRepository(':memory:'); const ledger = createLedgerService(':memory:',{now:()=>new Date(at)});disposables.push(repository,ledger);
+function setup(intents: unknown[], ledgerDatabase = ':memory:') {
+  const repository = createRepository(':memory:'); const ledger = createLedgerService(ledgerDatabase,{now:()=>new Date(at)});disposables.push(repository,ledger);
   const payloads: Array<{messages:Array<{role:string;content:string}>}> = [];
   const controller = createController({repository,planner:createPlanner(repository),ledger,now:()=>at,getApiKey:async()=>'synthetic-key',fetch:async(_url,init)=>{payloads.push(JSON.parse(String(init?.body)));const next=intents.shift();if(!next)throw Error('unexpected model call');return envelope(next);}});
   return {repository,ledger,controller,payloads,intents};
@@ -27,6 +31,73 @@ function importSynthetic(ledger: LedgerService, entries: LedgerEntry[]) {
   ledger.import({ format: 'ultimate-calendar-ledger', formatVersion: 1, entries, balanceSnapshots: [], rules: DEFAULT_LEDGER_RULES, audit: [], sources: [] }, 'synthetic-receivable-import');
 }
 describe('main assistant local ledger commands',()=>{
+  it('adds and persists a new courier category with only dining history, without replaying a saved command', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'uc-ledger-category-')); temporaryDirectories.push(directory);
+    const database = join(directory, 'ledger.sqlite');
+    const intent = expense('alipay');
+    Object.assign(intent.changes[0]!.values, { title: '合成快递费', category: '快递物流', amountCents: 1200, personalCents: 1200, cashflows: [{ accountId: 'alipay', deltaCents: -1200 }] });
+    const { controller, ledger, payloads } = setup([route, intent], database);
+    const original = syntheticEntry('synthetic-breakfast', { title: '合成早餐', category: '餐饮' });
+    importSynthetic(ledger, [original]);
+    const request = { operationId: 'synthetic-courier-category', text: '合成快递费12元支付宝' };
+    const saved = await controller.command(request);
+    expect(saved).toMatchObject({ ok: true, data: { conversationState: { domain: 'ledger', phase: 'saved' } } });
+    const after = ledger.snapshot('2026-10');
+    expect(after.entries).toHaveLength(2);
+    expect(after.entries.find(entry => entry.id === original.id)).toEqual(original);
+    expect(after.entries.find(entry => entry.title === '合成快递费')).toMatchObject({ category: '快递物流', amountCents: 1200, personalCents: 1200, cashflows: [{ accountId: 'alipay', deltaCents: -1200 }] });
+    expect(after.summary.categories).toEqual([{ category: '快递物流', cents: 1200 }, { category: '餐饮', cents: 100 }]);
+    const modelContext = JSON.parse(payloads[1]!.messages.at(-1)!.content).context;
+    expect(modelContext.categories).toEqual(['餐饮']);
+    expect(payloads[1]!.messages[0]!.content).toContain('分类是开放文本');
+    expect(payloads[1]!.messages[0]!.content).toContain('“快递费12元支付宝”应归快递物流');
+    expect(await controller.command(request)).toEqual(saved);
+    expect(ledger.snapshot('2026-10')).toEqual(after);
+    expect(payloads).toHaveLength(2);
+    disposables.splice(disposables.indexOf(ledger), 1); ledger.close();
+    const reopened = createLedgerService(database, { now: () => new Date(at) }); disposables.push(reopened);
+    expect(reopened.snapshot('2026-10').entries).toEqual(after.entries);
+    expect(reopened.query({ category: '快递物流' }).entries).toEqual(after.entries.filter(entry => entry.category === '快递物流'));
+    expect(reopened.snapshot('2026-10').summary.categories).toEqual(after.summary.categories);
+  });
+
+  it('accepts an explicitly chosen custom category outside both history and common suggestions', async () => {
+    const intent = expense('alipay');
+    Object.assign(intent.changes[0]!.values, { title: '合成赛用模型材料', category: '合成赛事材料' });
+    const { controller, ledger } = setup([route, intent]);
+    const saved = await controller.command({ operationId: 'synthetic-custom-category', text: '合成赛用模型材料20元支付宝，分类记合成赛事材料' });
+    expect(saved).toMatchObject({ ok: true, data: { conversationState: { phase: 'saved' } } });
+    expect(ledger.snapshot().entries).toEqual([expect.objectContaining({ category: '合成赛事材料', amountCents: 2000, personalCents: 2000, cashflows: [{ accountId: 'alipay', deltaCents: -2000 }] })]);
+    expect(ledger.snapshot().summary.categories).toEqual([{ category: '合成赛事材料', cents: 2000 }]);
+  });
+
+  it('retains an existing custom category when correcting the authorized amount fields', async () => {
+    const original = syntheticEntry('synthetic-existing-category', { title: '合成模型材料', category: '合成赛事材料' });
+    const { controller, ledger } = setup([route, { kind: 'mutate', changes: [{ type: 'updateEntry', id: original.id, expectedVersion: 1,
+      patch: { amountCents: 300, personalCents: 300, cashflows: [{ accountId: 'alipay', deltaCents: -300 }] }, note: '用户更正实际金额' }] }]);
+    importSynthetic(ledger, [original]);
+    const saved = await controller.command({ operationId: 'synthetic-keep-category', text: '合成模型材料实际是3元，改一下金额' });
+    expect(saved).toMatchObject({ ok: true, data: { conversationState: { phase: 'saved' } } });
+    expect(ledger.snapshot().entries).toEqual([expect.objectContaining({ id: original.id, version: 2, category: '合成赛事材料', amountCents: 300, personalCents: 300, cashflows: [{ accountId: 'alipay', deltaCents: -300 }] })]);
+    expect(ledger.snapshot().summary.categories).toEqual([{ category: '合成赛事材料', cents: 300 }]);
+  });
+
+  it('changes only the category when the user explicitly corrects it, preserving amounts and cashflows', async () => {
+    const original = syntheticEntry('synthetic-category-correction', { title: '合成快递费', category: '餐饮' });
+    const { controller, ledger } = setup([route, { kind: 'mutate', changes: [{ type: 'updateEntry', id: original.id, expectedVersion: 1,
+      patch: { category: '快递物流' }, note: '用户明确更正分类' }] }]);
+    importSynthetic(ledger, [original]);
+    const before = ledger.snapshot();
+    const saved = await controller.command({ operationId: 'synthetic-category-only', text: '把合成快递费这笔的分类改为快递物流，金额不动' });
+    expect(saved).toMatchObject({ ok: true, data: { conversationState: { phase: 'saved' } } });
+    const after = ledger.snapshot();
+    expect(after.entries).toHaveLength(1);
+    expect(after.entries[0]).toMatchObject({ ...original, category: '快递物流', version: 2, updatedAt: new Date(at).toISOString() });
+    expect(after.summary.personalCents).toBe(before.summary.personalCents);
+    expect(after.summary.accounts).toEqual(before.summary.accounts);
+    expect(after.summary.categories).toEqual([{ category: '快递物流', cents: 100 }]);
+  });
+
   it('saves an AA receipt and corrects a fully charged original atomically without another AI call on retry', async () => {
     const { controller, ledger, payloads } = setup([route, { kind: 'mutate', changes: [{ type: 'createEntry', key: 'new:0', values: {
       kind: 'aa_return', date: '2026-10-23', month: '2026-10', title: '合成拼车返款', category: '返款', amountCents: 1200, personalCents: 0,

@@ -68,7 +68,7 @@ describe('DeepSeek account settings', () => {
   });
   it('groups account, rates and usage together and keeps infrequent settings collapsed without losing saved values', async () => {
     const f = fixture({ campus: '示例大学北校区', termStart: '2026-08-31', termWeeks: 20,
-      periodMap: [{ period: 1, startTime: '08:30', endTime: '09:15' }], locationContext: '合成地点背景',
+      periodMap: [{ period: 1, startTime: '08:30', endTime: '09:15' }], locationContext: '合成地点背景', personalContext: '合成社团宣传部成员',
       closeToTray: false, autoLaunch: true, courseReminders: true, blockLeadMinutes: [15], taskLeadMinutes: [60, 30],
     });
     await screen.findByText('12.345678');
@@ -93,6 +93,7 @@ describe('DeepSeek account settings', () => {
     await screen.findByText('12.345678');
     fireEvent.click(screen.getByText('日历与校园'));
     fireEvent.change(screen.getByLabelText('学校与校区'), { target: { value: '合成校园草稿' } });
+    fireEvent.change(screen.getByLabelText('个人身份与职责补充'), { target: { value: '合成班学习委员\n合成社团宣传部成员，负责活动报名' } });
     fireEvent.change(screen.getByLabelText('第一教学周周一'), { target: { value: '2026-08-31' } });
     fireEvent.change(screen.getByLabelText('节次时间（每行：节次,开始,结束）'), { target: { value: '1,08:30,09:15\n2,09:20,10:05' } });
     fireEvent.click(screen.getByText('日历与校园'));
@@ -106,7 +107,7 @@ describe('DeepSeek account settings', () => {
     expect(screen.getByText('11.88')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '保存全部设置' }));
     await waitFor(() => expect(f.saveSettings).toHaveBeenCalledTimes(1));
-    expect(f.saveSettings.mock.calls[0]![0].settings).toMatchObject({ campus: '合成校园草稿', termStart: '2026-08-31',
+    expect(f.saveSettings.mock.calls[0]![0].settings).toMatchObject({ campus: '合成校园草稿', personalContext: '合成班学习委员\n合成社团宣传部成员，负责活动报名', termStart: '2026-08-31',
       periodMap: [{ period: 1, startTime: '08:30', endTime: '09:15' }, { period: 2, startTime: '09:20', endTime: '10:05' }],
       taskLeadMinutes: [25, 5], tokenPrices: { inputPerMillion: 2.5, outputPerMillion: 4 }, model: 'deepseek-flash' });
     expect((f.container.querySelector('.settings-campus') as HTMLDetailsElement).open).toBe(false);
@@ -141,15 +142,25 @@ describe('DeepSeek account settings', () => {
     expect(f.saveSettings).not.toHaveBeenCalled();
   });
 
-  it('saves editable campus context without requiring or changing an API key', async () => {
+  it('saves and clears personal context with campus context without requiring or changing an API key', async () => {
     const f = fixture();
     const campus = await screen.findByLabelText('学校与校区');
     expect((campus as HTMLInputElement).value).toBe('');
     fireEvent.change(campus, { target: { value: '示例大学北校区' } });
     fireEvent.change(screen.getByLabelText('地点理解补充'), { target: { value: '校内简称按所在校区理解，保留原名。' } });
+    const personalContext = screen.getByLabelText('个人身份与职责补充') as HTMLTextAreaElement;
+    expect(personalContext.value).toBe('');
+    expect(personalContext.maxLength).toBe(2000);
+    fireEvent.change(personalContext, { target: { value: '  合成班学习委员；负责学业通知。  ' } });
     fireEvent.click(screen.getByRole('button', { name: '保存全部设置' }));
     await waitFor(() => expect(f.saveSettings).toHaveBeenCalledTimes(1));
-    expect(f.saveSettings.mock.calls[0]![0].settings).toMatchObject({ campus: '示例大学北校区', locationContext: '校内简称按所在校区理解，保留原名。' });
+    expect(f.saveSettings.mock.calls[0]![0].settings).toMatchObject({ campus: '示例大学北校区', locationContext: '校内简称按所在校区理解，保留原名。', personalContext: '合成班学习委员；负责学业通知。' });
+    await waitFor(() => expect((screen.getByRole('button', { name: '保存全部设置' }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.change(personalContext, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存全部设置' }));
+    await waitFor(() => expect(f.saveSettings).toHaveBeenCalledTimes(2));
+    expect(f.snapshot.settings.personalContext).toBe('');
+    expect(f.setApiKey).not.toHaveBeenCalled();
     expect(f.snapshot.keyStatus.configured).toBe(true);
   });
   it('distinguishes a temporary load failure and recovers without entering or displaying a key', async () => {

@@ -28,7 +28,7 @@ export const LedgerAdjustmentSchema = z.strictObject({ targetEntryIds: z.array(i
 export const LedgerEntryDraftSchema = z.strictObject({
   id, kind: LedgerEntryKindSchema, date: LedgerDateSchema.nullable(), month: LedgerMonthSchema,
   dateNote: z.string().max(2000).default(''), occurredAt: instant.nullable().default(null),
-  title: z.string().trim().min(1).max(500), category: z.string().trim().min(1).max(100),
+  title: z.string().trim().min(1).max(500), category: z.string().trim().min(1).max(100).describe('开放的账单分类名称，可使用新的或自定义分类；历史分类不是白名单，不默认餐饮。'),
   counterparty: z.string().trim().max(200).optional(),
   amountCents: LedgerCentsSchema, personalCents: LedgerCentsSchema.nullable(),
   incomeCents: LedgerCentsSchema.default(0), assetSaleCents: LedgerCentsSchema.default(0),

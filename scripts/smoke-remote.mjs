@@ -54,7 +54,7 @@ try {
   await writeFile(codeFile, await pairingCode(), { mode: 0o600 });
   await writeFile(configFile, JSON.stringify({ origin, deviceName: '合成 Windows 设备', pairingCodeFile: codeFile }));
   const debugPort = await port();
-  desktop = spawn(electron, ['.', `--planner-profile=${profile}`, `--planner-remote-config=${configFile}`, `--remote-debugging-port=${debugPort}`], { env, windowsHide: true, stdio: 'ignore' });
+  desktop = spawn(process.env.PLANNER_SMOKE_EXE || electron, [...(process.env.PLANNER_SMOKE_EXE ? [] : ['.']), `--planner-profile=${profile}`, `--planner-remote-config=${configFile}`, `--remote-debugging-port=${debugPort}`], { env, windowsHide: true, stdio: 'ignore' });
   let target;
   for (let i = 0; i < 200; i++) { if (desktop.exitCode !== null) throw Error('Remote desktop exited during startup'); try { target = (await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json()).find(value => value.type === 'page' && value.url.startsWith('file:')); } catch {} if (target) break; await wait(100); }
   assert(target, 'Bundled desktop renderer did not start');
@@ -65,6 +65,14 @@ try {
   assert(ready, 'Remote preload unavailable');
   const initial = await cdp('window.planner.snapshot()'); assert(initial.ok && initial.data.tasks.length === 0, 'Native remote did not read fresh server');
   assert(initial.data.keyStatus.scope === 'cloud', 'Native snapshot did not identify cloud Key scope');
+  const personalContext = '姓名：云端合成同学；学号：SYN-CLOUD-001；职务：示例协会资料组成员';
+  const savedProfile = await cdp(`window.planner.saveSettings(${JSON.stringify({ settings: { ...initial.data.settings, personalContext }, expectedSettings: initial.data.settings })})`);
+  assert(savedProfile.ok && savedProfile.data.personalContext === personalContext, 'Native personal background was not saved by compiled cloud backend');
+  assert(await cdp('typeof window.planner.selectCommandDocuments === "function"'), 'Native cloud mode lost the document reader IPC');
+  const legacyProfile = (await rpc('snapshot')).data.settings;
+  assert(!('personalContext' in legacyProfile), 'Old browser received an unsupported settings field');
+  const legacySave = await rpc('saveSettings', { settings: { ...legacyProfile, campus: '合成云端校区' }, expectedSettings: legacyProfile });
+  assert(legacySave.ok && (await cdp('window.planner.snapshot()')).data.settings.personalContext === personalContext, 'Old browser erased personal background');
   const added = await cdp(`window.planner.mutate(${JSON.stringify({ operationId: 'native-create', origin: 'manual', mutations: [{ type: 'create', entity: 'task', values: { title: '合成云端往返任务' } }] })})`);
   assert(added.ok && added.data.status === 'applied', 'Native remote create failed');
   const fromBrowser = await rpc('snapshot'); const task = fromBrowser.data.tasks[0]; assert(task?.title === '合成云端往返任务', 'Browser missed native write');

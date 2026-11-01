@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import { ArrowRight, ChevronDown, ChevronUp, MessageSquare, Paperclip } from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { ArrowRight, ChevronDown, ChevronUp, FileText, MessageSquare, Paperclip } from "lucide-react";
 import type { CommandRequest } from "../../../shared/contracts";
 import type { PlannerUI } from "../../hooks/usePlanner";
 import type { Selection } from "../Calendar";
 import { assistantRetryLabel, canContinueUnsent, canReanalyze, useAssistantConversation } from "./assistant-conversation";
 import { ResourceFields } from '../resources/ResourcePanel';
-import { AssistantImageButton, AssistantImageDraft, AssistantMessageImage } from './assistant-image-input';
+import { AssistantImageButton, AssistantAttachmentDraft, AssistantMessageAttachments } from './assistant-image-input';
+import { useAssistantPanelSize } from './assistant-panel-size';
 
 /** One-line assistant at the bottom of every page; its conversation opens upward over the page. */
 export function Assistant({ ui, selected, date, domain, ledgerView }: {
@@ -18,13 +19,20 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
   const [expanded, setExpanded] = useState(false);
   const [showResources, setShowResources] = useState(false);
   const { text, setText, history, running, send, retry, resources, setResources, unsentDraft, continueUnsent,
-    image, imageReading, imageError, selectImage, readImageFile, pasteImage, removeImage } = useAssistantConversation({ ui, selected, date, domain, ledgerView, onStart: () => setExpanded(true) });
+    images, documents, imageReading, imageError, readImageFiles, pasteImage, selectDocuments, removeImage, removeDocument, cancelRead } = useAssistantConversation({ ui, selected, date, domain, ledgerView, onStart: () => setExpanded(true) });
   const conversation = useRef<HTMLDivElement>(null);
   const root = useRef<HTMLElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    if (conversation.current)
-      conversation.current.scrollTop = conversation.current.scrollHeight;
+  const panelSize = useAssistantPanelSize(root, expanded);
+  const conversationId = useId();
+  const scrollPosition = useRef(0), followLatest = useRef(true), latestUser = useRef<string | undefined>(undefined);
+  useLayoutEffect(() => {
+    const newestUser = history.findLast(entry => entry.role === 'user')?.id;
+    const sent = newestUser !== latestUser.current; latestUser.current = newestUser;
+    if (!expanded || !conversation.current) return;
+    const thread = conversation.current;
+    if (sent || followLatest.current) { thread.scrollTop = thread.scrollHeight; followLatest.current = true; }
+    else thread.scrollTop = scrollPosition.current;
   }, [history, expanded]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
@@ -46,19 +54,23 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
   }, []);
 
   return (
-    <section ref={root} className={`a2-assist${expanded ? " open" : ""}`} aria-label="生活助手">
+    <section ref={root} className={`a2-assist${expanded ? " open" : ""}${panelSize.resizing ? ' is-resizing' : ''}`} aria-label="生活助手">
       {expanded && (
-        <div className="a2-assist-panel ui-overlay">
+        <div className="a2-assist-panel ui-overlay" style={{ height: panelSize.height }}>
+          <div className="a2-assist-resize" role="separator" tabIndex={0} aria-label="调整聊天框高度" aria-orientation="horizontal" aria-controls={conversationId}
+            aria-valuemin={panelSize.minimum} aria-valuemax={panelSize.maximum} aria-valuenow={panelSize.height} aria-valuetext={`${panelSize.height} 像素`}
+            title="拖动调整高度，也可使用上下方向键" onPointerDown={panelSize.onPointerDown} onKeyDown={panelSize.onKeyDown}><span /></div>
           <div className="a2-assist-head">
             <strong>生活助手</strong>
             <span className="ui-hint">{running ? "正在处理…" : selected ? "已携带选中事项" : "Esc 收起"}</span>
           </div>
-          <div className="conversation" aria-live="polite" ref={conversation}>
+          <div id={conversationId} className="conversation" role="log" aria-label="生活助手聊天记录" aria-live="polite" tabIndex={0} ref={conversation}
+            onWheel={event => event.stopPropagation()} onScroll={event => { const thread = event.currentTarget; scrollPosition.current = thread.scrollTop; followLatest.current = thread.scrollHeight - thread.clientHeight - thread.scrollTop < 32; }}>
             {history.length ? (
               history.map((entry) => (
                 <div className={`message ${entry.role}`} key={entry.id} aria-busy={entry.status === "pending"}>
                   <small>{entry.role === "user" ? "你" : "助手"}</small>
-                  <AssistantMessageImage image={entry.image} unavailable={entry.imageUnavailable} />
+                  <AssistantMessageAttachments {...entry} />
                   {entry.text}
                   {!ui.host?.resourceOpen && entry.resources?.filter(resource => resource.kind === 'web').map(resource =>
                     resource.kind === 'web' && <a key={resource.id} href={resource.url} target="_blank" rel="noopener noreferrer">{resource.name}</a>)}
@@ -78,7 +90,7 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
         </div>
       )}
       {unsentDraft && <p className="ui-hint" role="status">这条补充尚未发送，可在输入框继续补充后发送。</p>}
-      <AssistantImageDraft image={image} reading={imageReading} error={imageError} remove={removeImage} disabled={running || ui.busy} />
+      <AssistantAttachmentDraft images={images} documents={documents} reading={imageReading} error={imageError} removeImage={removeImage} removeDocument={removeDocument} cancelRead={cancelRead} disabled={running || ui.busy} />
       <form className="a2-assist-bar" onSubmit={(e) => { e.preventDefault(); void send(); }}>
         <MessageSquare aria-hidden="true" />
         <textarea
@@ -96,14 +108,17 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
           }}
         />
         <span className="ui-kbd" aria-hidden="true">Ctrl K</span>
-        <AssistantImageButton selectImage={selectImage} readImageFile={readImageFile} disabled={running || imageReading || ui.busy} />
-        <button type="button" className="ui-btn ghost icon" aria-label="选择指令中的资料" title="关联文件、文件夹或网页" onClick={() => { setExpanded(true); setShowResources(value => !value); }}>
+        <AssistantImageButton readImageFiles={readImageFiles} disabled={running || imageReading || ui.busy} />
+        {ui.host?.selectCommandDocuments && <button type="button" className="ui-btn ghost icon" aria-label="读取文件" title="读取文件内容供 AI 分析（Excel、Word、PPT、PDF 或文本，最多 3 份）" disabled={running || imageReading || ui.busy} onClick={selectDocuments}>
+          <FileText aria-hidden="true" />
+        </button>}
+        <button type="button" className="ui-btn ghost icon" aria-label="选择指令中的资料" title="关联文件、文件夹或网页（保存引用，不读取内容）" onClick={() => { setExpanded(true); setShowResources(value => !value); }}>
           <Paperclip aria-hidden="true" />
         </button>
         <button type="button" className="ui-btn ghost icon" aria-label={expanded ? "收起对话" : "展开对话"} onClick={() => setExpanded(!expanded)}>
           {expanded ? <ChevronDown aria-hidden="true" /> : <ChevronUp aria-hidden="true" />}
         </button>
-        <button type="submit" className="ui-btn primary icon" disabled={running || imageReading || ui.busy || (!text.trim() && !image)} aria-label="发送指令" title={running ? "处理中…" : "发送"}>
+        <button type="submit" className="ui-btn primary icon" disabled={running || imageReading || ui.busy || (!text.trim() && !images.length && !documents.length)} aria-label="发送指令" title={running ? "处理中…" : "发送"}>
           <ArrowRight aria-hidden="true" />
         </button>
       </form>

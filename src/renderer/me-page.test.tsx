@@ -49,9 +49,13 @@ it('groups the menu, shows one settings section at a time and still saves fields
   expect(within(term).getByLabelText('学校与校区')).toBeTruthy();
   expect((within(term).getByText('AI 与费用').closest('section') as HTMLElement).hidden).toBe(true);
   fireEvent.change(within(term).getByLabelText('学校与校区'), { target: { value: '合成校区' } });
+  fireEvent.change(within(term).getByLabelText('个人身份与职责补充'), { target: { value: '合成社团宣传部成员，负责活动报名' } });
+  fireEvent.click(within(screen.getByRole('navigation', { name: '我的' })).getByRole('button', { name: '提醒与启动' }));
+  const restoredTerm = await openMe('学期与节次');
+  expect((within(restoredTerm).getByLabelText('个人身份与职责补充') as HTMLTextAreaElement).value).toBe('合成社团宣传部成员，负责活动报名');
   fireEvent.click(within(term).getByRole('button', { name: '保存全部设置' }));
   await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(1));
-  expect(saveSettings.mock.calls[0]![0].settings).toMatchObject({ campus: '合成校区', model: expect.any(String) });
+  expect(saveSettings.mock.calls[0]![0].settings).toMatchObject({ campus: '合成校区', personalContext: '合成社团宣传部成员，负责活动报名', model: expect.any(String) });
   expect(screen.queryByText('让日历适合你')).toBeNull();
 });
 
