@@ -18,12 +18,14 @@ function bothStages(request: CommandRequest) {
 }
 
 describe('assistant conversation transport', () => {
-  it('adds image instructions only when current or historical user pixels are sent', () => {
+  it('keeps each stage system prefix identical when current or historical user pixels are sent', () => {
     const image = { imageDataUrl: 'data:image/png;base64,iVBORw0KGgo=', label: '合成图片.png' };
     const plain = { operationId: 'plain', text: '解释一下' };
-    for (const messages of bothStages(plain)) expect(messages[0]?.content).not.toContain('图片理解：');
+    const plainStages = bothStages(plain);
+    for (const messages of plainStages) expect(messages[0]?.content).toContain('图片理解：');
     for (const request of [{ ...plain, image }, { ...plain, history: [{ role: 'user' as const, text: '', image }] }]) {
-      for (const messages of bothStages(request)) {
+      for (const [index, messages] of bothStages(request).entries()) {
+        expect(messages[0]).toEqual(plainStages[index]![0]);
         expect(messages[0]?.content).toContain('图片理解：');
         expect(messages[0]?.content).toContain('不能自动记账');
       }

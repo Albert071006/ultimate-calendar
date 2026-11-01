@@ -13,7 +13,7 @@ const candidate: ExtractedCandidate = { title: '获奖同学领礼品', action: 
   sourceIds: [source.id], sourceQuote: source.text, deadline: null, eventStart: null, eventEnd: null, location: '', temporalEvidence: [], relation: { kind: 'duplicate', candidateId: original.id } };
 
 describe('capture-only event reconciliation', () => {
-  it('uses the same strict current-source schema for the prompt and response validation', () => {
+  it('strictly validates current source IDs even though the prompt schema has a stable structure', () => {
     const schema = captureRequestSchema([source.id, 'supporting-source']);
     expect(schema.safeParse({ candidates: [candidate] }).success).toBe(true);
     expect(schema.safeParse({ candidates: [{ ...candidate, sourceIds: [source.id, 'supporting-source'] }] }).success).toBe(false);

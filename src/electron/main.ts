@@ -46,6 +46,7 @@ import { createNativeResourceHost } from './resources-native';
 import { createLocalEvidenceResolver } from './local-evidence';
 import { combinedCaptureSources, createSourceAttachmentHost } from './source-attachments';
 import { createCollectorTrayOwnership } from './collector-tray';
+import { startAllowanceScheduler } from '../ledger/allowance-scheduler';
 
 const edition = desktopEdition(LOCAL_ONLY);
 app.setName(edition.name);
@@ -54,6 +55,7 @@ let window: BrowserWindow | null = null; let tray: Tray | null = null; let repos
 let quitting = false; let timer: ReturnType<typeof setInterval> | undefined; let navigationReady = false;
 let pendingNavigation: NavigateEvent | null = null;
 let stopAccount: (() => void) | undefined;
+let stopAllowance: (() => void) | undefined;
 let stopCapture: (() => void) | undefined;
 let stopUpdates: (() => void) | undefined;
 let stopSpace: (() => void) | undefined;
@@ -100,7 +102,7 @@ else {
     }
     quitting = true;
   });
-  app.on('will-quit', () => { if (timer) clearInterval(timer); stopCollectorTray?.(); stopRemote?.(); stopSpace?.(); disposeRestore?.(); stopUpdates?.(); stopAccount?.(); stopCapture?.(); ledger?.close(); repository?.close(); tray?.destroy(); });
+  app.on('will-quit', () => { if (timer) clearInterval(timer); stopAllowance?.(); stopCollectorTray?.(); stopRemote?.(); stopSpace?.(); disposeRestore?.(); stopUpdates?.(); stopAccount?.(); stopCapture?.(); ledger?.close(); repository?.close(); tray?.destroy(); });
   app.on('activate', () => showWindow());
   app.on('window-all-closed', () => { if ((!tray && !collectorOnly) || quitting) app.quit(); });
   // The independent edition starts with its own data; never import a legacy/cloud user's old local database.
@@ -177,7 +179,6 @@ async function start() {
   initializeBackupDirectory(data, app.getPath('documents'), !!profile, edition.directoryName);
   repository = createRepository(join(data, 'planner.sqlite')); const repo = repository; const planner = createPlanner(repo);
   ledger = createLedgerService(repo.path); const localLedger = ledger;
-  localLedger.ensureMonthlyAllowance();
   const keys = createKeyStore(join(data, 'credentials', 'deepseek.bin'), safeStorage, {
     onStatusChanged: () => changed({ reason: 'key' }),
   });
@@ -392,8 +393,16 @@ async function start() {
     } catch { if (!reminderFailureShown) { reminderFailureShown = true; startupNotice = { title: '提醒检查未完成', message: '尚未展示的提醒已保留。请检查数据目录空间与写入权限；修复后会再次检查。' }; void showRetainedSummary(); } }
   };
   await check(true);
+  const allowance = startAllowanceScheduler({ ledger: localLedger,
+    isIdle: () => !quitting && activeRequests === 0 && activeWorkflows === 0 && !updates.isInstalling() && !space.isRunning(),
+    onChanged: () => { automaticBackup(repo); changed({ reason: 'mutation' }); },
+    onError: () => {
+      startupNotice = { title: '生活费自动检查未完成', message: '请检查数据目录空间与写入权限，应用会自动重试，已有生活费不会重复记录。' };
+    },
+  });
+  stopAllowance = allowance.stop;
   timer = setInterval(() => { const catchUp = Date.now() - lastTick > 90_000; lastTick = Date.now(); void check(catchUp); }, 30_000);
-  powerMonitor.on('resume', () => { lastTick = Date.now(); void check(true); void account.refresh({ force: true, balanceOnly: true }); });
+  powerMonitor.on('resume', () => { lastTick = Date.now(); allowance.check(); void check(true); void account.refresh({ force: true, balanceOnly: true }); });
   applyAutoLaunch(repo.snapshot().settings.autoLaunch);
   account.start();
   updates.start();

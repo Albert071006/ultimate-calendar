@@ -12,7 +12,12 @@ export const CaptureCandidateSchema = ExtractedCandidateSchema.extend({
   eventKey: z.string().trim().min(1).max(80).optional(),
 });
 export const CaptureExtractionSchema = z.strictObject({ candidates: z.array(CaptureCandidateSchema).max(100) });
-/** Only the live request uses this narrower schema; old paid checkpoints retain their exact shape. */
+// The prompt keeps a stable structure; allowedSourceIds in its user data supplies the live IDs.
+// Keep the legacy checkpoint schema above unchanged, including its optional fields.
+export const CaptureRequestStructureSchema = z.strictObject({ candidates: z.array(CaptureCandidateSchema.extend({
+  sourceIds: z.array(IdSchema).length(1),
+})).max(100) });
+/** Responses still use exact live source IDs; a stable prompt must not loosen validation. */
 export function captureRequestSchema(sourceIds: string[]) {
   const sourceId = z.enum(sourceIds as [string, ...string[]]);
   return z.strictObject({ candidates: z.array(CaptureCandidateSchema.extend({

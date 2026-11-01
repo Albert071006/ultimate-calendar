@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createRepository, records, updateEntity, type Repository } from '../storage/repository';
 import { createPlanner } from '../domain/planner';
 import { createLedgerService, type LedgerService } from '../ledger/service';
+import { startAllowanceScheduler } from '../ledger/allowance-scheduler';
 import { createController, type ControllerOptions } from '../application/controller';
 import { createModelRequestQueue } from '../ai/request-queue';
 import { createAccountService } from '../ai/account';
@@ -142,6 +143,11 @@ export function createRemoteService(options: RemoteServiceOptions) {
   const maintenance = setInterval(() => { try { cleanupEvidence(); backup(); } catch (error) { options.onBackupError?.(error); } }, 60 * 60_000); maintenance.unref();
   const emit = (reason: ChangedEvent['reason']) => { for (const listener of listeners) { try { listener({ reason }); } catch { /* a disconnected observer cannot reject a committed operation */ } } };
   const restore = createCloudRestore({ repository, ledger, state, backup: () => backup(true), hasPendingWrites: () => running.size > 0 });
+  const allowance = startAllowanceScheduler({ ledger,
+    isIdle: () => lifecycle === 'running' && running.size === 0,
+    onChanged: () => { backup(true); emit('mutation'); },
+    onError: () => { console.error('Monthly allowance check failed; will retry automatically.'); },
+  });
   async function invoke(method: RemoteMethod, input: unknown, deviceId: string, modernAiSettings: boolean): Promise<unknown> {
     switch (method) {
       case 'snapshot': return { ok: true, data: { ...planner.snapshot(), keyStatus: { configured: !!await getApiKey(), sessionOnly: false } } };
@@ -289,7 +295,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
     },
     close(config: { graceMs?: number } = {}): Promise<void> {
       if (closePromise) return closePromise;
-      lifecycle = 'draining'; clearInterval(maintenance); account.stop();
+      lifecycle = 'draining'; clearInterval(maintenance); allowance.stop(); account.stop();
       closePromise = (async () => {
         const timer = setTimeout(() => shutdownAbort.abort(), Math.max(0, config.graceMs ?? 25_000)); timer.unref();
         try {
