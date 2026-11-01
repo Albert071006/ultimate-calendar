@@ -354,6 +354,8 @@ describe('calendar, reminders and backups', () => {
     expect(buildCalendar(p.snapshot(), '2026-09-07', '2026-09-27', true).map(x => x.date)).toEqual(['2026-09-07', '2026-09-22']);
   });
   it('uses literal reminder boundaries, date-only 09:00, receipts survive restart', () => {
+    // The records must exist before every reminder point, regardless of the real test date.
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-01T11:59:59+08:00'));
     const { repository: r, planner: p, mutate, path } = setup();
     mutate({ type: 'create', entity: 'task', values: { title: 'exact', deadline: { date: '2026-11-02', time: '12:00' } } });
     mutate({ type: 'create', entity: 'task', values: { title: 'date', deadline: { date: '2026-11-02', time: null } } });
