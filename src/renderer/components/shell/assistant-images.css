@@ -5,7 +5,16 @@
 .assistant-image-error { color: var(--accent); }
 .assistant-message-image { display: block; width: auto; max-width: min(280px, 100%); max-height: 220px; margin: 6px 0; object-fit: contain; border-radius: var(--radius); }
 .assistant-image-unavailable { display: block; margin-top: 6px; font-size: 12px; opacity: .8; }
-.a2-assist > .assistant-image-draft { margin-bottom: 6px; }
-.m-assistant > .assistant-image-draft { margin: 0 12px 8px; }
+.assistant-attachments-draft { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; max-height: min(32vh, 260px); overflow: auto; }
+.assistant-attachment-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.assistant-attachment-list > .assistant-image-draft { flex: 1 1 220px; min-width: 0; }
+.assistant-attachment-list > .assistant-document-draft { flex-basis: 100%; }
+.assistant-document-draft > svg { width: 24px; flex-shrink: 0; }
+.assistant-attachment-loading { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.assistant-message-images { display: flex; flex-wrap: wrap; gap: 8px; }
+.assistant-message-document { display: flex; align-items: center; gap: 6px; margin: 6px 0; overflow-wrap: anywhere; }
+.assistant-message-document > svg { width: 16px; height: 16px; flex-shrink: 0; }
+.a2-assist > .assistant-attachments-draft { margin-bottom: 6px; }
+.m-assistant > .assistant-attachments-draft { margin: 0 12px 8px; }
 .m-assistant-compose textarea { min-width: 0; }
 .assistant-image-button { flex: none; width: 44px; height: 44px; }

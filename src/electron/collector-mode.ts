@@ -99,9 +99,8 @@ export async function startCollectorMode(directory: string, dependencies: Collec
     keySync = (dependencies.createCollectorKeySync ?? createCollectorKeySync)({ directory, encryption, keys,
       onSettings(settings) {
         const current = repository!.snapshot().settings;
-        if (current.model !== settings.model || (current.reasoningEffort ?? 'none') !== (settings.reasoningEffort ?? 'none')) {
-          repository!.saveSettings({ ...current, model: settings.model, reasoningEffort: settings.reasoningEffort ?? 'none' });
-        }
+        const next = { ...current, model: settings.model, reasoningEffort: settings.reasoningEffort ?? 'none', ...settings.userProfile };
+        if (JSON.stringify(current) !== JSON.stringify(next)) repository!.saveSettings(next);
       },
       async onChanged(value) {
         account?.resetKey();

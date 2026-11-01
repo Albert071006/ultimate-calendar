@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { ImportSourceRequestSchema, AnalyzeSourceRequestSchema, CommandRequestSchema, CommandIntentSchema, CourseImportRequestSchema, SaveSettingsRequestSchema, WorkflowReceiptSchema, SourceSchema, CandidateSchema, InstantSchema, type PlannerService, type Source, type ApiResult, type AnalysisResult, type CommandResult, type CourseImportResult, type Settings, type WorkflowReceipt, type ImportSourceRequest, type AnalyzeSourceRequest, type CommandRequest, type CourseImportRequest } from '../shared/contracts';
+import { hasCommandAttachments, ImportSourceRequestSchema, AnalyzeSourceRequestSchema, CommandRequestSchema, CommandIntentSchema, CourseImportRequestSchema, SaveSettingsRequestSchema, WorkflowReceiptSchema, SourceSchema, CandidateSchema, InstantSchema, type PlannerService, type Source, type ApiResult, type AnalysisResult, type CommandResult, type CourseImportResult, type Settings, type WorkflowReceipt, type ImportSourceRequest, type AnalyzeSourceRequest, type CommandRequest, type CourseImportRequest } from '../shared/contracts';
 import { type Repository, type StoredState, newEntity, findEntity, records, updateEntity } from '../storage/repository';
 import { automaticBackup } from '../storage/backups';
 import { nowInstant } from '../domain/time';
@@ -150,13 +150,13 @@ export function createController(options: ControllerOptions) {
         if (prior?.result && prior.result.mutationResult?.status !== 'preview') return prior.result;
         const context = { ...buildCommandContext(planner.snapshot(), request, now()), currentUiDomain: request.domain ?? 'calendar',
           availableServices: { ledger: !!options.ledger }, currentLedgerView: request.domain === 'ledger' ? request.ledgerView : undefined };
-        let intent = prior?.intent ?? await model(CommandIntentSchema, commandMessages(context, request.text, request.history, request.image), input.operationId, 'command');
-        // A picture can answer a pending textual request, but cannot authorize a fresh action.
+        let intent = prior?.intent ?? await model(CommandIntentSchema, commandMessages(context, request.text, request.history, request.image, request), input.operationId, 'command');
+        // Attachments can answer a pending textual request, but cannot authorize a fresh action.
         const previousQuestion = request.history.at(-1); const previousUser = request.history.at(-2);
         const pendingTextRequest = previousQuestion?.role === 'assistant' && previousQuestion.outcome?.phase === 'clarification'
           && previousUser?.role === 'user' && previousUser.text.trim().length > 0;
-        if (request.image && !request.text && !pendingTextRequest && intent.kind !== 'query' && intent.kind !== 'clarification') {
-          intent = { kind: 'clarification', reply: '已收到图片。', questions: ['希望我解释图片、根据图片记账，还是安排日历事项？'] };
+        if (hasCommandAttachments(request) && !request.text && !pendingTextRequest && intent.kind !== 'query' && intent.kind !== 'clarification') {
+          intent = { kind: 'clarification', reply: '已收到附件。', questions: ['希望我解释附件内容、根据附件记账，还是安排日历事项？'] };
         }
         if (!prior?.intent) intent = groundResourceCommand(groundTimedCommand(intent, request, context.now), context, planner.snapshot());
         if (intent.kind === 'ledger') {

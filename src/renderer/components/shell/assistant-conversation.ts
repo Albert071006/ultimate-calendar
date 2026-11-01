@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { ApiError, CommandRequest, CommandResult, SelectedImage } from "../../../shared/contracts";
+import { commandImages, hasCommandAttachments, type ApiError, type CommandDocument, type CommandRequest, type CommandResult, type SelectedImage } from "../../../shared/contracts";
 import { operationId } from "../../calendar-layout";
 import type { PlannerUI } from "../../hooks/usePlanner";
 import type { Selection } from "../Calendar";
@@ -16,8 +16,11 @@ export type ConversationEntry = {
   outcome?: CommandResult['conversationState'];
   resources?: ResourceReference[];
   image?: SelectedImage;
-  /** A persisted conversation never includes image bytes. */
+  images?: SelectedImage[];
+  documents?: CommandDocument[];
+  /** A persisted conversation never includes image bytes or extracted document text. */
   imageUnavailable?: boolean;
+  documentsUnavailable?: boolean;
   /** Only a definitive pre-send failure can supply a later clarification; unknown results cannot. */
   delivery?: 'not-sent' | 'unknown';
   /** Keep the structured failure code; never infer safe replay from localized error text. */
@@ -29,7 +32,7 @@ export type UnsentClarificationDraft = { replyId: string; text: string };
 export function canContinueUnsent(entry: ConversationEntry): boolean {
   const request = entry.request, previous = request?.history?.at(-1);
   return entry.status === 'failed' && entry.delivery === 'not-sent' && !!request?.text.trim()
-    && !request.image && !request.resources?.length && !needsResourcePreparation(request.text)
+    && !hasCommandAttachments(request) && !request.resources?.length && !needsResourcePreparation(request.text)
     && previous?.role === 'assistant' && previous.outcome?.phase === 'clarification';
 }
 
@@ -153,19 +156,21 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
       } : entry));
   }
   function send() {
-    const image = imageInput.currentImage.current;
-    if (!ui.client || (!text.trim() && !image) || inFlight.current || imageInput.reading.current || ui.busy) return;
+    const images = imageInput.currentImages.current, documents = imageInput.currentDocuments.current;
+    const attachments = { ...(images.length ? { images } : {}), ...(documents.length ? { documents } : {}) };
+    if (!ui.client || (!text.trim() && !hasCommandAttachments(attachments)) || inFlight.current || imageInput.reading.current || ui.busy) return;
     const id = operationId();
-    // Keep only successful pairs. An image from a failed turn must never leak into a later instruction.
+    // Keep only successful pairs. Failed attachments must never leak into a later instruction.
     const successfulHistory = history.flatMap((entry, index) => {
       const reply = history[index + 1];
       return entry.role === 'user' && reply?.role === 'assistant' && !reply.status ? [entry, reply] : [];
     }).slice(-20);
-    const lastImageId = image ? undefined : successfulHistory.findLast(entry => entry.role === 'user' && entry.image)?.id;
+    const lastAttachmentId = hasCommandAttachments(attachments) ? undefined : successfulHistory.findLast(entry =>
+      entry.role === 'user' && (hasCommandAttachments(entry) || entry.imageUnavailable || entry.documentsUnavailable))?.id;
     const request: CommandRequest = {
       operationId: id,
       text,
-      ...(image ? { image } : {}),
+      ...attachments,
       ...(resources.length ? { resources } : {}),
       ...(domain ? { domain } : {}),
       ...(domain === 'ledger' && ledgerView ? { ledgerView } : {}),
@@ -174,26 +179,30 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
       toDate: date,
       // A failed request can only be resumed with its explicit retry action.
       // Do not turn its unsatisfied instruction into context for a different request.
-      history: successfulHistory.map(({ id: entryId, role, text: message, outcome, image: priorImage, imageUnavailable }) => ({
-        role, text: (imageUnavailable ? `[先前图片未保留，如需看图请重新选择图片]\n${message}` : message).slice(0, 10_000), ...(outcome ? { outcome } : {}),
-        ...(entryId === lastImageId && priorImage ? { image: priorImage } : {}),
-      })),
+      history: successfulHistory.map(entry => {
+        const retained = entry.id === lastAttachmentId;
+        const priorImages = retained ? commandImages(entry) : [];
+        const note = entry.imageUnavailable || entry.documentsUnavailable ? '[先前附件内容未保留，如需分析请重新选择附件]\n'
+          : hasCommandAttachments(entry) && !retained ? '[该条较早的附件本次未携带，如需分析请重新选择附件]\n' : '';
+        return { role: entry.role, text: `${note}${entry.text}`.slice(0, 10_000), ...(entry.outcome ? { outcome: entry.outcome } : {}),
+          ...(priorImages.length ? { images: priorImages } : {}), ...(retained && entry.documents?.length ? { documents: entry.documents } : {}) };
+      }),
     };
     const replyId = `${id}:assistant`;
     latestReplyId.current = replyId;
     setHistory(previous => [...previous.map(entry => entry.id === editingReplyId
       ? { ...entry, request: undefined, text: `${entry.text}\n已在后续消息中重新编辑。` } : entry),
-      { id: `${id}:user`, role: "user", text, ...(image ? { image } : {}) },
+      { id: `${id}:user`, role: "user", text, ...attachments },
       { id: replyId, role: "assistant", text: "正在处理…", status: "pending", request },
     ]);
     setText("");
     composer.current = '';
     setEditingReplyId(undefined);
-    imageInput.removeImage();
+    imageInput.clearAttachments();
     void execute(request, replyId);
   }
   function continueUnsent(entry: ConversationEntry) {
-    if (entry.id !== latestReplyId.current || !canContinueUnsent(entry) || inFlight.current || ui.busy || imageInput.currentImage.current || resources.length) return;
+    if (entry.id !== latestReplyId.current || !canContinueUnsent(entry) || inFlight.current || ui.busy || imageInput.currentImages.current.length || imageInput.currentDocuments.current.length || resources.length) return;
     setText(entry.request!.text);
     composer.current = entry.request!.text;
     setEditingReplyId(entry.id);

@@ -17,6 +17,7 @@ import { shouldSuppressPassiveQuestion } from './qa-actionability';
 import { normalizeCaptureResponseTimes } from './response-time';
 import { assertArrivalFollowup } from './arrival-followup';
 import { reasoningRequest } from '../shared/ai-reasoning';
+import { AttachmentContextSchema, cachedAttachmentContext } from './attachment-context';
 export { attachmentEvidenceUnits } from './attachment-deduplication';
 
 export const ANALYSIS_VERSION = 'qq-v2';
@@ -28,6 +29,7 @@ const UnitSchema = UnitIdentitySchema.extend({ text: z.string(), imageDataUrl: z
 export type AnalysisUnit = z.infer<typeof UnitSchema>;
 const SavedUnitSchema = UnitSchema.omit({ text: true, imageDataUrl: true }).extend({ textHash: z.string(), imageHash: z.string().nullable() });
 const ContextSchema = z.strictObject({ id: z.string(), sentAt: z.string(), text: z.string(),
+  attachments: AttachmentContextSchema.optional(),
   recipient: z.strictObject({ audience: z.enum(['self', 'all', 'others', 'unspecified', 'unknown']), sender: z.enum(['self', 'other', 'unknown']), addressedText: z.string().nullable(), truncated: z.boolean() }).optional(),
 });
 const CheckpointSchema = z.strictObject({ version: z.literal(2), planFingerprint: z.string(), units: z.array(SavedUnitSchema), context: z.array(ContextSchema), warnings: z.array(z.string()), completed: z.array(z.strictObject({ key: z.string(), value: CaptureExtractionSchema })), final: z.boolean(),
@@ -35,6 +37,7 @@ const CheckpointSchema = z.strictObject({ version: z.literal(2), planFingerprint
   attachmentDedupe: z.literal(1).optional(), documentGrouping: z.literal(1).optional(),
   passiveQuestionFilter: z.literal(1).optional(),
   noticeFirst: z.literal(1).optional(),
+  attachmentContext: z.literal(1).optional(),
 });
 type Checkpoint = z.infer<typeof CheckpointSchema>;
 type Plan = Omit<Checkpoint, 'units' | 'planFingerprint' | 'completed' | 'final' | 'pendingResponse'> & { units: AnalysisUnit[] };
@@ -63,7 +66,7 @@ function compactAttachmentText(units: AnalysisUnit[]): AnalysisUnit[] {
   }
   flush(); return result;
 }
-export function prepareAnalysis(store: CaptureStore, batch: CaptureBatch, options: { deduplicateAttachments?: boolean; documentGrouping?: boolean; passiveQuestionFilter?: boolean; noticeFirst?: boolean } = {}): Plan {
+export function prepareAnalysis(store: CaptureStore, batch: CaptureBatch, options: { deduplicateAttachments?: boolean; documentGrouping?: boolean; passiveQuestionFilter?: boolean; noticeFirst?: boolean; attachmentContext?: boolean } = {}): Plan {
   const units: AnalysisUnit[] = []; const warnings: string[] = [];
   const deduplicate = options.deduplicateAttachments !== false ? createAttachmentDeduplicator() : (_attachment: unknown, _message: unknown, values: AnalysisUnit[]) => values;
   let textBytes = 0, imageBytes = 0;
@@ -81,18 +84,22 @@ export function prepareAnalysis(store: CaptureStore, batch: CaptureBatch, option
     const original = m.sourceMessageId ? store.messageByKey(m.accountId, m.groupId, m.sourceMessageId) : null;
     return (original && !original.deleted && Date.parse(original.sentAt) === Date.parse(m.sentAt) ? [original, m] : [m]).map(value => [value.id, value] as const);
   }));
+  const priorMessages = store.contextMessagesBefore(batch.id, { includeAttachments: options.attachmentContext !== false });
+  const attachmentContexts = options.attachmentContext === false ? new Map<string, z.infer<typeof AttachmentContextSchema>>() : cachedAttachmentContext(store, batch, [...priorMessages, ...contextMessages.values()]);
   const context = [...contextMessages.values()].flatMap(m => {
-    if (contextBudget <= 0) return [];
+    const attachments = attachmentContexts.get(m.id);
+    if (contextBudget <= 0 && !attachments) return [];
     const text = m.text.slice(0, Math.min(2000, contextBudget)); contextBudget -= text.length;
     const recipient = recipientContext(m);
-    return [{ id: m.id, sentAt: m.sentAt, text, recipient: { ...recipient, addressedText: recipient.addressedText?.slice(0, 2000) ?? null } }];
+    return [{ id: m.id, sentAt: m.sentAt, text, recipient: { ...recipient, addressedText: recipient.addressedText?.slice(0, 2000) ?? null }, ...(attachments ? { attachments } : {}) }];
   });
   let priorBudget = 8000;
-  const priorContext = store.contextMessagesBefore(batch.id).flatMap(m => {
-    if (priorBudget <= 0) return [];
+  const priorContext = priorMessages.flatMap(m => {
+    const attachments = attachmentContexts.get(m.id);
+    if (priorBudget <= 0 && !attachments) return [];
     const text = m.text.slice(0, Math.min(2000, priorBudget)); priorBudget -= text.length;
     const recipient = recipientContext(m);
-    return [{ id: m.id, sentAt: m.sentAt, text, recipient: { ...recipient, addressedText: recipient.addressedText?.slice(0, 2000) ?? null } }];
+    return [{ id: m.id, sentAt: m.sentAt, text, recipient: { ...recipient, addressedText: recipient.addressedText?.slice(0, 2000) ?? null }, ...(attachments ? { attachments } : {}) }];
   }).reverse();
   for (const [messageIndex, m] of messages.entries()) {
     const base = { messageId: m.id, accountId: m.accountId, groupId: m.groupId, sentAt: m.sentAt, label: `${m.accountId.startsWith('wechat:') ? '微信' : 'QQ'} · ${m.groupName || m.groupId} · ${m.senderName || '群消息'}` };
@@ -123,13 +130,14 @@ export function prepareAnalysis(store: CaptureStore, batch: CaptureBatch, option
     ...(options.deduplicateAttachments !== false ? { attachmentDedupe: 1 as const } : {}),
     ...(options.documentGrouping !== false ? { documentGrouping: 1 as const } : {}),
     ...(options.passiveQuestionFilter !== false ? { passiveQuestionFilter: 1 as const } : {}),
-    ...(options.noticeFirst !== false ? { noticeFirst: 1 as const } : {}) };
+    ...(options.noticeFirst !== false ? { noticeFirst: 1 as const } : {}),
+    ...(options.attachmentContext !== false ? { attachmentContext: 1 as const } : {}) };
 }
 function saveUnit({ text, imageDataUrl, ...unit }: AnalysisUnit): z.infer<typeof SavedUnitSchema> {
   return { ...unit, textHash: hashInput(text), imageHash: imageDataUrl ? hashInput(imageDataUrl) : null };
 }
 function hydrateUnits(store: CaptureStore, batch: CaptureBatch, checkpoint: Checkpoint): { units: AnalysisUnit[]; warnings: string[] } {
-  const plan = prepareAnalysis(store, batch, { deduplicateAttachments: checkpoint.attachmentDedupe === 1, documentGrouping: checkpoint.documentGrouping === 1, passiveQuestionFilter: checkpoint.passiveQuestionFilter === 1, noticeFirst: checkpoint.noticeFirst === 1 }); const current = new Map(plan.units.map(unit => [unit.id, unit]));
+  const plan = prepareAnalysis(store, batch, { deduplicateAttachments: checkpoint.attachmentDedupe === 1, documentGrouping: checkpoint.documentGrouping === 1, passiveQuestionFilter: checkpoint.passiveQuestionFilter === 1, noticeFirst: checkpoint.noticeFirst === 1, attachmentContext: checkpoint.attachmentContext === 1 }); const current = new Map(plan.units.map(unit => [unit.id, unit]));
   const units = checkpoint.units.map(saved => {
     const unit = current.get(saved.id);
     if (!unit || hashInput(saveUnit(unit)) !== hashInput(saved)) throw new WorkflowError('CONFLICT', '批次原文或附件分片已变化，请核对后选择重读资料；不会自动重复付费');
@@ -298,13 +306,14 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
   if (modalities && !modalities.includes('image') && actualUnits.some(unit => eligible(unit) && unit.imageDataUrl)) throw new WorkflowError('VALIDATION', '当前选定模型不支持图片；请切换到支持图片的模型后重读资料，原图仍保留');
   const profile = locationProfile(settings);
   // Empty context preserves pre-profile checkpoints; saved paid fragments remain resumable.
-  const profileFingerprint = profile.campus || profile.locationContext ? { userProfile: profile } : {};
+  const profileFingerprint = profile.campus || profile.locationContext || profile.personalContext ? { userProfile: profile } : {};
   const planFingerprint = hashInput({ version: ANALYSIS_VERSION, model: settings.model, ...profileFingerprint,
     ...(plan.attachmentDedupe === 1 ? { attachmentDedupe: 1 } : {}), ...(plan.documentGrouping === 1 ? { documentGrouping: 1 } : {}),
     ...(plan.passiveQuestionFilter === 1 ? { passiveQuestionFilter: 1 } : {}),
     ...(plan.noticeFirst === 1 ? { noticeFirst: 1 } : {}),
+    ...(plan.attachmentContext === 1 ? { attachmentContext: 1 } : {}),
     units: plan.units, context: plan.context, warnings: plan.warnings });
-  if (prior.success && prior.data.planFingerprint !== planFingerprint) throw new WorkflowError('CONFLICT', '模型、校园背景或输入已变化；请恢复本批次原设置后重试，或明确选择重读资料；不会自动重复付费');
+  if (prior.success && prior.data.planFingerprint !== planFingerprint) throw new WorkflowError('CONFLICT', '模型、个人背景或输入已变化；请恢复本批次原设置后重试，或明确选择重读资料；不会自动重复付费');
   const checkpoint: Checkpoint = prior.success ? prior.data : { ...plan, planFingerprint, completed: [], final: false };
   if (!checkpoint.pendingResponse) store.checkpointResult(batch.id, checkpoint);
   applyCaptureProgress(repository, batch, checkpoint, actualUnits, eligible, checkpoint.warnings, options.onProgress);
@@ -359,10 +368,11 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
     await runModel(async () => {
       if (!options.canContinue()) throw new WorkflowError('CANCELLED', '分析已暂停，已完成的分片结果保留；恢复分析后继续');
       if (repository.snapshot().settings.model !== settings.model) throw new WorkflowError('CONFLICT', '排队期间已更改模型，尚未发出此请求；请使用当前模型重读资料');
-      if (JSON.stringify(locationProfile(repository.snapshot().settings)) !== JSON.stringify(profile)) throw new WorkflowError('CONFLICT', '排队期间校园背景已改变，尚未发出此请求；请核对设置后重试或重读资料');
+      if (JSON.stringify(locationProfile(repository.snapshot().settings)) !== JSON.stringify(profile)) throw new WorkflowError('CONFLICT', '排队期间个人背景已改变，尚未发出此请求；请核对设置后重试或重读资料');
       const apiKey = await options.getApiKey(); if (!apiKey) throw new WorkflowError('NO_API_KEY', '请在设置中配置 DeepSeek 密钥后，手动重试本批次');
       const currentSettings = repository.snapshot().settings;
       if (currentSettings.model !== settings.model) throw new WorkflowError('CONFLICT', '云端模型已变化，尚未发出请求；请核对后重读资料');
+      if (JSON.stringify(locationProfile(currentSettings)) !== JSON.stringify(profile)) throw new WorkflowError('CONFLICT', '云端个人背景已变化，尚未发出请求；请核对设置后重试或重读资料');
       // Effort changes affect the next paid request, never a saved response or its receipt hash.
       const requestSettings = { ...settings, reasoningEffort: currentSettings.reasoningEffort };
       if (!options.canContinue()) throw new WorkflowError('CANCELLED', '分析已暂停，已完成的分片结果保留；恢复分析后继续');

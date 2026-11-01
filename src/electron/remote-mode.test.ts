@@ -1,9 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { writePrivate } from '../remote/private-file';
 import { SnapshotSchema } from '../shared/contracts';
+import { fixtureXlsx } from '../capture/documents/fixtures';
+const documentWorker = vi.hoisted(() => ({ started: vi.fn(), terminate: vi.fn(), hold: false }));
+vi.mock('node:worker_threads', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { extractDocument } = await import('../capture/documents');
+  class Worker extends EventEmitter {
+    constructor(path: string, options: { workerData: { name: string; bytes: Uint8Array } }) {
+      super(); documentWorker.started(path, options);
+      if (!documentWorker.hold) void extractDocument({ ...options.workerData, bytes: Buffer.from(options.workerData.bytes) }).then(result => this.emit('message', result));
+    }
+    terminate() { documentWorker.terminate(); return Promise.resolve(0); }
+  }
+  return { Worker };
+});
 const localControl=vi.hoisted(()=>({invoke:vi.fn(),close:vi.fn()}));
 vi.mock('./collector-control',async importOriginal=>({...await importOriginal<typeof import('./collector-control')>(),createCollectorControlClient:()=>localControl}));
 
@@ -11,7 +25,7 @@ const mock=vi.hoisted(()=>({handlers:new Map<string,(...args:unknown[])=>unknown
 vi.mock('electron',async()=>{
   const {EventEmitter}=await import('node:events');
   class Window extends EventEmitter{webContents=Object.assign(new EventEmitter(),{id:1,mainFrame:{routingId:2},send:vi.fn(),setWindowOpenHandler:vi.fn()});isDestroyed(){return false;}isVisible(){return false;}isMinimized(){return false;}loadURL=vi.fn(async()=>{});show=vi.fn();destroy=vi.fn();}
-  return{BrowserWindow:Window,Menu:{buildFromTemplate:(value:typeof mock.menu)=>{mock.menu=value;return value;},setApplicationMenu:vi.fn()},app:{isPackaged:true},dialog:{showMessageBox:mock.message,showOpenDialog:mock.openImage},ipcMain:{handle:(name:string,handler:(...args:unknown[])=>unknown)=>mock.handlers.set(name,handler),removeHandler:(name:string)=>mock.handlers.delete(name)},safeStorage:{isEncryptionAvailable:()=>mock.canEncrypt,encryptString:mock.encrypt,decryptString:mock.decrypt},session:{defaultSession:{setPermissionRequestHandler:vi.fn(),setPermissionCheckHandler:vi.fn(),on:vi.fn(),removeListener:vi.fn()}}};
+  return{BrowserWindow:Window,Menu:{buildFromTemplate:(value:typeof mock.menu)=>{mock.menu=value;return value;},setApplicationMenu:vi.fn()},app:{isPackaged:true,getAppPath:()=>process.cwd()},dialog:{showMessageBox:mock.message,showOpenDialog:mock.openImage},ipcMain:{handle:(name:string,handler:(...args:unknown[])=>unknown)=>mock.handlers.set(name,handler),removeHandler:(name:string)=>mock.handlers.delete(name)},safeStorage:{isEncryptionAvailable:()=>mock.canEncrypt,encryptString:mock.encrypt,decryptString:mock.decrypt},session:{defaultSession:{setPermissionRequestHandler:vi.fn(),setPermissionCheckHandler:vi.fn(),on:vi.fn(),removeListener:vi.fn()}}};
 });
 vi.mock('../remote/node-client',async importOriginal=>({...await importOriginal<typeof import('../remote/node-client')>(),createNodeRemoteClient:mock.createClient}));
 vi.mock('../remote/write-journal',()=>({createWriteJournal:()=>mock.journal}));
@@ -20,10 +34,37 @@ import { startNativeRemote } from './remote-mode';
 import { RemoteClientError } from '../remote/node-client';
 
 const roots:string[]=[],closers:(()=>void)[]=[];
+beforeEach(() => { documentWorker.hold = false; });
 beforeEach(()=>{mock.handlers.clear();mock.menu=[];mock.canEncrypt=true;vi.clearAllMocks();mock.createClient.mockReturnValue(mock.client);mock.client.pair.mockResolvedValue({});mock.client.getSession.mockResolvedValue({identity:{dataInstanceId:'11111111-1111-4111-8111-111111111111',generation:1},deviceId:'synthetic-device'});mock.journal.rpc.mockResolvedValue({ok:true,data:SnapshotSchema.parse({schemaVersion:1,sources:[],candidates:[],tasks:[],blocks:[],goals:[],courses:[],courseExceptions:[],preferences:[],feedback:[],settings:{},journal:[],tokenUsage:[],keyStatus:{configured:false,sessionOnly:false}})});mock.journal.inspect.mockResolvedValue({status:'interrupted',requestId:'synthetic-unresolved',method:'mutate'});mock.message.mockResolvedValue({response:0});mock.openImage.mockResolvedValue({canceled:true,filePaths:[]});mock.encrypt.mockImplementation((value:string)=>{mock.cleartext=value;return Buffer.from('synthetic-opaque-cipher');});mock.decrypt.mockImplementation(()=>mock.cleartext);});
 afterEach(()=>{for(const close of closers.splice(0))close();for(const root of roots.splice(0)){const part=relative(tmpdir(),root);if(!part||part.startsWith('..')||isAbsolute(part))throw Error('Unsafe test cleanup');rmSync(root,{recursive:true,force:true});}});
 function fixture(){const directory=mkdtempSync(join(tmpdir(),'calendar-native-mode-'));roots.push(directory);const code=join(directory,'pairing-code.txt');writePrivate(code,'synthetic-high-entropy-pair-code');return{directory,config:{origin:'https://synthetic.example',deviceName:'合成Windows',pairingCodeFile:code},document:'file:///synthetic/index.html'};}
 describe('native cloud-mode boundary',()=>{
+  it('reads a selected synthetic Excel locally through the native document runtime without forwarding its path', async () => {
+    const f = fixture(), path = join(f.directory, '合成名单.xlsx'), bytes = fixtureXlsx(); writeFileSync(path, bytes);
+    const runtime = await startNativeRemote(f.config, f.directory, f.document); closers.push(runtime.close);
+    const event = { sender: { id: 1 }, senderFrame: { routingId: 2, url: f.document } };
+    mock.openImage.mockResolvedValue({ canceled: false, filePaths: [path] });
+    const result = await mock.handlers.get('planner:selectCommandDocuments')!(event, undefined);
+    expect(result).toMatchObject({ ok: true, data: [{ label: '合成名单.xlsx', text: expect.stringContaining('交报告') }] });
+    expect(JSON.stringify(result)).not.toContain(f.directory);
+    expect(mock.openImage).toHaveBeenCalledWith(runtime.window, expect.objectContaining({ properties: ['openFile', 'multiSelections'] }));
+    expect(documentWorker.started).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('document-worker.cjs'), expect.objectContaining({ workerData: { name: '合成名单.xlsx', bytes: new Uint8Array(bytes) } }));
+    expect(documentWorker.terminate).toHaveBeenCalledTimes(1);
+    expect(mock.journal.rpc).not.toHaveBeenCalled(); expect(mock.client.rpc).not.toHaveBeenCalled();
+  });
+  it('disposes a pending document runtime when the cloud desktop closes', async () => {
+    const f = fixture(), path = join(f.directory, '合成文件.csv'); writeFileSync(path, '学号,姓名\nS123,合成同学');
+    const runtime = await startNativeRemote(f.config, f.directory, f.document);
+    const event = { sender: { id: 1 }, senderFrame: { routingId: 2, url: f.document } };
+    documentWorker.hold = true; mock.openImage.mockResolvedValue({ canceled: false, filePaths: [path] });
+    const pending = mock.handlers.get('planner:selectCommandDocuments')!(event, undefined);
+    await vi.waitFor(() => expect(documentWorker.started).toHaveBeenCalledTimes(1));
+    runtime.close();
+    expect(await pending).toMatchObject({ ok: false, error: { code: 'VALIDATION', message: expect.stringContaining('已取消') } });
+    expect(documentWorker.terminate).toHaveBeenCalledTimes(1);
+    expect(mock.handlers.has('planner:selectCommandDocuments')).toBe(false);
+    expect(mock.journal.rpc).not.toHaveBeenCalled();
+  });
   it('exports busy preview from the paired cloud snapshot without requiring a goal or writing remotely',async()=>{
     const f=fixture(),runtime=await startNativeRemote(f.config,f.directory,f.document);closers.push(runtime.close);
     const event={sender:{id:1},senderFrame:{routingId:2,url:f.document}},input={fromDate:'2030-04-15',toDate:'2030-04-21'};

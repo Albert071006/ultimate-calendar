@@ -7,10 +7,10 @@ import { z } from 'zod';
 import { WorkflowError } from '../ai/deepseek';
 import { createNodeRemoteClient, fileCredentialStore, normalizeRemoteOrigin, RemoteClientError, sameRemoteIdentity, type RemoteCredential } from '../remote/node-client';
 import { privatePath, readPrivate, writePrivate } from '../remote/private-file';
-import { AiKeySyncPlaintextSchema, AiKeySyncResponseSchema, aiKeySyncAad, type AiKeySyncResponse } from '../shared/ai-key-sync';
+import { AiKeySyncPlaintextSchema, AiKeySyncResponseSchema, aiKeySyncAad, type AiKeySyncResponse, type AiKeySyncPlaintext } from '../shared/ai-key-sync';
 import { AiConfigurationRevisionSchema } from '../shared/ai-configuration';
 import { RemoteIdentitySchema } from '../shared/remote';
-import { type KeyStatus, type Settings } from '../shared/contracts';
+import { type KeyStatus } from '../shared/contracts';
 import type { AsyncEncryption } from './key-store';
 
 const ConfigSchema = z.strictObject({
@@ -40,7 +40,7 @@ export interface CollectorKeySyncOptions {
   keys: { get(): Promise<string | null>; set(key: string | null): Promise<KeyStatus>; status(): KeyStatus };
   createClient?(options: Parameters<typeof createNodeRemoteClient>[0]): SyncClient;
   onChanged?(value: CollectorKeyChange): void | Promise<void>;
-  onSettings?(settings: Pick<Settings, 'model' | 'reasoningEffort'>): void;
+  onSettings?(settings: NonNullable<AiKeySyncPlaintext['settings']>): void;
   onStatusChanged?(): void;
   timeoutMs?: number;
   pollMs?: number;
@@ -176,7 +176,7 @@ export function createCollectorKeySync(options: CollectorKeySyncOptions) {
       throw failure(error instanceof RemoteClientError && [401, 403, 409].includes(error.status) ? 'identity' : 'network');
     } finally { signal.removeEventListener('abort', cancel); }
     checkOpen(signal);
-    let key: string | null, revision: Revision, settings: Pick<Settings, 'model' | 'reasoningEffort'> | undefined;
+    let key: string | null, revision: Revision, settings: AiKeySyncPlaintext['settings'];
     try {
       const checked = AiKeySyncResponseSchema.parse(response), envelope = checked.envelope;
       if (!sameRemoteIdentity(checked.identity, credential!.identity) || envelope.deviceId !== credential!.deviceId || envelope.keyId !== keyId || envelope.nonce !== nonce) throw Error();

@@ -7,6 +7,19 @@ const image = { imageDataUrl: png, label: '合成图片.png' };
 const request = { operationId: 'image-boundary', text: '查看这张图片', image };
 
 describe('assistant image boundary', () => {
+  it('accepts multiple current images and document context while retaining one aggregate attachment budget', () => {
+    const document = { label: '合成名单.xlsx', text: '[工作表1/第2行]\n学号：S123，姓名：合成同学' };
+    expect(CommandRequestSchema.parse({ operationId: 'multi', text: '', images: [image, image], documents: [document] }).images).toHaveLength(2);
+    expect(CommandRequestSchema.safeParse({ operationId: 'multi', text: '', images: [image, image], history: [{ role: 'user', text: '', images: [image, image, image] }] }).success).toBe(false);
+    expect(CommandRequestSchema.safeParse({ ...request, images: [image] }).success).toBe(false);
+    expect(CommandRequestSchema.safeParse({ operationId: 'document', text: '', documents: [document] }).success).toBe(true);
+    expect(CommandRequestSchema.safeParse({ operationId: 'document', text: '核对', history: [{ role: 'assistant', text: '', documents: [document] }] }).success).toBe(false);
+    expect(CommandRequestSchema.safeParse({ operationId: 'document', text: '', documents: [{ ...document, label: 'C:\\private\\名单.xlsx' }] }).success).toBe(false);
+    expect(CommandRequestSchema.safeParse({ operationId: 'document', text: '', documents: [{ ...document, path: 'private' }] }).success).toBe(false);
+    expect(CommandRequestSchema.safeParse({ operationId: 'document', text: '', documents: [{ ...document, text: '字'.repeat(40001) }] }).success).toBe(false);
+    expect(CommandRequestSchema.safeParse({ operationId: 'document', text: '', documents: [document, document], history: [{ role: 'user', text: '', documents: [document, document] }] }).success).toBe(false);
+    expect(CommandRequestSchema.safeParse({ operationId: 'document', text: '', documents: Array.from({ length: 3 }, () => ({ ...document, text: '字'.repeat(35000) })) }).success).toBe(false);
+  });
   it('accepts a current image without text but not an empty message or only an old image', () => {
     expect(CommandRequestSchema.parse({ ...request, text: '  ' }).text).toBe('');
     expect(CommandRequestSchema.safeParse({ operationId: 'blank', text: '' }).success).toBe(false);

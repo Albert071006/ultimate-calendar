@@ -71,12 +71,12 @@ describe('durable AI workflows with real planner', () => {
   it('passes the editable campus background to manual source analysis as data', async () => {
     let payload: { messages: { role: string; content: string }[] } | null = null;
     const { repository, controller } = setup(async (_url, init) => { payload = JSON.parse(String(init?.body)); return reply({ candidates: [] }); });
-    repository.saveSettings({ campus: '示例大学北校区', locationContext: '保留校内简称，不编造房间。' });
+    repository.saveSettings({ campus: '示例大学北校区', locationContext: '保留校内简称，不编造房间。', personalContext: '示例协会资料组组长，负责收集报名表。' });
     const source = await controller.importSource({ operationId: 'campus-import', source: { kind: 'text', text: '示例园集合', sentAt: at } });
     if (!source.ok) throw Error('source import failed');
     expect((await controller.analyzeSource({ operationId: 'campus-analysis', sourceId: source.data.id })).ok).toBe(true);
     const messages = payload!.messages;
-    expect(JSON.parse(messages.find(message => message.role === 'user')!.content).userProfile).toEqual({ campus: '示例大学北校区', locationContext: '保留校内简称，不编造房间。' });
+    expect(JSON.parse(messages.find(message => message.role === 'user')!.content).userProfile).toEqual({ campus: '示例大学北校区', locationContext: '保留校内简称，不编造房间。', personalContext: '示例协会资料组组长，负责收集报名表。' });
     expect(messages[0]!.content).toContain('conditions 只写');
     expect(messages[0]!.content).toContain('不得编造具体楼号');
   });

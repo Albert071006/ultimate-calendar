@@ -22,6 +22,7 @@ import { ChangedEventSchema, NavigateEventSchema, MutationRequestSchema, MAX_IMA
 import { WorkflowError } from '../ai/deepseek';
 import { createKeyStore } from './key-store';
 import { boundedFile, imageFromBytes } from './files';
+import { commandDocumentsFromPaths, COMMAND_DOCUMENT_EXTENSIONS } from './command-documents';
 import { dispatchRequest, trustedCaller, type Caller } from './ipc';
 import { methods } from './protocol';
 import { createRestoreManager } from './restore';
@@ -314,6 +315,10 @@ async function start() {
     saveSettings: async request => { const result = await controller.saveSettings(request); if (result.ok) { applyAutoLaunch(result.data.autoLaunch); changed({ reason: 'settings' }); } return result; },
     setApiKey: async request => { const status = await keys.set(request.key); account.resetKey(); changed({ reason: 'key' }); return { ok: true, data: status }; },
     retryApiKey: async () => { const status = await keys.retry(); if (status.configured) void account.refresh({ force: true }); return { ok: true, data: status }; },
+    selectCommandDocuments: async () => {
+      const result = await dialog.showOpenDialog(window!, { title: '选择供生活助手读取的文件', properties: ['openFile', 'multiSelections'], filters: [{ name: '文档与表格', extensions: COMMAND_DOCUMENT_EXTENSIONS }] });
+      return { ok: true, data: result.canceled || !result.filePaths.length ? null : await commandDocumentsFromPaths(result.filePaths, input => documents.extract(input)) };
+    },
     selectImage: async () => {
       const result = await dialog.showOpenDialog(window!, { title: '选择要导入的图片', properties: ['openFile'], filters: [{ name: 'PNG / JPEG 图片', extensions: ['png', 'jpg', 'jpeg'] }] });
       if (result.canceled || !result.filePaths[0]) return { ok: true, data: null };

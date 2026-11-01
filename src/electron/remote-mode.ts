@@ -6,6 +6,8 @@ import { createWriteJournal } from '../remote/write-journal';
 import { REMOTE_METHODS, REMOTE_READ_METHODS, type RemoteMethod } from '../shared/remote';
 import { MAX_IMAGE_BYTES, SetApiKeyRequestSchema, SaveSettingsRequestSchema, SnapshotSchema, ImportSourceRequestSchema, LocalSourceEvidenceRequestSchema, CourseImportRequestSchema, MutationRequestSchema, type ApiError } from '../shared/contracts';
 import { boundedFile, imageFromBytes } from './files';
+import { commandDocumentsFromPaths, COMMAND_DOCUMENT_EXTENSIONS } from './command-documents';
+import { createDocumentExtractor } from '../capture/documents/runtime';
 import { dispatchRequest } from './ipc';
 import { methods } from './protocol';
 import type { NativeRemoteConfig } from './remote-config';
@@ -47,6 +49,7 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
     const shell = createRemoteDesktopShell({ window, directory, config, collector, changed, rpc: journal.rpc, getIdentity: async () => (await client.getSession()).identity, isBusy: () => activeRequests > 0 });
     const resourceDirectory = config.localDataDirectory ?? directory;
     const resources = createNativeResourceHost(resourceDirectory, () => window);
+    const documents = createDocumentExtractor();
     const planSource = async (): Promise<PlanSource> => { const { identity } = await client.getSession(); return { kind: 'cloud', dataInstanceId: identity.dataInstanceId, generation: identity.generation }; };
     const planSnapshot = async () => { const result = remoteOutputs.snapshot.parse(await journal.rpc('snapshot')); if (!result.ok) throw new Error(result.error.message); return result.data; };
     const planExport = createNativePlanExport({ window: () => window, snapshot: planSnapshot, source: planSource });
@@ -124,6 +127,10 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
               if (request) changed();
               return { ok: true, data: { configured: status.configured, sessionOnly: false, scope: 'cloud', cloudConfiguration: status } };
             }
+            if (method === 'selectCommandDocuments') {
+              const result = await dialog.showOpenDialog(window, { title: '选择供生活助手读取的文件', properties: ['openFile', 'multiSelections'], filters: [{ name: '文档与表格', extensions: COMMAND_DOCUMENT_EXTENSIONS }] });
+              return { ok: true, data: result.canceled || !result.filePaths.length ? null : await commandDocumentsFromPaths(result.filePaths, input => documents.extract(input)) };
+            }
             if (method === 'selectImage') {
               const result = await dialog.showOpenDialog(window, { title: '选择导入云端的图片', properties: ['openFile'], filters: [{ name: 'PNG / JPEG', extensions: ['png', 'jpg', 'jpeg'] }] });
               const path = result.filePaths[0]; return { ok: true, data: result.canceled || !path ? null : imageFromBytes(path, await boundedFile(path, MAX_IMAGE_BYTES)) };
@@ -181,7 +188,7 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
     // Canonical snapshots are fetched by the existing client on this event. No local DB or QQ socket is opened.
     const poll = setInterval(() => { if (window.isVisible() && !window.isMinimized()) { changed(); void collector?.invoke('captureSnapshot').then(result => { if (result.ok && !window.isDestroyed()) window.webContents.send('planner:capture-changed', result.data); }).catch(() => {}); } }, 30_000);
     window.on('focus', changed);
-    const close = () => { clearInterval(poll); shell.close(); collector?.close(); client.close(); session.defaultSession.removeListener('will-download', download); for (const method of methods) ipcMain.removeHandler(`planner:${method}`); };
+    const close = () => { clearInterval(poll); documents.dispose(); shell.close(); collector?.close(); client.close(); session.defaultSession.removeListener('will-download', download); for (const method of methods) ipcMain.removeHandler(`planner:${method}`); };
     window.once('closed', close);
     try { await window.loadURL(documentUrl); window.show(); } catch (error) { window.destroy(); throw error; }
     return { window, close };

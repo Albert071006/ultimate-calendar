@@ -49,6 +49,17 @@ async function setup() {
 }
 
 describe('assistant images over authenticated HTTP', () => {
+  it('accepts bounded multi-image and document requests through authenticated HTTP and validates new attachment fields', async () => {
+    const { rpc, payloads } = await setup();
+    const input = { operationId: 'multi-documents', text: '核对这几份资料', images: [image, otherImage], documents: [{ label: '合成名单.xlsx', text: '学号S123，合成姓名' }] };
+    expect((await rpc('multi-documents-wire', input)).status).toBe(200);
+    const parts = payloads[0]!.messages.at(-1)!.content;
+    expect(Array.isArray(parts) && parts.filter(part => part.type === 'image_url')).toHaveLength(2);
+    expect(JSON.stringify(parts)).toContain('合成名单.xlsx');
+    expect((await rpc('invalid-document-path', { ...input, operationId: 'invalid-document-path', documents: [{ label: 'C:/private.xlsx', text: 'private' }] })).status).toBe(400);
+    expect((await rpc('invalid-document-budget', { ...input, operationId: 'invalid-document-budget', documents: [{ label: 'large.csv', text: 'a'.repeat(40001) }] })).status).toBe(400);
+    expect(payloads).toHaveLength(1);
+  });
   it('transmits original PNG pixels after pairing and CSRF, replays exact retries and rejects altered images', async () => {
     const { rpc, payloads } = await setup();
     const input = { operationId: 'image-business', text: '解释这张合成图片', image };

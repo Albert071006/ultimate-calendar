@@ -52,7 +52,7 @@ const api = {
   onCaptureChanged: (listener: Parameters<DesktopAPI['onCaptureChanged']>[0]) => { const handler = (_event: IpcRendererEvent, value: unknown) => { const parsed = CaptureSnapshotSchema.safeParse(value); if (parsed.success) listener(parsed.data); }; ipcRenderer.on('planner:capture-changed', handler); return () => ipcRenderer.removeListener('planner:capture-changed', handler); },
   onWechatCaptureChanged: (listener: Parameters<DesktopAPI['onWechatCaptureChanged']>[0]) => { const handler = (_event: IpcRendererEvent, value: unknown) => { const parsed = CaptureSnapshotSchema.safeParse(value); if (parsed.success) listener(parsed.data); }; ipcRenderer.on('planner:wechat-capture-changed', handler); return () => ipcRenderer.removeListener('planner:wechat-capture-changed', handler); },
   accountSnapshot: () => invoke('accountSnapshot'), refreshAccount: () => invoke('refreshAccount'), onAccountChanged: accountChanged,
-  snapshot: () => invoke('snapshot'), selectImage: () => invoke('selectImage'),
+  snapshot: () => invoke('snapshot'), selectImage: () => invoke('selectImage'), selectCommandDocuments: () => invoke('selectCommandDocuments'),
   mutate: (request: unknown) => invoke('mutate', request), undo: (id?: string) => invoke('undo', id),
   importSource: (request: unknown) => invoke('importSource', request), analyzeSource: (request: unknown) => invoke('analyzeSource', request),
   command: (request: unknown) => invoke('command', request), importCourses: (request: unknown) => invoke('importCourses', request),

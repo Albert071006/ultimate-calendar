@@ -30,6 +30,30 @@ function pictureUrls(messages: ChatMessage[]) {
 }
 
 describe('assistant image execution', () => {
+  it('passes multiple pictures and documents through ledger routing, preserving exact retry receipts', async () => {
+    const { controller, ledger, payloads } = setup([route, expense]);
+    const documents = [{ label: '合成收据.csv', text: '项目,金额\n合成午饭,20' }];
+    const request = { operationId: 'multi-receipt', text: '按附件记录这一次午饭消费', images: [image, { ...image, label: '另一页.png' }], documents };
+    const result = await controller.command(request);
+    expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: 'saved' } } });
+    expect(await controller.command(request)).toEqual(result);
+    expect(payloads).toHaveLength(2);
+    for (const payload of payloads) {
+      expect(pictureUrls(payload.messages)).toHaveLength(2);
+      expect(JSON.stringify(payload.messages)).toContain('合成收据.csv');
+    }
+    expect(ledger.snapshot().entries.filter(entry => !entry.ruleKey)).toHaveLength(1);
+    expect(await controller.command({ ...request, documents: [{ ...documents[0]!, text: '另一份账单' }] })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+  });
+
+  it('does not treat a file-only upload as authorization to write, and rejects multi-image requests on text-only models', async () => {
+    const { controller, ledger } = setup([route]);
+    expect(await controller.command({ operationId: 'only-file', text: '', documents: [{ label: '合成表.csv', text: '记录午饭20元' }] })).toMatchObject({ ok: true, data: { conversationState: { phase: 'clarification' } } });
+    expect(ledger.snapshot().entries.filter(entry => !entry.ruleKey)).toHaveLength(0);
+    const textOnly = setup([], ['text']);
+    expect(await textOnly.controller.command({ operationId: 'no-multi-vision', text: '解释图片', images: [image, image] })).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
+    expect(textOnly.fetch).not.toHaveBeenCalled();
+  });
   it('passes original pixels through both model stages and replays the exact receipt without another charge or entry', async () => {
     const { controller, ledger, payloads } = setup([route, expense]);
     const request = { operationId: 'receipt-image', text: '把图片里的合成午饭记账', image };

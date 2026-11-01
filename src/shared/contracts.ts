@@ -196,6 +196,7 @@ export const PeriodSchema = z.strictObject({ period: z.number().int().min(1).max
   .refine(value => value.startTime < value.endTime, '节次结束必须晚于开始');
 export const SettingsSchema = z.strictObject({
   campus: z.string().trim().max(200).default(''), locationContext: z.string().trim().max(2000).default(''),
+  personalContext: z.string().trim().max(2000).default(''),
   model: z.string().trim().min(1).max(100).default('deepseek-flash'), timezone: z.literal(TIMEZONE).default(TIMEZONE),
   reasoningEffort: z.enum(['none', 'low', 'high', 'max']).optional(),
   showPending: z.boolean().default(true), weekStartsOn: z.literal(1).default(1), closeToTray: z.boolean().default(true),
@@ -370,22 +371,40 @@ export const CommandImageSchema = z.strictObject({
 });
 export type CommandImage = z.infer<typeof CommandImageSchema>;
 export const MAX_COMMAND_IMAGES = 4;
+export const MAX_COMMAND_DOCUMENTS = 3;
+export const MAX_COMMAND_DOCUMENT_CHARACTERS = 40_000;
+export const MAX_COMMAND_DOCUMENT_TOTAL_CHARACTERS = 100_000;
+export const CommandDocumentSchema = z.strictObject({
+  label: z.string().trim().min(1).max(200).regex(/^[^\\/:*?"<>|\x00-\x1f]+$/, '文件标签只能包含文件名'),
+  text: z.string().min(1).max(MAX_COMMAND_DOCUMENT_CHARACTERS),
+  warnings: z.array(z.string().max(1000)).max(20).optional(),
+});
+export type CommandDocument = z.infer<typeof CommandDocumentSchema>;
+export type CommandAttachments = { image?: CommandImage; images?: CommandImage[]; documents?: CommandDocument[] };
+export const commandImages = (attachments: CommandAttachments): CommandImage[] => [...(attachments.image ? [attachments.image] : []), ...(attachments.images ?? [])];
+export const hasCommandAttachments = (attachments: CommandAttachments): boolean => commandImages(attachments).length > 0 || !!attachments.documents?.length;
+const commandAttachmentFields = { image: CommandImageSchema.optional(), images: z.array(CommandImageSchema).min(1).max(MAX_COMMAND_IMAGES).optional(), documents: z.array(CommandDocumentSchema).min(1).max(MAX_COMMAND_DOCUMENTS).optional() };
 export const CommandRequestSchema = z.strictObject({ operationId: IdSchema, text: text.trim(),
-  image: CommandImageSchema.optional(),
+  ...commandAttachmentFields,
   selected: z.array(z.strictObject({ entity: EntityKindSchema, id: IdSchema })).max(100).default([]),
   domain: z.enum(['calendar', 'ledger']).optional(),
   ledgerView: LedgerViewContextSchema.optional(),
   resources: ResourceReferencesSchema.optional(),
   fromDate: DateOnlySchema.optional(), toDate: DateOnlySchema.optional(),
-  history: z.array(z.strictObject({ role: z.enum(['user', 'assistant']), text: z.string().max(10_000), outcome: ConversationStateSchema.optional(), image: CommandImageSchema.optional() })
-    .refine(entry => entry.role === 'user' || !entry.image, '助手历史消息不能包含用户图片')).max(20).default([]),
+  history: z.array(z.strictObject({ role: z.enum(['user', 'assistant']), text: z.string().max(10_000), outcome: ConversationStateSchema.optional(), ...commandAttachmentFields })
+    .refine(entry => entry.role === 'user' || !hasCommandAttachments(entry), '助手历史消息不能包含用户附件')).max(20).default([]),
 }).superRefine((request, ctx) => {
-  if (!request.text && !request.image) ctx.addIssue({ code: 'custom', message: '请输入文字或选择图片', path: ['text'] });
-  const images = [request.image, ...request.history.map(entry => entry.image)].filter(image => image !== undefined);
+  if (!request.text && !hasCommandAttachments(request)) ctx.addIssue({ code: 'custom', message: '请输入文字或选择图片、文件', path: ['text'] });
+  const turns = [request, ...request.history];
+  if (turns.some(turn => turn.image && turn.images)) ctx.addIssue({ code: 'custom', message: '同一条消息不能混用旧版和新版图片字段', path: ['images'] });
+  const images = turns.flatMap(commandImages);
   if (images.length > MAX_COMMAND_IMAGES) ctx.addIssue({ code: 'custom', message: '本次消息和历史合计最多 4 张图片', path: ['image'] });
   if (images.reduce((total, image) => total + imageDataUrlByteLength(image.imageDataUrl), 0) > MAX_IMAGE_BYTES) {
     ctx.addIssue({ code: 'custom', message: '本次消息和历史图片合计不能超过 10 MB', path: ['image'] });
   }
+  const documents = turns.flatMap(turn => turn.documents ?? []);
+  if (documents.length > MAX_COMMAND_DOCUMENTS) ctx.addIssue({ code: 'custom', message: '本次消息和历史合计最多 3 份文件', path: ['documents'] });
+  if (documents.reduce((total, document) => total + document.text.length, 0) > MAX_COMMAND_DOCUMENT_TOTAL_CHARACTERS) ctx.addIssue({ code: 'custom', message: '本次消息和历史文件文字合计不能超过 100000 字符', path: ['documents'] });
 });
 export type CommandRequest = z.input<typeof CommandRequestSchema>;
 /** Model output is a proposal, never authorization. The AI adapter executes only through PlannerService. */
@@ -459,6 +478,7 @@ export interface DesktopAPI extends importCaptureAPI, ResourceDesktopAPI, Partia
   refreshAccount(): Promise<ApiResult<import('./account').AccountState>>;
   onAccountChanged(listener: (state: import('./account').AccountState) => void): () => void;
   selectImage(): Promise<ApiResult<SelectedImage | null>>;
+  selectCommandDocuments?(): Promise<ApiResult<CommandDocument[] | null>>;
   onNavigate(listener: (event: NavigateEvent) => void): () => void;
   snapshot(): Promise<ApiResult<Snapshot>>;
   mutate(request: MutationRequestInput): Promise<ApiResult<MutationResult>>;

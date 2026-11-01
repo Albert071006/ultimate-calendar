@@ -101,7 +101,7 @@ describe('capture analysis and durable candidate application', () => {
   it('reuses a legacy mixed-recipient paid checkpoint without regrouping or charging again and suppresses its other-recipient result', async () => {
     const { store, repository, batch, message: ordinary } = setup();
     const other = store.ingest([{ accountId: '100', groupId: '200', messageId: 'legacy-other', sentAt: '2026-10-23T12:00:00+08:00', text: '@群成员 明天18点提交报告', segments: [{ type: 'at', data: { qq: '999' } }] }]).ids[0]!;
-    const saved = batch(), prepared = prepareAnalysis(store, saved, { deduplicateAttachments: false, documentGrouping: false, passiveQuestionFilter: false, noticeFirst: false });
+    const saved = batch(), prepared = prepareAnalysis(store, saved, { deduplicateAttachments: false, documentGrouping: false, passiveQuestionFilter: false, noticeFirst: false, attachmentContext: false });
     const units = prepared.units.map(({ text, imageDataUrl, ...unit }) => ({ ...unit, textHash: hashInput(text), imageHash: imageDataUrl ? hashInput(imageDataUrl) : null }));
     const profile = locationProfile(repository.snapshot().settings);
     const profileFingerprint = profile.campus || profile.locationContext ? { userProfile: profile } : {};
@@ -153,6 +153,33 @@ describe('capture analysis and durable candidate application', () => {
     repository.saveSettings({ campus: '另一校区' });
     await expect(analyzeCapture({ ...options(store, repository), batch: store.claimBatch()!, fetch: async () => { calls++; return response({ candidates: [] }); } })).rejects.toMatchObject({ code: 'CONFLICT' });
     expect(calls).toBe(2); expect(repository.snapshot().tokenUsage).toHaveLength(1);
+  });
+  it('passes personal-only context to capture and protects paid fragments when the role changes', async () => {
+    const { store, repository, batch } = setup('a'.repeat(100_000));
+    repository.saveSettings({ personalContext: '姓名：合成同学；学号：SYN-001；职务：示例协会资料组组长' });
+    const saved = batch(); let calls = 0;
+    await expect(analyzeCapture({ ...options(store, repository), batch: saved, fetch: async (_url, request) => {
+      calls++;
+      const messages = JSON.parse(String(request?.body)).messages;
+      expect(JSON.parse(messages[1].content[0].text).userProfile).toEqual({ campus: '', locationContext: '', personalContext: repository.snapshot().settings.personalContext });
+      expect(messages[0].content).not.toContain('SYN-001');
+      expect(messages[0].content).toContain('匹配时提取该角色需要执行的职责');
+      expect(messages[0].content).toContain('不是完整身份清单');
+      expect(messages[0].content).toContain('同名但学号或班级矛盾');
+      if (calls === 2) throw Error('network');
+      return response({ candidates: [] });
+    } })).rejects.toMatchObject({ code: 'NETWORK' });
+    store.recoverInterrupted(); store.retryBatch(saved.id);
+    repository.saveSettings({ personalContext: '仅负责示例协会摄影，不负责资料收集' });
+    await expect(analyzeCapture({ ...options(store, repository), batch: store.claimBatch()!, fetch: async () => { calls++; return response({ candidates: [] }); } })).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(calls).toBe(2); expect(repository.snapshot().tokenUsage).toHaveLength(1);
+  });
+  it('does not send a paid request if key refresh changed personal background after planning', async () => {
+    const { store, repository, batch } = setup(); let calls = 0;
+    await expect(analyzeCapture({ ...options(store, repository), batch: batch(), getApiKey: async () => {
+      repository.saveSettings({ personalContext: '合成协会资料组组长' }); return 'synthetic';
+    }, fetch: async () => { calls++; return response({ candidates: [] }); } })).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(calls).toBe(0); expect(repository.snapshot().tokenUsage).toHaveLength(0);
   });
   it('keeps each message timestamp and creates only pending candidates; replay never pays or duplicates', async () => {
     const { store, repository, batch } = setup(); const saved = batch(); const unit = prepareAnalysis(store, saved).units[0]!;

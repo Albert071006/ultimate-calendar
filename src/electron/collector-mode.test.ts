@@ -8,6 +8,7 @@ import type { CaptureStore } from '../capture/store';
 import { CaptureSnapshotSchema } from '../shared/capture';
 import { SpaceSnapshotSchema } from '../shared/space';
 import { emptyAccountState } from '../shared/account';
+import { SettingsSchema } from '../shared/contracts';
 
 vi.mock('electron', () => ({ app: { isPackaged: false }, safeStorage: { isAsyncEncryptionAvailable: async () => true } }));
 vi.mock('../capture/documents/runtime', () => ({ createDocumentExtractor: () => { throw Error('Tests must inject document handling'); } }));
@@ -36,6 +37,30 @@ function fixture() {
   return { root, dependencies, repoClose, storeClose, dispose, start, stop, keyGet, bridgeGet, set, warnings, accountState, accountStart, accountStop, accountReset, options: () => options!, busy: (value: boolean) => { busy = value; } };
 }
 describe('Windows collection-only backend', () => {
+  it('shares cloud profile edits with QQ and WeChat while old sync responses preserve the local profile', async () => {
+    const value = fixture(), original = value.dependencies.createCaptureService!;
+    let settings = SettingsSchema.parse({ campus: '旧校区', personalContext: '旧职责' });
+    const saveSettings = vi.fn(next => { settings = SettingsSchema.parse(next); });
+    value.dependencies.createRepository = () => ({ close: value.repoClose, snapshot: () => ({ settings }), saveSettings }) as unknown as Repository;
+    const services: Parameters<NonNullable<CollectorDependencies['createCaptureService']>>[0][] = [];
+    value.dependencies.createCaptureService = options => { services.push(options); return original(options); };
+    let syncOptions: Parameters<NonNullable<CollectorDependencies['createCollectorKeySync']>>[0] | undefined;
+    value.dependencies.createCollectorKeySync = options => { syncOptions = options; return undefined; };
+    try {
+      const mode = await startCollectorMode(value.root, value.dependencies);
+      const userProfile = { campus: '合成大学', locationContext: '保留合成地点名称', personalContext: '合成社团宣传干事' };
+      syncOptions!.onSettings!({ model: settings.model, userProfile });
+      for (const service of services) expect(service.repository.snapshot().settings).toMatchObject(userProfile);
+      expect(services).toHaveLength(2);
+      syncOptions!.onSettings!({ model: settings.model, userProfile }); expect(saveSettings).toHaveBeenCalledTimes(1);
+      syncOptions!.onSettings!({ model: settings.model }); expect(settings).toMatchObject(userProfile);
+      syncOptions!.onSettings!({ model: settings.model, userProfile: { ...userProfile, personalContext: '' } });
+      for (const service of services) expect(service.repository.snapshot().settings.personalContext).toBe('');
+      expect(saveSettings).toHaveBeenCalledTimes(2);
+      await mode.close();
+    } finally { rmSync(value.root, { recursive: true, force: true }); }
+  });
+
   it('shares current model capabilities with both capture services without changing the model or key', async () => {
     const value = fixture(), original = value.dependencies.createCaptureService!;
     const services: Parameters<NonNullable<CollectorDependencies['createCaptureService']>>[0][] = [];
