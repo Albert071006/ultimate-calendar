@@ -35,7 +35,7 @@ describe('loan recording and balances on desktop and mobile', () => {
     fireEvent.change(screen.getByLabelText('对方（可留空）'), { target: { value: '合成同学乙' } });
     fireEvent.change(screen.getByLabelText(amountLabel), { target: { value: '95.20' } });
     const account = screen.getByLabelText(accountLabel);
-    expect(within(account).queryByRole('option', { name: '亲情卡' })).toBeNull();
+    expect(!!within(account).queryByRole('option', { name: '亲情卡' })).toBe(kind === 'loan_repay');
     expect(within(account).queryByRole('option', { name: '学校饭卡' })).toBeNull();
     fireEvent.change(account, { target: { value: 'wechat' } });
     expect(screen.queryByLabelText('个人开销（元）')).toBeNull();
@@ -43,6 +43,52 @@ describe('loan recording and balances on desktop and mobile', () => {
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(save.mock.calls[0]![0][0]).toMatchObject({ entry: { kind, counterparty: '合成同学乙', amountCents: 9520, personalCents: 0, incomeCents: 0, assetSaleCents: 0,
       cashflows: [{ accountId: 'wechat', deltaCents: direction * 9520 }], relatedEntryIds: [], adjustments: [] } });
+  });
+
+  it.each([false, true])('records an explicitly family-funded repayment without personal spending (mobile=%s)', async mobile => {
+    const borrowed = loan();
+    const save = vi.fn(async (_changes: Change[]) => true);
+    render(<MobileProvider mobile={mobile}><EntryEditor snapshot={snapshot([borrowed])} busy={false} error="" save={save} close={vi.fn()} /></MobileProvider>);
+    fireEvent.change(screen.getByLabelText('类型'), { target: { value: 'loan_repay' } });
+    fireEvent.change(screen.getByLabelText('项目'), { target: { value: '合成亲情卡归还' } });
+    fireEvent.change(screen.getByLabelText('对应原借入'), { target: { value: 'borrowed' } });
+    fireEvent.change(screen.getByLabelText('实际支付（元）'), { target: { value: '75' } });
+    fireEvent.change(screen.getByLabelText('支付账户'), { target: { value: 'family' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存账单' }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0][0]).toMatchObject({ entry: { kind: 'loan_repay', amountCents: 7500, personalCents: 0, incomeCents: 0, assetSaleCents: 0,
+      cashflows: [{ accountId: 'family', deltaCents: -7500 }], relatedEntryIds: ['borrowed'], adjustments: [] } });
+  });
+
+  it.each(['loan_borrow', 'loan_lend', 'loan_collect'] as const)('clears family selection when repayment changes to %s', next => {
+    editor();
+    fireEvent.change(screen.getByLabelText('支付账户'), { target: { value: 'family' } });
+    fireEvent.change(screen.getByLabelText('类型'), { target: { value: 'loan_repay' } });
+    expect((screen.getByLabelText('支付账户') as HTMLSelectElement).value).toBe('family');
+    fireEvent.change(screen.getByLabelText('类型'), { target: { value: next } });
+    const account = screen.getByLabelText(next === 'loan_lend' ? '支付账户' : '收款账户') as HTMLSelectElement;
+    expect(account.value).toBe('');
+    expect(within(account).queryByRole('option', { name: '亲情卡' })).toBeNull();
+  });
+
+  it('clears a stored-value selection when switching to repayment', () => {
+    editor();
+    fireEvent.change(screen.getByLabelText('支付账户'), { target: { value: 'meal' } });
+    fireEvent.change(screen.getByLabelText('类型'), { target: { value: 'loan_repay' } });
+    const account = screen.getByLabelText('支付账户') as HTMLSelectElement;
+    expect(account.value).toBe('');
+    expect(within(account).queryByRole('option', { name: '学校饭卡' })).toBeNull();
+  });
+
+  it('preserves a family-funded repayment while editing its note', async () => {
+    const borrowed = loan(), paid = loan({ id: 'family-paid', kind: 'loan_repay', amountCents: 7500, cashflows: [{ accountId: 'family', deltaCents: -7500 }], relatedEntryIds: ['borrowed'] });
+    const save = editor([borrowed, paid], paid);
+    expect((screen.getByLabelText('支付账户') as HTMLSelectElement).value).toBe('family');
+    fireEvent.change(screen.getByLabelText('更正说明'), { target: { value: '合成补充备注' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存更正' }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![0][0]).toMatchObject({ expectedVersion: 1, entry: { id: 'family-paid', kind: 'loan_repay', personalCents: 0,
+      cashflows: [{ accountId: 'family', deltaCents: -7500 }], relatedEntryIds: ['borrowed'] } });
   });
 
   it('links a partial repayment to an older loan, rejects excess principal, and clears a link when changing direction', async () => {
