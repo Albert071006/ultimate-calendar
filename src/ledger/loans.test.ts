@@ -29,6 +29,32 @@ function settlement(id: string, kind: 'loan_repay' | 'loan_collect', amount: num
 }
 
 describe('loan principal and settlement views', () => {
+  it('settles a previous-month loan with a family card without changing personal cash, spending or income', () => {
+    const ledger = service(); put(ledger, loan('family-borrow', 'loan_borrow', 18000));
+    const before = ledger.snapshot();
+    const repayment = settlement('family-repay', 'loan_repay', 12000, 'family-borrow', { cashflows: [{ accountId: 'family', deltaCents: -12000 }] });
+    const request: LedgerMutationRequest = { operationId: 'family-repayment', expectedRevision: before.revision,
+      changes: [{ type: 'putEntry', entry: repayment, expectedVersion: null, confirmDuplicate: false, note: '合成亲情卡归还' }] };
+    ledger.mutate(request);
+    const snapshot = ledger.snapshot('2026-10');
+    expect(snapshot.summary).toMatchObject({ actualPaidCents: 12000, personalCents: 0, incomeCents: 0, assetSaleCents: 0, familyUsageCents: 12000 });
+    expect(snapshot.summary.accounts.find(account => account.id === 'family')).toMatchObject({ recordedUsageCents: 12000, balanceCents: null });
+    for (const id of ['wechat', 'alipay']) expect(snapshot.summary.accounts.find(account => account.id === id)?.periodChangeCents).toBe(0);
+    expect(snapshot.rules.familyActualRemainingCents).toBe(before.rules.familyActualRemainingCents);
+    expect(ledgerLoans(snapshot.entries)).toMatchObject({ payableCents: 6000, items: [{ settledCents: 12000, outstandingCents: 6000 }] });
+    expect(ledger.mutate(request).status).toBe('already_saved');
+    expect(ledger.snapshot('2026-10')).toEqual(snapshot);
+    ledger.undo({ operationId: 'undo-family-repayment', expectedRevision: snapshot.revision });
+    expect(ledger.snapshot().entries).toEqual(before.entries);
+    expect(ledger.snapshot('2026-10').summary.familyUsageCents).toBe(0);
+    expect(ledgerLoans(ledger.snapshot().entries).payableCents).toBe(18000);
+  });
+  it('records an unlinked historical family repayment without inventing a principal or reducing other debts', () => {
+    const ledger = service(); put(ledger, loan('unrelated', 'loan_borrow', 18000));
+    put(ledger, settlement('historical-family', 'loan_repay', 12000, undefined, { cashflows: [{ accountId: 'family', deltaCents: -12000 }] }));
+    expect(ledgerLoans(ledger.snapshot().entries)).toMatchObject({ payableCents: 18000, unlinked: [{ id: 'historical-family' }] });
+    expect(ledger.snapshot('2026-10').summary).toMatchObject({ familyUsageCents: 12000, personalCents: 0, incomeCents: 0 });
+  });
   it('calculates partial and cross-month settlements separately for every principal without inferring unlinked balances', () => {
     const entries = [
       entry(loan('borrow', 'loan_borrow')), entry(loan('lend', 'loan_lend', 8000)), entry(loan('other-borrow', 'loan_borrow', 9000)),
@@ -71,6 +97,23 @@ describe('loan principal and settlement views', () => {
 });
 
 describe('atomic loan validation', () => {
+  it.each(['loan_borrow', 'loan_lend', 'loan_collect'] as const)('still rejects a family card for %s', kind => {
+    const ledger = service(); const before = ledger.snapshot();
+    const deltaCents = kind === 'loan_lend' ? -10000 : 10000;
+    expect(() => put(ledger, loan('family-wrong-direction', kind, 10000, { cashflows: [{ accountId: 'family', deltaCents }] }))).toThrow(/亲情卡仅支持归还借款/);
+    expect(ledger.snapshot()).toEqual(before);
+  });
+  it.each(['meal', 'bakery'])('still rejects %s for repayment and rolls back unrelated entries', accountId => {
+    const ledger = service(); put(ledger, loan('original', 'loan_borrow')); const before = ledger.snapshot();
+    expect(() => put(ledger, loan('unrelated', 'loan_lend'), settlement('stored-repay', 'loan_repay', 5000, 'original', { cashflows: [{ accountId, deltaCents: -5000 }] }))).toThrow(/不能使用储值卡/);
+    expect(ledger.snapshot()).toEqual(before);
+  });
+  it('rejects incoming family repayments and overpayment atomically', () => {
+    const ledger = service(); put(ledger, loan('original', 'loan_borrow', 5000)); const before = ledger.snapshot();
+    expect(() => put(ledger, settlement('wrong-direction', 'loan_repay', 2000, 'original', { cashflows: [{ accountId: 'family', deltaCents: 2000 }] }))).toThrow(/方向或金额不一致/);
+    expect(() => put(ledger, settlement('too-much', 'loan_repay', 6000, 'original', { cashflows: [{ accountId: 'family', deltaCents: -6000 }] }))).toThrow(/超过原始借款本金/);
+    expect(ledger.snapshot()).toEqual(before);
+  });
   it('distinguishes loan counterparties and original principals while retaining exact duplicate protection', () => {
     const ledger = service();
     put(ledger, loan('party-a', 'loan_borrow', 10000, { title: '合成借入', counterparty: '合成对方甲' }),
@@ -170,7 +213,8 @@ describe('loan backup compatibility', () => {
   });
   it('round-trips loan links, counterparties, corrections and outstanding balances through import and backup replacement', () => {
     const ledger = service(); put(ledger, loan('borrow', 'loan_borrow', 10000, { counterparty: '  合成同学甲  ' }));
-    put(ledger, settlement('repay', 'loan_repay', 2000, 'borrow')); put(ledger, settlement('repay', 'loan_repay', 3000, 'borrow'));
+    put(ledger, settlement('repay', 'loan_repay', 2000, 'borrow'));
+    put(ledger, settlement('repay', 'loan_repay', 3000, 'borrow', { cashflows: [{ accountId: 'family', deltaCents: -3000 }] }));
     const exported = LedgerImportPayloadSchema.parse(ledger.exportJson());
     const other = service(); other.import(exported, 'loan-backup');
     expect(other.snapshot().entries).toEqual(ledger.snapshot().entries);

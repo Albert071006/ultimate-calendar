@@ -102,7 +102,7 @@ describe('remote HTTP boundary', () => {
     const replay = await rpc('ledgerMutate', input); expect(replay.data.status).toBe('already_saved');
     expect((await rpc('ledgerSnapshot', undefined, mobile)).data.entries).toHaveLength(1);
   });
-  it('shares loan principal and partial repayment across devices and restart, while old clients get an update message before writes', async () => {
+  it.each(['alipay', 'family'])('shares loan principal and %s repayment across devices and restart, while old clients get an update message before writes', async accountId => {
     let fixture = await setup();
     const first = await fixture.pair(), second = await fixture.pair();
     let sequence = 0;
@@ -123,18 +123,19 @@ describe('remote HTTP boundary', () => {
     const saved = await rpc('ledgerMutate', input, first, 'loan-borrow-once'); expect(saved.ok).toBe(true);
     expect(await rpc('ledgerMutate', input, first, 'loan-borrow-once')).toEqual(saved);
     const repayment = { ...entry, id: 'synthetic-partial', kind: 'loan_repay', date: '2026-09-11', month: '2026-09',
-      title: '合成部分归还', amountCents: 7000, cashflows: [{ accountId: 'alipay', deltaCents: -7000 }], relatedEntryIds: [entry.id] };
+      title: '合成部分归还', amountCents: 7000, cashflows: [{ accountId, deltaCents: -7000 }], relatedEntryIds: [entry.id] };
     const paid = await rpc('ledgerMutate', { operationId: 'loan-http-repay', expectedRevision: 1,
       changes: [{ type: 'putEntry', expectedVersion: null, entry: repayment }] }, second);
     expect(paid.ok).toBe(true);
     const snapshot = LedgerSnapshotSchema.parse((await rpc('ledgerSnapshot', { month: '2026-09' }, second)).data);
     expect(ledgerLoans(snapshot.entries).payableCents).toBe(11000);
-    expect(snapshot.summary).toMatchObject({ personalCents: 0, incomeCents: 0, actualPaidCents: 7000 });
+    expect(snapshot.summary).toMatchObject({ personalCents: 0, incomeCents: 0, actualPaidCents: 7000, familyUsageCents: accountId === 'family' ? 7000 : 0 });
     const backup = JSON.parse((await rpc('backupExportData')).data.content);
     expect(JSON.stringify(backup)).toContain('loan_borrow');
     await fixture.close(); fixture = await setup(fixture.folder);
     const restored = LedgerSnapshotSchema.parse((await rpc('ledgerSnapshot', { month: '2026-09' }, second)).data);
     expect(restored.entries).toEqual(snapshot.entries);
+    expect(restored.summary).toEqual(snapshot.summary);
     expect(ledgerLoans(restored.entries).payableCents).toBe(11000);
     expect(await rpc('ledgerMutate', input, first, 'loan-borrow-once')).toEqual(saved);
     expect(await rpc('ledgerSnapshot', undefined, first, 'old-client-read', true)).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });

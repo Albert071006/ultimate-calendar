@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRepository, type Repository } from '../storage/repository';
 import { createCaptureStore, type CaptureStore } from './store';
-import { ANALYSIS_VERSION, analyzeCapture, applyCaptureResult, hashInput, prepareAnalysis } from './analysis';
+import { ANALYSIS_VERSION, analyzeCapture, applyCaptureResult, batchMessages, hashInput, prepareAnalysis } from './analysis';
 import type { ExtractedCandidate } from '../ai/schemas';
 import { locationProfile } from '../ai/prompts';
 
@@ -25,6 +25,30 @@ function candidate(sourceId: string): ExtractedCandidate {
 function response(value: unknown) { return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } })); }
 const options = (store: CaptureStore, repository: Repository) => ({ store, repository, getApiKey: async () => 'synthetic', canContinue: () => true });
 describe('capture analysis and durable candidate application', () => {
+  it('keeps all system instructions stable across batches while retaining current source IDs and evidence in user data', () => {
+    const { store, batch } = setup();
+    const plan = prepareAnalysis(store, batch());
+    const first = batchMessages(plan.units, plan.context, [], [], { campus: '合成北校区' });
+    const units = [
+      { ...plan.units[0]!, id: 'second-batch-text', messageId: 'second-message', sentAt: '2026-10-25T12:00:00+08:00', text: '后天18点提交另一份报告' },
+      { ...plan.units[0]!, id: 'second-batch-image', messageId: 'image-message', text: '', imageDataUrl: 'data:image/png;base64,c3ludGhldGlj' },
+    ];
+    const context = [{ id: 'context-only-source', sentAt: units[0]!.sentAt, text: '合成前文，仅作背景' }];
+    const second = batchMessages(units, context, [], ['合成附件未完整解析'], { campus: '合成南校区' });
+    expect(second[0]).toEqual(first[0]);
+    expect(second[0]!.content).toContain('当前允许来源只取 allowedSourceIds');
+    expect(second[0]!.content).not.toContain(plan.units[0]!.id);
+    expect(second[0]!.content).not.toContain(units[0]!.id);
+    const content = second[1]!.content;
+    if (typeof content === 'string' || content[0]?.type !== 'text') throw Error('Expected capture evidence parts');
+    expect(JSON.parse(content[0].text)).toMatchObject({
+      allowedSourceIds: ['second-batch-text', 'second-batch-image'],
+      units: [{ id: units[0]!.id, sentAt: units[0]!.sentAt, text: units[0]!.text, hasImage: false }, { id: units[1]!.id, hasImage: true }],
+      context: [{ ...context[0], contextOnly: true }],
+      warnings: ['合成附件未完整解析'], userProfile: { campus: '合成南校区' },
+    });
+    expect(content.at(-1)).toEqual({ type: 'image_url', image_url: { url: units[1]!.imageDataUrl } });
+  });
   it('refreshes the cloud model before preparing an unpaid batch and uses the latest effort after key sync',async()=>{
     const {store,repository,batch}=setup();let refreshed=0,calls=0;
     await analyzeCapture({...options(store,repository),batch:batch(),refreshModelSettings:async()=>{refreshed++;repository.saveSettings({...repository.snapshot().settings,model:'deepseek-v4-pro',reasoningEffort:'low'});},getApiKey:async()=>{repository.saveSettings({...repository.snapshot().settings,reasoningEffort:'high'});return 'synthetic';},fetch:async(_url,init)=>{
@@ -139,10 +163,15 @@ describe('capture analysis and durable candidate application', () => {
     expect(snapshot.sources[0]?.captureRef?.messageId).toBe(unit.messageId);
     applyCaptureResult(store, repository, store.batch(saved.id)!); snapshot = repository.snapshot(); expect(snapshot.candidates).toHaveLength(1); expect(snapshot.sources).toHaveLength(1);
   });
-  it('rejects invented or cross-part source IDs before creating any candidates', async () => {
+  it.each(['primary', 'supporting'] as const)('rejects invented or cross-part %s source IDs before creating any candidates', async kind => {
     const { store, repository, batch } = setup(); const saved = batch();
-    await expect(analyzeCapture({ ...options(store, repository), batch: saved, fetch: async () => response({ candidates: [candidate('unselected-source')] }) })).rejects.toMatchObject({ code: 'AI_RESPONSE' });
-    expect(repository.snapshot().candidates).toEqual([]); expect(store.batch(saved.id)?.status).toBe('requesting');
+    const unit = prepareAnalysis(store, saved).units[0]!;
+    const result = kind === 'primary' ? candidate('unselected-source') : {
+      ...candidate(unit.id), supportingSources: [{ sourceId: 'unselected-source', quote: '明天18点提交报告' }],
+    };
+    await expect(analyzeCapture({ ...options(store, repository), batch: saved, fetch: async () => response({ candidates: [result] }) })).rejects.toMatchObject({ code: 'AI_RESPONSE' });
+    expect(repository.snapshot()).toMatchObject({ candidates: [], sources: [] });
+    expect(store.batch(saved.id)?.status).toBe('requesting');
   });
   it('does not automatically retry a paid request whose network outcome is unknown', async () => {
     const { store, repository, batch } = setup(); let calls = 0; const saved = batch();

@@ -1,4 +1,4 @@
-import type { LedgerEntry, LedgerEntryKind } from './ledger';
+import type { LedgerAccount, LedgerEntry, LedgerEntryKind } from './ledger';
 
 export type LedgerLoanPrincipalKind = 'loan_borrow' | 'loan_lend';
 export type LedgerLoanSettlementKind = 'loan_repay' | 'loan_collect';
@@ -22,6 +22,12 @@ export interface LedgerLoans {
 }
 export function isLedgerLoanKind(kind: LedgerEntryKind): kind is LedgerLoanKind {
   return kind === 'loan_borrow' || kind === 'loan_lend' || kind === 'loan_repay' || kind === 'loan_collect';
+}
+
+/** A reported family-card repayment settles debt without moving personal cash.
+ * Family cards are not cash-receiving or lending accounts. */
+export function ledgerLoanAllowsAccount(kind: LedgerLoanKind, accountKind: LedgerAccount['kind']): boolean {
+  return accountKind === 'cash' || kind === 'loan_repay' && accountKind === 'family';
 }
 
 /** Derive principal balances across the complete validated ledger, never a month slice. */

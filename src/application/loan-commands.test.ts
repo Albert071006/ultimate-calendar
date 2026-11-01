@@ -33,6 +33,33 @@ function seed(ledger: LedgerService, entries: LedgerEntry[]) {
 }
 
 describe('assistant loan bookkeeping', () => {
+  it('continues a family-card repayment after the old unsupported-account clarification without asking to change accounts again', async () => {
+    const { controller, ledger, payloads } = setup([route, { kind: 'clarification', question: '合成旧限制：请换一个现金账户。' }, route, { kind: 'mutate', changes: [
+      { type: 'createEntry', key: 'new:0', values: values('loan_repay', '合成亲情卡还款', 12000, -12000,
+        { counterparty: '合成同学乙', cashflows: [{ accountId: 'family', deltaCents: -12000 }], relatedEntryIds: ['family-principal'] }) },
+    ] }]);
+    seed(ledger, [principal('family-principal', 'loan_borrow', 18000, '合成同学乙')]);
+    const text = '还合成同学乙120元亲情卡';
+    const first = await controller.command({ operationId: 'old-family-clarification', text });
+    expect(first.ok).toBe(true); if (!first.ok) throw Error('Expected clarification');
+    expect(ledger.snapshot().entries).toHaveLength(1);
+    const request = { operationId: 'family-repay-confirmed', text: '就是用亲情卡还的', history: [
+      { role: 'user' as const, text }, { role: 'assistant' as const, text: first.data.reply, outcome: first.data.conversationState },
+    ] };
+    const reply = await controller.command(request);
+    expect(reply.ok).toBe(true); if (!reply.ok) throw Error('Expected saved repayment');
+    expect(reply.data.conversationState).toEqual({ domain: 'ledger', phase: 'saved' });
+    expect(reply.data.reply).toContain('本月已记录使用 ¥120.00');
+    expect(reply.data.reply).toContain('待还 ¥60.00');
+    expect(ledger.snapshot('2026-10').summary).toMatchObject({ personalCents: 0, incomeCents: 0, familyUsageCents: 12000 });
+    const saved = ledger.snapshot();
+    expect(saved.entries.find(entry => entry.kind === 'loan_repay')).toMatchObject({ cashflows: [{ accountId: 'family', deltaCents: -12000 }], relatedEntryIds: ['family-principal'] });
+    expect(payloads[3]!.messages[0]!.content).toContain('亲情卡归还本金计亲情卡使用额');
+    expect(payloads[3]!.messages[1]!.content).toBe(text);
+    expect(await controller.command(request)).toEqual(reply);
+    expect(ledger.snapshot()).toEqual(saved); expect(payloads).toHaveLength(4);
+  });
+
   it('records a mixed borrowing, withdrawal, fee and purchase atomically without treating principal as income or spending', async () => {
     const { controller, ledger, payloads } = setup([route, { kind: 'mutate', changes: [
       { type: 'createEntry', key: 'new:0', values: values('loan_borrow', '合成同学借款到账', 42000, 42000, { counterparty: '合成同学甲' }) },

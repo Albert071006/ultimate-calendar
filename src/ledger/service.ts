@@ -9,7 +9,7 @@ import {
 } from '../shared/ledger';
 import { ledgerEntryMatches, summarizeLedger } from './summary';
 import { ledgerReceivable } from './receivable';
-import { isLedgerLoanKind } from '../shared/ledger-loans';
+import { isLedgerLoanKind, ledgerLoanAllowsAccount } from '../shared/ledger-loans';
 
 export class LedgerError extends Error {
   constructor(readonly code: 'VALIDATION' | 'CONFLICT' | 'DUPLICATE' | 'STORAGE', message: string, readonly details?: unknown) { super(message); this.name = 'LedgerError'; }
@@ -79,10 +79,13 @@ export function validateLedgerData(data: LedgerData): void {
     const outgoing = entry.cashflows.reduce((sum, flow) => sum + Math.max(0, -flow.deltaCents), 0);
     const incoming = entry.cashflows.reduce((sum, flow) => sum + Math.max(0, flow.deltaCents), 0);
     if (isLedgerLoanKind(entry.kind)) {
+      const loanKind = entry.kind;
       if (entry.amountCents <= 0) fail('借款本金必须大于零');
       if (entry.personalCents !== 0 || entry.incomeCents !== 0 || entry.assetSaleCents !== 0) fail('借款本金、还款和收回均不计个人开销、普通收入或资产变现');
       if (entry.adjustments.length) fail('借款不能冲减消费；手续费或利息请单独记录');
-      if (entry.cashflows.some(flow => flow.accountId !== null && accountsById.get(flow.accountId)!.kind !== 'cash')) fail('借款只能使用现金账户或待确认账户，不能使用亲情卡或储值卡');
+      if (entry.cashflows.some(flow => flow.accountId !== null && !ledgerLoanAllowsAccount(loanKind, accountsById.get(flow.accountId)!.kind))) {
+        fail(entry.kind === 'loan_repay' ? '归还借款可使用现金账户、亲情卡或待确认账户，不能使用储值卡' : '借入、借出和收回本金只能使用现金账户或待确认账户；亲情卡仅支持归还借款');
+      }
       const incomingLoan = entry.kind === 'loan_borrow' || entry.kind === 'loan_collect';
       if (incomingLoan ? outgoing !== 0 || incoming !== entry.amountCents : incoming !== 0 || outgoing !== entry.amountCents) fail('借款本金与账户资金收付方向或金额不一致');
       if (entry.kind === 'loan_borrow' || entry.kind === 'loan_lend') {
