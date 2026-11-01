@@ -30,12 +30,12 @@ async function main() {
     process.stdout.write(`已恢复到全新资料目录：${restored.dataDirectory}\n任务 ${restored.taskCount} 条，账目 ${restored.ledgerEntryCount} 条；请重新配对并配置服务端密钥\n`); return;
   }
   if (command === 'backup') {
-    const service = createRemoteService({ dataDirectory: directory, backupDirectory: values.get('--backup-dir'), startupBackup: false, getApiKey: async () => null });
+    const service = createRemoteService({ dataDirectory: directory, backupDirectory: values.get('--backup-dir'), startupBackup: false, scheduleMonthlyAllowance: false, getApiKey: async () => null });
     try { process.stdout.write(`已导出脱敏安全备份：${service.backup()}\n`); } finally { await service.close(); }
     return;
   }
   if (command === 'advance-generation') {
-    const service = createRemoteService({ dataDirectory: directory, startupBackup: false, getApiKey: async () => null });
+    const service = createRemoteService({ dataDirectory: directory, startupBackup: false, scheduleMonthlyAllowance: false, getApiKey: async () => null });
     try { service.state.advanceGeneration(); process.stdout.write('资料代际已更新；旧待提交内容需重新核对\n'); } finally { await service.close(); }
     return;
   }

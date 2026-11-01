@@ -37,6 +37,8 @@ export interface RemoteServiceOptions {
   maxConcurrentWrites?: number;
   maxConcurrentWritesPerDevice?: number;
   startupBackup?: boolean;
+  /** Administrative one-shot commands must not run recurring bookkeeping jobs. */
+  scheduleMonthlyAllowance?: boolean;
 }
 function acquireDirectory(directory: string): () => void {
   const path = join(directory, '.remote-service.lock'), token = randomUUID();
@@ -143,7 +145,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
   const maintenance = setInterval(() => { try { cleanupEvidence(); backup(); } catch (error) { options.onBackupError?.(error); } }, 60 * 60_000); maintenance.unref();
   const emit = (reason: ChangedEvent['reason']) => { for (const listener of listeners) { try { listener({ reason }); } catch { /* a disconnected observer cannot reject a committed operation */ } } };
   const restore = createCloudRestore({ repository, ledger, state, backup: () => backup(true), hasPendingWrites: () => running.size > 0 });
-  const allowance = startAllowanceScheduler({ ledger,
+  const allowance = options.scheduleMonthlyAllowance === false ? null : startAllowanceScheduler({ ledger,
     isIdle: () => lifecycle === 'running' && running.size === 0,
     onChanged: () => { backup(true); emit('mutation'); },
     onError: () => { console.error('Monthly allowance check failed; will retry automatically.'); },
@@ -295,7 +297,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
     },
     close(config: { graceMs?: number } = {}): Promise<void> {
       if (closePromise) return closePromise;
-      lifecycle = 'draining'; clearInterval(maintenance); allowance.stop(); account.stop();
+      lifecycle = 'draining'; clearInterval(maintenance); allowance?.stop(); account.stop();
       closePromise = (async () => {
         const timer = setTimeout(() => shutdownAbort.abort(), Math.max(0, config.graceMs ?? 25_000)); timer.unref();
         try {

@@ -43,5 +43,11 @@ it('cloud records and broadcasts the allowance with no connected client or ledge
   const reopened = start();
   const second = await reopened.rpc('ledgerExportData', { requestId: 'export-after-restart', identity: reopened.state.identity(), input: { format: 'json' } }, 'synthetic-device');
   expect(second).toEqual(result);
+  await reopened.close();
+  vi.setSystemTime(new Date('2026-12-01T02:00:00Z'));
+  const administrative = createRemoteService({ dataDirectory, backupDirectory, scheduleMonthlyAllowance: false, getApiKey: async () => null, controller: { fetch } }); services.push(administrative);
+  vi.advanceTimersByTime(30_000);
+  const administrativeExport = await administrative.rpc('ledgerExportData', { requestId: 'administrative-export', identity: administrative.state.identity(), input: { format: 'json' } }, 'synthetic-device');
+  expect(administrativeExport).toEqual(result);
   expect(fetch).not.toHaveBeenCalled();
 });
