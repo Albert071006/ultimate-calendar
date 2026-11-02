@@ -18,6 +18,10 @@ export class LedgerError extends Error {
 export class LedgerValidationRejection extends LedgerError {
   constructor(readonly operationId: string, message: string) { super('VALIDATION', message); this.name = 'LedgerValidationRejection'; }
 }
+/** A duplicate check rejected a new mutation and its entire transaction was rolled back. */
+export class LedgerDuplicateRejection extends LedgerError {
+  constructor(readonly operationId: string, message: string, details?: unknown) { super('DUPLICATE', message, details); this.name = 'LedgerDuplicateRejection'; }
+}
 function emptyLedger(): LedgerData { return { revision: 0, entries: [], balanceSnapshots: [], rules: structuredClone(DEFAULT_LEDGER_RULES), audit: [], sources: [] }; }
 export function initializeLedgerDatabase(db: DatabaseSync): void {
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('ledger_state','ledger_operations')").all();
@@ -214,9 +218,10 @@ export class LedgerService {
       try { this.db.exec('ROLLBACK'); } catch {
         throw new LedgerError('STORAGE', '账本保存状态尚未确认，请核对原操作，不要重新记账');
       }
-      // Only this proven, rolled-back boundary permits fresh AI analysis. Read
-      // failures, conflicts and uncertain/committed writes must retain their ID.
+      // Only this proven, rolled-back boundary permits a duplicate clarification
+      // or fresh AI analysis. Uncertain/committed writes must retain their ID.
       if (kind === 'mutation' && phase === 'apply') {
+        if (error instanceof LedgerError && error.code === 'DUPLICATE') throw new LedgerDuplicateRejection(operationId, error.message, error.details);
         if (error instanceof LedgerError && error.code === 'VALIDATION') throw new LedgerValidationRejection(operationId, error.message);
         if (error instanceof Error && error.name === 'ZodError') throw new LedgerValidationRejection(operationId, '账目格式不符合保存要求');
       }
@@ -241,7 +246,7 @@ export class LedgerService {
             const duplicate = data.entries.find(entry => !entry.voided && entry.date === change.entry.date && entry.month === change.entry.month && entry.kind === change.entry.kind && entry.amountCents === change.entry.amountCents && normalizeTitle(entry.title) === normalizeTitle(change.entry.title) &&
               (!isLedgerLoanKind(change.entry.kind) || ((entry.counterparty?.trim() ?? '') === (change.entry.counterparty?.trim() ?? '') &&
                 JSON.stringify([...new Set(entry.relatedEntryIds)].sort()) === JSON.stringify([...new Set(change.entry.relatedEntryIds)].sort()))));
-            if (duplicate) throw new LedgerError('DUPLICATE', `已有相同日期、项目和金额的“${duplicate.title}”，请先确认是否确实是另一笔`, { entryIds: [duplicate.id] });
+            if (duplicate) throw new LedgerError('DUPLICATE', `已有相同${duplicate.date ? '日期' : '月份（日期待确认）'}、项目和金额的“${duplicate.title}”，请先确认是否确实是另一笔`, { entryIds: [duplicate.id] });
           }
           const entry: LedgerEntry = { ...change.entry, version: (old?.version ?? 0) + 1, createdAt: old?.createdAt ?? at, updatedAt: at, voided: false,
             sameDayBalanceOrder: old?.sameDayBalanceOrder ?? data.rules.sameDayNewEntryOrder };

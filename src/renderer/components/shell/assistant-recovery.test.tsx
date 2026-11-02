@@ -48,6 +48,31 @@ async function askAndFail(command: ReturnType<typeof fixture>['command'], failur
 }
 
 describe('assistant connection failures and visible continuation', () => {
+  it.each(['phone', 'desktop'] as const)('keeps a ledger duplicate clarification after an older completed undo on %s', async surface => {
+    const { api, command } = fixture();
+    const duplicateQuestion = '本次整批账目均未保存；请确认这些同额消费是各自真实发生的不同笔交易吗？';
+    command.mockResolvedValueOnce({ ok: true, data: { reply: '已撤销上一次账本操作', items: [], mutationResult: null,
+      conversationState: { domain: 'ledger', phase: 'saved' } } })
+      .mockResolvedValueOnce({ ok: true, data: { reply: duplicateQuestion, items: [], mutationResult: null,
+        conversationState: { domain: 'ledger', phase: 'clarification' } } });
+    render(surface === 'phone' ? <Phone api={api} /> : <Desktop api={api} />);
+    const composer = screen.getByLabelText(surface === 'phone' ? '对生活助手说' : '自然语言指令');
+    const submit = async (text: string) => {
+      fireEvent.change(composer, { target: { value: text } });
+      fireEvent.click(screen.getByRole('button', { name: surface === 'phone' ? '发送' : '发送指令' }));
+      await waitFor(() => expect(screen.queryAllByText('正在处理…')).toHaveLength(0));
+    };
+    await submit('撤销上一笔账');
+    const batch = '合成买水5元、快递12元、买水5元，均从支付宝支出，只确定本月';
+    await submit(batch);
+    expect(screen.queryByRole('button', { name: '核对这条指令' })).toBeNull();
+    await submit('是');
+    expect(command.mock.calls[2]![0].history?.slice(-2)).toEqual([
+      { role: 'user', text: batch },
+      { role: 'assistant', text: duplicateQuestion, outcome: { domain: 'ledger', phase: 'clarification' } },
+    ]);
+  });
+
   it('shows the actual pre-send failure and restores the clarification as an editable draft', async () => {
     const { api, command } = fixture(); render(<Phone api={api} />);
     await askAndFail(command);
