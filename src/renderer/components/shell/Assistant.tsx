@@ -8,7 +8,7 @@ import { ResourceFields } from '../resources/ResourcePanel';
 import { AssistantImageButton, AssistantAttachmentDraft, AssistantMessageAttachments } from './assistant-image-input';
 import { useAssistantPanelSize } from './assistant-panel-size';
 
-/** One-line assistant at the bottom of every page; its conversation opens upward over the page. */
+/** Compact composer that grows with its draft; its conversation opens upward over the page. */
 export function Assistant({ ui, selected, date, domain, ledgerView }: {
   ui: PlannerUI;
   selected: Selection | null;
