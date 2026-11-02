@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
-import { RemoteIdentitySchema, RemoteOperationSchema, RemoteSessionSchema, PairRequestSchema, type RemoteIdentity, type RemoteMethod } from '../shared/remote';
+import { RemoteIdentitySchema, RemoteOperationSchema, RemoteSessionSchema, PairRequestSchema, REMOTE_READ_METHODS, type RemoteIdentity, type RemoteMethod } from '../shared/remote';
 import { DistilledRequestSchema, DistilledResultSchema, type DistilledRequest } from '../shared/distilled';
 import { AiApiKeySchema, AiConfigurationRevisionSchema, AiConfigurationStatusSchema, type AiConfigurationStatus } from '../shared/ai-configuration';
 import { AiKeySyncRequestSchema, AiKeySyncResponseSchema, MAX_AI_KEY_SYNC_BYTES } from '../shared/ai-key-sync';
@@ -29,7 +29,7 @@ export function fileCredentialStore(file: string): CredentialStore {
     write(value) { writePrivate(file, JSON.stringify(CredentialSchema.parse(value))); } };
 }
 export function sameRemoteIdentity(a: RemoteIdentity, b: RemoteIdentity) { return a.dataInstanceId === b.dataInstanceId && a.generation === b.generation && a.protocolVersion === b.protocolVersion; }
-function parseRemote<S extends z.ZodType>(schema:S,value:unknown):z.output<S> { const result=schema.safeParse(value);if(!result.success)throw new RemoteClientError(502,'资料服务响应不符合接口契约，未确认操作结果');return result.data as z.output<S>; }
+function parseRemote<S extends z.ZodType>(schema:S,value:unknown,readOnly=false):z.output<S> { const result=schema.safeParse(value);if(!result.success)throw new RemoteClientError(502,readOnly?'资料服务响应不符合接口契约，未能读取最新资料':'资料服务响应不符合接口契约，未确认操作结果');return result.data as z.output<S>; }
 
 /** Node-only transport. Cookies never reach the renderer, redirects are never followed. */
 export function createNodeRemoteClient(options: { origin: string; credentialsFile?: string; credentials?: CredentialStore; fetch?: typeof fetch; timeoutMs?: number; localConnectAddress?: '127.0.0.1' }) {
@@ -46,6 +46,11 @@ export function createNodeRemoteClient(options: { origin: string; credentialsFil
   let session: Extract<z.infer<typeof RemoteSessionSchema>, { paired: true }> | undefined;
   const lifetime = new AbortController();
   async function request(path: string, input?: unknown, config: { signal?: AbortSignal; pairing?: boolean; method?: 'GET' | 'POST' | 'PUT' | 'DELETE' } = {}) {
+    const method = config.method ?? (input === undefined ? 'GET' : 'POST');
+    // RPC reads use POST too. Classify the request actually sent, including a
+    // session preflight that can fail before the intended write is dispatched.
+    const readOnly = method === 'GET' || path.startsWith('/api/v1/rpc/') &&
+      (REMOTE_READ_METHODS as readonly string[]).includes(path.slice('/api/v1/rpc/'.length));
     const modelRequest = isAiRpcPath(path);
     const timeout = AbortSignal.timeout(Math.min(modelRequest ? AI_RPC_TIMEOUT_MS : 30_000, Math.max(100, options.timeoutMs ?? (modelRequest ? AI_RPC_TIMEOUT_MS : 30_000))));
     const receiverSync = path === '/api/v1/ai/receiver/sync';
@@ -58,13 +63,14 @@ export function createNodeRemoteClient(options: { origin: string; credentialsFil
         response.status === 409 ? '云端配置已变化；请重新读取状态，核对后再操作' :
         response.status === 400 ? '云端配置输入无效，请检查后重试' :
         '云端配置未确认；请重新读取状态核对，不会自动重发' :
-        response.status === 409 ? '资料代际或操作编号冲突，请核对后处理' : '资料服务未完成请求，请核对原操作结果';
+        response.status === 409 ? readOnly ? '资料版本或状态冲突，请刷新核对后重试' : '资料代际或操作编号冲突，请核对后处理' :
+        readOnly ? '资料读取未完成，请稍后刷新' : '资料服务未完成请求，请核对原操作结果';
       return new RemoteClientError(response.status, message, Number.isFinite(retry) && retry > 0 ? Math.min(retry * 1000, 300_000) : undefined);
     };
     if (!path.startsWith('/api/v1/') || new URL(path, origin).origin !== origin || path.includes('\\')) throw Error('无效接口路径');
     try {
       const response = await fetcher(origin + path, { redirect: 'error', cache: 'no-store', signal: AbortSignal.any([timeout, lifetime.signal, ...(config.signal ? [config.signal] : [])]),
-        method: config.method ?? (input === undefined ? 'GET' : 'POST'), headers: { Origin: origin, [AI_SETTINGS_HEADER]: AI_SETTINGS_VERSION, [PROFILE_SETTINGS_HEADER]: PROFILE_SETTINGS_VERSION, ...(path.startsWith('/api/v1/rpc/ledger') ? { [LEDGER_API_HEADER]: LEDGER_API_VERSION } : {}), ...(credential && !config.pairing ? { Cookie: credential.cookie } : {}),
+        method, headers: { Origin: origin, [AI_SETTINGS_HEADER]: AI_SETTINGS_VERSION, [PROFILE_SETTINGS_HEADER]: PROFILE_SETTINGS_VERSION, ...(path.startsWith('/api/v1/rpc/ledger') ? { [LEDGER_API_HEADER]: LEDGER_API_VERSION } : {}), ...(credential && !config.pairing ? { Cookie: credential.cookie } : {}),
           ...(input === undefined ? {} : { 'Content-Type': 'application/json', 'X-CSRF-Token': session?.csrfToken ?? '' }) },
         ...(input === undefined ? {} : { body: JSON.stringify(input) }) });
       if(response.redirected||response.status>=300&&response.status<400){await response.body?.cancel();throw new RemoteClientError(502,'资料服务发生重定向，未将凭据发送到其他地址');}
@@ -76,10 +82,10 @@ export function createNodeRemoteClient(options: { origin: string; credentialsFil
       const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       if (!response.ok) throw httpFailure(response);
       return { body, response };
-    } catch (error) { if (error instanceof RemoteClientError) throw error; throw new RemoteClientError(0, aiConfiguration ? '云端配置连接未完成；请重新读取状态核对，不会自动重发' : '连接未完成；写入结果可能尚未返回，请查询原操作编号'); }
+    } catch (error) { if (error instanceof RemoteClientError) throw error; throw new RemoteClientError(0, aiConfiguration ? '云端配置连接未完成；请重新读取状态核对，不会自动重发' : readOnly ? '资料读取未完成，请检查连接后刷新' : '连接未完成；写入结果可能尚未返回，请查询原操作编号'); }
   }
   async function getSession() {
-    const value = parseRemote(RemoteSessionSchema,(await request('/api/v1/session')).body);
+    const value = parseRemote(RemoteSessionSchema,(await request('/api/v1/session')).body,true);
     if (!value.paired || !credential) { session = undefined; throw new RemoteClientError(401, '此设备尚未配对或授权已失效'); }
     if (value.device.id !== credential.deviceId || !sameRemoteIdentity(value.identity, credential.identity)) { session = undefined; throw new RemoteClientError(409, '服务身份或资料代际已变更，旧操作已隔离，不能自动重放'); }
     session = value;
@@ -142,7 +148,7 @@ export function createNodeRemoteClient(options: { origin: string; credentialsFil
       const checked = remoteInputs[method].parse(input), current = await ready();
       const response = await request('/api/v1/rpc/' + method, { requestId, identity: current.identity, input: checked });
       if (!credential || !sameRemoteIdentity(credential.identity, current.identity)) throw new RemoteClientError(409, '资料已恢复，已丢弃原代际的迟到响应');
-      return parseRemote(remoteOutputs[method], response.body) as z.output<typeof remoteOutputs[M]>;
+      return parseRemote(remoteOutputs[method], response.body, (REMOTE_READ_METHODS as readonly RemoteMethod[]).includes(method)) as z.output<typeof remoteOutputs[M]>;
     },
     async confirmRestore(input: unknown) {
       const checked = remoteInputs.restoreConfirm.parse(input), current = await ready();
@@ -154,7 +160,7 @@ export function createNodeRemoteClient(options: { origin: string; credentialsFil
       }
       return result;
     },
-    async operation(requestId: string) { await ready(); return parseRemote(RemoteOperationSchema,(await request('/api/v1/operations/' + encodeURIComponent(requestId))).body); },
+    async operation(requestId: string) { await ready(); return parseRemote(RemoteOperationSchema,(await request('/api/v1/operations/' + encodeURIComponent(requestId))).body,true); },
     async sendDistilled(input: DistilledRequest, config: { signal?: AbortSignal } = {}) {
       const checked = DistilledRequestSchema.parse(input), current = await ready();
       if (!sameRemoteIdentity(current.identity, checked.identity)) throw new RemoteClientError(409, '提炼资料属于另一资料代际');

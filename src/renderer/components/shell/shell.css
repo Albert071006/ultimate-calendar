@@ -46,10 +46,10 @@
 .a2-service h2 { font-family: var(--font-display); font-weight: 600; }
 
 .a2-assist { grid-row: 3; position: relative; margin: 10px 22px 14px; }
-.a2-assist-bar { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 6px 0 14px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--surface); }
+.a2-assist-bar { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 6px 6px 14px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--surface); }
 .a2-assist.open .a2-assist-bar { border-color: var(--ink); }
 .a2-assist-bar > svg { width: 17px; height: 17px; color: var(--ink-3); stroke-width: 1.7; flex-shrink: 0; }
-.a2-assist-bar textarea { flex: 1; min-width: 0; height: 22px; max-height: 22px; padding: 0; resize: none; overflow: hidden; border: 0; outline: none; background: transparent; font: inherit; font-size: 13.5px; line-height: 22px; color: var(--ink); }
+.a2-assist-bar textarea { flex: 1; min-width: 0; field-sizing: content; height: auto; min-height: 22px; max-height: min(132px, 30dvh); padding: 0; resize: none; overflow-y: auto; overscroll-behavior: contain; border: 0; outline: none; background: transparent; font: inherit; font-size: 13.5px; line-height: 22px; color: var(--ink); }
 .a2-assist-bar textarea::placeholder { color: var(--ink-3); }
 .a2-assist-panel { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 25; display: flex; flex-direction: column; min-height: 0; overflow: hidden; box-sizing: border-box; }
 .a2-assist-resize { flex: 0 0 12px; display: grid; place-items: center; cursor: ns-resize; touch-action: none; user-select: none; }

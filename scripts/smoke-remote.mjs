@@ -2,6 +2,7 @@ import { spawn, execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
+import { createServer as createHttpServer, request as httpRequest } from 'node:http';
 import { mkdir, mkdtemp, writeFile, readFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import electron from 'electron';
@@ -14,6 +15,18 @@ const root = await mkdtemp(resolve('test-results/remote-smoke-')), data = join(r
 const env = { ...process.env }; for (const key of ['ELECTRON_RUN_AS_NODE', 'PLANNER_DEV_URL', 'DEEPSEEK_API_KEY', 'VAPID_SUBJECT']) delete env[key];
 async function port() { const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening'); const value = server.address().port; await new Promise(done => server.close(done)); return value; }
 const origin = `http://127.0.0.1:${await port()}`;
+const testRecovery = process.env.PLANNER_SMOKE_CONNECTION_RECOVERY === '1';
+const servicePort = testRecovery ? await port() : new URL(origin).port;
+let disconnected = false;
+let outageRequests = 0;
+const outageProxy = testRecovery ? createHttpServer((request, response) => {
+  if (disconnected) { outageRequests++; response.writeHead(503, { 'content-type': 'application/json' }); response.end('{}'); return; }
+  const upstream = httpRequest({ host: '127.0.0.1', port: servicePort, method: request.method, path: request.url, headers: request.headers }, result => {
+    response.writeHead(result.statusCode, result.headers); result.pipe(response);
+  });
+  upstream.on('error', () => response.destroy()); request.pipe(upstream);
+}) : null;
+if (outageProxy) { outageProxy.listen(Number(new URL(origin).port), '127.0.0.1'); await once(outageProxy, 'listening'); }
 // These are deliberately invalid provider credentials; this smoke only exercises configuration, never AI calls.
 const nativeAiKey = `synthetic-smoke-native-key-${crypto.randomUUID()}`, browserAiKey = `synthetic-smoke-browser-key-${crypto.randomUUID()}`;
 const syntheticAiKeys = [nativeAiKey, browserAiKey];
@@ -30,13 +43,14 @@ async function assertPrivateProfileHasNoAiKey(directory) {
 }
 let service, desktop, socket, serial = 0; const pending = new Map();
 async function pairingCode() { const result = await execFile(process.execPath, ['dist-server/cli.mjs', 'pair', '--data-dir', data], { env, windowsHide: true }); const code = result.stdout.trim().split(/\r?\n/).at(-1); assert(/^[A-Za-z0-9_-]{43}$/.test(code), 'Pair code unavailable'); return code; }
-async function cdp(expression) {
+async function cdpCall(method, params = {}) {
   const id = ++serial;
-  const result = new Promise((done, reject) => { const timeout = setTimeout(() => { pending.delete(id); reject(Error('Remote smoke CDP timeout')); }, 20_000); pending.set(id, value => { clearTimeout(timeout); value.error || value.result?.exceptionDetails ? reject(Error('Remote smoke renderer call failed')) : done(value.result.result.value); }); });
-  socket.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } })); return result;
+  const result = new Promise((done, reject) => { const timeout = setTimeout(() => { pending.delete(id); reject(Error('Remote smoke CDP timeout')); }, 20_000); pending.set(id, value => { clearTimeout(timeout); value.error || value.result?.exceptionDetails ? reject(Error('Remote smoke renderer call failed: ' + method)) : done(value.result); }); });
+  socket.send(JSON.stringify({ id, method, params })); return result;
 }
+async function cdp(expression) { return (await cdpCall('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })).result.value; }
 try {
-  service = spawn(process.execPath, ['dist-server/cli.mjs', 'serve', '--data-dir', data, '--origin', origin, '--port', new URL(origin).port], { env, windowsHide: true, stdio: 'ignore' });
+  service = spawn(process.execPath, ['dist-server/cli.mjs', 'serve', '--data-dir', data, '--origin', origin, '--port', String(servicePort)], { env, windowsHide: true, stdio: 'ignore' });
   let live = false;
   for (let i = 0; i < 100; i++) { try { live = (await fetch(origin + '/api/v1/session')).ok; } catch {} if (live) break; if (service.exitCode !== null) throw Error('Remote service exited'); await wait(100); }
   assert(live, 'Remote service did not start');
@@ -54,7 +68,7 @@ try {
   await writeFile(codeFile, await pairingCode(), { mode: 0o600 });
   await writeFile(configFile, JSON.stringify({ origin, deviceName: '合成 Windows 设备', pairingCodeFile: codeFile }));
   const debugPort = await port();
-  desktop = spawn(process.env.PLANNER_SMOKE_EXE || electron, [...(process.env.PLANNER_SMOKE_EXE ? [] : ['.']), `--planner-profile=${profile}`, `--planner-remote-config=${configFile}`, `--remote-debugging-port=${debugPort}`], { env, windowsHide: true, stdio: 'ignore' });
+  desktop = spawn(process.env.PLANNER_SMOKE_EXE || electron, [...(process.env.PLANNER_SMOKE_EXE ? [] : ['.']), `--planner-profile=${profile}`, `--planner-remote-config=${configFile}`, `--remote-debugging-port=${debugPort}`], { env, windowsHide: !testRecovery, stdio: 'ignore' });
   let target;
   for (let i = 0; i < 200; i++) { if (desktop.exitCode !== null) throw Error('Remote desktop exited during startup'); try { target = (await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json()).find(value => value.type === 'page' && value.url.startsWith('file:')); } catch {} if (target) break; await wait(100); }
   assert(target, 'Bundled desktop renderer did not start');
@@ -65,6 +79,39 @@ try {
   assert(ready, 'Remote preload unavailable');
   const initial = await cdp('window.planner.snapshot()'); assert(initial.ok && initial.data.tasks.length === 0, 'Native remote did not read fresh server');
   assert(initial.data.keyStatus.scope === 'cloud', 'Native snapshot did not identify cloud Key scope');
+  if (testRecovery) {
+    const credentialBefore = await readFile(join(profile, 'credentials', 'remote-device.bin'));
+    let rendered = false;
+    for (let i = 0; i < 100; i++) {
+      rendered = await cdp('[...document.querySelectorAll("button")].some(button => button.textContent === "课表")');
+      if (rendered) break; await wait(100);
+    }
+    assert(rendered, 'Desktop calendar did not render before the connection test');
+    await cdpCall('Page.bringToFront');
+    await cdp('window.__smokeChanged = 0; window.planner.onChanged(() => window.__smokeChanged++); true');
+    // Make only this smoke's service unavailable, keeping its database lock intact.
+    disconnected = true;
+    console.log('Disconnected direct read:', await cdp('window.planner.snapshot()'));
+    let failed = false;
+    for (let i = 0; i < 80; i++) {
+      try { failed = await cdp('document.body.innerText.includes("资料读取未完成")'); } catch {}
+      if (failed) break; await wait(500);
+    }
+    if (!failed) console.log('Read failure diagnostic:', {outageRequests}, await cdp('({text:document.body.innerText.slice(0,2500),ready:document.readyState,visibility:document.visibilityState,changes:window.__smokeChanged,api:!!window.planner})'));
+    assert(failed, 'Disconnected read did not show the read-specific error');
+    assert(!await cdp('document.body.innerText.includes("写入结果可能尚未返回")'), 'Read failure was mislabeled as an unknown write');
+    disconnected = false;
+    let recovered = false;
+    for (let i = 0; i < 80; i++) {
+      recovered = await cdp('!document.body.innerText.includes("资料读取未完成") && [...document.querySelectorAll("button")].some(button => button.textContent === "课表")');
+      if (recovered) break; await wait(500);
+    }
+    assert(recovered, 'Automatic refresh did not clear the disconnected-read error');
+    assert(credentialBefore.equals(await readFile(join(profile, 'credentials', 'remote-device.bin'))), 'Read recovery changed pairing');
+    const readJournal = await readFile(join(profile, 'remote-write.json'), 'utf8').catch(error => { if (error.code === 'ENOENT') return 'null'; throw error; });
+    assert(JSON.parse(readJournal) === null, 'Read recovery created a pending write');
+    console.log('PASS: real native disconnect/reconnect automatically cleared the read error, without re-pairing or creating a pending write.');
+  }
   const personalContext = '姓名：云端合成同学；学号：SYN-CLOUD-001；职务：示例协会资料组成员';
   const savedProfile = await cdp(`window.planner.saveSettings(${JSON.stringify({ settings: { ...initial.data.settings, personalContext }, expectedSettings: initial.data.settings })})`);
   assert(savedProfile.ok && savedProfile.data.personalContext === personalContext, 'Native personal background was not saved by compiled cloud backend');
@@ -126,5 +173,6 @@ try {
   await writeFile(join(root, 'result.json'), JSON.stringify({ passed: true, checks: ['compiled-server', 'native-pair', 'bidirectional-task', 'single-slot-finish-from-desktop', 'single-slot-reopen-from-browser', 'remote-ledger', 'cloud-key-snapshot', 'native-cloud-key-save', 'browser-cloud-key-update', 'native-cloud-key-retry', 'stale-cloud-key-rejected', 'native-cloud-key-clear', 'no-cloud-key-in-native-profile', 'cloud-key-bypasses-write-journal', 'capture-disabled', 'no-local-database', 'encrypted-credential', 'normal-desktop-exit'] }, null, 2));
 } finally {
   socket?.close();
+  if (outageProxy) { outageProxy.closeAllConnections(); await new Promise(done => outageProxy.close(done)); }
   for (const child of [desktop, service]) if (child && child.exitCode === null) { child.kill(); await Promise.race([once(child, 'exit'), wait(5000)]); }
 }
