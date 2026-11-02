@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createNodeRemoteClient, normalizeRemoteOrigin, type RemoteCredential } from './node-client';
+import { REMOTE_READ_METHODS } from '../shared/remote';
 
 const origin='https://synthetic.example',identity={protocolVersion:1 as const,dataInstanceId:'11111111-1111-4111-8111-111111111111',generation:1},deviceId='22222222-2222-4222-8222-222222222222';
 const session={paired:true,identity,device:{id:deviceId,name:'合成Windows'},csrfToken:'synthetic-csrf',aiConfigured:false};
@@ -43,6 +44,45 @@ describe('native Node remote transport',()=>{
     const f=setup(path=>path.endsWith('/session')?json(session):json({ok:true,data:{status:'pretend-saved'}}));
     await expect(f.client.rpc('mutate',{operationId:'synthetic-business',origin:'manual',mutations:[{type:'create',entity:'task',values:{title:'合成任务'}}]})).rejects.toMatchObject({status:502});
     expect(f.fetcher.mock.calls[1]![1]!.headers).toMatchObject({'X-CSRF-Token':'synthetic-csrf'});expect(JSON.parse(String(f.fetcher.mock.calls[1]![1]!.body))).toMatchObject({identity});f.client.close();
+  });
+  it.each(['session','status','operation'] as const)('reports a failed %s GET as a read failure without claiming a write is pending',async method=>{
+    const f=setup(path=>{if(path.endsWith('/session')&&method!=='session')return json(session);throw Error('synthetic private transport detail');});
+    const error=await (method==='session'?f.client.getSession():method==='status'?f.client.status():f.client.operation('synthetic-request')).catch(error=>error);
+    expect(error).toMatchObject({status:0,message:'资料读取未完成，请检查连接后刷新'});
+    expect(f.fetcher).toHaveBeenCalledTimes(method==='session'?1:2);
+    expect(f.fetcher.mock.calls.every(([,init])=>init!.method==='GET')).toBe(true);
+    expect(f.store.write).not.toHaveBeenCalled();f.client.close();
+  });
+  it.each(REMOTE_READ_METHODS)('recognizes the %s read RPC despite its POST transport and never retries it',async method=>{
+    const input=method==='ledgerExportData'?{format:'json'}:method==='restorePreview'?{content:'synthetic backup'}:undefined;
+    const f=setup(path=>{if(path.endsWith('/session'))return json(session);throw Error('synthetic dropped read');});
+    await expect(f.client.rpc(method,input)).rejects.toMatchObject({status:0,message:'资料读取未完成，请检查连接后刷新'});
+    expect(f.fetcher).toHaveBeenCalledTimes(2);
+    expect(f.fetcher.mock.calls[1]![1]!.method).toBe('POST');
+    expect(String(f.fetcher.mock.calls[1]![0])).toBe(origin+'/api/v1/rpc/'+method);
+    expect(f.store.write).not.toHaveBeenCalled();f.client.close();
+  });
+  it('does not describe an unsent mutation as an unknown write when its session preflight fails',async()=>{
+    const f=setup(()=>{throw Error('synthetic preflight failure');});
+    await expect(f.client.rpc('mutate',{operationId:'synthetic-business',origin:'manual',mutations:[{type:'create',entity:'task',values:{title:'合成任务'}}]}))
+      .rejects.toMatchObject({status:0,message:'资料读取未完成，请检查连接后刷新'});
+    expect(f.fetcher).toHaveBeenCalledTimes(1);expect(String(f.fetcher.mock.calls[0]![0])).toBe(origin+'/api/v1/session');
+    expect(f.store.write).not.toHaveBeenCalled();f.client.close();
+  });
+  it('keeps the original-operation warning after a dispatched mutation times out and does not retry',async()=>{
+    const f=setup((path,init)=>path.endsWith('/session')?json(session):new Promise((_resolve,reject)=>init.signal!.addEventListener('abort',()=>reject(init.signal!.reason),{once:true})),saved,100);
+    await expect(f.client.rpc('mutate',{operationId:'synthetic-business',origin:'manual',mutations:[{type:'create',entity:'task',values:{title:'合成任务'}}]}))
+      .rejects.toMatchObject({status:0,message:'连接未完成；写入结果可能尚未返回，请查询原操作编号'});
+    expect(f.fetcher).toHaveBeenCalledTimes(2);expect(String(f.fetcher.mock.calls[1]![0])).toBe(origin+'/api/v1/rpc/mutate');
+    expect(f.store.write).not.toHaveBeenCalled();f.client.close();
+  });
+  it('keeps failed HTTP reads and invalid read responses distinct from unconfirmed write results',async()=>{
+    const unavailable=setup(path=>path.endsWith('/session')?json(session):json({},503));
+    await expect(unavailable.client.rpc('snapshot')).rejects.toMatchObject({status:503,message:'资料读取未完成，请稍后刷新'});unavailable.client.close();
+    const invalid=setup(path=>path.endsWith('/session')?json(session):json({ok:true,data:{}}));
+    await expect(invalid.client.rpc('snapshot')).rejects.toMatchObject({status:502,message:'资料服务响应不符合接口契约，未能读取最新资料'});invalid.client.close();
+    const invalidSession=setup(()=>json({paired:true}));
+    await expect(invalidSession.client.getSession()).rejects.toMatchObject({status:502,message:'资料服务响应不符合接口契约，未能读取最新资料'});invalidSession.client.close();
   });
 });
 

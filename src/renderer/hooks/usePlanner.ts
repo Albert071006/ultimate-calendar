@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ApiResult,
   ApiError,
@@ -8,42 +8,59 @@ import type {
 } from "../../shared/contracts";
 import type { HostCapabilities, PlannerClient, PlannerMutationResult } from "../../shared/client";
 import { operationId } from "../calendar-layout";
+type PlannerError = { message: string; code: ApiError["code"] | null };
 export function usePlanner(api: PlannerClient | undefined, host?: HostCapabilities) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [error, setError] = useState("");
-  const [errorCode, setErrorCode] = useState<ApiError["code"] | null>(null);
+  // A successful read only resolves a read failure, never an unconfirmed action.
+  const [readError, setReadError] = useState<PlannerError | null>(null);
+  const [actionError, setActionError] = useState<PlannerError | null>(null);
+  const snapshotRequest = useRef(0);
+  const settledSnapshotRequest = useRef(0);
+  const visibleError = actionError ?? readError;
+  const error = visibleError?.message ?? "";
+  const errorCode = visibleError?.code ?? null;
+  const setError = useCallback((message: string) => {
+    setActionError(message ? { message, code: null } : null);
+    if (!message) setReadError(null);
+  }, []);
   const [notice, setNotice] = useState("");
   const [preview, setPreview] = useState<Extract<
     MutationResult,
     { status: "preview" }
   > | null>(null);
   const [busy, setBusy] = useState(false);
-  const readSnapshot = useCallback(async () => {
+  const readSnapshot = useCallback(async (afterOperation = false) => {
     if (!api) return;
-    const result = await api.snapshot();
-    if (result.ok) setSnapshot(result.data);
-    else {
-      setError(result.error.message);
-      setErrorCode(result.error.code);
-      return result.error;
+    const request = ++snapshotRequest.current;
+    let result: ApiResult<Snapshot>;
+    try { result = await api.snapshot(); }
+    catch (e) {
+      result = { ok: false, error: { code: 'NETWORK', message: e instanceof Error ? e.message : '资料读取失败，请检查连接后重试。', retryable: true } };
     }
+    // Late responses must not replace newer data or resurrect a recovered error.
+    if (request < settledSnapshotRequest.current) return;
+    settledSnapshotRequest.current = request;
+    if (result.ok) { setSnapshot(result.data); setReadError(null); }
+    else setReadError({ code: result.error.code, message: afterOperation
+      ? `已收到处理结果，但最新资料刷新失败：${result.error.message}。请刷新核对，不要重复提交。`
+      : result.error.message });
   }, [api]);
   const refresh = useCallback(async () => { await readSnapshot(); }, [readSnapshot]);
   useEffect(() => {
     if (!api) return;
-    void refresh().catch(() => setError("资料服务连接失败，请重试。"));
-    return api.onChanged(() => {
-      void refresh().catch(() => setError("刷新失败，请重试。"));
+    void refresh();
+    const unsubscribe = api.onChanged(() => {
+      void refresh();
     });
+    return () => { unsubscribe(); settledSnapshotRequest.current = ++snapshotRequest.current; };
   }, [api, refresh]);
   const receive = useCallback((result: PlannerMutationResult) => {
     if (result.status === "preview") {
       setPreview(result);
       setNotice("尚未执行 · 请确认更改");
     } else if (result.status === "clarification") {
-      setErrorCode(null);
       setNotice("尚未执行 · 需要补充信息");
-      setError(result.questions.join("；"));
+      setActionError({ message: result.questions.join("；"), code: null });
     } else {
       setPreview(null);
       setNotice(result.message);
@@ -55,24 +72,16 @@ export function usePlanner(api: PlannerClient | undefined, host?: HostCapabiliti
   ): Promise<T | undefined> {
     setBusy(true);
     setError("");
-    setErrorCode(null);
     try {
       const result = await job();
       if (!result.ok) {
-        setError(result.error.message);
-        setErrorCode(result.error.code);
+        setActionError({ message: result.error.message, code: result.error.code });
         return undefined;
       }
       success?.(result.data);
       // A confirmed operation stays confirmed even when the subsequent snapshot cannot be read.
       // Returning undefined here would expose a retry button for work that already succeeded.
-      try {
-        const refreshError = await readSnapshot();
-        if (refreshError) setError(`已收到处理结果，但最新资料刷新失败：${refreshError.message}。请刷新核对，不要重复提交。`);
-      } catch (e) {
-        setError(`已收到处理结果，但最新资料刷新失败：${e instanceof Error ? e.message : '资料服务暂不可用'}。请刷新核对，不要重复提交。`);
-        setErrorCode('NETWORK');
-      }
+      await readSnapshot(true);
       return result.data;
     } catch (e) {
       setError(e instanceof Error ? e.message : "操作失败，请重试。");
