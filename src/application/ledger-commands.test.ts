@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRepository, type Repository } from '../storage/repository';
 import { createPlanner } from '../domain/planner';
-import { createLedgerService, LedgerError, type LedgerService } from '../ledger/service';
+import { createLedgerService, LedgerDuplicateRejection, LedgerError, type LedgerService } from '../ledger/service';
 import { createController } from './controller';
 import { WorkflowError } from '../ai/deepseek';
 import { DEFAULT_LEDGER_RULES, LedgerEntryDraftSchema, LedgerEntrySchema, type LedgerEntry } from '../shared/ledger';
@@ -31,6 +31,64 @@ function importSynthetic(ledger: LedgerService, entries: LedgerEntry[]) {
   ledger.import({ format: 'ultimate-calendar-ledger', formatVersion: 1, entries, balanceSnapshots: [], rules: DEFAULT_LEDGER_RULES, audit: [], sources: [] }, 'synthetic-receivable-import');
 }
 describe('main assistant local ledger commands',()=>{
+  it.each([false, true])('keeps a fully rolled-back duplicate batch as the latest clarification (existing=%s)', async existing => {
+    const values = { ...expense('alipay').changes[0]!.values, date: null, dateNote: '具体日期待确认', title: '合成饮用水', amountCents: 500, personalCents: 500,
+      cashflows: [{ accountId: 'alipay', deltaCents: -500 }] };
+    const batch = { kind: 'mutate', changes: [0, 1].map(index => ({ type: 'createEntry', key: `new:${index}`, values })) };
+    const { controller, ledger, payloads, intents } = setup([route, batch]);
+    if (existing) importSynthetic(ledger, [syntheticEntry('existing-synthetic-water', { ...values, kind: 'expense', category: '餐饮' })]);
+    const before = ledger.snapshot();
+    const undo = vi.spyOn(ledger, 'undo');
+    const oldHistory: CommandRequest['history'] = [
+      { role: 'user', text: '撤销上一笔合成记录' },
+      { role: 'assistant', text: '已撤销上一笔合成记录', outcome: { domain: 'ledger', phase: 'saved' } },
+    ];
+    const request: CommandRequest = { operationId: `synthetic-duplicate-batch-${existing}`, text: '合成饮用水5元、合成饮用水5元，都是支付宝支出，只确定10月', history: oldHistory };
+    const first = await controller.command(request);
+    expect(first).toMatchObject({ ok: true, data: { conversationState: { domain: 'ledger', phase: 'clarification' } } });
+    if (!first.ok) throw Error('Expected a duplicate clarification');
+    expect(first.data.reply).toContain('本次整批账目均未保存');
+    expect(first.data.reply).toContain('相同月份（日期待确认）');
+    expect(first.data.reply).toContain('各自真实发生的不同笔交易');
+    expect(ledger.snapshot()).toEqual(before);
+    expect(await controller.command(request)).toEqual(first);
+    expect(payloads).toHaveLength(2);
+
+    intents.push(route, { ...batch, changes: batch.changes.map(change => ({ ...change, confirmDuplicate: true })) });
+    const confirmation: CommandRequest = { operationId: `synthetic-confirm-duplicate-${existing}`, text: '是', history: [
+      ...oldHistory, { role: 'user', text: request.text }, { role: 'assistant', text: first.data.reply, outcome: first.data.conversationState },
+    ] };
+    const saved = await controller.command(confirmation);
+    expect(saved).toMatchObject({ ok: true, data: { conversationState: { domain: 'ledger', phase: 'saved' } } });
+    const after = ledger.snapshot();
+    expect(after.revision).toBe(before.revision + 1);
+    expect(after.entries).toHaveLength(before.entries.length + 2);
+    expect(after.summary.personalCents).toBe(before.summary.personalCents + 1000);
+    expect(after.entries.filter(entry => !before.entries.some(old => old.id === entry.id))).toEqual([
+      expect.objectContaining({ title: '合成饮用水', date: null, month: '2026-10', amountCents: 500, personalCents: 500, cashflows: [{ accountId: 'alipay', deltaCents: -500 }] }),
+      expect.objectContaining({ title: '合成饮用水', date: null, month: '2026-10', amountCents: 500, personalCents: 500, cashflows: [{ accountId: 'alipay', deltaCents: -500 }] }),
+    ]);
+    expect(undo).not.toHaveBeenCalled();
+    for (const payload of payloads.slice(2)) {
+      expect(payload.messages.at(-2)?.role).toBe('assistant');
+      expect(payload.messages.at(-2)?.content).toContain(first.data.reply);
+      expect(JSON.parse(payload.messages.at(-1)!.content)).toMatchObject({ userCommand: '是' });
+    }
+    expect(await controller.command(confirmation)).toEqual(saved);
+    expect(ledger.snapshot()).toEqual(after);
+    expect(payloads).toHaveLength(4);
+  });
+
+  it.each([false, true])('does not present an unproven or mismatched duplicate as a safe clarification (mismatch=%s)', async mismatch => {
+    const { controller, ledger } = setup([route, expense('alipay')]);
+    const before = ledger.snapshot();
+    vi.spyOn(ledger, 'mutate').mockImplementation(() => {
+      throw mismatch ? new LedgerDuplicateRejection('another-operation', '合成重复异常') : new LedgerError('DUPLICATE', '合成重复异常');
+    });
+    expect(await controller.command({ operationId: `unproven-duplicate-${mismatch}`, text: '合成午饭' })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    expect(ledger.snapshot()).toEqual(before);
+  });
+
   it('adds and persists a new courier category with only dining history, without replaying a saved command', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'uc-ledger-category-')); temporaryDirectories.push(directory);
     const database = join(directory, 'ledger.sqlite');

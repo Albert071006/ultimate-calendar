@@ -16,7 +16,7 @@ import { normalizeCandidate, candidateFingerprint, supplementCandidate } from '.
 import { parseCourseFile, parseCsv, previewCourseRows, type SelectedCourseFile } from '../imports/courses';
 import type { PriceQuote } from '../shared/account';
 import type { ModelRequestRunner } from '../ai/request-queue';
-import { LedgerValidationRejection, type LedgerService } from '../ledger/service';
+import { LedgerDuplicateRejection, LedgerValidationRejection, type LedgerService } from '../ledger/service';
 import { LedgerIntentSchema, LedgerCommandProposalSchema } from '../shared/ledger-command';
 import { ledgerLoans } from '../shared/ledger-loans';
 import { validateLedgerQueryAccount } from '../ai/ledger-accounts';
@@ -205,6 +205,16 @@ export function createController(options: ControllerOptions) {
             let result: ReturnType<LedgerService['mutate']>;
             try { result = ledger.mutate(proposal.mutationRequest!); }
             catch (error) {
+              if (error instanceof LedgerDuplicateRejection && error.operationId === proposal.mutationRequest!.operationId) {
+                // A rolled-back duplicate is an unanswered question, not a failed
+                // request to discard from the next conversational turn.
+                const clarification: CommandResult = {
+                  reply: `${error.message}。本次整批账目均未保存。\n请确认这批同日期（日期未知时为同月份）、项目和金额相同的记录，是否均为各自真实发生的不同笔交易，包括清单内重复以及与已有账目相同的记录？回复“是”可继续确认这批账目；若有误，请指出需删除或修改的条目。`,
+                  mutationResult: null, items: [], conversationState: { domain: 'ledger', phase: 'clarification' },
+                };
+                repository.transact(state => save(state, id, fingerprint, { kind: 'command', intent, result: clarification, ledgerProposal: proposal }));
+                return clarification;
+              }
               if (error instanceof LedgerValidationRejection && error.operationId === proposal.mutationRequest!.operationId) {
                 throw new WorkflowError('AI_RESPONSE', `账本校验失败：${error.message}。本次整批账目均未保存，可重新分析。诊断：AI_LEDGER_VALIDATION`);
               }
