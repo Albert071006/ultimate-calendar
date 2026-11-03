@@ -39,7 +39,7 @@ describe('natural-language recurring occurrence edits', () => {
     let anchor: Block;
     const { planner, controller, confirm, task } = setup(async (_url, init) => {
       const request = JSON.parse(String(init?.body)); const { context } = JSON.parse(request.messages[1].content);
-      expect(context.toDate).toBe('2026-11-06');
+      expect(JSON.parse(request.messages.at(-1).content).context.toDate).toBe('2026-11-06');
       expect(context.blocks).toContainEqual(expect.objectContaining({ id: anchor.id, version: anchor.version, recurrence: anchor.recurrence }));
       expect(context.recurringSeries).toContainEqual(expect.objectContaining({ seriesId: anchor.recurrence!.seriesId, occurrenceCount: 6 }));
       expect(request.messages[0].content).toContain('scope=this-and-following');

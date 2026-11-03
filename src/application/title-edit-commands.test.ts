@@ -40,10 +40,10 @@ describe('title-only command context and persistence', () => {
       calls++;
       const body = JSON.parse(String(init?.body));
       const payload = JSON.parse(body.messages.at(-1).content);
-      expect(body.messages.slice(1,-1)).toEqual(history.map(({role,text})=>({role,content:text})));
+      expect(body.messages.slice(2,-1)).toEqual(history.map(({role,text})=>({role,content:text})));
       expect(payload).toMatchObject({ userCommand: text, context: { fromDate: '2026-10-23', toDate: '2026-10-23', selected: [] } });
-      expect(payload.context.calendar.some((item: { refId: string }) => item.refId === expectedTarget.id)).toBe(false);
-      expect(payload.context.blocks).toEqual(expect.arrayContaining([expect.objectContaining({ id: expectedTarget.id, version: expectedTarget.version, title: expectedTarget.title, taskId: null, recurrence: null })]));
+      expect(JSON.parse(body.messages[1].content).context.calendar.some((item: { refId: string }) => item.refId === expectedTarget.id)).toBe(false);
+      expect(JSON.parse(body.messages[1].content).context.blocks).toEqual(expect.arrayContaining([expect.objectContaining({ id: expectedTarget.id, version: expectedTarget.version, title: expectedTarget.title, taskId: null, recurrence: null })]));
       return completion({ kind: 'mutate', reply: '标题改为“办理借阅证”，保留地点和时间。', mutations: [{ type: 'update', entity: 'block', id: expectedTarget.id, expectedVersion: expectedTarget.version, values: { title: '办理借阅证' } }] });
     });
     expectedTarget = target;

@@ -46,7 +46,13 @@ export function buildCommandContext(snapshot: Snapshot, request: CommandRequest,
   const datedBlocks = new Set(snapshot.blocks.filter(block => mentionsBlockDate(block, text)).map(block => block.id));
   const recentDatedBlocks = new Set(snapshot.blocks.filter(block => recentTexts.some(query => mentionsBlockDate(block, query))).map(block => block.id));
   const rank = <T extends { id: string; title?: string }>(list: T[], limit = 60) => [...list].sort((a, b) => Number(selected.has(b.id)) - Number(selected.has(a.id)) || Number(datedBlocks.has(b.id)) - Number(datedBlocks.has(a.id)) || titleScore(b.title).current - titleScore(a.title).current || Number(recentDatedBlocks.has(b.id)) - Number(recentDatedBlocks.has(a.id)) || titleScore(b.title).recent - titleScore(a.title).recent).slice(0, limit);
-  const trim = <T extends { id: string }>(list: T[], limit = 60) => rank(list, limit).map(r => Object.fromEntries(Object.entries(r).filter(([k]) => !['imageDataUrl', 'sourceQuote', 'temporalEvidence'].includes(k)).map(([k, v]) => [k, typeof v === 'string' ? v.slice(0, 1200) : v])));
+  type PromptRecord = Record<string, unknown> & { id: string; createdAt: string };
+  const trim = <T extends { id: string; createdAt: string }>(list: T[], limit = 60) => rank(list, limit).map((record): PromptRecord => ({
+    ...Object.fromEntries(Object.entries(record)
+      .filter(([key]) => !['imageDataUrl', 'sourceQuote', 'temporalEvidence'].includes(key))
+      .map(([key, value]) => [key, typeof value === 'string' ? value.slice(0, 1200) : value])),
+    id: record.id, createdAt: record.createdAt,
+  }));
   const relevantTasks = new Set(snapshot.tasks.filter(task => selected.has(task.id) || titleMentioned(task.title)).map(task => task.id));
   const mentionedBlocks = new Set(snapshot.blocks.filter(block => selected.has(block.id) || datedBlocks.has(block.id) || recentDatedBlocks.has(block.id) || titleMentioned(block.title) || !!block.taskId && relevantTasks.has(block.taskId)).map(block => block.id));
   const relevantSeries = new Set(snapshot.blocks.filter(block => block.recurrence && mentionedBlocks.has(block.id)).map(block => block.recurrence!.seriesId));
@@ -59,8 +65,16 @@ export function buildCommandContext(snapshot: Snapshot, request: CommandRequest,
     return { seriesId, title: occurrences[0]!.title.slice(0, 500), taskId: occurrences[0]!.taskId, occurrenceCount: occurrences.length, firstOccurrenceStart: occurrences[0]!.recurrence!.occurrenceStart, lastOccurrenceStart: occurrences.at(-1)!.recurrence!.occurrenceStart };
   });
   const context = { now, timezone: snapshot.settings.timezone, explicitReminderStart: explicitReminderStart(request.text, now), academicTerm, userProfile: locationProfile(snapshot.settings), fromDate, toDate, selected: request.selected ?? [], tasks: trim(snapshot.tasks), goals: trim(snapshot.goals), candidates: trim(snapshot.candidates.map(candidate => ({ ...candidate, classification: candidateDisposition(candidate, now) }))), blocks: trim(blocks, 120), recurringSeries, courses: trim(snapshot.courses), courseExceptions: trim(snapshot.courseExceptions), preferences: snapshot.preferences.filter(p => p.enabled).slice(0, 20).map(p => ({ id: p.id, version: p.version, text: p.text.slice(0, 500), enabled: p.enabled })), journal: snapshot.journal.slice(0, 10).map(j => ({ id: j.id, message: j.message, undoable: j.undoable, undoneAt: j.undoneAt })), calendar: buildCalendar(snapshot, fromDate, toDate, true).slice(0, 150) };
-  // Bound serialized context without silently truncating JSON; progressively shrink record lists.
-  while (JSON.stringify(context).length > 60_000) {
+  const recordLists = ['tasks', 'goals', 'candidates', 'blocks', 'courses', 'courseExceptions'] as const;
+  const relevantRecordIds: Partial<Record<typeof recordLists[number], string[]>> = {};
+  for (const key of recordLists) {
+    const matches = context[key].filter(record => selected.has(record.id) || datedBlocks.has(record.id)
+      || recentDatedBlocks.has(record.id) || (typeof record.title === 'string' && titleMentioned(record.title)));
+    if (matches.length) relevantRecordIds[key] = matches.slice(0, 8).map(record => record.id);
+  }
+  // Truncate in relevance order, including the small relevance index in the budget.
+  const indexLength = JSON.stringify({ relevantRecordIds }).length;
+  while (JSON.stringify(context).length + indexLength > 60_000) {
     const lists = [context.tasks, context.goals, context.candidates, context.blocks, context.recurringSeries, context.courses, context.courseExceptions, context.calendar];
     const largest = lists.sort((a, b) => b.length - a.length)[0]!; if (!largest.length) break; largest.pop();
   }
@@ -71,8 +85,20 @@ export function buildCommandContext(snapshot: Snapshot, request: CommandRequest,
     ...context.goals.map(record => ({ entity: 'goal' as const, id: String(record.id) })),
   ].sort((a, b) => Number(selected.has(b.id)) - Number(selected.has(a.id)));
   const resourceLinks = owners.flatMap(owner => resolveResources(snapshot, owner).map(link => ({ ...link, target: owner }))).slice(0, 120);
-  const result = { ...context, attachedResources: request.resources ?? [], resourceLinks };
+  const result = { ...context, attachedResources: request.resources ?? [], resourceLinks, relevantRecordIds };
   while (JSON.stringify(result).length > 90_000 && result.resourceLinks.length) result.resourceLinks.pop();
+  // Once membership is final, changing the question should not reshuffle shared records.
+  for (const key of recordLists) {
+    const rows = result[key];
+    if (relevantRecordIds[key]) {
+      const retained = new Set(rows.map(row => row.id));
+      relevantRecordIds[key] = relevantRecordIds[key].filter(id => retained.has(id));
+    }
+    rows.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  }
+  result.recurringSeries.sort((a, b) => a.seriesId.localeCompare(b.seriesId));
+  result.resourceLinks.sort((a, b) => a.target.entity.localeCompare(b.target.entity)
+    || a.target.id.localeCompare(b.target.id) || a.resource.id.localeCompare(b.resource.id));
   return result;
 }
 export function validateCommandReferences(mutations: Mutation[], context: ReturnType<typeof buildCommandContext>) {

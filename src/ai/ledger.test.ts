@@ -25,6 +25,16 @@ function mutation(value: unknown) {
 }
 
 describe('ledger AI adaptation', () => {
+  it('keeps the same expense records in a stable order and points to the matches for each question', () => {
+    const { snapshot } = fixture([entry({ id: 'z', title: '合成打车' }), entry({ id: 'a', title: '合成早餐' })]);
+    const context = (text: string) => ledgerContext(snapshot, { operationId: 'stable', text }, now);
+    const breakfast = context('合成早餐那一笔'), taxi = context('合成打车那一笔');
+    expect(taxi.entries).toEqual(breakfast.entries);
+    expect(taxi.entries.map(item => item.id)).toEqual(['a', 'z']);
+    expect(breakfast.relevantRecordIds.entries[0]).toBe('a');
+    expect(taxi.relevantRecordIds.entries[0]).toBe('z');
+  });
+
   it('retains old outstanding loans ahead of recent purchases and preserves counterparty during an account-only edit', () => {
     const original = entry({ id: 'old-loan', kind: 'loan_borrow', title: '合成旧借入', counterparty: '合成同学乙', date: '2025-11-02', month: '2025-11', amountCents: 18000, personalCents: 0, cashflows: [{ accountId: 'wechat', deltaCents: 18000 }], updatedAt: '2025-11-02T18:00:00+08:00' });
     const { service, snapshot } = fixture([original, ...Array.from({ length: 130 }, (_, i) => entry({ id: `recent-${i}`, title: `合成近期消费${i}` }))]);

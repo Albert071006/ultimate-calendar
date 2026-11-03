@@ -5,7 +5,7 @@ import { createLedgerService, LedgerDuplicateRejection, LedgerError, type Ledger
 import { createController } from './controller';
 import { WorkflowError } from '../ai/deepseek';
 import { DEFAULT_LEDGER_RULES, LedgerEntryDraftSchema, LedgerEntrySchema, type LedgerEntry } from '../shared/ledger';
-import type { CommandRequest } from '../shared/contracts';
+import { MutationRequestSchema, type CommandRequest } from '../shared/contracts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,6 +31,48 @@ function importSynthetic(ledger: LedgerService, entries: LedgerEntry[]) {
   ledger.import({ format: 'ultimate-calendar-ledger', formatVersion: 1, entries, balanceSnapshots: [], rules: DEFAULT_LEDGER_RULES, audit: [], sources: [] }, 'synthetic-receivable-import');
 }
 describe('main assistant local ledger commands',()=>{
+  it('routes a text expense without sending calendar records, and retains earlier facts for the full ledger parser', async () => {
+    const { controller, repository, payloads } = setup([route, expense('alipay')]);
+    const planner = createPlanner(repository);
+    planner.mutate(MutationRequestSchema.parse({ operationId: 'seed-schedule', origin: 'manual', confirmed: false,
+      mutations: [{ type: 'create', entity: 'task', values: { title: '保密合成日程' } }] }));
+    const request: CommandRequest = { operationId: 'compact-bookkeeping', text: '午饭20元支付宝', history: [
+      { role: 'user', text: '先解释合成旧问题' }, { role: 'assistant', text: '合成旧答复' },
+      { role: 'user', text: '午饭已付款' }, { role: 'assistant', text: '多少钱？', outcome: { domain: 'ledger', phase: 'clarification' } },
+    ] };
+    expect(await controller.command(request)).toMatchObject({ ok: true, data: { conversationState: { domain: 'ledger', phase: 'saved' } } });
+    expect(payloads).toHaveLength(2);
+    const routePayload = JSON.stringify(payloads[0]);
+    expect(routePayload).not.toContain('保密合成日程');
+    expect(routePayload).not.toContain('合成旧答复');
+    expect(routePayload).toContain('多少钱？');
+    expect(JSON.stringify(payloads[1])).toContain('合成旧答复');
+  });
+
+  it('defers an uncertain financial cue to the full calendar context before answering', async () => {
+    const { repository, ledger, controller, payloads } = setup([{ kind: 'full_context' }, { kind: 'query', reply: '合成讲座在周二举行' }]);
+    createPlanner(repository).mutate(MutationRequestSchema.parse({ operationId: 'seed-talk', origin: 'manual', confirmed: false,
+      mutations: [{ type: 'create', entity: 'task', values: { title: '合成支付研究讲座' } }] }));
+    const before = ledger.snapshot();
+    const request = { operationId: 'ambiguous-bank-talk', text: '支付宝那场在周几？' };
+    const result = await controller.command(request);
+    expect(result).toMatchObject({ ok: true, data: { conversationState: { domain: 'calendar', phase: 'query' } } });
+    expect(JSON.stringify(payloads[0])).not.toContain('合成支付研究讲座');
+    expect(JSON.stringify(payloads[1])).toContain('合成支付研究讲座');
+    expect(await controller.command(request)).toEqual(result);
+    expect(payloads).toHaveLength(2);
+    expect(ledger.snapshot()).toEqual(before);
+  });
+
+  it('keeps explicit reminders containing a payment amount on the single calendar call', async () => {
+    const { controller, ledger, payloads } = setup([{ kind: 'clarification', reply: '请补充时间', questions: ['几点提醒？'] }]);
+    const before = ledger.snapshot();
+    expect(await controller.command({ operationId: 'payment-reminder', text: '提醒我明天还款100元', domain: 'ledger' }))
+      .toMatchObject({ ok: true, data: { conversationState: { domain: 'calendar', phase: 'clarification' } } });
+    expect(payloads).toHaveLength(1);
+    expect(ledger.snapshot()).toEqual(before);
+  });
+
   it.each([false, true])('keeps a fully rolled-back duplicate batch as the latest clarification (existing=%s)', async existing => {
     const values = { ...expense('alipay').changes[0]!.values, date: null, dateNote: '具体日期待确认', title: '合成饮用水', amountCents: 500, personalCents: 500,
       cashflows: [{ accountId: 'alipay', deltaCents: -500 }] };
@@ -105,7 +147,7 @@ describe('main assistant local ledger commands',()=>{
     expect(after.entries.find(entry => entry.id === original.id)).toEqual(original);
     expect(after.entries.find(entry => entry.title === '合成快递费')).toMatchObject({ category: '快递物流', amountCents: 1200, personalCents: 1200, cashflows: [{ accountId: 'alipay', deltaCents: -1200 }] });
     expect(after.summary.categories).toEqual([{ category: '快递物流', cents: 1200 }, { category: '餐饮', cents: 100 }]);
-    const modelContext = JSON.parse(payloads[1]!.messages.at(-1)!.content).context;
+    const modelContext = JSON.parse(payloads[1]!.messages[1]!.content).context;
     expect(modelContext.categories).toEqual(['餐饮']);
     expect(payloads[1]!.messages[0]!.content).toContain('分类是开放文本');
     expect(payloads[1]!.messages[0]!.content).toContain('“快递费12元支付宝”应归快递物流');
@@ -227,7 +269,7 @@ describe('main assistant local ledger commands',()=>{
   });
   it('continues the screenshot domain clarification with the original purchase facts and saves exactly once',async()=>{
     const clarification = {kind:'clarification',reply:'需要确认操作类型',questions:['这是记账还是安排日历事项？']};
-    const {controller,ledger,intents,payloads}=setup([clarification]);
+    const {controller,ledger,intents,payloads}=setup([{kind:'full_context'},clarification]);
     const first=await controller.command({operationId:'vpn-ambiguous',text:'vpn14 支付宝'});
     expect(first.ok).toBe(true);if(!first.ok)throw Error('failed');
     expect(first.data.conversationState?.phase).toBe('clarification');
@@ -243,14 +285,14 @@ describe('main assistant local ledger commands',()=>{
     const entries=ledger.snapshot().entries.filter(entry=>!entry.ruleKey);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({title:'VPN',date:'2026-10-23',amountCents:1400,personalCents:1400,cashflows:[{accountId:'alipay',deltaCents:-1400}]});
-    for(const payload of payloads.slice(1)){
-      expect(payload.messages.map(message=>message.role)).toEqual(['system','user','assistant','user']);
-      expect(payload.messages[1]?.content).toBe('vpn14 支付宝');
-      expect(payload.messages[2]?.content).toContain('这是记账还是安排日历事项？');
+    for(const payload of payloads.slice(2)){
+      expect(payload.messages.map(message=>message.role)).toEqual(['system','user','user','assistant','user']);
+      expect(payload.messages.at(-3)?.content).toBe('vpn14 支付宝');
+      expect(payload.messages.at(-2)?.content).toContain('这是记账还是安排日历事项？');
       expect(JSON.parse(payload.messages.at(-1)!.content)).toMatchObject({userCommand:'记账'});
     }
     expect(await controller.command(secondRequest)).toEqual(second);
-    expect(payloads).toHaveLength(3);
+    expect(payloads).toHaveLength(4);
     expect(ledger.snapshot().entries.filter(entry=>!entry.ruleKey)).toHaveLength(1);
   });
 
@@ -287,7 +329,7 @@ describe('main assistant local ledger commands',()=>{
     expect(thanks.ok).toBe(true);if(!thanks.ok)throw Error('failed');
     expect(thanks.data.conversationState).toEqual({domain:'calendar',phase:'query'});
     expect(payloads).toHaveLength(5);
-    expect(payloads.at(-1)!.messages[2]?.content).toContain('saved');
+    expect(payloads.at(-1)!.messages.at(-2)?.content).toContain('saved');
     expect(ledger.snapshot().entries.filter(entry=>!entry.ruleKey)).toHaveLength(1);
   });
   it('does not send bookkeeping records on ordinary calendar requests',async()=>{
@@ -339,11 +381,12 @@ describe('main assistant local ledger commands',()=>{
     expect(result.ok).toBe(true); if (!result.ok) throw Error('query failed');
     expect(query).toHaveBeenCalledWith({ month: '2026-09' });
     const routing = JSON.parse(payloads[0]!.messages.at(-1)!.content).context;
-    expect(routing).toMatchObject({ availableServices: { ledger: true }, currentLedgerView: input.ledgerView });
+    expect(JSON.parse(payloads[0]!.messages[1]!.content).context.availableServices).toEqual({ ledger: true });
+    expect(routing).toMatchObject({ currentLedgerView: input.ledgerView });
     expect(JSON.stringify(payloads[0])).not.toContain('合成活动材料甲');
     const context = JSON.parse(payloads[1]!.messages.at(-1)!.content).context;
     expect(context).toMatchObject({ now: at, currentView: input.ledgerView, defaultQueryMonth: '2026-09', summary: { month: '2026-09' } });
-    expect(context.entries.some((entry: { id: string }) => entry.id === 'old-advance')).toBe(false);
+    expect(JSON.parse(payloads[1]!.messages[1]!.content).context.entries.some((entry: { id: string }) => entry.id === 'old-advance')).toBe(false);
     for (const evidence of ['合成活动材料甲', '548.00', '160.00', '76.00', '312.00', '合成活动材料乙', '已结清']) expect(result.data.reply).toContain(evidence);
     expect(result.data.reply).not.toContain('待收回 ¥300.00');
     expect(result.data.items).toEqual([]);
