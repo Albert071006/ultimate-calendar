@@ -23,6 +23,7 @@ async function fixture(){
   cleanup.push(()=>service.close());
   function browser(storage:OfflineStorage=createMemoryStorage()){
     let token:string|undefined,online=true,dropWrite=false;
+    let heldRead: { started(): void; wait: Promise<void> } | undefined;
     const calls:{path:string;method:string;input:unknown}[]=[];
     const fetcher:typeof fetch=async(input,init={})=>{
       if(!online)throw TypeError('Synthetic phone network is offline');
@@ -42,7 +43,8 @@ async function fixture(){
         if(rpc){
           const rpcMethod=RemoteMethodSchema.parse(rpc[1]);const request=RemoteRequestSchema.parse(payload);
           const result=await service.rpc(rpcMethod,request,current.device.id);
-          if(dropWrite&&!['snapshot','ledgerSnapshot'].includes(rpcMethod)){dropWrite=false;online=false;throw TypeError('Synthetic response lost after server commit');}
+          if (heldRead && ['snapshot', 'changes'].includes(rpcMethod)) { const held = heldRead; heldRead = undefined; held.started(); await held.wait; }
+          if(dropWrite&&!['snapshot','changes','ledgerSnapshot'].includes(rpcMethod)){dropWrite=false;online=false;throw TypeError('Synthetic response lost after server commit');}
           return json(result);
         }
         const operation=/^\/api\/v1\/operations\/(.+)$/.exec(url.pathname);
@@ -53,13 +55,43 @@ async function fixture(){
       }catch(error){if(error instanceof RemoteFault)return json({ok:false,error:{message:error.message}},error.status);throw error;}
     };
     function open(){const controller=createRemoteClient({origin,storage,fetch:fetcher,timeoutMs:2000});cleanup.push(async()=>controller.dispose());return controller;}
-    return{storage,calls,open,setOnline:(value:boolean)=>{online=value;},loseNextWriteResponse:()=>{dropWrite=true;},expireAuthorization:()=>{const current=service.state.session(token);if(current)service.state.revoke(current.device.id);}};
+    function holdNextCalendarRead() {
+      let start!: () => void, release!: () => void;
+      const started = new Promise<void>(resolve => { start = resolve; }), wait = new Promise<void>(resolve => { release = resolve; });
+      heldRead = { started: start, wait }; return { started, release };
+    }
+    return{storage,calls,open,holdNextCalendarRead,setOnline:(value:boolean)=>{online=value;},loseNextWriteResponse:()=>{dropWrite=true;},expireAuthorization:()=>{const current=service.state.session(token);if(current)service.state.revoke(current.device.id);}};
   }
   async function pair(controller:RemoteController,name='合成手机'){await controller.initialize();expect(controller.getState().status).toBe('unpaired');await controller.pair(service.state.createPairingCode(),name);expect(controller.getState().status).toBe('online');}
   return{directory,service,browser,pair};
 }
 
 describe('durable remote client against a real synthetic authority',()=>{
+  it('serializes a delayed canonical read before a write receipt so stale data cannot replace the committed cache', async () => {
+    const f = await fixture(), phone = f.browser(), controller = phone.open(); await f.pair(controller);
+    const held = phone.holdNextCalendarRead(), read = controller.client.snapshot(); await held.started;
+    phone.calls.length = 0;
+    const write = controller.client.mutate(taskInput('Task after delayed read'));
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(phone.calls.some(value => value.path.endsWith('/mutate'))).toBe(false);
+    held.release(); await read;
+    expect(await write).toMatchObject({ ok: true });
+    expect(controller.client.currentSnapshot?.()?.tasks.map(task => task.title)).toEqual(['Task after delayed read']);
+    expect(controller.client.currentSnapshot?.()?.cursor).toEqual(f.service.snapshot().cursor);
+  });
+
+  it('uses a committed patch and incremental reconnect without reloading calendar or cached ledger months', async () => {
+    const f = await fixture(), phone = f.browser(), controller = phone.open(); await f.pair(controller);
+    await controller.client.ledgerSnapshot({ month: '2030-01' }); await controller.client.ledgerSnapshot({ month: '2030-02' });
+    phone.calls.length = 0;
+    expect(await controller.client.mutate(taskInput('Synthetic incremental task'))).toMatchObject({ ok: true, data: { status: 'applied' } });
+    expect(controller.client.currentSnapshot?.()?.tasks).toHaveLength(1);
+    expect(phone.calls.some(value => value.path.endsWith('/snapshot') || value.path.endsWith('/ledgerSnapshot'))).toBe(false);
+    phone.calls.length = 0; await controller.reconnect();
+    expect(phone.calls.some(value => value.path.endsWith('/changes'))).toBe(true);
+    expect(phone.calls.some(value => value.path.endsWith('/snapshot') || value.path.endsWith('/ledgerSnapshot'))).toBe(false);
+  });
+
   it('keeps an HTTP 401 authorization failure sticky when the network subsequently goes offline',async()=>{
     const f=await fixture();const phone=f.browser(),controller=phone.open();await f.pair(controller);phone.expireAuthorization();
     expect(await controller.client.snapshot()).toMatchObject({ok:false,error:{code:'AUTH'}});expect(controller.getState().status).toBe('expired');

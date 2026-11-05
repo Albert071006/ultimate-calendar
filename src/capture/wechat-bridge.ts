@@ -18,6 +18,13 @@ const identitySchema = z.object({ accountId: z.string().min(8).max(1024).startsW
 const groupsSchema = z.array(z.object({ id: z.string().min(1).max(1024).endsWith('@chatroom'), name: z.string().max(1000) })).max(10000);
 const historySchema = z.object({ messages: z.array(z.record(z.string(), z.unknown())).max(100), nextCursor: z.string().max(2000).nullable(), complete: z.literal(false) });
 const mediaSchema = z.object({ status: z.literal('ready'), path: z.string().max(4096), name: z.string().min(1).max(1000), size: z.number().int().min(1).max(25 * 1024 * 1024), sha256: z.string().regex(/^[a-f0-9]{64}$/) });
+const pendingMediaErrors = new Map([
+  ['NOT_DOWNLOADED', '未找到与消息匹配的完整附件，请在电脑微信中打开或下载原件'],
+  ['THUMBNAIL_ONLY', '电脑微信只有缩略图，请在原消息中打开完整图片'],
+  ['IMAGE_KEY_UNAVAILABLE', '暂时无法解密微信图片，请保持电脑微信登录并在原消息中打开图片'],
+  ['READ_PENDING', '微信正在写入本机资料，稍后会重新读取'],
+  ['MEDIA_PENDING', '微信附件尚未准备好，稍后会重新读取'],
+]);
 const packetSchema = z.discriminatedUnion('ok', [
   z.object({ id: z.string(), ok: z.literal(true), data: z.unknown() }),
   z.object({ id: z.string(), ok: z.literal(false), error: z.object({ code: z.string().max(100), message: z.string().max(2000) }) }),
@@ -132,7 +139,8 @@ export function createWechatBridgeFactory(runtime: WechatReaderRuntime): Capture
                   } else {
                     if (packet.error.code === 'TOO_LARGE') request.reject(new AttachmentDownloadError('微信附件超过 25 MB 自动读取上限，请手动查看', 'too-large'));
                     else if (packet.error.code === 'UNSUPPORTED') request.reject(new AttachmentDownloadError('此微信附件格式尚不支持自动读取，请手动查看', 'unsupported'));
-                    else if (/NOT_DOWNLOADED|MEDIA_PENDING|IMAGE_KEY_UNAVAILABLE|READ_PENDING/.test(packet.error.code)) request.reject(new AttachmentDownloadError('微信附件尚未在本机完整下载，请在微信中打开或下载后重试；系统会稍后再检查', 'failed', true));
+                    else if (pendingMediaErrors.has(packet.error.code)) request.reject(new AttachmentDownloadError(pendingMediaErrors.get(packet.error.code)!, 'failed', true));
+                    else if (packet.error.code === 'AMBIGUOUS') request.reject(new AttachmentDownloadError('无法唯一匹配这条消息的本机附件，请在原消息中核对'));
                     else request.reject(new AttachmentDownloadError('微信本机资料暂时无法读取，请确认微信已登录', 'failed', /NOT_LOGGED_IN|NOT_RUNNING|READ_FAILED/.test(packet.error.code)));
                     if (packet.error.code !== 'IMAGE_KEY_UNAVAILABLE' && /NOT_LOGGED_IN|NOT_RUNNING|KEY|DATABASE|INTERNAL/.test(packet.error.code)) failed();
                   }

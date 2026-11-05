@@ -358,8 +358,9 @@ class LocalMedia:
                         else:
                             matches.append((digest, quality, path))
         if not matches:
-            detail = '本机只有缩略图，请在微信打开完整图片后重试' if has_thumb else '图片尚未下载到电脑微信，请在微信打开图片后重试'
-            raise MediaError('NOT_DOWNLOADED', detail)
+            if has_thumb:
+                raise MediaError('THUMBNAIL_ONLY', '本机只有缩略图，请在微信打开完整图片后重试')
+            raise MediaError('NOT_DOWNLOADED', '图片尚未下载到电脑微信，请在微信打开图片后重试')
         if len({item[0] for item in matches}) != 1:
             raise MediaError('AMBIGUOUS', '无法唯一确认该消息的本机图片，请手动核对')
         matches.sort(key=lambda item: (item[1] != 'original', str(item[2])))

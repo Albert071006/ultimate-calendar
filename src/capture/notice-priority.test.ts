@@ -47,7 +47,7 @@ describe('notice first and compact document analysis', () => {
     let calls = 0;
     await analyzeCapture({ ...f, getApiKey: async () => 'synthetic', canContinue: () => true, requestBudget: 1, fetch: async (_url, request) => {
       calls++; const sent = input(request);
-      expect(sent.units.map(unit => unit.messageId)).toEqual([f.noticeId]);
+      expect(sent.units).toHaveLength(1); expect(sent.units[0]).toMatchObject({ messageId: 'm1', text: '期中考试安排在第11周，请根据附件复习。', attachmentId: null });
       return response([notice(sent.units[0]!.id)]);
     } });
     expect(calls).toBe(1);
@@ -73,7 +73,7 @@ describe('notice first and compact document analysis', () => {
     f.store.startAttempt(f.batch.id, 'already-paid'); f.store.savePendingResponse(f.batch.id, checkpoint);
     let calls = 0;
     await analyzeCapture({ ...f, batch: f.store.batch(f.batch.id)!, requestBudget: 1, getApiKey: async () => 'synthetic', canContinue: () => true,
-      fetch: async (_url, request) => { calls++; const sent = input(request); expect(sent.units.map(unit => unit.messageId)).toEqual([f.noticeId]); return response([notice(sent.units[0]!.id)]); } });
+      fetch: async (_url, request) => { calls++; const sent = input(request); expect(sent.units).toHaveLength(1); expect(sent.units[0]).toMatchObject({ messageId: 'm1', text: '期中考试安排在第11周，请根据附件复习。', attachmentId: null }); return response([notice(sent.units[0]!.id)]); } });
     const saved = f.store.batch(f.batch.id)!.result as unknown as typeof checkpoint;
     expect(calls).toBe(1); expect(saved.units).toEqual(units); expect(saved.planFingerprint).toBe(checkpoint.planFingerprint);
     expect(saved.pendingResponse).toBeUndefined(); expect(saved.completed.map(group => group.key)).toEqual([groupKey(0, 30), groupKey(30, 60), groupKey(90, 91)]);

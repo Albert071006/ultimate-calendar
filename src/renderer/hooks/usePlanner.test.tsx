@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SnapshotSchema, type ApiError, type ApiResult, type Snapshot } from '../../shared/contracts';
+import { SnapshotSchema, type ApiError, type ApiResult, type Snapshot, type PlannerChanges, type PlannerPatch } from '../../shared/contracts';
 import type { PlannerClient } from '../../shared/client';
 import { usePlanner } from './usePlanner';
 
@@ -23,6 +23,100 @@ function deferred<T>() {
 }
 
 describe('planner refresh recovery', () => {
+  it('applies a confirmed write patch immediately without downloading another snapshot and locks only its target', async () => {
+    const state = success(); if (!state.ok) throw Error();
+    state.data.cursor = { streamId: '11111111-1111-4111-8111-111111111111', revision: 0 };
+    const read = vi.fn(async () => state), changes = vi.fn<() => Promise<ApiResult<PlannerChanges>>>();
+    const api = { snapshot: read, changes, onChanged: () => () => {} } as unknown as PlannerClient;
+    const f = renderHook(() => usePlanner(api)); await waitFor(() => expect(f.result.current.snapshot).not.toBeNull());
+    const sync: PlannerPatch = { from: state.data.cursor, to: { ...state.data.cursor, revision: 1 }, entities: [], settings: { ...state.data.settings, campus: 'Saved campus' } };
+    const write = deferred<ApiResult<string>>(); let pending!: Promise<string | undefined>;
+    act(() => { pending = f.result.current.run(() => write.promise, undefined, { targets: ['settings'], label: '正在保存' }); });
+    expect(f.result.current.isPending('settings')).toBe(true); expect(f.result.current.isPending('candidate:other')).toBe(false);
+    expect(f.result.current.snapshot?.settings.campus).not.toBe('Saved campus');
+    await act(async () => { write.resolve({ ok: true, data: 'saved', sync }); await pending; });
+    expect(f.result.current.snapshot?.settings.campus).toBe('Saved campus');
+    expect(f.result.current.isPending('settings')).toBe(false); expect(read).toHaveBeenCalledOnce(); expect(changes).not.toHaveBeenCalled();
+  });
+
+  it.each([1, 2])('uses one post-write snapshot for %i native change notifications and waits for its result', async notifications => {
+    const f = fixture();
+    await waitFor(() => expect(f.result.current.snapshot).not.toBeNull());
+    const write = deferred<ApiResult<string>>(), read = deferred<ApiResult<Snapshot>>();
+    f.read.mockReturnValueOnce(read.promise);
+    let operation!: Promise<string | undefined>;
+    act(() => { operation = f.result.current.run(() => write.promise); });
+    act(() => { for (let i = 0; i < notifications; i += 1) f.changed(); });
+    expect(f.read).toHaveBeenCalledTimes(1);
+    await act(async () => { write.resolve({ ok: true, data: 'confirmed' }); });
+    expect(f.read).toHaveBeenCalledTimes(2);
+    expect(f.result.current.busy).toBe(true);
+    await act(async () => { read.resolve(success()); expect(await operation).toBe('confirmed'); });
+    expect(f.read).toHaveBeenCalledTimes(2);
+    expect(f.result.current.busy).toBe(false);
+  });
+
+  it('does not reuse or apply a pre-write snapshot while the post-write read is pending', async () => {
+    const f = fixture();
+    await waitFor(() => expect(f.result.current.snapshot).not.toBeNull());
+    const old = deferred<ApiResult<Snapshot>>(), fresh = deferred<ApiResult<Snapshot>>();
+    f.read.mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise);
+    act(() => f.changed());
+    let operation!: Promise<string | undefined>;
+    await act(async () => { operation = f.result.current.run(async () => { f.changed(); return { ok: true, data: 'saved' }; }); });
+    expect(f.read).toHaveBeenCalledTimes(3);
+    await act(async () => { old.resolve(failure('过时请求断线')); });
+    expect(f.result.current.error).toBe('');
+    expect(f.result.current.busy).toBe(true);
+    await act(async () => { fresh.resolve(success()); await operation; });
+    expect(f.result.current.busy).toBe(false);
+    expect(f.result.current.error).toBe('');
+  });
+
+  it('refreshes a change received during the post-write read without extending the confirmed action', async () => {
+    const f = fixture();
+    await waitFor(() => expect(f.result.current.snapshot).not.toBeNull());
+    const postWrite = deferred<ApiResult<Snapshot>>(), followup = deferred<ApiResult<Snapshot>>();
+    f.read.mockReturnValueOnce(postWrite.promise).mockReturnValueOnce(followup.promise);
+    let operation!: Promise<string | undefined>;
+    await act(async () => { operation = f.result.current.run(async () => ({ ok: true, data: 'saved' })); });
+    act(() => { f.changed(); f.changed(); });
+    expect(f.read).toHaveBeenCalledTimes(2);
+    await act(async () => { postWrite.resolve(success()); expect(await operation).toBe('saved'); });
+    expect(f.read).toHaveBeenCalledTimes(3);
+    expect(f.result.current.busy).toBe(false);
+    const latest = success();
+    if (latest.ok) latest.data.settings.model = 'synthetic-new-model';
+    await act(async () => { followup.resolve(latest); });
+    expect(f.result.current.snapshot?.settings.model).toBe('synthetic-new-model');
+  });
+
+  it('keeps a failed action error while processing changes deferred during that action', async () => {
+    const f = fixture();
+    await waitFor(() => expect(f.result.current.snapshot).not.toBeNull());
+    await act(async () => {
+      await f.result.current.run(async () => { f.changed(); return failure('写入结果未确认'); });
+    });
+    expect(f.read).toHaveBeenCalledTimes(2);
+    expect(f.result.current.error).toBe('写入结果未确认');
+    expect(f.result.current.busy).toBe(false);
+  });
+
+  it('keeps the action controls busy until every active operation has finished refreshing', async () => {
+    const f = fixture();
+    await waitFor(() => expect(f.result.current.snapshot).not.toBeNull());
+    const first = deferred<ApiResult<string>>(), second = deferred<ApiResult<string>>();
+    let firstOperation!: Promise<string | undefined>, secondOperation!: Promise<string | undefined>;
+    act(() => {
+      firstOperation = f.result.current.run(() => first.promise);
+      secondOperation = f.result.current.run(() => second.promise);
+    });
+    await act(async () => { first.resolve({ ok: true, data: 'first' }); await firstOperation; });
+    expect(f.result.current.busy).toBe(true);
+    await act(async () => { second.resolve({ ok: true, data: 'second' }); await secondOperation; });
+    expect(f.result.current.busy).toBe(false);
+  });
+
   it.each(['response', 'throw'] as const)('clears a %s read failure after the next background refresh succeeds', async mode => {
     const f = fixture();
     await waitFor(() => expect(f.result.current.snapshot).not.toBeNull());

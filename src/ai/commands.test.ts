@@ -89,7 +89,8 @@ describe('command calendar context and semantic references', () => {
     });
     const context = buildCommandContext(data, { operationId: 'bounded-series', text: '这次取消', selected: [{ entity: 'block', id: 'day-159' }] }, at);
     expect(JSON.stringify(context).length).toBeLessThanOrEqual(60_000);
-    expect(context.blocks[0]).toMatchObject({ id: 'day-159', recurrence: data.blocks[159]!.recurrence });
+    expect(context.blocks).toContainEqual(expect.objectContaining({ id: 'day-159', recurrence: data.blocks[159]!.recurrence }));
+    expect(context.relevantRecordIds.blocks?.[0]).toBe('day-159');
     expect(context.blocks.length).toBeLessThan(120);
   });
 
@@ -131,7 +132,8 @@ describe('command calendar context and semantic references', () => {
     const data = ordinarySnapshot();
     data.blocks.push(BlockSchema.parse({ ...data.blocks[1]!, id: 'document-later', start: '2027-01-07T14:00:00+08:00', end: '2027-01-07T14:30:00+08:00' }));
     const context = buildCommandContext(data, { operationId: 'ambiguous-title', text: '取申请材料的标题改成办手续' }, at);
-    expect(context.blocks.map(block => block.id)).toEqual(['document', 'document-later', 'appointment']);
+    expect(context.relevantRecordIds.blocks).toEqual(['document', 'document-later']);
+    expect(context.blocks.map(block => block.id)).toEqual(['appointment', 'document', 'document-later']);
   });
 
   it('does not let assistant text retrieve unrelated past or future targets', () => {
@@ -151,6 +153,17 @@ describe('command calendar context and semantic references', () => {
       { role: 'assistant', text: '改成什么？' },
     ] }, at);
     expect(JSON.stringify(context).length).toBeLessThanOrEqual(60_000);
-    expect(context.blocks[0]).toMatchObject({ id: 'document' });
+    expect(context.relevantRecordIds.blocks?.[0]).toBe('document');
+    expect(context.blocks.some(block => block.id === 'document')).toBe(true);
+  });
+
+  it('sends shared records in the same order when a different question selects a different target', () => {
+    const data = ordinarySnapshot();
+    const request = { operationId: 'stable', fromDate: '2026-10-23', toDate: '2026-12-31' };
+    const library = buildCommandContext(data, { ...request, text: '借阅证' }, at);
+    const documents = buildCommandContext(data, { ...request, text: '申请材料' }, at);
+    expect(documents.blocks).toEqual(library.blocks);
+    expect(library.relevantRecordIds.blocks).toEqual(['appointment']);
+    expect(documents.relevantRecordIds.blocks).toEqual(['document']);
   });
 });

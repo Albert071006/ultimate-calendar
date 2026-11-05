@@ -10,12 +10,12 @@ import { MobileProvider } from './mobile/layout';
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 const now = '2026-10-23T12:00:00+08:00';
 const make = (id: string, extra: Partial<CandidateInput & Pick<Candidate, 'createdAt' | 'updatedAt'>> = {}) => CandidateSchema.parse({ id, title: id, version: 1, createdAt: now, updatedAt: now, sourceIds: ['source'], ...extra });
-function view(candidates: ReturnType<typeof make>[], settings: Partial<Settings> = {}, host?: HostCapabilities, options: { mobile?: boolean; sources?: Source[] } = {}) {
+function view(candidates: ReturnType<typeof make>[], settings: Partial<Settings> = {}, host?: HostCapabilities, options: { mobile?: boolean; sources?: Source[]; pending?: string[] } = {}) {
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date(now));
   const snapshot = SnapshotSchema.parse({ schemaVersion: 1, sources: options.sources ?? [SourceSchema.parse({ id: 'source', version: 1, createdAt: now, updatedAt: now, kind: 'text', text: '保留原通知', label: '合成通知群', sentAt: '2026-10-23T10:42:00+08:00', importedAt: now })], candidates, tasks: [], blocks: [], goals: [], courses: [], courseExceptions: [], preferences: [], feedback: [], settings, journal: [], tokenUsage: [], keyStatus: { configured: false, sessionOnly: false } });
   const mutate = vi.fn(async (_mutations: unknown[]) => ({ status: 'applied', transactionId: 'tx-1', message: '已保存' }));
   const undo = vi.fn(async (_id?: string) => {}), edit = vi.fn(), openSource = vi.fn();
-  const ui = { busy: false, mutate, undo, notice: '', error: '' } as unknown as PlannerUI;
+  const ui = { busy: !!options.pending?.length, isPending: (target: string) => options.pending?.some(id => target === `candidate:${id}`) ?? false, mutate, undo, notice: '', error: '' } as unknown as PlannerUI;
   const result = render(<MobileProvider mobile={options.mobile ?? false}><Inbox snapshot={snapshot} ui={ui} select={() => {}} edit={edit} importMessage={() => {}} openSource={openSource} host={host} /></MobileProvider>);
   return { snapshot, mutate, undo, edit, openSource, ...result };
 }
@@ -24,6 +24,15 @@ const detail = () => screen.getByRole('article', { name: '通知详情' });
 const tab = (name: RegExp) => fireEvent.click(screen.getByRole('tab', { name }));
 
 describe('notice detail', () => {
+  it.each([false, true])('keeps other notices and navigation usable while one notice saves (mobile=%s)', mobile => {
+    const result = view([make('正在提交的通知'), make('另一条通知')], {}, undefined, { mobile, pending: ['正在提交的通知'] });
+    expect((within(list()).getByRole('button', { name: '接受 正在提交的通知' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(list()).getByRole('button', { name: '忽略 正在提交的通知' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(list()).getByRole('button', { name: '接受 另一条通知' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(within(list()).getByRole('button', { name: '另一条通知' }));
+    expect(result.mutate).not.toHaveBeenCalled();
+    expect(result.snapshot.candidates.every(candidate => candidate.status === 'pending')).toBe(true);
+  });
   it('opens the notice tutorial without accepting the notice or repeating it for each source', async () => {
     const sourceAttachments = vi.fn(async () => ({ ok: true as const, data: { attachments: [{ id: 'tutorial', name: '合成操作教程.docx', status: 'available' as const }], unavailableSources: 0 } }));
     const sourceAttachmentOpen = vi.fn(async () => ({ ok: true as const, data: { opened: true as const } }));

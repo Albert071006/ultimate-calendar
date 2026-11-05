@@ -31,35 +31,35 @@ function setup() {
 }
 
 describe('controlled cloud restore', () => {
-  it('previews without writing and requires the same device, digest and unexpired token', () => {
+  it('previews without writing and requires the same device, digest and unexpired token', async () => {
     const f = setup(), before = f.repository.read(), identity = f.state.identity();
     const preview = f.restore.preview({ content: f.content }, 'device-a');
     expect(preview).toMatchObject({ taskCount: 1, ledgerEntryCount: 1 }); expect(f.repository.read()).toEqual(before); expect(f.state.identity()).toEqual(identity);
-    expect(() => f.restore.confirm({ token: preview.token, digest: 'f'.repeat(64) }, 'device-a')).toThrow(/失效/);
-    expect(() => f.restore.confirm(preview, 'device-b')).toThrow();
+    await expect(f.restore.confirm({ token: preview.token, digest: 'f'.repeat(64) }, 'device-a')).rejects.toThrow(/失效/);
+    await expect(f.restore.confirm(preview, 'device-b')).rejects.toThrow();
     const confirmation = { token: preview.token, digest: preview.digest };
-    expect(() => f.restore.confirm(confirmation, 'device-b')).toThrow(/当前设备/);
-    f.expire(); expect(() => f.restore.confirm(confirmation, 'device-a')).toThrow(/失效/);
+    await expect(f.restore.confirm(confirmation, 'device-b')).rejects.toThrow(/当前设备/);
+    f.expire(); await expect(f.restore.confirm(confirmation, 'device-a')).rejects.toThrow(/失效/);
     for (const content of ['not-json', JSON.stringify({ format: 'desktop-full-backup' }), JSON.stringify({ ...JSON.parse(f.content), formatVersion: 999 })]) expect(() => f.restore.preview({ content }, 'device-a')).toThrow(/安全备份/);
   });
 
-  it('rejects changes after preview, pending writes and backup failure before advancing generation', () => {
+  it('rejects changes after preview, pending writes and backup failure before advancing generation', async () => {
     const f = setup(), identity = f.state.identity();
     let preview = f.restore.preview({ content: f.content }, 'device');
     f.repository.saveSettings({ ...f.repository.snapshot().settings, campus: '虚构修改校区' });
-    expect(() => f.restore.confirm({ token: preview.token, digest: preview.digest }, 'device')).toThrow(/资料已变化/);
+    await expect(f.restore.confirm({ token: preview.token, digest: preview.digest }, 'device')).rejects.toThrow(/资料已变化/);
     preview = f.restore.preview({ content: f.content }, 'device'); f.setBusy(true);
-    expect(() => f.restore.confirm({ token: preview.token, digest: preview.digest }, 'device')).toThrow(/进行中的修改/);
+    await expect(f.restore.confirm({ token: preview.token, digest: preview.digest }, 'device')).rejects.toThrow(/进行中的修改/);
     f.setBusy(false); f.setBackupFails();
-    expect(() => f.restore.confirm({ token: preview.token, digest: preview.digest }, 'device')).toThrow(/安全备份未完成/);
+    await expect(f.restore.confirm({ token: preview.token, digest: preview.digest }, 'device')).rejects.toThrow(/安全备份未完成/);
     expect(f.state.identity()).toEqual(identity); expect(f.repository.snapshot().tasks).toHaveLength(2); expect(f.state.restoreStatus().status).toBe('never');
   });
 
-  it('backs up current data, replaces planner and ledger, fences old writes and preserves pairing', () => {
+  it('backs up current data, replaces planner and ledger, fences old writes and preserves pairing', async () => {
     const f = setup(), identity = f.state.identity(), paired = f.state.pair(f.state.createPairingCode(), '虚构设备');
     f.state.begin('old-write', paired.device.id, 'saveSettings', 'synthetic-fingerprint');
     const preview = f.restore.preview({ content: f.content }, paired.device.id), confirmation = { token: preview.token, digest: preview.digest };
-    const restored = f.restore.confirm(confirmation, paired.device.id);
+    const restored = await f.restore.confirm(confirmation, paired.device.id);
     expect(restored).toMatchObject({ identity: { ...identity, generation: identity.generation + 1 }, taskCount: 1, ledgerEntryCount: 1, backupCreated: true });
     expect(f.repository.snapshot().tasks).toHaveLength(1); expect(f.repository.read().operations).toEqual([]); expect(f.repository.read().receipts).toEqual([]);
     expect(f.ledger.exportJson().entries[0]?.originalText).toBe('');
@@ -67,14 +67,14 @@ describe('controlled cloud restore', () => {
     expect(f.state.restoreStatus()).toMatchObject({ status: 'completed', generation: restored.identity.generation });
     const backupPayloads = readdirSync(join(f.root, 'backups')).map(name => JSON.parse(readFileSync(join(f.root, 'backups', name), 'utf8')));
     expect(backupPayloads.some(value => value.planner.entities.task.length === 2)).toBe(true);
-    expect(() => f.restore.confirm(confirmation, paired.device.id)).toThrow(/失效/);
+    await expect(f.restore.confirm(confirmation, paired.device.id)).rejects.toThrow(/失效/);
   });
 
-  it('rolls back both business stores on transactional failure but retains the generation fence and interrupted marker', () => {
+  it('rolls back both business stores on transactional failure but retains the generation fence and interrupted marker', async () => {
     const f = setup(), beforePlanner = f.repository.read(), beforeLedger = f.ledger.exportJson(), identity = f.state.identity();
     const preview = f.restore.preview({ content: f.content }, 'device'), replace = f.repository.replaceState.bind(f.repository);
     vi.spyOn(f.repository, 'replaceState').mockImplementation((value, callback) => replace(value, db => { callback?.(db); throw Error('synthetic transaction failure'); }));
-    expect(() => f.restore.confirm({ token: preview.token, digest: preview.digest }, 'device')).toThrow(/结果需要核对/);
+    await expect(f.restore.confirm({ token: preview.token, digest: preview.digest }, 'device')).rejects.toThrow(/结果需要核对/);
     expect(f.repository.read()).toEqual(beforePlanner); expect(f.ledger.exportJson()).toEqual(beforeLedger);
     expect(f.state.identity().generation).toBe(identity.generation + 1); expect(f.state.restoreStatus().status).toBe('interrupted');
   });

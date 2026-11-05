@@ -1,9 +1,10 @@
-import { SnapshotSchema, type ApiResult, type ChangedEvent, type Snapshot } from '../../shared/contracts';
+import { ChangedEventSchema, SnapshotSchema, type ApiResult, type ChangedEvent, type Snapshot } from '../../shared/contracts';
 import type { PlannerClient, QueuedWrite } from '../../shared/client';
 import type { LedgerSnapshot } from '../../shared/ledger';
 import { LEDGER_API_HEADER, LEDGER_API_VERSION } from '../../shared/ledger-compatibility';
 import { AI_SETTINGS_HEADER, AI_SETTINGS_VERSION, AI_RPC_TIMEOUT_MS, isAiRpcPath } from '../../shared/ai-reasoning';
 import { PROFILE_SETTINGS_HEADER, PROFILE_SETTINGS_VERSION } from '../../shared/profile-settings';
+import { applyPlannerPatch, PLANNER_SYNC_HEADER, PLANNER_SYNC_VERSION } from '../../shared/planner-sync';
 import { RemoteOperationSchema, RemoteSessionSchema, type RemoteMethod } from '../../shared/remote';
 import { remoteInputs, remoteOutputs } from '../../server/protocol';
 import { allowsOffline, captureBase, instant, localId, projectSnapshot, rebaseWrite, references, resolveAliases, writeLabel } from './queue';
@@ -49,6 +50,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
   let serial: Promise<unknown> = Promise.resolve(), initialized: Promise<void> | undefined, disposed = false;
   let loaded: Promise<void> | undefined, reconnectFlight: Promise<void> | undefined, cachedSessionAllowed = false, refreshAfterFlight = false;
   let eventSource: EventSource | undefined, refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  const eventDomains = new Set<'planner' | 'ledger' | 'key'>();
   let renewTimer: ReturnType<typeof setTimeout> | undefined, renewAfter = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined, reconnectFailures = 0;
   // Completed command replies can outlive outbox cleanup while their conversation still offers Retry.
@@ -74,11 +76,11 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     }, wait);
   }
   const clone = () => structuredClone(partition!);
-  function emit(patch: Partial<RemoteClientState> = {}, dataChanged = false) {
+  function emit(patch: Partial<RemoteClientState> = {}, dataChanged = false, domains?: ChangedEvent['domains']) {
     state = { ...state, session: session ?? (cachedSessionAllowed && ['connecting', 'offline'].includes(state.status) ? partition?.session : undefined) ?? null,
       pending: partition?.queue ?? [], cachedAt: partition?.cachedAt ?? null, ...patch };
     for (const listener of listeners) listener();
-    if (dataChanged) for (const listener of changed) listener({ reason: 'mutation' });
+    if (dataChanged) for (const listener of changed) listener({ reason: 'mutation', ...(domains ? { domains } : {}) });
   }
   function locked<T>(action: () => Promise<T>): Promise<T> {
     const exclusive = async () => {
@@ -91,10 +93,10 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     };
     const next = serial.then(exclusive, exclusive); serial = next.catch(() => {}); return next;
   }
-  async function persist(next: OfflinePartition, dataChanged = false) {
+  async function persist(next: OfflinePartition, dataChanged = false, domains?: ChangedEvent['domains']) {
     try {
       await storage.write(partitionKey(origin, next.session), { ...next, session: { ...next.session, csrfToken: '' } });
-      partition = next; emit({ storageError: '' }, dataChanged);
+      partition = next; emit({ storageError: '' }, dataChanged, domains);
     } catch {
       emit({ storageError: '无法可靠保存手机缓存或待提交操作，请释放储存空间后重试。' });
       throw new HttpFault(507, '手机储存未完成，操作没有被确认保存');
@@ -127,12 +129,12 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
   async function request<T>(path: string, input?: unknown, method = input === undefined ? 'GET' : 'POST'): Promise<T> {
     if (!path.startsWith('/api/v1/') || path.includes('\\') || new URL(path, origin).origin !== origin) throw Error('只能访问当前资料服务');
     const controller = new AbortController();
-    const readOnly = ['/api/v1/session', '/api/v1/session/renew', '/api/v1/rpc/snapshot', '/api/v1/rpc/ledgerSnapshot'].includes(path);
+    const readOnly = ['/api/v1/session', '/api/v1/session/renew', '/api/v1/rpc/snapshot', '/api/v1/rpc/changes', '/api/v1/rpc/ledgerSnapshot'].includes(path);
     const modelRequest = isAiRpcPath(path);
     const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? (readOnly ? READ_TIMEOUT_MS : modelRequest ? AI_RPC_TIMEOUT_MS : 60_000));
     try {
       const response = await fetcher(new URL(path, origin), { method, credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: controller.signal,
-        headers: { [AI_SETTINGS_HEADER]: AI_SETTINGS_VERSION, [PROFILE_SETTINGS_HEADER]: PROFILE_SETTINGS_VERSION, ...(path.startsWith('/api/v1/rpc/ledger') ? { [LEDGER_API_HEADER]: LEDGER_API_VERSION } : {}), ...(input === undefined ? {} : { 'Content-Type': 'application/json' }), ...(method === 'GET' ? {} : { 'X-CSRF-Token': session?.csrfToken ?? '' }) },
+        headers: { [AI_SETTINGS_HEADER]: AI_SETTINGS_VERSION, [PROFILE_SETTINGS_HEADER]: PROFILE_SETTINGS_VERSION, [PLANNER_SYNC_HEADER]: PLANNER_SYNC_VERSION, ...(path.startsWith('/api/v1/rpc/ledger') ? { [LEDGER_API_HEADER]: LEDGER_API_VERSION } : {}), ...(input === undefined ? {} : { 'Content-Type': 'application/json' }), ...(method === 'GET' ? {} : { 'X-CSRF-Token': session?.csrfToken ?? '' }) },
         ...(input === undefined ? {} : { body: JSON.stringify(input) }) });
       const value: unknown = await response.json();
       if (!response.ok) {
@@ -160,11 +162,15 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     if (!partition || !session && state.status !== 'offline') return failure('请先配对并联网加载一次资料', 'AUTH');
     if (state.status === 'online' && session) {
       try {
+        if (method === 'snapshot') {
+          await refreshCanonical(false, false, false);
+          const snapshot = projectCachedSnapshot();
+          return snapshot ? { ok: true, data: snapshot } : failure('资料缓存尚未准备好');
+        }
         const result = await rpc(method, input);
         if (!result.ok) return result;
         const next = clone(); next.cachedAt = instant();
-        if (method === 'snapshot') next.snapshot = result.data as Snapshot;
-        else { const data = result.data as LedgerSnapshot; const month = input && typeof input === 'object' && 'month' in input && typeof input.month === 'string' ? input.month : instant().slice(0, 7); next.ledgers[month] = data; }
+        const data = result.data as LedgerSnapshot; const month = input && typeof input === 'object' && 'month' in input && typeof input.month === 'string' ? input.month : instant().slice(0, 7); next.ledgers[month] = data;
         await persist(next);
       } catch (error) { if (error instanceof HttpFault && error.status === 507) return failure(error.message, 'STORAGE'); networkFailure(error); if (error instanceof HttpFault && error.status === 401) return failure('设备授权已失效', 'AUTH'); }
     }
@@ -172,8 +178,18 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     const month = input && typeof input === 'object' && 'month' in input && typeof input.month === 'string' ? input.month : instant().slice(0, 7);
     const ledger = partition?.ledgers[month]; return ledger ? { ok: true, data: ledger } : failure('此月份尚无账本缓存，请联网加载；离线草稿不计入正式余额');
   }
-  async function refreshCanonical(includeLedgers = true) {
-    const result = await rpc('snapshot', undefined);
+  async function refreshCanonical(includeLedgers = false, forceSnapshot = false, notify = true) {
+    // Every caller owns locked(): a delayed read cannot race a committed write
+    // receipt or replace a newer canonical cache. cachedSnapshot is read-only.
+    const cached = partition?.snapshot;
+    let result: ApiResult<unknown>;
+    if (!forceSnapshot && cached?.cursor) {
+      const changes = await rpc('changes', { cursor: cached.cursor });
+      if (!changes.ok) throw Error(changes.error.message);
+      const delta = remoteOutputs.changes.parse(changes);
+      const next = delta.ok && delta.data.status === 'patch' ? applyPlannerPatch(cached, delta.data.patch) : null;
+      result = next ? { ok: true, data: next } : await rpc('snapshot', undefined);
+    } else result = await rpc('snapshot', undefined);
     if (!result.ok) throw Error(result.error.message);
     const next = clone(); next.snapshot = result.data as Snapshot; next.cachedAt = instant();
     for (const month of includeLedgers ? Object.keys(next.ledgers) : []) {
@@ -181,10 +197,11 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
       if (!ledger.ok) throw Error(ledger.error.message);
       next.ledgers[month] = ledger.data as LedgerSnapshot;
     }
-    await persist(next, !includeLedgers);
+    await persist(next, notify, ['planner']);
   }
   function connectEvents() {
     eventSource?.close();
+    eventDomains.clear();
     const factory = options.events ?? (typeof EventSource === 'undefined' ? undefined : (url: string) => new EventSource(url));
     if (!factory || disposed) return;
     const source = factory(new URL('/api/v1/events', origin).href);
@@ -195,10 +212,25 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
       if (reconnectFlight) refreshAfterFlight = true;
       else void reconnect().catch(() => {});
     };
-    source.addEventListener('changed', () => {
+    source.addEventListener('changed', event => {
       if (disposed || eventSource !== source) return;
       if (refreshTimer) clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(retry, 250);
+      let notice: { identity?: PairedSession['identity']; domains?: ChangedEvent['domains']; reason?: ChangedEvent['reason'] };
+      try {
+        const { identity, ...value } = JSON.parse((event as MessageEvent).data);
+        notice = { ...ChangedEventSchema.parse(value), identity };
+      } catch { eventDomains.clear(); refreshTimer = setTimeout(retry, 250); return; }
+      if (!session || !notice.identity || JSON.stringify(notice.identity) !== JSON.stringify(session.identity) || notice.reason === 'restore' || !notice.domains) {
+        refreshTimer = setTimeout(retry, 250); return;
+      }
+      for (const domain of notice.domains) if (['planner', 'ledger', 'key'].includes(domain)) eventDomains.add(domain);
+      refreshTimer = setTimeout(() => {
+        const domains = [...eventDomains]; eventDomains.clear();
+        void locked(async () => {
+          if (domains.includes('planner') || domains.includes('key')) await refreshCanonical(false, domains.includes('key'));
+          if (domains.includes('ledger')) for (const listener of changed) listener({ reason: notice.reason ?? 'mutation', domains: ['ledger'] });
+        }).catch(error => networkFailure(error));
+      }, 150);
     });
     source.onerror = () => {
       if (disposed || eventSource !== source) return;
@@ -278,10 +310,14 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     }
     // A successful receipt is retained until the canonical cache is refreshed. A dropped refresh can only query this same request.
     saved.status = 'uncertain'; saved.message = '服务已确认，正在核对最新资料。'; await persist(next);
-    await refreshCanonical();
+    const patched = result.sync && next.snapshot ? applyPlannerPatch(next.snapshot, result.sync) : null;
+    if (patched) { const updated = clone(); updated.snapshot = patched; updated.cachedAt = instant(); await persist(updated); }
+    else if (item.method !== 'ledgerMutate' && item.method !== 'ledgerUndo') await refreshCanonical(false, false, false);
     const complete = clone();
     if ((item.method === 'ledgerMutate' || item.method === 'ledgerUndo') && data && data.snapshot) {
       const original = item.input as { expectedRevision: number };
+      const month = (item.input as { month?: string }).month ?? instant().slice(0, 7);
+      complete.ledgers[month] = data.snapshot as LedgerSnapshot;
       complete.ledgerRevisions ??= {};
       complete.ledgerRevisions[item.id] = { base: original.expectedRevision, after: (data.snapshot as LedgerSnapshot).revision };
     }
@@ -297,7 +333,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     }
     complete.queue = complete.queue.filter(value => value.id !== item.id);
     complete.completed.push(item.id);
-    await persist(complete, true);
+    await persist(complete, true, item.method.startsWith('ledger') ? ['ledger'] : item.method === 'command' ? ['planner', 'ledger'] : ['planner']);
   }
   async function flush(): Promise<Map<string, ApiResult<unknown>>> {
     const results = new Map<string, ApiResult<unknown>>();
@@ -385,6 +421,9 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     }
     try {
       const result = (await flush()).get(item.id) ?? partition!.queue.find(pending => pending.id === item!.id)?.result;
+      // The UI sees the canonical cache plus its still-pending local drafts, never a raw
+      // server patch overlaid directly onto an optimistic phone projection.
+      if (result?.ok) { const { sync: _sync, ...receipt } = result; return receipt; }
       if (result) return result;
     } catch { return failure('手机储存异常。若操作已发送，请先恢复储存并查询结果，勿另建重复操作', 'STORAGE', 'unknown'); }
     const queued: QueuedWrite = { status: 'queued', requestId: item.requestId, message: '待提交 · 已保存在此手机，尚未获得资料服务确认' };
@@ -488,6 +527,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     client: {
       // Read-only projection bypasses the write lock; it never sends or acknowledges a draft.
       snapshot: calendarSnapshot,
+      currentSnapshot: cachedSnapshot,
       ledgerSnapshot: input => locked(() => read('ledgerSnapshot', input)),
       mutate: input => locked(() => write('mutate', input)), undo: id => locked(() => write('undo', id ?? partition?.snapshot?.journal.findLast(entry => entry.undoable && !entry.undoneAt)?.id)),
       command, importSource: input => locked(() => write('importSource', input)),

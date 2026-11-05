@@ -7,6 +7,7 @@ import type { BrowserWindow } from 'electron';
 import type { createCollectorControlClient } from './collector-control';
 import type { createUpdateService } from './update-service';
 import { SnapshotSchema } from '../shared/contracts';
+import { applyPlannerPatch } from '../shared/planner-sync';
 import { emptyState } from '../storage/repository';
 import { DEFAULT_LEDGER_RULES } from '../shared/ledger';
 import { createRemoteDesktopShell } from './remote-desktop-shell';
@@ -85,6 +86,18 @@ afterEach(() => {
 });
 
 describe('cloud desktop device shell', () => {
+  it('applies device-only settings without requiring a new cloud revision', async () => {
+    const f = fixture(); await flush();
+    const cursor = { streamId: '11111111-1111-4111-8111-111111111111', revision: 2 };
+    const before = f.shell.snapshot({ ...snapshot(), cursor });
+    f.shell.saveDeviceSettings({ closeToTray: false, autoLaunch: true });
+    const delta = f.shell.patch({ from: cursor, to: cursor, entities: [], settings: { ...before.settings, closeToTray: true, autoLaunch: false } });
+    const after = applyPlannerPatch(before, delta)!;
+    expect(after.cursor).toEqual(cursor);
+    expect(after.settings).toMatchObject({ closeToTray: false, autoLaunch: true });
+    expect(f.changed).toHaveBeenCalledOnce();
+  });
+
   it('renews the shared tray and completes its release before allowing normal quit', async () => {
     const f = fixture(); await flush();
     const owner = f.collector.setTrayOwner.mock.calls[0]![0];

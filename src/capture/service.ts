@@ -14,6 +14,10 @@ import type { PriceQuote } from '../shared/account';
 import type { ModelRequestRunner } from '../ai/request-queue';
 
 type Raw = Record<string, unknown>;
+function unreadWechatAttachments(items: StoredCaptureAttachment[], retryable: boolean) {
+  const details = items.slice(0, 3).map(item => `【${item.name.slice(0, 160)}】${item.error ?? '等待附件读取'}`).join('；');
+  return `本次未继续请求 AI。${details}。${retryable ? '系统会稍后自动检查。' : '请处理附件后重试此批。'}`.slice(0, 2000);
+}
 export type CaptureBridge = Pick<ReadOnlyBridge, 'start' | 'stop' | 'getGroups' | 'history' | 'rememberMessage' | 'getReferencedMessage' | 'getForward'> & {
   getImage(...args: Parameters<ReadOnlyBridge['getImage']>): Promise<CaptureAttachmentLocation>;
   getFileUrl(...args: Parameters<ReadOnlyBridge['getFileUrl']>): Promise<CaptureAttachmentLocation>;
@@ -156,6 +160,11 @@ export function createCaptureService(options: {
     // Never await model work here: key retrieval can wait for the synchronizer invoking this callback.
     emit(); return snapshot();
   }
+  function resumeAfterCloudKeySync() {
+    if (stopped || !store.resumeAfterCloudKeySync()) return false;
+    error = null; emit();
+    return true; // The regular tick picks up the restored batch after the sync callback returns.
+  }
   async function backfill() {
     if (historyRunning || stopped || suspended || !bridge || !health?.online || !store.config().enabled) return;
     historyRunning = true; const client = bridge;
@@ -238,10 +247,16 @@ export function createCaptureService(options: {
         const resolvedName = attachmentFileName(locator, a.name);
         bytes = await (options.downloader ?? downloadAttachment)(locator, { fileName: resolvedName });
         if (!permitted(message.accountId, message.groupId, false)) throw new WorkflowError('CANCELLED', '来源群已取消选择，已停止附件处理');
-        const saved = store.putAttachment(a.id, bytes);
+        store.putAttachment(a.id, bytes);
         if (resolvedName !== a.name) store.renameAttachment(a.id, resolvedName);
-        const cached = saved.hash && store.findExtraction(saved.hash, EXTRACTOR_VERSION);
-        if (cached) { store.saveExtraction(a.id, { extractorVersion: EXTRACTOR_VERSION, chunks: cached.chunks.map(({ id: _id, attachmentId: _attachmentId, ...c }) => c) }); return; }
+      }
+      // Cached bytes and freshly downloaded bytes share the same versioned
+      // extraction cache. Retrying a download/extraction must not parse again
+      // when another attachment has already produced the complete result.
+      const hash = store.attachment(a.id)?.hash;
+      const cached = hash && store.findExtraction(hash, EXTRACTOR_VERSION);
+      if (cached && !cached.attachment.error && cached.chunks.length && cached.chunks.every(chunk => chunk.status === 'ready' && !chunk.error)) {
+        store.saveExtraction(a.id, { extractorVersion: EXTRACTOR_VERSION, chunks: cached.chunks.map(({ id: _id, attachmentId: _attachmentId, ...c }) => c) }); return;
       }
       store.setAttachmentStatus(a.id, 'extracting'); emit();
       const result = await options.extract({ bytes, name: store.attachment(a.id)?.name ?? a.name });
@@ -272,13 +287,11 @@ export function createCaptureService(options: {
             if (unfinished.length) {
               const unreadMessages = [...new Set(unfinished.map(item => item.messageId))].map(messageId => {
                 const items = unfinished.filter(item => item.messageId === messageId), retryable = items.every(item => item.retryable === true);
-                const names = items.slice(0, 3).map(item => item.name).join('、');
-                return { messageId, retryable, error: `微信附件尚未完整读取（${names}），本条消息未请求 AI，同批其他可读消息已分开处理。${retryable ? '请在微信中打开或下载附件；系统会稍后自动检查，也可重试此批。' : '请查看附件状态并处理后重试；不支持或超出大小限制的文件需手动处理。'}`.slice(0, 2000) };
+                return { messageId, retryable, error: unreadWechatAttachments(items, retryable) };
               });
               if (store.isolateUnreadAttachments(batch.id, unreadMessages)) { emit(); continue; }
               const retryable = unfinished.every(item => item.retryable === true) && batch.attempts.length === 0;
-              const names = unfinished.slice(0, 3).map(item => item.name).join('、');
-              store.waitForAttachments(batch.id, `微信附件尚未完整读取（${names}），本批未继续请求 AI。${retryable ? '请在微信中打开或下载附件；系统会稍后自动检查，也可重试此批。' : '请查看附件状态并处理后重试；不支持或超出大小限制的文件需手动处理。'}`.slice(0, 2000), retryable);
+              store.waitForAttachments(batch.id, unreadWechatAttachments(unfinished, retryable), retryable);
               emit(); continue;
             }
           }
@@ -318,7 +331,7 @@ export function createCaptureService(options: {
     finally { running = false; emit(); }
   }
   return {
-    snapshot, connect, configure, credentialsChanged, groups: getGroups,
+    snapshot, connect, configure, credentialsChanged, resumeAfterCloudKeySync, groups: getGroups,
     async start() {
       stopped = false; suspended = false;
       if (!timer) timer = setInterval(() => {

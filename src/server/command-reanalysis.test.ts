@@ -46,12 +46,18 @@ describe('explicit assistant reanalysis across durable service receipts', () => 
     expect(calls).toBe(2);
 
     const retry = { ...request, requestId: 'reanalyzed-wire', input: { ...request.input, operationId: 'reanalyzed-business' } };
-    const saved = await service.rpc('command', retry, 'synthetic-device');
+    const saved = await service.rpc('command', retry, 'synthetic-device') as ApiResult<unknown>;
     expect(saved).toMatchObject({ ok: true, data: { conversationState: { domain: 'ledger', phase: 'saved' } } });
     expect((await ledger()).entries).toMatchObject(entries.map(entry => ({ title: entry.values.title, amountCents: 620 })));
     expect(calls).toBe(4);
     expect(await service.rpc('command', retry, 'synthetic-device')).toEqual(saved);
-    expect(await service.rpc('command', { ...retry, requestId: 'same-business-other-wire' }, 'synthetic-device')).toEqual(saved);
+    const repeated = await service.rpc('command', { ...retry, requestId: 'same-business-other-wire' }, 'synthetic-device') as ApiResult<unknown>;
+    // A new transport request returns the exact same business receipt but its
+    // own synchronization range. No second ledger mutation or AI call occurs.
+    if (!saved.ok || !repeated.ok) throw Error('Expected successful receipts');
+    expect(repeated.data).toEqual(saved.data);
+    expect(repeated.sync).toEqual({ from: service.snapshot().cursor, to: service.snapshot().cursor, entities: [] });
+    expect(calls).toBe(4);
 
     await service.close();
     service = createRemoteService(options);

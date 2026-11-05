@@ -1,3 +1,4 @@
+import { operationPending } from '../../operation-feedback';
 import { useState, type CSSProperties } from "react";
 import { ArrowRight, Plus } from "lucide-react";
 import type { CalendarItem, Snapshot } from "../../../shared/contracts";
@@ -83,8 +84,8 @@ export function Today({ snapshot, ui, pendingCount, create, openInbox, openCandi
             {meta && <div className="bm">{meta}</div>}
             {item.category === "candidate" && !past && (
               <div className="acts">
-                <button className="ui-btn sm primary" disabled={ui.busy} onClick={() => decide(item.refId, "acceptCandidate")}>参加</button>
-                <button className="ui-btn sm" disabled={ui.busy} onClick={() => decide(item.refId, "ignoreCandidate")}>忽略</button>
+                <button className="ui-btn sm primary" disabled={operationPending(ui, `candidate:${item.refId}`)} onClick={() => decide(item.refId, "acceptCandidate")}>{operationPending(ui, `candidate:${item.refId}`) ? "正在保存…" : "参加"}</button>
+                <button className="ui-btn sm" disabled={operationPending(ui, `candidate:${item.refId}`)} onClick={() => decide(item.refId, "ignoreCandidate")}>忽略</button>
                 <button className="ui-btn sm ghost" onClick={() => openCandidate(item.refId)}>稍后</button>
               </div>
             )}

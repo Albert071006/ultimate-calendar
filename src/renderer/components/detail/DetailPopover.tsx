@@ -1,3 +1,4 @@
+import { operationPending } from '../../operation-feedback';
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Check, FileOutput, Pencil, Trash2, X } from "lucide-react";
 import { mondayWeekday, type Block, type Candidate, type Course, type Goal, type ReminderConfig, type Snapshot, type Task } from "../../../shared/contracts";
@@ -139,14 +140,14 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
       ? { type: "cancelRecurringEvent", id: block.id, expectedVersion: block.version, scope: "single" }
       : { type: "delete", entity: "block", id: block.id, expectedVersion: block.version }]);
     footer = <>
-      {!block.cancelled && <button className="ui-btn sm dark" disabled={ui.busy}
+      {!block.cancelled && <button className="ui-btn sm dark" disabled={operationPending(ui, `${selection.entity}:${selection.id}`)}
         onClick={() => void ui.mutate([{ type: "finishBlock", id: block.id, expectedVersion: block.version, completed: !completed }])}>
-        <Check aria-hidden="true" />{multiple ? completed ? "恢复本次未完成" : "完成本次时段" : completed ? "恢复未完成" : singleTask ? "完成任务" : "完成"}</button>}
-      {multiple && task && task.status !== "done" && <button className="ui-btn sm" disabled={ui.busy}
-        onClick={() => void ui.mutate([{ type: "finishTask", id: task.id, expectedVersion: task.version, completed: true }])}>完成整个任务</button>}
+        <Check aria-hidden="true" />{operationPending(ui, `block:${block.id}`) ? "正在保存…" : multiple ? completed ? "恢复本次未完成" : "完成本次时段" : completed ? "恢复未完成" : singleTask ? "完成任务" : "完成"}</button>}
+      {multiple && task && task.status !== "done" && <button className="ui-btn sm" disabled={operationPending(ui, `${selection.entity}:${selection.id}`)}
+        onClick={() => void ui.mutate([{ type: "finishTask", id: task.id, expectedVersion: task.version, completed: true }])}>{operationPending(ui, `task:${task.id}`) ? "正在保存…" : "完成整个任务"}</button>}
       {editButton}
       <span className="spacer" />
-      {!block.cancelled && <button className="ui-btn sm ghost icon" disabled={ui.busy} aria-label={block.recurrence ? `取消本次 ${block.title}` : `删除 ${block.title}`}
+      {!block.cancelled && <button className="ui-btn sm ghost icon" disabled={operationPending(ui, `${selection.entity}:${selection.id}`)} aria-label={block.recurrence ? `取消本次 ${block.title}` : `删除 ${block.title}`}
         title={block.recurrence ? "取消本次活动" : "删除"} onClick={remove}><Trash2 aria-hidden="true" /></button>}
     </>;
   } else if (selection.entity === "course") {
@@ -177,7 +178,7 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
       {task.description && <p className="a2-pop-desc">{task.description}</p>}
       {attention && <section className="a2-pop-attention" aria-label="任务待处理">
         <strong className="task-attention-label">{attention.label}</strong>
-        <button className="ui-btn sm" disabled={ui.busy} onClick={() => attention.kind === "overdue" ? actions.editTask(task.id) : actions.schedule(task.id, attention.blockId)}>{attention.actionLabel}</button>
+        <button className="ui-btn sm" disabled={operationPending(ui, `${selection.entity}:${selection.id}`)} onClick={() => attention.kind === "overdue" ? actions.editTask(task.id) : actions.schedule(task.id, attention.blockId)}>{attention.actionLabel}</button>
       </section>}
       <dl>
         <dt>截止</dt><dd>{task.deadline ? <>{dateLabel(task.deadline.date)} <b>{task.deadline.time ?? ""}</b></> : "未设定"}</dd>
@@ -197,8 +198,8 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
       </section>}
     </>;
     footer = <>
-      {task.status !== "done" && <button className="ui-btn sm dark" disabled={ui.busy}
-        onClick={() => void ui.mutate([{ type: "finishTask", id: task.id, expectedVersion: task.version, completed: true }])}><Check aria-hidden="true" />完成任务</button>}
+      {task.status !== "done" && <button className="ui-btn sm dark" disabled={operationPending(ui, `${selection.entity}:${selection.id}`)}
+        onClick={() => void ui.mutate([{ type: "finishTask", id: task.id, expectedVersion: task.version, completed: true }])}><Check aria-hidden="true" />{operationPending(ui, `task:${task.id}`) ? "正在保存…" : "完成任务"}</button>}
       {editButton}
       {!arrangements.length && <button className="ui-btn sm" onClick={() => actions.schedule(task.id)}>{timing ? "安排活动" : "安排执行时段"}</button>}
       {task.status !== "done" && arrangements.length > 0 && (multiple && actions.scheduleAdditional
@@ -206,7 +207,7 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
         : !multiple && <button className="ui-btn sm ghost" onClick={() => actions.editTask(task.id)}>设置多时段</button>)}
       {task.status !== "done" && actions.scheduleRecurring && <button className="ui-btn sm ghost" onClick={() => actions.scheduleRecurring!(task.id)}>重复安排</button>}
       <span className="spacer" />
-      <button className="ui-btn sm ghost icon" disabled={ui.busy} aria-label={`移除 ${task.title}`} title="移除任务" onClick={() => actions.removeTask(task.id)}><Trash2 aria-hidden="true" /></button>
+      <button className="ui-btn sm ghost icon" disabled={operationPending(ui, `${selection.entity}:${selection.id}`)} aria-label={`移除 ${task.title}`} title="移除任务" onClick={() => actions.removeTask(task.id)}><Trash2 aria-hidden="true" /></button>
     </>;
   } else if (selection.entity === "candidate") {
     const candidate = value as Candidate, display = candidateDisplay(candidate, snapshot.settings), expiry = candidateExpiry(candidate, now);
@@ -226,8 +227,8 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
     const decide = (type: "acceptCandidate" | "ignoreCandidate") => void ui.mutate([{ type, id: candidate.id, expectedVersion: candidate.version, reason: "" }]);
     footer = <>
       {candidate.status === "pending" && !expiry.expired && <>
-        <button className="ui-btn sm primary" disabled={ui.busy} onClick={() => decide("acceptCandidate")}>参加</button>
-        <button className="ui-btn sm" disabled={ui.busy} onClick={() => decide("ignoreCandidate")}>忽略</button>
+        <button className="ui-btn sm primary" disabled={operationPending(ui, `${selection.entity}:${selection.id}`)} onClick={() => decide("acceptCandidate")}>参加</button>
+        <button className="ui-btn sm" disabled={operationPending(ui, `${selection.entity}:${selection.id}`)} onClick={() => decide("ignoreCandidate")}>忽略</button>
       </>}
       {editButton}
     </>;

@@ -30,7 +30,7 @@ function pictureUrls(messages: ChatMessage[]) {
 }
 
 describe('assistant image execution', () => {
-  it('passes multiple pictures and documents through ledger routing, preserving exact retry receipts', async () => {
+  it('sends multiple pictures and documents once to the ledger parser, preserving exact retry receipts', async () => {
     const { controller, ledger, payloads } = setup([route, expense]);
     const documents = [{ label: '合成收据.csv', text: '项目,金额\n合成午饭,20' }];
     const request = { operationId: 'multi-receipt', text: '按附件记录这一次午饭消费', images: [image, { ...image, label: '另一页.png' }], documents };
@@ -38,10 +38,11 @@ describe('assistant image execution', () => {
     expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: 'saved' } } });
     expect(await controller.command(request)).toEqual(result);
     expect(payloads).toHaveLength(2);
-    for (const payload of payloads) {
-      expect(pictureUrls(payload.messages)).toHaveLength(2);
-      expect(JSON.stringify(payload.messages)).toContain('合成收据.csv');
-    }
+    expect(pictureUrls(payloads[0]!.messages)).toHaveLength(0);
+    expect(JSON.stringify(payloads[0]!.messages)).not.toContain('合成收据.csv');
+    expect(JSON.stringify(payloads[0]!.messages)).not.toContain(documents[0]!.text.slice(0, 5));
+    expect(pictureUrls(payloads[1]!.messages)).toHaveLength(2);
+    expect(JSON.stringify(payloads[1]!.messages)).toContain('合成收据.csv');
     expect(ledger.snapshot().entries.filter(entry => !entry.ruleKey)).toHaveLength(1);
     expect(await controller.command({ ...request, documents: [{ ...documents[0]!, text: '另一份账单' }] })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
   });
@@ -54,27 +55,29 @@ describe('assistant image execution', () => {
     expect(await textOnly.controller.command({ operationId: 'no-multi-vision', text: '解释图片', images: [image, image] })).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
     expect(textOnly.fetch).not.toHaveBeenCalled();
   });
-  it('passes original pixels through both model stages and replays the exact receipt without another charge or entry', async () => {
+  it('passes original pixels to the ledger parser and replays the exact receipt without another charge or entry', async () => {
     const { controller, ledger, payloads } = setup([route, expense]);
     const request = { operationId: 'receipt-image', text: '把图片里的合成午饭记账', image };
     const result = await controller.command(request);
     expect(result).toMatchObject({ ok: true, data: { conversationState: { domain: 'ledger', phase: 'saved' } } });
     expect(await controller.command(request)).toEqual(result);
     expect(payloads).toHaveLength(2);
-    for (const payload of payloads) expect(pictureUrls(payload.messages)).toEqual([image.imageDataUrl]);
+    expect(pictureUrls(payloads[0]!.messages)).toEqual([]);
+    expect(pictureUrls(payloads[1]!.messages)).toEqual([image.imageDataUrl]);
     expect(ledger.snapshot().entries.filter(entry => !entry.ruleKey)).toHaveLength(1);
     expect(await controller.command({ ...request, image: { ...image, imageDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAAA' } })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
     expect(await controller.command({ operationId: request.operationId, text: request.text })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
     expect(payloads).toHaveLength(2);
   });
 
-  it('uses a historical user image for an explicitly requested follow-up in both model stages', async () => {
+  it('sends a historical user image to the ledger parser when the user explicitly follows up', async () => {
     const { controller, payloads } = setup([route, expense]);
     const request: CommandRequest = { operationId: 'history-image', text: '按这张图记账', history: [
       { role: 'user', text: '', image }, { role: 'assistant', text: '图中是合成午饭收据', outcome: { domain: 'calendar', phase: 'query' } },
     ] };
     expect((await controller.command(request)).ok).toBe(true);
-    for (const payload of payloads) expect(pictureUrls(payload.messages)).toEqual([image.imageDataUrl]);
+    expect(pictureUrls(payloads[0]!.messages)).toEqual([]);
+    expect(pictureUrls(payloads[1]!.messages)).toEqual([image.imageDataUrl]);
     expect(await controller.command({ ...request, history: [{ role: 'user', text: '', image: { ...image, label: 'changed.png' } }] })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
   });
 

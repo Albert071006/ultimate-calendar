@@ -17,6 +17,15 @@ const checkpoint = { version: 2, completed: [{ key: 'saved-fragment', value: { c
 afterEach(() => { for (const store of stores.splice(0)) store.close(); });
 
 describe('capture checkpoint queue rotation', () => {
+  it('yields a durable detail request after a paid answer but not an unpaid fabricated detail flag', () => {
+    const store = setup(), first = enqueue(store, 'first', 0); store.claimBatch(at(1));
+    const detail = { version: 2, completed: [], detailRequests: [{ key: 'request', context: ['message'], candidates: [] }], final: false };
+    store.checkpointResult(first.id, detail, undefined, at(2));
+    expect(() => store.yieldBatch(first.id, at(3))).toThrow('仅已保存分片进度');
+    store.startAttempt(first.id, 'paid-detail', at(3)); store.checkpointResult(first.id, detail, undefined, at(4));
+    expect(store.yieldBatch(first.id, at(5))).toMatchObject({ status: 'pending', result: detail });
+    expect(store.claimBatch(at(6))).toMatchObject({ id: first.id, result: detail });
+  });
   it('retains paid progress and rotates behind another waiting group without recording a failure', () => {
     const store = setup(), first = enqueue(store, 'first', 0), second = enqueue(store, 'second', 1);
     expect(store.claimBatch(at(2))?.id).toBe(first.id);

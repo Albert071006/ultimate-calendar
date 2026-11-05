@@ -1,3 +1,4 @@
+import { expandCaptureTable } from './request-wire';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,7 +16,9 @@ afterEach(() => { vi.restoreAllMocks(); for (const cleanup of cleanups.splice(0)
 const at = '2026-10-23T12:00:00+08:00';
 type ModelInput = { units: { id: string; text: string }[]; existingCandidates: { id: string; title: string; action: string; status: string }[] };
 function input(request?: RequestInit): ModelInput {
-  return JSON.parse(JSON.parse(String(request?.body)).messages.find((message: { role: string }) => message.role === 'user').content[0].text);
+  const value = JSON.parse(JSON.parse(String(request?.body)).messages.find((message: { role: string }) => message.role === 'user').content[0].text);
+  value.existingCandidates = expandCaptureTable(value.existingCandidates);
+  return value;
 }
 function response(value: unknown) {
   return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) }, finish_reason: 'stop' }],
@@ -99,7 +102,7 @@ describe('QQ durable paid responses and incremental progress', () => {
       calls++; const sent = input(request);
       if (calls === 1) return response({ candidates: [candidate(sent.units[0]!.id, sent.units[0]!.text)] });
       const saved = f.repository.snapshot().candidates[0]!;
-      expect(saved).toMatchObject({ status: 'pending' }); expect(sent.existingCandidates[0]!.id).toBe(saved.id);
+      expect(saved).toMatchObject({ status: 'pending' }); expect(sent.existingCandidates[0]!.id).toBe('c1');
       if (choice === 'accepted') {
         const task = f.repository.writeInternal({ operationId: 'synthetic-user-task', changes: [{ entity: 'task', values: {
           title: '用户安排的领取任务', description: '用户亲自填写的执行计划', candidateId: saved.id,
@@ -138,7 +141,7 @@ describe('QQ durable paid responses and incremental progress', () => {
       paid = { candidates: [candidate(sent.units[0]!.id, sent.units[0]!.text, { sourceIds: sent.units.map(unit => unit.id) })] };
       return response(paid);
     } })).rejects.toMatchObject({ code: 'AI_RESPONSE' });
-    expect(savedResponse(f).pendingResponse?.value).toEqual(paid);
+    expect(savedResponse(f).pendingResponse?.value).toEqual({ ...(paid as object), candidates: (paid as { candidates: ExtractedCandidate[] }).candidates.map(value => ({ ...value, sourceIds: value.sourceIds.map(id => prepareAnalysis(f.store, f.batch).units[Number(id.slice(1)) - 1]!.id) })) });
     expect(savedResponse(f).completed).toEqual([]);
     expect(f.repository.snapshot().candidates).toEqual([]);
     const before = savedResponse(f).pendingResponse;
@@ -163,7 +166,7 @@ describe('QQ durable paid responses and incremental progress', () => {
     await expect(analyzeCapture({ ...options(f), fetch: async (_url, request) => {
       calls++; const sent = input(request); paid = { candidates: [candidate(sent.units[0]!.id, sent.units[0]!.text)] }; return response(paid);
     } })).rejects.toThrow('synthetic checkpoint promotion failure');
-    expect(hasPersistedPaidResponse).toBe(true); expect(savedResponse(f).pendingResponse?.value).toEqual(paid);
+    expect(hasPersistedPaidResponse).toBe(true); expect(savedResponse(f).pendingResponse?.value).toEqual({ ...(paid as object), candidates: (paid as { candidates: ExtractedCandidate[] }).candidates.map(value => ({ ...value, sourceIds: value.sourceIds.map(id => prepareAnalysis(f.store, f.batch).units[Number(id.slice(1)) - 1]!.id) })) });
     spy.mockRestore(); f.reopen();
     await analyzeCapture({ ...options(f), batch: f.claimRetry(), fetch: async () => { calls++; return response({ candidates: [] }); } });
     const snapshot = f.repository.snapshot();

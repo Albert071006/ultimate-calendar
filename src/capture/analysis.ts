@@ -18,6 +18,7 @@ import { normalizeCaptureResponseTimes } from './response-time';
 import { assertArrivalFollowup } from './arrival-followup';
 import { reasoningRequest } from '../shared/ai-reasoning';
 import { AttachmentContextSchema, cachedAttachmentContext } from './attachment-context';
+import { compactCaptureMessages, CaptureDetailRequestSchema, type CaptureDetailEvidence } from './request-wire';
 export { attachmentEvidenceUnits } from './attachment-deduplication';
 
 export const ANALYSIS_VERSION = 'qq-v2';
@@ -38,6 +39,7 @@ const CheckpointSchema = z.strictObject({ version: z.literal(2), planFingerprint
   passiveQuestionFilter: z.literal(1).optional(),
   noticeFirst: z.literal(1).optional(),
   attachmentContext: z.literal(1).optional(),
+  detailRequests: z.array(z.strictObject({ key: z.string(), context: z.array(z.string()).max(60), candidates: z.array(z.string()).max(30) })).optional(),
 });
 type Checkpoint = z.infer<typeof CheckpointSchema>;
 type Plan = Omit<Checkpoint, 'units' | 'planFingerprint' | 'completed' | 'final' | 'pendingResponse'> & { units: AnalysisUnit[] };
@@ -168,7 +170,7 @@ export function batchMessages(units: AnalysisUnit[], context: Checkpoint['contex
   const content: Exclude<ChatMessage['content'], string> = [{ type: 'text', text: JSON.stringify({ units: units.map(({ imageDataUrl, attachmentAliases: _aliases, ...u }) => ({ ...u, hasImage: !!imageDataUrl, recipient: recipientHint(recipients?.get(u.messageId)) })), allowedSourceIds: units.map(unit => unit.id), context: context.map(message => ({ ...message, recipient: recipientHint(message.recipient ?? recipients?.get(message.id)), contextOnly: true })), warnings, userProfile: locationProfile(profile), existingCandidates: existing.map(c => captureCandidateContext(c, sources)) }) }];
   for (const unit of units) if (unit.imageDataUrl) content.push({ type: 'text', text: `以下图片属于 unit.id=${unit.id}，位置=${unit.locator}` }, { type: 'image_url', image_url: { url: unit.imageDataUrl } });
   const summaryPrivacy = '业务摘要与原文证据分开：title、action、benefit、potentialBenefit、conditions、uncertainties、location 不复制网址（URL）、本机路径、附件文件名或 QQ 账号/群号、微信账号/群号/wxid。保留必要的平台名称、行动、条件与地点；登录、下载等要求概括为“登录通知中的平台”“查看通知附件中的操作说明”，缺失信息只描述待核对的问题，不复述这些标识。sourceQuote、supportingSources[].quote、temporalEvidence[].quote 必须保留对应来源的连续原文，不为摘要隐私规则改写、替换或删去引文内容；原始资料和来源证据仍在本机保留。';
-  return [{ role: 'system', content: `${system}\n${captureActionabilityInstructions}\n${eventExtractionInstructions}\n${candidateFieldInstructions}\n${temporalExtractionInstructions}\n${summaryPrivacy}` }, { role: 'user', content }];
+  return [{ role: 'system', content: `${system}\n${captureActionabilityInstructions}\n${eventExtractionInstructions}\n${candidateFieldInstructions}\n${temporalExtractionInstructions}\n活动只给日期或“周六晚上”等时段时，eventStart、eventEnd 相应字段填 null，在 temporalEvidence 和 uncertainties 保留原话。\n${summaryPrivacy}` }, { role: 'user', content }];
 }
 function virtualSource(unit: AnalysisUnit): Source {
   const at = nowInstant();
@@ -233,8 +235,12 @@ function replayCandidates(completed: CompletedCapture[], batch: CaptureBatch, un
     if (entry.candidate.relation.candidateId && aliases.has(entry.candidate.relation.candidateId) && !existing.some(candidate => candidate.id === item.relation.candidateId)) {
       throw new WorkflowError('CONFLICT', '已保存的关联事项已删除或来源范围改变，保留当前结果供校对，不会重新创建该事项');
     }
+    const supportingDeadlineQuotes = entry.supportingSources.flatMap(ref => {
+      const source = sources.get(ref.sourceId);
+      return source?.kind === 'text' ? [{ quote: ref.quote, sentAt: source.sentAt }] : [];
+    });
     const decision = reconcileCaptureCandidate(item, sources.get(unit.id)!, evidenceIds, existing,
-      [...warnings, ...(evidenceIds.some(id => byId.get(id)!.imageDataUrl) ? ['图片文字由 AI 转写，请对照原图核对'] : [])], [...sink.sources(), ...sources.values()]);
+      [...warnings, ...(evidenceIds.some(id => byId.get(id)!.imageDataUrl) ? ['图片文字由 AI 转写，请对照原图核对'] : [])], [...sink.sources(), ...sources.values()], supportingDeadlineQuotes);
     if (decision.kind === 'ignore') { aliases.set(entry.id, decision.id); rememberPractice(decision.id); sink.remember?.(entry, decision.id); continue; }
     if (practice && practiceTarget) {
       // Append only the newly observed exercise to the live text. Never replay deleted steps or replace a user's edited summary.
@@ -324,7 +330,8 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
   });
   const runModel: ModelRequestRunner = options.runModel ?? (work => work());
   let paidRequests = 0;
-  for (const units of requests) {
+  for (let requestIndex = 0; requestIndex < requests.length; requestIndex++) {
+    const units = requests[requestIndex]!;
     const key = hashInput(units.map(u => u.id));
     if (checkpoint.completed.some(c => c.key === key)) continue;
     if (checkpoint.pendingResponse && checkpoint.pendingResponse.key !== key) throw new WorkflowError('CONFLICT', '已保存回答与当前分片顺序不符，停止重复付费');
@@ -338,9 +345,19 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
     const requestSchema = captureRequestSchema(eligibleUnits.map(unit => unit.id));
     const promoteResponse = () => {
       const pending = checkpoint.pendingResponse!;
+      const detail = CaptureDetailRequestSchema.safeParse(pending.value);
+      if (detail.success) {
+        if (checkpoint.detailRequests?.some(request => request.key === key)) throw new WorkflowError('AI_RESPONSE', '补充原文后仍缺少必要资料，请校对。已保留回答，未继续付费');
+        const { context, candidates } = detail.data.needsDetails;
+        if (!context.length && !candidates.length || context.some(id => !checkpoint.context.some(message => message.id === id))
+          || candidates.some(id => !pending.candidateIds?.includes(id))) throw new WorkflowError('AI_RESPONSE', '补读请求未指定本批次有效资料。已保留回答，未继续付费');
+        (checkpoint.detailRequests ??= []).push({ key, context, candidates }); delete checkpoint.pendingResponse;
+        store.checkpointResult(batch.id, checkpoint);
+        return false;
+      }
       let value: CaptureExtraction;
       try {
-        const parsed = requestSchema.safeParse(normalizeCaptureResponseTimes(pending.value, settings.timezone));
+        const parsed = requestSchema.safeParse(normalizeCaptureResponseTimes(pending.value, settings.timezone, eligibleUnits));
         if (!parsed.success) throw new WorkflowError('AI_RESPONSE', '回答的主来源、补充来源或字段不符合当前分片要求');
         value = parsed.data;
         const state = repository.read();
@@ -356,11 +373,13 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
       checkpoint.completed.push({ key, value }); delete checkpoint.pendingResponse;
       store.checkpointResult(batch.id, checkpoint);
       applyCaptureProgress(repository, batch, checkpoint, actualUnits, eligible, checkpoint.warnings, options.onProgress);
+      return true;
     };
     // A durable response is local work: no key lookup, model queue or second paid request.
     if (checkpoint.pendingResponse) {
       if (!options.canContinue()) throw new WorkflowError('CANCELLED', '分析已暂停，已保存的回答保留');
-      promoteResponse(); continue;
+      if (!promoteResponse()) requestIndex--;
+      continue;
     }
     if (paidRequests >= Math.max(1, options.requestBudget ?? Infinity)) {
       store.yieldBatch(batch.id); return;
@@ -379,17 +398,35 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
       const state = repository.read();
       const staged = stagedCandidates(checkpoint.completed, batch, actualUnits, eligible, checkpoint.warnings, state, planFingerprint, checkpoint.documentGrouping === 1, questionRecipients(checkpoint), checkpoint.noticeFirst === 1);
       const existing = recentCaptureCandidates(staged.candidates, staged.sources, batch, staged.preferred, new Set(checkpoint.context.map(message => message.id)));
-      const messages = batchMessages(eligibleUnits, checkpoint.context, existing, checkpoint.warnings, profile, recipients, staged.sources);
-      store.startAttempt(batch.id, hashInput({ planFingerprint, key }));
+      const details = checkpoint.detailRequests?.find(request => request.key === key);
+      const evidence: CaptureDetailEvidence = {};
+      if (details) {
+        evidence.context = new Map(details.context.map(id => {
+          const original = store.message(id);
+          if (!original || original.deleted || original.changed || original.accountId !== batch.accountId || original.groupId !== batch.groupId) throw new WorkflowError('CONFLICT', '补读原文已删除或变化，请校对；未继续付费');
+          return [id, { text: original.text }];
+        }));
+        evidence.candidates = new Map(details.candidates.map(id => {
+          const candidate = existing.find(candidate => candidate.id === id);
+          if (!candidate) throw new WorkflowError('CONFLICT', '补读事项已变化或删除，请校对；未继续付费');
+          const originals = candidate.sourceIds.map(sourceId => staged.sources.find(source => source.id === sourceId));
+          if (originals.some(source => !source)) throw new WorkflowError('CONFLICT', '补读事项的原始证据缺失，请校对；未继续付费');
+          return [id, originals.map(source => ({ text: source!.text, sentAt: source!.sentAt }))];
+        }));
+        if (JSON.stringify([...evidence.context, ...evidence.candidates]).length > 200_000) throw new WorkflowError('VALIDATION', '请求补读的原文超过单次分析上限，请缩小范围后校对；未静默截断或继续付费');
+      }
+      const wire = compactCaptureMessages(batchMessages(eligibleUnits, checkpoint.context, existing, checkpoint.warnings, profile, recipients, staged.sources), details, evidence);
+      const messages = wire.messages;
+      store.startAttempt(batch.id, hashInput({ planFingerprint, key, ...(details ? { details } : {}) }));
       paidRequests++;
       try {
         await completeJson({ key: apiKey, settings: requestSettings, messages, schema: z.json(), operationId: 'qq-request:' + randomUUID(), purpose: 'source', now: nowInstant(), maxAttempts: 1, timeoutMs: Math.max(90_000, reasoningRequest(requestSettings).timeoutMs), autoQuote: options.getPriceQuote?.(settings.model, settings.pricingCurrency), fetch: options.fetch, onUsage: usage => repository.addUsage(usage),
           onParsedResponse(value) {
-            checkpoint.pendingResponse = { key, value: z.json().parse(value), candidateIds: existing.map(candidate => candidate.id) };
+            checkpoint.pendingResponse = { key, value: z.json().parse(wire.decode(value)), candidateIds: existing.map(candidate => candidate.id) };
             store.savePendingResponse(batch.id, checkpoint);
           },
         });
-        promoteResponse();
+        if (!promoteResponse()) requestIndex--;
       } finally { options.afterRequest?.(); }
     });
   }

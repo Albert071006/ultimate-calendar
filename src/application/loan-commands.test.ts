@@ -55,7 +55,7 @@ describe('assistant loan bookkeeping', () => {
     const saved = ledger.snapshot();
     expect(saved.entries.find(entry => entry.kind === 'loan_repay')).toMatchObject({ cashflows: [{ accountId: 'family', deltaCents: -12000 }], relatedEntryIds: ['family-principal'] });
     expect(payloads[3]!.messages[0]!.content).toContain('亲情卡归还本金计亲情卡使用额');
-    expect(payloads[3]!.messages[1]!.content).toBe(text);
+    expect(payloads[3]!.messages.at(-3)!.content).toBe(text);
     expect(await controller.command(request)).toEqual(reply);
     expect(ledger.snapshot()).toEqual(saved); expect(payloads).toHaveLength(4);
   });

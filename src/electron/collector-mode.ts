@@ -108,6 +108,13 @@ export async function startCollectorMode(directory: string, dependencies: Collec
         await wechat?.credentialsChanged?.({ configured: value.configured, revision: value.revision, sourceId: value.sourceId });
         try { dependencies.onCloudKeyChanged?.(value); } catch { /* Observers cannot change the saved credential. */ }
       },
+      onConfiguredKeyVerified() {
+        if (closing) return;
+        for (const service of [capture, wechat]) {
+          try { service?.resumeAfterCloudKeySync?.(); }
+          catch { warn('COLLECTOR_RECOVER_SYNC_PAUSE_FAILED'); }
+        }
+      },
       onStatusChanged() { if (capture && !closing) try { emitCapture(capture.snapshot()); } catch { /* Startup may not yet have a snapshot. */ } },
     });
     documents = (dependencies.createDocumentExtractor ?? createDocumentExtractor)();
@@ -130,7 +137,7 @@ export async function startCollectorMode(directory: string, dependencies: Collec
     };
     account = (dependencies.createAccountService ?? createAccountService)({ getApiKey, fetch: cancellableFetch, isVisible: () => false });
     const captureOptions: Parameters<typeof createCaptureService>[0] = {
-      refreshModelSettings: () => keySync?.refresh() ?? Promise.resolve(),
+      refreshModelSettings: () => keySync?.refresh({ respectBackoff: true }) ?? Promise.resolve(),
       store, repository, credentials: bridgeKeys, extract: documents.extract, runModel: queue.run, fetch: cancellableFetch,
       onChanged: emitCapture, getApiKey, getPriceQuote: account.quote,
       getModelInputModalities: model => account!.snapshot().models.data?.find(item => item.id === model)?.inputModalities ?? null,

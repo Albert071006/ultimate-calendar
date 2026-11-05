@@ -1,10 +1,11 @@
+import { BackupProgressSchema } from '../shared/backup-progress';
 import { BrowserWindow, Menu, app, dialog, ipcMain, safeStorage, session } from 'electron';
 import { join } from 'node:path';
 import { createNodeRemoteClient, RemoteClientError, type RemoteCredential } from '../remote/node-client';
 import { readPrivate, writePrivate } from '../remote/private-file';
 import { createWriteJournal } from '../remote/write-journal';
 import { REMOTE_METHODS, REMOTE_READ_METHODS, type RemoteMethod } from '../shared/remote';
-import { MAX_IMAGE_BYTES, SetApiKeyRequestSchema, SaveSettingsRequestSchema, SnapshotSchema, ImportSourceRequestSchema, LocalSourceEvidenceRequestSchema, CourseImportRequestSchema, MutationRequestSchema, type ApiError } from '../shared/contracts';
+import { MAX_IMAGE_BYTES, SetApiKeyRequestSchema, SaveSettingsRequestSchema, SnapshotSchema, ImportSourceRequestSchema, LocalSourceEvidenceRequestSchema, CourseImportRequestSchema, MutationRequestSchema, type ApiError, type ChangedEvent } from '../shared/contracts';
 import { boundedFile, imageFromBytes } from './files';
 import { commandDocumentsFromPaths, COMMAND_DOCUMENT_EXTENSIONS } from './command-documents';
 import { createDocumentExtractor } from '../capture/documents/runtime';
@@ -43,7 +44,7 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
     const window = new BrowserWindow({ width: 1440, height: 940, minWidth: 980, minHeight: 680, show: false, title: '终极日历 · 云端资料', backgroundColor: '#f5f0e6', icon: join(__dirname, '../assets/app-icon.png'),
       titleBarStyle: 'hidden', titleBarOverlay: { color: '#f5f0e6', symbolColor: '#1f1c18', height: 32 },
       webPreferences: { preload: join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, spellcheck: false, devTools: !app.isPackaged } });
-    const changed = () => { if (!window.isDestroyed()) window.webContents.send('planner:changed', { reason: 'mutation' }); };
+    const changed = (event: ChangedEvent = { reason: 'mutation' }) => { if (!window.isDestroyed()) window.webContents.send('planner:changed', event); };
     let activeRequests = 0;
     const collector = config.localDataDirectory ? createCollectorControlClient({ directory: config.localDataDirectory, encryption: safeStorage }) : null;
     const shell = createRemoteDesktopShell({ window, directory, config, collector, changed, rpc: journal.rpc, getIdentity: async () => (await client.getSession()).identity, isBusy: () => activeRequests > 0 });
@@ -107,11 +108,15 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
             }
             const localResult = await shell.handle(method) ?? await files.handle(method, value);
             if (localResult) { if (localResult.ok && method === 'restore') changed(); return localResult; }
+            if (method === 'backupStatus') {
+              const status = await client.status() as { backup?: unknown };
+              return { ok: true, data: BackupProgressSchema.parse(status.backup) };
+            }
             if (method === 'saveSettings') {
               const request = SaveSettingsRequestSchema.parse(value);
               if (!request.expectedSettings) return failure('VALIDATION', '请重新打开设置页后保存，以便核对共用设置');
-              const result = await journal.rpc('saveSettings', request);
-              if (result.ok) { shell.saveDeviceSettings(request.settings); changed(); return { ok: true, data: { ...result.data, closeToTray: request.settings.closeToTray, autoLaunch: request.settings.autoLaunch } }; }
+              const result = remoteOutputs.saveSettings.parse(await journal.rpc('saveSettings', request));
+              if (result.ok) { shell.saveDeviceSettings(request.settings); return { ...result, ...(result.sync ? { sync: shell.patch({ ...result.sync, settings: result.data }) } : {}), data: { ...result.data, closeToTray: request.settings.closeToTray, autoLaunch: request.settings.autoLaunch } }; }
               return result;
             }
             if (method === 'retryApiKey' || method === 'setApiKey') {
@@ -124,7 +129,7 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
                 const localKey = await collector.invoke('captureRefreshApiKey').catch(() => null);
                 if (!localKey?.ok) await dialog.showMessageBox(window, { type: 'info', message: '云端密钥已更新，群消息提炼正在等待自动同步。', detail: '无需重复保存。电脑采集服务恢复连接后会自动取得最新配置；同步状态可在采集页查看。' }).catch(() => {});
               }
-              if (request) changed();
+              if (request) changed({ reason: 'key', domains: ['key'] });
               return { ok: true, data: { configured: status.configured, sessionOnly: false, scope: 'cloud', cloudConfiguration: status } };
             }
             if (method === 'selectCommandDocuments') {
@@ -158,8 +163,12 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
               for (const mutation of request.mutations) if (mutation.type === 'delete' && mutation.entity === 'source') sourceCache.forget(mutation.id);
             }
             if (method === 'snapshot' && result.ok && 'keyStatus' in result.data) return { ...result, data: shell.snapshot(SnapshotSchema.parse({ ...result.data, keyStatus: { ...result.data.keyStatus, scope: 'cloud' } })) };
-            if (!(REMOTE_READ_METHODS as readonly string[]).includes(method)) changed();
-            return result;
+            if (method === 'changes' && result.ok) {
+              const changes = remoteOutputs.changes.parse(result);
+              if (changes.ok && changes.data.status === 'patch') return { ...changes, data: { ...changes.data, patch: shell.patch(changes.data.patch) } };
+            }
+            if (!(REMOTE_READ_METHODS as readonly string[]).includes(method)) changed({ reason: 'mutation', domains: method.startsWith('ledger') ? ['ledger'] : method === 'command' ? ['planner', 'ledger'] : ['planner'], ...(result.ok && result.sync ? { cursor: result.sync.to } : {}) });
+            return result.ok && result.sync ? { ...result, sync: shell.patch(result.sync) } : result;
           } catch (error) {
             if (error instanceof WorkflowError) return failure(error.code, error.message, false);
             if (error instanceof RemoteClientError) return failure(error.status === 401 ? 'AUTH' : error.status === 409 ? 'CONFLICT' :
@@ -184,10 +193,10 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
       finally { inspecting = false; }
     };
     Menu.setApplicationMenu(null);
-    shell.setTrayItems([{ label: '刷新共用资料', click: changed }, { label: '核对云端操作', click: () => { void inspect(); } }]);
+    shell.setTrayItems([{ label: '刷新共用资料', click: () => changed() }, { label: '核对云端操作', click: () => { void inspect(); } }]);
     // Canonical snapshots are fetched by the existing client on this event. No local DB or QQ socket is opened.
     const poll = setInterval(() => { if (window.isVisible() && !window.isMinimized()) { changed(); void collector?.invoke('captureSnapshot').then(result => { if (result.ok && !window.isDestroyed()) window.webContents.send('planner:capture-changed', result.data); }).catch(() => {}); } }, 30_000);
-    window.on('focus', changed);
+    window.on('focus', () => changed());
     const close = () => { clearInterval(poll); documents.dispose(); shell.close(); collector?.close(); client.close(); session.defaultSession.removeListener('will-download', download); for (const method of methods) ipcMain.removeHandler(`planner:${method}`); };
     window.once('closed', close);
     try { await window.loadURL(documentUrl); window.show(); } catch (error) { window.destroy(); throw error; }

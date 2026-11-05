@@ -10,6 +10,7 @@ import { createLoopbackHttpsTransport } from './loopback-https';
 import { LEDGER_API_HEADER, LEDGER_API_VERSION } from '../shared/ledger-compatibility';
 import { AI_SETTINGS_HEADER, AI_SETTINGS_VERSION, AI_RPC_TIMEOUT_MS, isAiRpcPath } from '../shared/ai-reasoning';
 import { PROFILE_SETTINGS_HEADER, PROFILE_SETTINGS_VERSION } from '../shared/profile-settings';
+import { PLANNER_SYNC_HEADER, PLANNER_SYNC_VERSION } from '../shared/planner-sync';
 
 const CredentialSchema = z.strictObject({ version: z.literal(1), origin: z.string(), cookie: z.string().regex(/^(?:__Host-planner_session|planner_dev_session)=[A-Za-z0-9_-]+$/), identity: RemoteIdentitySchema, deviceId: z.string().uuid() });
 export type RemoteCredential = z.infer<typeof CredentialSchema>;
@@ -70,7 +71,7 @@ export function createNodeRemoteClient(options: { origin: string; credentialsFil
     if (!path.startsWith('/api/v1/') || new URL(path, origin).origin !== origin || path.includes('\\')) throw Error('无效接口路径');
     try {
       const response = await fetcher(origin + path, { redirect: 'error', cache: 'no-store', signal: AbortSignal.any([timeout, lifetime.signal, ...(config.signal ? [config.signal] : [])]),
-        method, headers: { Origin: origin, [AI_SETTINGS_HEADER]: AI_SETTINGS_VERSION, [PROFILE_SETTINGS_HEADER]: PROFILE_SETTINGS_VERSION, ...(path.startsWith('/api/v1/rpc/ledger') ? { [LEDGER_API_HEADER]: LEDGER_API_VERSION } : {}), ...(credential && !config.pairing ? { Cookie: credential.cookie } : {}),
+        method, headers: { Origin: origin, [AI_SETTINGS_HEADER]: AI_SETTINGS_VERSION, [PROFILE_SETTINGS_HEADER]: PROFILE_SETTINGS_VERSION, [PLANNER_SYNC_HEADER]: PLANNER_SYNC_VERSION, ...(path.startsWith('/api/v1/rpc/ledger') ? { [LEDGER_API_HEADER]: LEDGER_API_VERSION } : {}), ...(credential && !config.pairing ? { Cookie: credential.cookie } : {}),
           ...(input === undefined ? {} : { 'Content-Type': 'application/json', 'X-CSRF-Token': session?.csrfToken ?? '' }) },
         ...(input === undefined ? {} : { body: JSON.stringify(input) }) });
       if(response.redirected||response.status>=300&&response.status<400){await response.body?.cancel();throw new RemoteClientError(502,'资料服务发生重定向，未将凭据发送到其他地址');}

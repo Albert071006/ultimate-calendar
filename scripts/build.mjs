@@ -3,6 +3,7 @@ import { build as bundle } from 'esbuild';
 import { cp, mkdir } from 'node:fs/promises';
 import { writePwaShell } from './pwa-shell.mjs';
 import { desktopEdition, desktopViteOptions } from './desktop-edition.mjs';
+import { buildBackupWorker } from './build-backup-worker.mjs';
 
 const edition = desktopEdition();
 await viteBuild(desktopViteOptions(edition));
@@ -15,8 +16,9 @@ for (const entry of ['main', 'preload']) {
   const path = `src/electron/${entry}.ts`;
   await bundle({ entryPoints: [path], outfile: `dist-electron/${entry}.cjs`, platform: 'node',
     format: 'cjs', target: 'node24', bundle: true, external: ['electron', 'electron-updater'], sourcemap: false,
-    define: { __PLANNER_LOCAL_ONLY__: String(edition === 'local') } });
+    define: { __PLANNER_LOCAL_ONLY__: String(edition === 'local'), 'import.meta.url': 'undefined' } });
 }
+await buildBackupWorker('dist-electron/backup-worker.cjs');
 
 await mkdir('dist-electron/pdf-assets', { recursive: true });
 await bundle({ entryPoints: ['src/capture/documents/pdf-preload.ts'], outfile: 'dist-electron/pdf-preload.cjs', platform: 'node', format: 'cjs', target: 'node24', bundle: true, external: ['electron'] });

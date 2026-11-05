@@ -32,12 +32,12 @@ describe('conversational edit instructions', () => {
       { role: 'assistant', text: '哪条？' },
     ];
     const messages = commandMessages({ blocks: [{ id: 'block-1', title: '去资料室取申请材料' }] }, '去资料室取申请材料', history);
-    expect(messages).toHaveLength(4);
+    expect(messages).toHaveLength(5);
     expect(messages[0]!.content).toContain(conversationEditInstructions);
     expect(messages[0]!.content).toContain(titleEditInstructions);
     expect(messages[0]!.content).toContain('当前短答是在补全同一次请求');
     expect(messages[0]!.content).toContain('历史里已执行、已撤销、已取消、已拒绝或被新话题取代的操作不得重新执行');
-    expect(messages.slice(1,3)).toEqual(history.map(({role,text})=>({role,content:text})));
+    expect(messages.slice(2,4)).toEqual(history.map(({role,text})=>({role,content:text})));
     expect(JSON.parse(messages.at(-1)!.content as string)).toMatchObject({ userCommand: '去资料室取申请材料' });
   });
 

@@ -1,6 +1,7 @@
+import { LedgerContextIntentSchema, expandLedgerDetailIds, initialLedgerDetailIds, referencedLedgerEntries } from '../ai/ledger-context-details';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { hasCommandAttachments, ImportSourceRequestSchema, AnalyzeSourceRequestSchema, CommandRequestSchema, CommandIntentSchema, CourseImportRequestSchema, SaveSettingsRequestSchema, WorkflowReceiptSchema, SourceSchema, CandidateSchema, InstantSchema, type PlannerService, type Source, type ApiResult, type AnalysisResult, type CommandResult, type CourseImportResult, type Settings, type WorkflowReceipt, type ImportSourceRequest, type AnalyzeSourceRequest, type CommandRequest, type CourseImportRequest } from '../shared/contracts';
+import { commandImages, hasCommandAttachments, ImportSourceRequestSchema, AnalyzeSourceRequestSchema, CommandRequestSchema, CommandIntentSchema, CourseImportRequestSchema, SaveSettingsRequestSchema, WorkflowReceiptSchema, SourceSchema, CandidateSchema, InstantSchema, type PlannerService, type Source, type ApiResult, type AnalysisResult, type CommandResult, type CourseImportResult, type Settings, type WorkflowReceipt, type ImportSourceRequest, type AnalyzeSourceRequest, type CommandRequest, type CourseImportRequest } from '../shared/contracts';
 import { type Repository, type StoredState, newEntity, findEntity, records, updateEntity } from '../storage/repository';
 import { automaticBackup } from '../storage/backups';
 import { nowInstant } from '../domain/time';
@@ -9,6 +10,7 @@ import { completeJson, safeError, WorkflowError } from '../ai/deepseek';
 import { ExtractionSchema } from '../ai/schemas';
 import { extractionMessages, commandMessages, courseMessages } from '../ai/prompts';
 import { buildCommandContext, validateCommandReferences } from '../ai/commands';
+import { canUseCompactLedgerRoute, compactLedgerRouteMessages, LedgerRouteSchema } from '../ai/ledger-routing';
 import { groundTimedCommand } from '../ai/timed-commands';
 import { groundResourceCommand, selectedCommandResources } from '../ai/resource-commands';
 import { commandMutationReply } from './command-reply';
@@ -47,13 +49,14 @@ export function createController(options: ControllerOptions) {
     const promise = (async (): Promise<ApiResult<T>> => { try { return { ok: true, data: await work(`workflow:${hash(id)}`, fingerprint) }; } catch (error) { return { ok: false, error: safeError(error) }; } finally { (options.automaticBackup ?? automaticBackup)(repository); } })();
     running.set(id, { fingerprint, promise }); void promise.finally(() => running.delete(id)); return promise;
   }
+  function requireImageModel(modelName: string) {
+    const modalities = options.getModelInputModalities?.(modelName);
+    if (modalities && !modalities.includes('image')) throw new WorkflowError('VALIDATION', '当前模型不支持图片输入，请在设置中选择支持图片的模型后重试；原始图片已保留');
+  }
   async function model<T>(schema: z.ZodType<T>, messages: Parameters<typeof completeJson>[0]['messages'], operationId: string, purpose: 'source' | 'command' | 'courses', stage: '命令理解' | '账本解析' | '来源分析' | '课表识别' = purpose === 'source' ? '来源分析' : purpose === 'courses' ? '课表识别' : '命令理解') {
     const request = async () => {
       const settings = planner.snapshot().settings;
-      const modalities = options.getModelInputModalities?.(settings.model);
-      if (modalities && !modalities.includes('image') && messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'))) {
-        throw new WorkflowError('VALIDATION', '当前模型不支持图片输入，请在设置中选择支持图片的模型后重试；原始图片已保留');
-      }
+      if (messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'))) requireImageModel(settings.model);
       try {
         const result = await completeJson({ key: await options.getApiKey(), settings, autoQuote: options.getPriceQuote?.(settings.model, settings.pricingCurrency), messages, schema, operationId: `request:${hash(operationId)}:${randomUUID()}`, purpose, now: now(), fetch: options.fetch, onUsage: usage => repository.addUsage(usage) });
         return result.value;
@@ -148,9 +151,17 @@ export function createController(options: ControllerOptions) {
         const request = CommandRequestSchema.parse(input); const prior = repository.transact(state => receipt(state, id, fingerprint));
         if (prior && prior.kind !== 'command') throw new WorkflowError('CONFLICT', '操作类型不匹配');
         if (prior?.result && prior.result.mutationResult?.status !== 'preview') return prior.result;
-        const context = { ...buildCommandContext(planner.snapshot(), request, now()), currentUiDomain: request.domain ?? 'calendar',
-          availableServices: { ledger: !!options.ledger }, currentLedgerView: request.domain === 'ledger' ? request.ledgerView : undefined };
-        let intent = prior?.intent ?? await model(CommandIntentSchema, commandMessages(context, request.text, request.history, request.image, request), input.operationId, 'command');
+        const buildCalendarContext = () => ({ ...buildCommandContext(planner.snapshot(), request, now()), currentUiDomain: request.domain ?? 'calendar',
+          availableServices: { ledger: !!options.ledger }, currentLedgerView: request.domain === 'ledger' ? request.ledgerView : undefined });
+        let fullContext: ReturnType<typeof buildCalendarContext> | undefined;
+        const calendarContext = () => fullContext ??= buildCalendarContext();
+        let compactIntent: { kind: 'ledger'; reply: string } | undefined;
+        if (!prior?.intent && options.ledger && canUseCompactLedgerRoute(request)) {
+          if ([request, ...request.history].some(turn => commandImages(turn).length)) requireImageModel(planner.snapshot().settings.model);
+          const route = await model(LedgerRouteSchema, compactLedgerRouteMessages(request), input.operationId, 'command');
+          if (route.kind === 'ledger') compactIntent = { kind: 'ledger', reply: route.reply || '交由账本处理' };
+        }
+        let intent = prior?.intent ?? compactIntent ?? await model(CommandIntentSchema, commandMessages(calendarContext(), request.text, request.history, request.image, request), input.operationId, 'command');
         // Attachments can answer a pending textual request, but cannot authorize a fresh action.
         const previousQuestion = request.history.at(-1); const previousUser = request.history.at(-2);
         const pendingTextRequest = previousQuestion?.role === 'assistant' && previousQuestion.outcome?.phase === 'clarification'
@@ -158,7 +169,10 @@ export function createController(options: ControllerOptions) {
         if (hasCommandAttachments(request) && !request.text && !pendingTextRequest && intent.kind !== 'query' && intent.kind !== 'clarification') {
           intent = { kind: 'clarification', reply: '已收到附件。', questions: ['希望我解释附件内容、根据附件记账，还是安排日历事项？'] };
         }
-        if (!prior?.intent) intent = groundResourceCommand(groundTimedCommand(intent, request, context.now), context, planner.snapshot());
+        if (!prior?.intent && intent.kind !== 'ledger') {
+          const context = calendarContext();
+          intent = groundResourceCommand(groundTimedCommand(intent, request, context.now), context, planner.snapshot());
+        }
         if (intent.kind === 'ledger') {
           const ledger = options.ledger;
           if (!ledger) throw new WorkflowError('VALIDATION', '账本服务尚未连接，请重新打开应用');
@@ -167,7 +181,21 @@ export function createController(options: ControllerOptions) {
           const defaultQueryMonth = request.domain === 'ledger' ? request.ledgerView?.month ?? currentMonth : currentMonth;
           const snapshot = ledger.snapshot(defaultQueryMonth);
           const ledgerView = ledgerContext(snapshot, request, now());
-          const proposal: z.infer<typeof LedgerCommandProposalSchema> = prior?.ledgerProposal ?? { intent: await model(LedgerIntentSchema, ledgerMessages(ledgerView, request), `${input.operationId}:ledger`, 'command', '账本解析'), revision: snapshot.revision };
+          const readLedgerIntent = async (): Promise<z.infer<typeof LedgerIntentSchema>> => {
+            const known = new Set(ledgerView.entries.map(entry => entry.id));
+            const details = new Set(initialLedgerDetailIds(ledgerView));
+            for (let round = 0; round < 3; round++) {
+              const value = await model(LedgerContextIntentSchema, ledgerMessages(ledgerView, request, [...details]), `${input.operationId}:ledger:${round}`, 'command', '账本解析');
+              const requested = value.kind === 'read_entries' ? value.ids : referencedLedgerEntries(value);
+              if (requested.some(id => !known.has(id))) throw new WorkflowError('AI_RESPONSE', '未找到提案关联的原账目，请提供日期或项目');
+              const missing = expandLedgerDetailIds(ledgerView, requested).filter(id => !details.has(id));
+              if (value.kind !== 'read_entries' && !missing.length) return value;
+              if (!missing.length || round === 2) return { kind: 'clarification', question: '尚未能根据原记录确定这次操作，账目未保存。请补充需要处理的日期或项目。' };
+              for (const id of missing) details.add(id);
+            }
+            throw new WorkflowError('AI_RESPONSE', '账目详情尚未核对，请重新查询');
+          };
+          const proposal: z.infer<typeof LedgerCommandProposalSchema> = prior?.ledgerProposal ?? { intent: await readLedgerIntent(), revision: snapshot.revision };
           // Resolve the visible ledger range once, so a retried query stays on the
           // same month. Calendar selection never changes a transaction's date.
           if (proposal.intent.kind === 'query' && proposal.intent.detail !== 'loans' && !proposal.intent.query.month && !proposal.intent.query.from && !proposal.intent.query.to) {
@@ -226,6 +254,7 @@ export function createController(options: ControllerOptions) {
           repository.transact(state => save(state,id,fingerprint,{kind:'command',intent,result,ledgerProposal:proposal}));
           return result;
         }
+        const context = calendarContext();
         // A saved intent passed this check before persistence. Its target may now be deleted
         // by its own committed operation; PlannerService replays the durable exact result.
         if (intent.kind === 'mutate' && !prior?.intent) validateCommandReferences(intent.mutations, context);

@@ -1,3 +1,4 @@
+import { expandCaptureTable } from './request-wire';
 import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -40,7 +41,9 @@ function response(candidates: CaptureCandidate[]) {
     usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
 }
 function input(request?: RequestInit): Input {
-  return JSON.parse(JSON.parse(String(request?.body)).messages.find((message: { role: string }) => message.role === 'user').content[0].text);
+  const value = JSON.parse(JSON.parse(String(request?.body)).messages.find((message: { role: string }) => message.role === 'user').content[0].text);
+  value.existingCandidates = expandCaptureTable(value.existingCandidates);
+  return value;
 }
 function options(f: ReturnType<typeof fixture>) { return { store: f.store, repository: f.repository, getApiKey: async () => 'synthetic', canContinue: () => true }; }
 
@@ -57,6 +60,22 @@ function tableBatch(f: ReturnType<typeof fixture>) {
 }
 
 describe('QQ batch event evidence and incremental candidate application', () => {
+  it.each([true, false])('grounds a separate registration deadline only inside the quoted supplement (%s)', async citedDeadline => {
+    const f = fixture(), meeting = '本周日晚上举行讲座，具体钟点另行通知', invitation = '请报名参加讲座', cutoff = '报名截止到本周六24：00';
+    f.message('notice', meeting); f.message('registration', invitation + '。' + cutoff, 1);
+    await analyzeCapture({ ...options(f), batch: f.seal(), fetch: async (_url, request) => {
+      const [primary, supplement] = input(request).units;
+      return response([extracted(primary!.id, meeting, {
+        eventStart: '2026-10-25', deadline: { date: '2026-10-24', time: null },
+        temporalEvidence: [{ field: 'eventStart', basis: 'relative', quote: meeting }, { field: 'deadline', basis: 'relative', quote: cutoff }],
+        supportingSources: [{ sourceId: supplement!.id, quote: citedDeadline ? cutoff : invitation }],
+      })]);
+    } });
+    expect(f.repository.snapshot().candidates[0]).toMatchObject({ eventStart: null,
+      deadline: citedDeadline ? { date: '2026-10-24', time: null } : null,
+      temporalEvidence: expect.arrayContaining([{ field: 'eventStart', basis: 'relative', quote: meeting }]) });
+  });
+
   it('keeps a fire-safety image and its following text as two actual sources of one candidate', async () => {
     const f = fixture();
     const imageMessage = f.store.ingest([{ accountId: '100', groupId: '200', messageId: 'safety-image', sentAt: at, importedAt: at,
@@ -70,12 +89,12 @@ describe('QQ batch event evidence and incremental candidate application', () => 
       expect(sent.units).toHaveLength(1);
       if (calls === 1) {
         const text = sent.units[0]!;
-        expect(text).toMatchObject({ messageId: textMessage, attachmentId: null });
+        expect(text).toMatchObject({ messageId: 'm1', attachmentId: null });
         return response([extracted(text.id, text.text, { title: '遵守电动车及宿舍消防安全规定', action: '遵守通知中的消防安全规定' })]);
       }
       const image = sent.units[0]!;
-      expect(image.messageId).toBe(imageMessage); expect(image.attachmentId).not.toBeNull();
-      expect(sent.existingCandidates[0]!.id).toBe(f.repository.snapshot().candidates[0]!.id);
+      expect(image.messageId).toBe('m1'); expect(image.attachmentId).not.toBeNull();
+      expect(sent.existingCandidates[0]!.id).toBe('c1');
       return response([extracted(image.id, '禁止电动车进入宿舍充电', { title: '遵守电动车及宿舍消防安全规定', action: '禁止电动车进入宿舍充电',
         relation: { kind: 'supplement', candidateId: sent.existingCandidates[0]!.id } })]);
     } });
@@ -116,14 +135,14 @@ describe('QQ batch event evidence and incremental candidate application', () => 
       calls++; const sent = input(request);
       if (calls === 1) {
         expect(sent.units).toHaveLength(1);
-        expect(sent.units[0]).toMatchObject({ messageId: followup, attachmentId: null });
+        expect(sent.units[0]).toMatchObject({ messageId: 'm1', attachmentId: null });
         return response([extracted(sent.units[0]!.id, sent.units[0]!.text, {
           action: '携带校园卡领取奖品', conditions: ['携带校园卡'],
         })]);
       }
       expect(f.repository.snapshot().candidates).toHaveLength(1);
       expect(sent.existingCandidates).toHaveLength(1);
-      expect(sent.existingCandidates[0]!.id).toBe(f.repository.snapshot().candidates[0]!.id);
+      expect(sent.existingCandidates[0]!.id).toBe('c1');
       expect(sent.existingCandidates[0]!.id).not.toMatch(/^qq-stage:/);
       expect(sent.units).toHaveLength(calls === 2 ? 30 : 1);
       expect(sent.units.every(unit => unit.attachmentId !== null && unit.messageId !== followup)).toBe(true);
@@ -146,11 +165,11 @@ describe('QQ batch event evidence and incremental candidate application', () => 
     await expect(analyzeCapture({ ...options(f), batch, fetch: async (_url, request) => {
       calls++; const sent = input(request);
       if (calls === 1) {
-        expect(sent.units).toHaveLength(1); expect(sent.units[0]).toMatchObject({ messageId: followup, attachmentId: null });
+        expect(sent.units).toHaveLength(1); expect(sent.units[0]).toMatchObject({ messageId: 'm1', attachmentId: null });
         return response([extracted(sent.units[0]!.id, sent.units[0]!.text, { action: '携带校园卡领取奖品', conditions: ['携带校园卡'] })]);
       }
-      savedId = sent.existingCandidates[0]!.id;
-      expect(savedId).toBe(f.repository.snapshot().candidates[0]!.id);
+      savedId = f.repository.snapshot().candidates[0]!.id;
+      expect(sent.existingCandidates[0]!.id).toBe('c1');
       expect(savedId).not.toMatch(/^qq-stage:/);
       expect(sent.units.every(unit => unit.attachmentId !== null)).toBe(true);
       if (calls === 2) {
@@ -167,7 +186,7 @@ describe('QQ batch event evidence and incremental candidate application', () => 
     f.reopen(); f.store.retryBatch(batch.id);
     await analyzeCapture({ ...options(f), batch: f.store.claimBatch()!, fetch: async (_url, request) => {
       calls++; const sent = input(request);
-      expect(sent.units).toHaveLength(1); expect(sent.existingCandidates[0]!.id).toBe(savedId);
+      expect(sent.units).toHaveLength(1); expect(sent.existingCandidates[0]!.id).toBe('c1');
       const page = sent.units[0]!;
       expect(page.attachmentId).not.toBeNull(); expect(page.text).toContain('第 31 页'); expect(page.messageId).not.toBe(followup);
       return response([extracted(page.id, page.text, { relation: { kind: 'supplement', candidateId: savedId } })]);

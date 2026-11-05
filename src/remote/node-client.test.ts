@@ -54,7 +54,7 @@ describe('native Node remote transport',()=>{
     expect(f.store.write).not.toHaveBeenCalled();f.client.close();
   });
   it.each(REMOTE_READ_METHODS)('recognizes the %s read RPC despite its POST transport and never retries it',async method=>{
-    const input=method==='ledgerExportData'?{format:'json'}:method==='restorePreview'?{content:'synthetic backup'}:undefined;
+    const input=method==='ledgerExportData'?{format:'json'}:method==='restorePreview'?{content:'synthetic backup'}:method==='changes'?{cursor:{streamId:'11111111-1111-4111-8111-111111111111',revision:0}}:undefined;
     const f=setup(path=>{if(path.endsWith('/session'))return json(session);throw Error('synthetic dropped read');});
     await expect(f.client.rpc(method,input)).rejects.toMatchObject({status:0,message:'资料读取未完成，请检查连接后刷新'});
     expect(f.fetcher).toHaveBeenCalledTimes(2);

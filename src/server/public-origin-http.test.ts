@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +9,7 @@ import { RemoteState } from './state';
 
 const primary = 'https://private.example.test', publicOrigin = 'https://calendar.example.test';
 const cleanup: (() => Promise<void>)[] = [];
-afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
+afterEach(async () => { vi.restoreAllMocks(); for (const close of cleanup.splice(0).reverse()) await close(); });
 async function setup(overrides: Partial<Pick<RemoteHttpOptions, 'publicOrigin' | 'trustLoopbackProxy' | 'publicRateLimits'>> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'calendar-public-origin-'));
   cleanup.push(async () => { rmSync(root, { recursive: true, force: true }); });
@@ -45,6 +45,26 @@ async function setup(overrides: Partial<Pick<RemoteHttpOptions, 'publicOrigin' |
 }
 
 describe('explicit public HTTPS origin', () => {
+  it('exposes only backup progress to paired public devices while keeping management status private', async () => {
+    const f = await setup(), device = await f.pair(publicOrigin);
+    expect((await f.call(publicOrigin, '/api/v1/backup/status')).status).toBe(401);
+    const status = f.service.status();
+    const enriched = { ...status, backup: { ...status.backup, directory: 'synthetic-private-backup-path', rawError: 'synthetic-private-error', storageBytes: 123456 } };
+    vi.spyOn(f.service, 'status').mockReturnValue(enriched);
+    const response = await f.call(publicOrigin, '/api/v1/backup/status', { headers: device.headers });
+    expect(response.status).toBe(200); expect(response.headers.get('cache-control')).toBe('no-store');
+    const result = await response.json();
+    expect(result).toEqual({ status: status.backup.status, lastSuccessAt: status.backup.lastSuccessAt,
+      pending: status.backup.pending, pendingSince: status.backup.pendingSince, running: status.backup.running });
+    expect(Object.keys(result).sort()).toEqual(['lastSuccessAt', 'pending', 'pendingSince', 'running', 'status']);
+    expect(JSON.stringify(result)).not.toContain('synthetic-private');
+    expect((await f.call(publicOrigin, '/api/v1/status', { headers: device.headers })).status).toBe(404);
+    const write = await f.call(publicOrigin, '/api/v1/backup/status', { method: 'POST', headers: device.headers, body: '{}' });
+    expect(write.status).toBe(405); expect(write.headers.get('allow')).toBe('GET');
+    f.state.revoke(device.session.device.id);
+    expect((await f.call(publicOrigin, '/api/v1/backup/status', { headers: device.headers })).status).toBe(401);
+  });
+
   it('shares one data service across exact hosts while rejecting mixed origins and unknown hosts', async () => {
     const f = await setup(), desktop = await f.pair(), phone = await f.pair(publicOrigin);
     expect(phone.session.identity).toEqual(desktop.session.identity);

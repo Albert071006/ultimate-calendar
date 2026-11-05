@@ -22,7 +22,7 @@ function desktop() {
   } as unknown as DesktopAPI;
 }
 const clientOnly = (api: DesktopAPI): PlannerClient =>
-  Object.fromEntries(PLANNER_CLIENT_METHODS.map(method => [method, api[method]])) as PlannerClient;
+  Object.fromEntries(PLANNER_CLIENT_METHODS.map(method => [method, api[method]])) as unknown as PlannerClient;
 
 it('renders the planner from a data client alone and hides host-only pages', async () => {
   const api = desktop();

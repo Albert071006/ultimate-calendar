@@ -78,7 +78,7 @@ describe('private AI configuration HTTP contract', () => {
     const saved = await fixture.call(endpoint, { method: 'PUT', headers, body: JSON.stringify({ identity: session.identity, expectedRevision: null, apiKey: `  ${firstKey}\n` }) });
     expect(saved.status).toBe(200); const result = await saved.json();
     expect(result).toMatchObject({ ok: true, configuration: { configured: true, editable: true, source: 'managed', revision: expect.any(String) } });
-    expect(await fixture.credentials.getApiKey()).toBe(firstKey); expect(events).toEqual([{ reason: 'key' }]);
+    expect(await fixture.credentials.getApiKey()).toBe(firstKey); expect(events).toEqual([{ reason: 'key', domains: ['key'], cursor: fixture.service.snapshot().cursor }]);
     expect(await (await fixture.call('/api/v1/session', { headers })).json()).toMatchObject({ aiConfigured: true });
     const snapshot = await fixture.call('/api/v1/rpc/snapshot', { method: 'POST', headers, body: JSON.stringify({ identity: session.identity, requestId: 'configured-snapshot' }) });
     expect(await snapshot.json()).toMatchObject({ ok: true, data: { keyStatus: { configured: true, sessionOnly: false } } });
@@ -146,7 +146,7 @@ describe('private AI configuration HTTP contract', () => {
     publicResponses.push(await (await fixture.call('/api/v1/session', { headers })).text());
     publicResponses.push(await (await fixture.call('/api/v1/status', { headers })).text());
     publicResponses.push(await (await fixture.call('/api/v1/rpc/snapshot', { method: 'POST', headers, body: JSON.stringify({ identity: session.identity, requestId: 'privacy-snapshot' }) })).text());
-    fixture.service.backup(); await fixture.close();
+    await fixture.service.backup(); await fixture.close();
     function walk(directory: string): string[] { return readdirSync(directory).flatMap(name => { const path = join(directory, name); return statSync(path).isDirectory() ? walk(path) : [path]; }); }
     const persisted = walk(fixture.folder).filter(path => path !== join(fixture.folder, 'ai-credentials.json'));
     for (const key of [firstKey, secondKey]) {

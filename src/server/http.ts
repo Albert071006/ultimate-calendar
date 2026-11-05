@@ -8,12 +8,14 @@ import { z } from 'zod';
 import { LEDGER_API_HEADER, LEDGER_API_VERSION } from '../shared/ledger-compatibility';
 import { AI_SETTINGS_HEADER, AI_SETTINGS_VERSION, legacyAiSettingsResult } from '../shared/ai-reasoning';
 import { PROFILE_SETTINGS_HEADER, PROFILE_SETTINGS_VERSION, legacyProfileSettingsResult } from '../shared/profile-settings';
+import { PLANNER_SYNC_HEADER, PLANNER_SYNC_VERSION, legacyPlannerSyncResult } from '../shared/planner-sync';
 import { PairRequestSchema, RemoteMethodSchema, RemoteRequestSchema, RemoteSessionSchema, type RemoteDevice } from '../shared/remote';
 import type { RemoteService } from './service';
 import { RemoteFault } from './state';
 import { DistilledRequestSchema } from '../shared/distilled';
 import { MAX_CLOUD_EXPORT_WIRE_BYTES } from '../shared/cloud-management';
 import { MAX_AI_KEY_SYNC_BYTES } from '../shared/ai-key-sync';
+import { BackupProgressSchema } from '../shared/backup-progress';
 
 export interface RemoteHttpContext { device: RemoteDevice; csrfToken: string }
 export interface RemoteHttpOptions {
@@ -136,7 +138,8 @@ export function createRemoteHttpServer(options: RemoteHttpOptions) {
       const modernAiSettings = request.headers[AI_SETTINGS_HEADER.toLowerCase()] === AI_SETTINGS_VERSION;
       const modernProfileSettings = request.headers[PROFILE_SETTINGS_HEADER.toLowerCase()] === PROFILE_SETTINGS_VERSION;
       const settingsResult = (method: string, result: unknown) => {
-        const compatible = modernAiSettings ? result : legacyAiSettingsResult(method, result);
+        const synced = request.headers[PLANNER_SYNC_HEADER.toLowerCase()] === PLANNER_SYNC_VERSION ? result : legacyPlannerSyncResult(method, result);
+        const compatible = modernAiSettings ? synced : legacyAiSettingsResult(method, synced);
         return modernProfileSettings ? compatible : legacyProfileSettingsResult(method, compatible);
       };
       const publicRequest = incomingOrigin === publicOrigin;
@@ -200,6 +203,10 @@ export function createRemoteHttpServer(options: RemoteHttpOptions) {
           throw new RemoteFault(405, '此接口只接受 GET、PUT 或 DELETE');
         }
         if (url.pathname === '/api/v1/status' && method === 'GET') { sendJson(response, 200, options.service.status()); return; }
+        if (url.pathname === '/api/v1/backup/status') {
+          if (method !== 'GET') { response.setHeader('Allow', 'GET'); throw new RemoteFault(405, '此接口只接受 GET'); }
+          sendJson(response, 200, BackupProgressSchema.parse(options.service.status().backup)); return;
+        }
         if (url.pathname === '/api/v1/logout' && method === 'POST') {
           options.service.state.revoke(session.device.id); await options.onRevokeDevice?.(session.device.id);
           response.setHeader('Set-Cookie', cookie('', 0)); sendJson(response, 200, { ok: true }); return;

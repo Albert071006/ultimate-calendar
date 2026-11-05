@@ -1,3 +1,4 @@
+import { expandCaptureTable } from './request-wire';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -35,7 +36,9 @@ function options(f: ReturnType<typeof fixture>) {
   return { store: f.store, repository: f.repository, batch: f.batch, getApiKey: async () => 'synthetic', canContinue: () => true };
 }
 function input(request?: RequestInit): Input {
-  return JSON.parse(JSON.parse(String(request?.body)).messages.find((message: { role: string }) => message.role === 'user').content[0].text);
+  const value = JSON.parse(JSON.parse(String(request?.body)).messages.find((message: { role: string }) => message.role === 'user').content[0].text);
+  value.existingCandidates = expandCaptureTable(value.existingCandidates);
+  return value;
 }
 function extracted(unit: Pick<Unit, 'id' | 'text'>, support: Pick<Unit, 'id' | 'text'>[] = [], changes: Partial<ExtractedCandidate> = {}): Extracted {
   return { title: '确认作品参赛要求', action: '确认四分钟短片是否符合参赛时长要求', benefit: '', benefitKind: 'unknown', potentialBenefit: '',
@@ -67,6 +70,8 @@ describe('passive group questions in durable capture analysis', () => {
     expect(f.repository.snapshot()).toMatchObject({ candidates: [], sources: [] });
     expect(f.repository.snapshot().tokenUsage).toHaveLength(1);
     expect(f.store.batchMessages(f.batch.id).map(message => message.text)).toEqual(ruleDialogue);
+    const originals = prepareAnalysis(f.store, f.batch).units;
+    paid = { ...paid!, sourceIds: [originals[0]!.id], supportingSources: originals.slice(1).map(unit => ({ sourceId: unit.id, quote: unit.text })) };
     expect(checkpoint(f).completed[0]!.value.candidates).toEqual([paid]);
     expect(f.store.batch(f.batch.id)!.status).toBe('applied');
     f.reopen();

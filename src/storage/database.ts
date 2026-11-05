@@ -10,7 +10,9 @@ export function openDatabase(path: string, readOnly = false): sqlite.DatabaseSyn
     db.exec('PRAGMA busy_timeout=5000');
     if (!readOnly) {
       const v = db.prepare('PRAGMA user_version').get()!['user_version']; if (v !== 0 && v !== 1) throw Error('不支持的数据库版本');
-      db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON');
+      // A successful business commit must be durable even when independent
+      // exports are delayed or the background backup worker fails.
+      db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON');
     }
     return db;
   } catch (error) { db.close(); throw error; }

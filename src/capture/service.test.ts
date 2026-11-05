@@ -1,3 +1,4 @@
+import { EXTRACTOR_VERSION } from './documents';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -33,13 +34,32 @@ async function setup(fetcher: typeof fetch = async () => { throw Error('AI must 
   return { service, store, repository, send, actions };
 }
 describe('capture orchestration against real local OneBot websocket', () => {
+  it.each(['same-version', 'old-version', 'partial'] as const)('checks extraction cache even when bytes are already stored (%s)', async mode => {
+    const extract = vi.fn(async () => ({ parts: [{ locator: '正文', text: '新提取的完整正文' }], status: 'ready' as const, warnings: [] }));
+    const downloader = vi.fn(async () => { throw Error('Already downloaded'); });
+    const { service, store } = await setup(async () => successfulAnalysis(), { extract, downloader });
+    await service.configure({ ...store.config(), enabled: true, groupIds: ['200'] }); await waitFor(() => !service.busy());
+    const at = fromUnix(Date.now() / 1000 - 60)!;
+    const ids = ['cached', 'retry'].map(messageId => store.ingest([{ accountId: '100', groupId: '200', messageId, sentAt: at, text: '', attachments: [{ name: '合成.docx', kind: 'file' }] }], at).ids[0]!);
+    const attachments = ids.map(id => store.attachments(id)[0]!);
+    for (const attachment of attachments) store.putAttachment(attachment.id, Buffer.from('synthetic document bytes'));
+    store.saveExtraction(attachments[0]!.id, { extractorVersion: mode === 'old-version' ? 'old-synthetic-version' : EXTRACTOR_VERSION,
+      error: mode === 'partial' ? '有部分片段未读取' : null,
+      chunks: [{ ordinal: 0, location: '正文', text: '已缓存的完整正文', imageDataUrl: null, status: 'ready', error: null }] });
+    await service.configure({ ...store.config(), analysisEnabled: true }); await waitFor(() => !service.busy());
+    service.action({ action: 'analyze' }); await waitFor(() => !service.busy());
+    expect(downloader).not.toHaveBeenCalled();
+    expect(extract).toHaveBeenCalledTimes(mode === 'same-version' ? 0 : 1);
+    expect(store.listChunks(attachments[1]!.id, { offset: 0, limit: 1 }).items[0]!.text).toBe(mode === 'same-version' ? '已缓存的完整正文' : '新提取的完整正文');
+  });
+
   it('lets another group collected during a long attachment run before the next attachment request', async () => {
     const order: string[] = [];
     let collectNotice: (() => void) | undefined;
     const { service, store } = await setup(async (_url, request) => {
       const messages = JSON.parse(String(request?.body)).messages;
       const input = JSON.parse(messages.find((message: { role: string }) => message.role === 'user').content[0].text);
-      order.push(input.units[0].groupId);
+      order.push(input.units[0].text.startsWith('合成资料') ? '200' : '300');
       if (order.length === 1) collectNotice!();
       return successfulAnalysis();
     }, {}, request => request.action === 'get_group_list'
@@ -79,6 +99,22 @@ describe('capture orchestration against real local OneBot websocket', () => {
     await waitFor(() => !service.busy() && store.batch(rejected.id)?.status === 'applied');
     expect(service.snapshot()).toMatchObject({ error: null, analysisWaitingForKey: false, config: { analysisEnabled: true } });
     expect(store.batch(unknown.id)?.status).toBe('uncertain'); expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+  it('recovers a persisted unsent sync timeout once after a successful sync of the same key', async () => {
+    const fetcher = vi.fn(async () => successfulAnalysis());
+    const { service, store } = await setup(fetcher);
+    await service.configure({ ...store.config(), enabled: true, groupIds: ['200'] }); await waitFor(() => !service.busy());
+    const sentAt = fromUnix(Date.now() / 1000 - 20)!;
+    store.ingest([{ accountId: '100', groupId: '200', messageId: 'legacy-preflight', text: '合成通知', sentAt }], sentAt);
+    store.saveConfig({ ...store.config(), analysisEnabled: true });
+    const batch = store.sealBatches({ force: true })[0]!; store.claimBatch();
+    store.failBatch(batch.id, '云端密钥同步暂未完成，未使用旧密钥；连接恢复后会自动重试'); store.pauseForCredentials('AUTH', batch.id);
+    expect(service.resumeAfterCloudKeySync()).toBe(true);
+    expect(service.resumeAfterCloudKeySync()).toBe(false);
+    expect(service.snapshot()).toMatchObject({ analysisWaitingForKey: false, config: { analysisEnabled: true } });
+    expect(store.batch(batch.id)).toMatchObject({ status: 'pending', attempts: [] }); expect(fetcher).not.toHaveBeenCalled();
+    service.action({ action: 'analyze' }); await waitFor(() => !service.busy());
+    expect(store.batch(batch.id)?.status).toBe('applied'); expect(fetcher).toHaveBeenCalledTimes(1);
   });
   it('ignores duplicate revision callbacks when the worker lost its receipt and the new key was also rejected', async () => {
     const fetcher = vi.fn(async () => new Response('{}', { status: 401 }));
@@ -190,16 +226,16 @@ describe('capture orchestration against real local OneBot websocket', () => {
       const payload = JSON.parse(String(request?.body));
       const sent = JSON.parse(payload.messages.find((message: { role: string }) => message.role === 'user').content[0].text) as { units: { id: string; text: string }[] };
       groupSizes.push(sent.units.length);
-      if (groupSizes.length === 1) firstSourceId = sent.units[0]!.id;
+      if (groupSizes.length === 1) firstSourceId = sent.units.at(-1)!.id;
       else {
         expect(onPlannerChanged).toHaveBeenCalledTimes(1);
         expect(repository.snapshot().candidates).toHaveLength(1);
         expect(sent.units.every(unit => unit.id !== firstSourceId)).toBe(true);
       }
       const answer = { candidates: [{ title: '领取合成活动资料', action: '领取合成活动资料', benefit: '', benefitKind: 'unknown', potentialBenefit: '',
-        conditions: [], uncertainties: [], sourceIds: [firstSourceId], sourceQuote: sent.units[0]!.text, deadline: null, eventStart: null, eventEnd: null,
+        conditions: [], uncertainties: [], sourceIds: [groupSizes.length === 1 ? sent.units[0]!.id : firstSourceId], sourceQuote: sent.units[0]!.text, deadline: null, eventStart: null, eventEnd: null,
         location: '', temporalEvidence: [], relation: { kind: 'new', candidateId: null } }] };
-      if (groupSizes.length === 2) invalidAnswer = answer;
+      if (groupSizes.length === 2) invalidAnswer = { ...answer, candidates: answer.candidates.map(value => ({ ...value, sourceIds: [`invalid-wire-id:${firstSourceId}`] })) };
       return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer) }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
     });
     const { service, store, repository } = await setup(fetcher, { onPlannerChanged });

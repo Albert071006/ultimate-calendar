@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
 import { createRepository, type Repository } from './repository';
-import { automaticBackup, createBackup, restoreBackup } from './backups';
+import { automaticBackup, createBackup, flushAutomaticBackups, restoreBackup } from './backups';
 import { initializeBackupDirectory, readSpaceState, resolveBackupDirectory, saveSpacePolicy, writeSpaceState } from './space-policy';
 import { planBackupRetention, pruneManagedBackups } from './backup-retention';
 import { createRestoreManager } from '../electron/restore';
@@ -43,9 +43,10 @@ describe('central backup directory', () => {
     expect(resolveBackupDirectory(x.data)).toBe(shared);
     expect(readdirSync(shared)).toEqual([]);
   });
-  it('uses the central folder for automatic backup, rotation and direct restore safety backups', () => {
+  it('uses the central folder for automatic backup, rotation and direct restore safety backups', async () => {
     const x = fixture(), folder = initializeBackupDirectory(x.data, x.documents), repo = repository(x.data);
     automaticBackup(repo);
+    await flushAutomaticBackups(repo);
     expect(readdirSync(folder).filter(name => name.startsWith('auto-'))).toHaveLength(1);
     expect(existsSync(join(x.data, 'backups'))).toBe(false);
     const before = join(folder, 'manual.sqlite'); createBackup(repo, before);

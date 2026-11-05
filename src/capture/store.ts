@@ -74,6 +74,8 @@ const CredentialPauseSchema = z.strictObject({
   reason: z.enum(['AUTH', 'NO_API_KEY']),
   failure: z.strictObject({ batchId: IdSchema, fingerprint: z.string().regex(/^[a-f0-9]{64}$/) }).nullable(),
 });
+// Older collectors recorded a temporary cloud preflight failure as AUTH.
+const legacyCloudSyncTimeout = '云端密钥同步暂未完成，未使用旧密钥；连接恢复后会自动重试';
 const CredentialChangeSchema = z.strictObject({
   sourceId: z.string().regex(/^[a-f0-9]{64}$/), revision: z.string().uuid().nullable(), configured: z.boolean(),
 });
@@ -299,13 +301,15 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
     writeConfig({ ...active, analysisEnabled: false });
     return true;
   }
-  function resumeAfterCredentials(at: string): boolean {
+  function resumeAfterCredentials(at: string, trigger: 'key-change' | 'cloud-sync' = 'key-change'): boolean {
     const pause = credentialPause(); if (!pause) return false;
     const value = pause.failure ? batch(pause.failure.batchId) : null;
+    if (trigger === 'cloud-sync' && (pause.reason !== 'AUTH' || value?.error !== legacyCloudSyncTimeout
+      || value.attempts.length > 0 || value.result !== null || value.inputFingerprint !== null)) return false;
     // Exact saved failure only: manual changes, uncertain requests and cleaned sources never retry.
-    if (value?.status === 'failed' && digest(json(value)) === pause.failure!.fingerprint && !value.messageIds.some(id => !message(id) || message(id)!.deleted)) {
+    if (value?.status === 'failed' && digest(json(value)) === pause.failure!.fingerprint && value.messageIds.every(id => message(id)?.deleted === false)) {
       value.status = 'pending'; value.error = null; value.updatedAt = at; saveBatch(value);
-    }
+    } else if (trigger === 'cloud-sync') return false;
     writeConfig({ ...config(), analysisEnabled: true }); clearCredentialPause();
     return true;
   }
@@ -315,6 +319,10 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
     // Private local state: a user configuration or restored backup cannot grant automatic resume.
     pauseForCredentials(reason: 'AUTH' | 'NO_API_KEY', failedBatchId?: string) { return transaction(() => pauseForCredentials(reason, failedBatchId)); },
     resumeAfterCredentials(at = nowInstant()) { InstantSchema.parse(at); return transaction(() => resumeAfterCredentials(at)); },
+    resumeAfterCloudKeySync() {
+      if (!credentialPause()) return false;
+      return transaction(() => resumeAfterCredentials(nowInstant(), 'cloud-sync'));
+    },
     applyCredentialChange(input: z.infer<typeof CredentialChangeSchema>, at = nowInstant()) {
       const next = CredentialChangeSchema.parse(input); InstantSchema.parse(at);
       return transaction(() => {
@@ -515,8 +523,10 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
       InstantSchema.parse(at);
       return transaction(() => {
         const value = batch(id), result = value?.result;
+        const savedDetailRequest = result && typeof result === 'object' && !Array.isArray(result)
+          && Array.isArray(result.detailRequests) && result.detailRequests.length > 0 && value?.attempts.at(-1)?.status === 'succeeded';
         if (!value || value.status !== 'preparing' || !result || typeof result !== 'object' || Array.isArray(result)
-          || !Array.isArray(result.completed) || !result.completed.length || result.pendingResponse || result.final !== false
+          || !Array.isArray(result.completed) || !result.completed.length && !savedDetailRequest || result.pendingResponse || result.final !== false
           || value.attempts.at(-1)?.status === 'requesting') throw Error('仅已保存分片进度的准备中批次可让出队列');
         value.status = 'pending'; value.updatedAt = at; value.error = null; saveBatch(value); return value;
       });

@@ -150,7 +150,7 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
       </div>
       <div className="a2-ib-decide">
         {open && !snoozing && <>
-          <button className="ui-btn primary" disabled={busy} aria-label="接受事项" onClick={() => decide("acceptCandidate")}>{old ? "审阅并接受变更" : "接受"}{!mobile && <> <kbd>A</kbd></>}</button>
+          <button className="ui-btn primary" disabled={busy} aria-label="接受事项" onClick={() => decide("acceptCandidate")}>{busy ? "正在保存…" : old ? "审阅并接受变更" : "接受"}{!mobile && <> <kbd>A</kbd></>}</button>
           <button className={mobile ? "m-text-btn quiet" : "ui-btn"} disabled={busy} onClick={() => decide("ignoreCandidate")}>忽略{!mobile && <> <kbd>I</kbd></>}</button>
           <button className={mobile ? "m-text-btn quiet" : "ui-btn"} disabled={busy} onClick={() => setSnoozing(true)}>稍后{!mobile && <> <kbd>L</kbd></>}</button>
           <input aria-label="决定原因（可选）" value={reason} maxLength={2000} onChange={event => setReason(event.target.value)} placeholder={mobile ? "原因（可选）" : "原因（可选），例如：时间冲突、没兴趣"} />

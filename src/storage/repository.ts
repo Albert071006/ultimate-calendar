@@ -6,10 +6,12 @@ import { WorkflowReceiptSchema } from '../shared/contracts';
 import { openDatabase, initializeDatabase } from './database';
 import { nowInstant } from '../domain/time';
 import { validateRelationships } from '../domain/validation';
-import { automaticBackup } from './backups';
+import { automaticBackup, cancelAutomaticBackups } from './backups';
 import { normalizeLegacyRecurringSeries } from './legacy-recurring-series';
 import { describeJournal } from '../domain/journal-description';
 import { assignMissingColors } from '../domain/palette';
+import { createPlannerChangeLog } from './planner-sync';
+import type { PlannerChanges, PlannerCursor, PlannerPatch } from '../shared/contracts';
 
 const CancellationUndoBaselineSchema = z.array(z.strictObject({
   key: z.string().regex(/^[a-f0-9]{64}$/),
@@ -47,14 +49,20 @@ export function updateEntity(state: StoredState, kind: EntityKind, id: string, v
   const old = findEntity(state, kind, id); if (!old) throw Error(`记录不存在：${kind}/${id}`);
   const next = EntitySchemas[kind].parse({ ...old, ...(values as object), id, version: old.version + 1, createdAt: old.createdAt, updatedAt: nowInstant() }); putEntity(state, kind, next); return next;
 }
+function journalSnapshot(state: StoredState) {
+  return state.journal.slice().reverse().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).slice(0, 100).map(({ details, undoExpected: _expected, cancellationUndoBaseline: _cancelBaseline, ...summary }) => ({ ...summary, ...describeJournal({ ...summary, details }) }));
+}
 export function stateSnapshot(state: StoredState): Snapshot {
   return SnapshotSchema.parse({ schemaVersion: 1, sources: state.entities.source, candidates: state.entities.candidate, tasks: state.entities.task, blocks: state.entities.block, goals: state.entities.goal, courses: state.entities.course, courseExceptions: state.entities.courseException, preferences: state.entities.preference, feedback: state.entities.feedback, settings: state.settings, journal: state.journal.slice().reverse().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).slice(0, 100).map(({ details, undoExpected: _expected, cancellationUndoBaseline: _cancelBaseline, ...summary }) => ({ ...summary, ...describeJournal({ ...summary, details }) })), tokenUsage: state.usage, keyStatus: { configured: false, sessionOnly: false } });
 }
 export function diffStates(before: StoredState, after: StoredState): PreviewDetail[] {
-  return kinds.flatMap(entity => [...new Set([...before.entities[entity], ...after.entities[entity]].map(e => e.id))].flatMap(id => {
-    const old = findEntity(before, entity, id) ?? null; const next = findEntity(after, entity, id) ?? null;
-    return JSON.stringify(old) === JSON.stringify(next) ? [] : [{ entity, id, before: old, after: next }];
-  }));
+  return kinds.flatMap(entity => {
+    const previous = new Map(before.entities[entity].map(value => [value.id, value])), current = new Map(after.entities[entity].map(value => [value.id, value]));
+    return [...new Set([...previous.keys(), ...current.keys()])].flatMap(id => {
+      const old = previous.get(id) ?? null, next = current.get(id) ?? null;
+      return JSON.stringify(old) === JSON.stringify(next) ? [] : [{ entity, id, before: old, after: next }];
+    });
+  });
 }
 export function summarize(details: PreviewDetail[]) { return details.map(d => { const record = d.after ?? d.before; return { entity: d.entity, id: d.id, action: d.before === null ? 'create' as const : d.after === null ? 'delete' as const : 'update' as const, beforeVersion: d.before?.version ?? null, afterVersion: d.after?.version ?? null, title: record && 'title' in record ? record.title : '' }; }); }
 
@@ -83,8 +91,8 @@ export function readDatabaseState(db: DatabaseSync): StoredState {
   state.schemaVersion = z.literal(1).parse(data.metadata.find(([id]) => id === 'schemaVersion')?.[1]);
   state.lastBackupAt = InstantSchema.nullable().parse(data.metadata.find(([id]) => id === 'lastBackupAt')?.[1]); return parseState(state);
 }
-function persistDiff(db: DatabaseSync, before: StoredState, after: StoredState) {
-  for (const d of diffStates(before, after)) {
+function persistDiff(db: DatabaseSync, before: StoredState, after: StoredState, details: PreviewDetail[]) {
+  for (const d of details) {
     if (d.after) db.prepare('INSERT INTO records(kind,id,payload) VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload').run(d.entity, d.id, JSON.stringify(d.after));
     else db.prepare('DELETE FROM records WHERE kind=? AND id=?').run(d.entity, d.id);
   }
@@ -100,6 +108,8 @@ export interface Repository {
   readonly path: string;
   read(): StoredState;
   snapshot(): Snapshot;
+  cursor(): PlannerCursor;
+  changes(cursor: PlannerCursor): PlannerChanges;
   transact<T>(work: (state: StoredState) => T): T;
   writeInternal(request: { operationId: string; changes: InternalChange[]; usage?: TokenUsage; journal?: boolean }): { entities: Entity[] };
   saveSettings(settings: SettingsInput): Snapshot['settings'];
@@ -111,16 +121,38 @@ export interface Repository {
   /** Internal database callback shares the planner transaction; never exposed to renderer IPC. */
   replaceState(state: StoredState, inTransaction?: (db: DatabaseSync) => void): void;
 }
-export function createRepository(path: string, options: { automaticBackup?(repository: Repository): void } = {}): Repository {
+export function createRepository(path: string, options: { automaticBackup?(repository: Repository): void; sanitizeSync?(patch: PlannerPatch): PlannerPatch } = {}): Repository {
   const backup = options.automaticBackup ?? automaticBackup;
   const db = openDatabase(path); let closed = false;
   try { initializeDatabase(db, () => initializeDefaults(db)); } catch (error) { db.close(); throw error; }
-  const read = () => readDatabaseState(db);
+  const sync = createPlannerChangeLog(db, options.sanitizeSync);
+  // The collector may commit through another SQLite connection between SELECTs.
+  // Read records, settings and the revision in one WAL snapshot; reuse an existing
+  // write transaction when called by a mutation instead of starting a nested one.
+  function consistentRead<T>(work: () => T): T {
+    if (db.isTransaction) return work();
+    db.exec('BEGIN');
+    try { const value = work(); db.exec('COMMIT'); return value; }
+    catch (error) { db.exec('ROLLBACK'); throw error; }
+  }
+  const read = () => consistentRead(() => readDatabaseState(db));
   const repository: Repository = {
-    path, read, snapshot: () => stateSnapshot(read()),
+    path, read, cursor: sync.cursor, changes: cursor => consistentRead(() => sync.changes(cursor)),
+    snapshot: () => consistentRead(() => ({ ...stateSnapshot(read()), cursor: sync.cursor() })),
     transact(work) {
       db.exec('BEGIN IMMEDIATE'); let result;
-      try { const state = read(); const before = structuredClone(state); result = work(state); assignMissingColors(state, nowInstant().slice(0, 10)); parseState(state); persistDiff(db, before, state); db.exec('COMMIT'); }
+      try {
+        const state = read(); const before = structuredClone(state); result = work(state); assignMissingColors(state, nowInstant().slice(0, 10)); parseState(state);
+        const details = diffStates(before, state); persistDiff(db, before, state, details);
+        const oldUsage = new Map(before.usage.map(value => [value.id, JSON.stringify(value)])), nextUsage = new Set(state.usage.map(value => value.id));
+        const upserts = state.usage.filter(value => oldUsage.get(value.id) !== JSON.stringify(value)), deletedIds = before.usage.filter(value => !nextUsage.has(value.id)).map(value => value.id);
+        sync.append({ entities: details.map(value => ({ entity: value.entity, id: value.id, value: value.after })),
+          ...(JSON.stringify(before.settings) !== JSON.stringify(state.settings) ? { settings: state.settings } : {}),
+          ...(JSON.stringify(before.journal) !== JSON.stringify(state.journal) ? { journal: journalSnapshot(state) } : {}),
+          ...(upserts.length || deletedIds.length ? { usage: { upserts, deletedIds } } : {}),
+        });
+        db.exec('COMMIT');
+      }
       catch (error) { db.exec('ROLLBACK'); throw error; }
       return result;
     },
@@ -142,7 +174,7 @@ export function createRepository(path: string, options: { automaticBackup?(repos
     saveSettings(value) { const settings = SettingsSchema.parse(value); repository.transact(state => { state.settings = settings; }); backup(repository); return settings; },
     addUsage(value) { const usage = TokenUsageSchema.parse(value); repository.transact(state => { if (!state.usage.some(u => u.operationId === usage.operationId)) state.usage.push(usage); }); backup(repository); },
     claimReminders(values) { const reminders = values.map(r => ReminderSchema.parse(r)); return repository.transact(state => { const fresh = reminders.filter(r => !state.receipts.includes(r.id)); state.receipts.push(...fresh.map(r => r.id)); return fresh; }); },
-    close() { if (!closed) { db.close(); closed = true; } },
+    close() { if (!closed) { cancelAutomaticBackups(repository); db.close(); closed = true; } },
     vacuumInto(target) { db.prepare('VACUUM INTO ?').run(target); },
     estimatedBackupBytes() {
       const pages = Number(db.prepare('PRAGMA page_count').get()!['page_count']);
@@ -150,7 +182,7 @@ export function createRepository(path: string, options: { automaticBackup?(repos
       const size = Number(db.prepare('PRAGMA page_size').get()!['page_size']);
       return Math.max(0, pages - free) * size;
     },
-    replaceState(value, inTransaction) { const state = parseState(value); repository.transact(live => { Object.assign(live, state); inTransaction?.(db); }); },
+    replaceState(value, inTransaction) { const state = parseState(value); repository.transact(live => { Object.assign(live, state); sync.reset(); inTransaction?.(db); }); },
   };
   // Fail on corrupt/future/incompatible persisted records before returning a usable repository.
   // Records saved before belonging colors existed receive theirs once, durably, at open.

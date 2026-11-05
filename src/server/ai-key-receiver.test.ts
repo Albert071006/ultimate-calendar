@@ -162,7 +162,7 @@ describe('locally authorized encrypted AI key receivers', () => {
     outputs.push(JSON.stringify(events), JSON.stringify(fixture.service.snapshot()));
     outputs.push(await (await fixture.call('/api/v1/ai/config', { headers: device.headers })).text());
     outputs.push(await (await fixture.call('/api/v1/operations/key-sync', { headers: device.headers })).text());
-    fixture.service.backup(); await fixture.close();
+    await fixture.service.backup(); await fixture.close();
     const restarted = await setup({ directory: fixture.folder });
     const response = await restarted.call(endpoint, { method: 'POST', headers: device.headers, body: JSON.stringify(device.input()) });
     expect(response.status).toBe(200);
@@ -171,7 +171,7 @@ describe('locally authorized encrypted AI key receivers', () => {
     const walk = (folder: string): string[] => readdirSync(folder).flatMap(name => { const file = join(folder, name); return statSync(file).isDirectory() ? walk(file) : [file]; });
     for (const file of walk(fixture.folder)) for (const key of [keyA, keyB]) expect(readFileSync(file).includes(Buffer.from(key))).toBe(false);
     for (const output of outputs) for (const key of [keyA, keyB]) expect(output).not.toContain(key);
-    expect(events).toEqual([{ reason: 'key' }, { reason: 'key' }, { reason: 'key' }]);
+    expect(events).toEqual(Array.from({ length: 3 }, () => ({ reason: 'key', domains: ['key'], cursor: expect.objectContaining({ streamId: expect.any(String), revision: expect.any(Number) }) })));
   });
 
   it('binds encryption to identity, device, public key, revision and challenge, and rejects the wrong private key', async () => {
