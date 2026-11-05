@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs';
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,8 +11,50 @@ import { LedgerEntryDraftSchema } from '../shared/ledger';
 import { GoalInputSchema, TaskInputSchema } from '../shared/contracts';
 import { createSafeBackup } from './backup';
 import { createRemoteService } from './service';
+import { flushAutomaticBackups } from '../storage/backups';
+
+vi.mock('node:fs', { spy: true });
 
 describe('sanitized server backups and backup injection compatibility', () => {
+  it('does not publish or rotate a new export that fails full staged ledger validation', () => {
+    const root = mkdtempSync(join(tmpdir(), 'calendar-backup-staging-'));
+    const repository = createRepository(':memory:', { automaticBackup() {} }), ledger = createLedgerService(':memory:');
+    try {
+      const entry = LedgerEntryDraftSchema.parse({ id: 'synthetic-staging-entry', kind: 'expense', date: '2020-01-01', month: '2020-01', title: '虚构校验支出', category: '其他', amountCents: 100, personalCents: 100, cashflows: [{ accountId: 'alipay', deltaCents: -100 }] });
+      ledger.mutate({ operationId: 'synthetic-staging-write', expectedRevision: 0, changes: [{ type: 'putEntry', entry, expectedVersion: null, confirmDuplicate: false, note: '' }] });
+      const good = createSafeBackup({ repository, ledger, directory: root });
+      const invalid = ledger.exportJson(); invalid.entries[0]!.cashflows[0]!.deltaCents = -200;
+      const exportJson = vi.spyOn(ledger, 'exportJson').mockReturnValue(invalid);
+      try { expect(() => createSafeBackup({ repository, ledger, directory: root })).toThrow(); }
+      finally { exportJson.mockRestore(); }
+      expect(readdirSync(root)).toEqual([good.slice(good.lastIndexOf(process.platform === 'win32' ? '\\' : '/') + 1)]);
+    } finally { ledger.close(); repository.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+  it('reuses validation only for unchanged files and retains modified backups even when size and mtime match', () => {
+    const root = mkdtempSync(join(tmpdir(), 'calendar-backup-validation-'));
+    const repository = createRepository(join(root, 'data', 'planner.sqlite'), { automaticBackup: () => {} });
+    const ledger = createLedgerService(repository.path), directory = join(root, 'exports');
+    let restoreReads = () => {};
+    try {
+      const first = createSafeBackup({ repository, ledger, directory, now: new Date('2027-01-01T00:00:00Z') });
+      const original = readFileSync(first, 'utf8'), before = fs.statSync(first);
+      const readSpy = vi.spyOn(fs, 'readFileSync');
+      restoreReads = () => { readSpy.mockRestore(); };
+      readSpy.mockClear();
+      createSafeBackup({ repository, ledger, directory, now: new Date('2027-01-02T00:00:00Z') });
+      expect(readSpy.mock.calls.filter(call => call[0] === first)).toHaveLength(0);
+
+      const invalid = original.replace('"formatVersion":1', '"formatVersion":9');
+      expect(invalid.length).toBe(original.length);
+      fs.writeFileSync(first, invalid);
+      fs.utimesSync(first, before.atime, before.mtime);
+      expect(fs.statSync(first).size).toBe(before.size);
+      for (let day = 3; day <= 11; day++) createSafeBackup({ repository, ledger, directory, now: new Date(Date.UTC(2027, 0, day)) });
+      expect(readSpy.mock.calls.some(call => call[0] === first)).toBe(true);
+      expect(readFileSync(first, 'utf8')).toBe(invalid);
+      expect(readdirSync(directory).filter(name => name.startsWith('safe-auto-'))).toHaveLength(8);
+    } finally { restoreReads(); ledger.close(); repository.close(); rmSync(root, { recursive: true, force: true }); }
+  });
   it('exports formal planner and complete ledger fields without raw sources, quotes, hidden fingerprints or credentials', () => {
     const root = mkdtempSync(join(tmpdir(), 'calendar-safe-backup-')); const data = join(root, 'data'); mkdirSync(data);
     const repository = createRepository(join(data, 'planner.sqlite'), { automaticBackup: () => {} }); const planner = createPlanner(repository, { automaticBackup: () => {} }); const ledger = createLedgerService(repository.path);
@@ -41,12 +84,12 @@ describe('sanitized server backups and backup injection compatibility', () => {
     const overrideRepo = vi.fn(), overridePlanner = vi.fn(), overrideController = vi.fn();
     const overridden = createRepository(join(root, 'overridden.sqlite'), { automaticBackup: overrideRepo });
     try {
-      repository.saveSettings({}); expect(repository.read().lastBackupAt).not.toBeNull();
+      repository.saveSettings({}); expect(repository.read().lastBackupAt).toBeNull(); await flushAutomaticBackups(repository); expect(repository.read().lastBackupAt).not.toBeNull();
       repository.transact(state => { state.lastBackupAt = null; });
       createPlanner(repository).mutate({ operationId: 'default-mutate', origin: 'manual', confirmed: false, mutations: [{ type: 'create', entity: 'goal', values: GoalInputSchema.parse({ title: '虚构默认目标' }) }] });
-      expect(repository.read().lastBackupAt).not.toBeNull(); repository.transact(state => { state.lastBackupAt = null; });
+      await flushAutomaticBackups(repository); expect(repository.read().lastBackupAt).not.toBeNull(); repository.transact(state => { state.lastBackupAt = null; });
       await createController({ repository, planner: createPlanner(repository), getApiKey: async () => null }).importSource({ operationId: 'default-import', source: { kind: 'text', text: '虚构消息' } });
-      expect(repository.read().lastBackupAt).not.toBeNull();
+      await flushAutomaticBackups(repository); expect(repository.read().lastBackupAt).not.toBeNull();
       overridden.saveSettings({}); expect(overrideRepo).toHaveBeenCalledOnce(); expect(overridden.read().lastBackupAt).toBeNull();
       const planner = createPlanner(overridden, { automaticBackup: overridePlanner });
       planner.mutate({ operationId: 'override-mutate', origin: 'manual', confirmed: false, mutations: [{ type: 'create', entity: 'goal', values: GoalInputSchema.parse({ title: '虚构覆盖目标' }) }] }); expect(overridePlanner).toHaveBeenCalledOnce();
@@ -63,6 +106,7 @@ describe('sanitized server backups and backup injection compatibility', () => {
       expect(service.snapshot().sources[0]?.imageDataUrl).toBe(imageDataUrl);
       const analyzed = await service.rpc('analyzeSource', { requestId: 'image-analysis', identity: service.state.identity(), input: { operationId: 'analyze-image-source', sourceId: result.data.id } }, 'synthetic-device'); expect(analyzed).toMatchObject({ ok: true });
       expect(service.snapshot().sources[0]).toMatchObject({ kind: 'text', imageDataUrl: null });
+      await service.backup();
       for (const name of readdirSync(backupDirectory)) { const content = readFileSync(join(backupDirectory, name), 'utf8'); expect(content).not.toContain(imageDataUrl); expect(content).not.toContain('RAW-UPLOADED-SYNTHETIC-TEXT'); }
       expect(() => createRemoteService({ dataDirectory: join(root, 'data'), getApiKey: async () => null })).toThrow(/已有服务/);
     } finally { await service.close(); rmSync(root, { recursive: true, force: true }); }

@@ -12,7 +12,7 @@ import { createNativePlanImport } from './plan-import';
 import { createNativePlanExport, localPlanSource } from './plan-export';
 import { createNativeBusyExport } from './busy-export';
 import { createController } from '../application/controller';
-import { createBackup, automaticBackup, inspectBackupFile } from '../storage/backups';
+import { createBackup, automaticBackup, inspectBackupFile, flushAutomaticBackups, automaticBackupStatus } from '../storage/backups';
 import { createSpaceManager } from '../storage/space-management';
 import { initializeBackupDirectory, resolveBackupDirectory } from '../storage/space-policy';
 import { createLedgerService, type LedgerService } from '../ledger/service';
@@ -54,6 +54,8 @@ app.setName(edition.name);
 const APP_ID = edition.appId; app.setAppUserModelId(APP_ID);
 let window: BrowserWindow | null = null; let tray: Tray | null = null; let repository: Repository | null = null;
 let quitting = false; let timer: ReturnType<typeof setInterval> | undefined; let navigationReady = false;
+let backupClosing = false, backupDrained = false;
+let quiesceForBackup: (() => Promise<void>) | undefined;
 let pendingNavigation: NavigateEvent | null = null;
 let stopAccount: (() => void) | undefined;
 let stopAllowance: (() => void) | undefined;
@@ -102,6 +104,20 @@ else {
       return;
     }
     quitting = true;
+    if (repository && !backupDrained) {
+      event.preventDefault();
+      if (!backupClosing) {
+        backupClosing = true;
+        void (async () => {
+          await quiesceForBackup?.();
+          try { await flushAutomaticBackups(repository!); } catch { /* Database commits remain saved; retry the daily backup next time. */ }
+          backupDrained = true; app.quit();
+        })().catch(() => {
+          backupClosing = false; quitting = false;
+          dialog.showErrorBox('日历仍有操作未结束', '请等待正在处理的操作完成后再退出。数据库和现有备份均保留。');
+        });
+      }
+    }
   });
   app.on('will-quit', () => { if (timer) clearInterval(timer); stopAllowance?.(); stopCollectorTray?.(); stopRemote?.(); stopSpace?.(); disposeRestore?.(); stopUpdates?.(); stopAccount?.(); stopCapture?.(); ledger?.close(); repository?.close(); tray?.destroy(); });
   app.on('activate', () => showWindow());
@@ -127,7 +143,7 @@ function documentUrl(): string {
   if (!app.isPackaged && url === 'http://127.0.0.1:5173/') return url;
   return pathToFileURL(join(__dirname, '../dist/index.html')).href;
 }
-function changed(value: ChangedEvent) { if (window && !window.isDestroyed()) window.webContents.send('planner:changed', ChangedEventSchema.parse(value)); }
+function changed(value: ChangedEvent) { if (window && !window.isDestroyed()) window.webContents.send('planner:changed', ChangedEventSchema.parse({ domains: value.reason === 'key' ? ['key'] : ['planner'], ...(repository ? { cursor: repository.cursor() } : {}), ...value })); }
 function navigate(value: NavigateEvent) {
   showWindow(); pendingNavigation = NavigateEventSchema.parse(value);
   if (navigationReady && window) { window.webContents.send('planner:navigate', pendingNavigation); pendingNavigation = null; }
@@ -277,8 +293,8 @@ async function start() {
     updateSnapshot: async () => ({ ok: true, data: updates.snapshot() }),
     checkForUpdates: updates.checkForUpdates, downloadUpdate: updates.downloadUpdate, installUpdate: updates.installUpdate,
     ledgerSnapshot: async request => { const generated = localLedger.ensureMonthlyAllowance(); if (generated) { automaticBackup(repo); changed({reason:'mutation'}); } return {ok:true,data:localLedger.snapshot(request?.month)}; },
-    ledgerMutate: async request => { const result = localLedger.mutate(request); automaticBackup(repo); changed({reason:'mutation'}); return {ok:true,data:result}; },
-    ledgerUndo: async request => { const result = localLedger.undo(request); automaticBackup(repo); changed({reason:'undo'}); return {ok:true,data:result}; },
+    ledgerMutate: async request => { const result = localLedger.mutate(request); automaticBackup(repo); changed({reason:'mutation',domains:['ledger']}); return {ok:true,data:result}; },
+    ledgerUndo: async request => { const result = localLedger.undo(request); automaticBackup(repo); changed({reason:'undo',domains:['ledger']}); return {ok:true,data:result}; },
     ledgerExport: async request => {
       const content = request.format === 'json' ? JSON.stringify(localLedger.exportJson(),null,2) : localLedger.exportCsv(request.month);
       const result = await dialog.showSaveDialog(window!,{title:request.format === 'json' ? '导出完整账本（包含快照、关联与更正历史）' : '导出账单 CSV',defaultPath:join(app.getPath('documents'),`终极日历账单-${request.month ?? nowInstant().slice(0,10)}.${request.format}`),filters:[{name:request.format === 'json' ? '完整账本' : 'CSV 表格',extensions:[request.format]}],properties:['createDirectory','showOverwriteConfirmation']});
@@ -306,11 +322,12 @@ async function start() {
     accountSnapshot: async () => { void account.refresh({ force: true, balanceOnly: true }); return { ok: true, data: account.snapshot() }; },
     refreshAccount: async () => { if (keys.status().loadError) await keys.retry(); return { ok: true, data: await account.refresh({ force: true }) }; },
     snapshot: async () => ({ ok: true, data: { ...planner.snapshot(), keyStatus: keys.status() } }),
+    changes: async request => ({ ok: true, data: repo.changes(request.cursor) }),
     mutate: async request => { const result = planner.mutate(request as Parameters<typeof planner.mutate>[0]); if (result.status === 'applied') changed({ reason: 'mutation', transactionId: result.transactionId }); return { ok: true, data: result }; },
     undo: async id => { const result = planner.undo(id); if (result.status === 'applied') changed({ reason: 'undo', transactionId: result.transactionId }); return { ok: true, data: result }; },
     importSource: async request => { const result = await controller.importSource(request); changed({ reason: 'import' }); return result; },
     analyzeSource: async request => workflow(async () => { const pending = controller.analyzeSource(request); changed({ reason: 'analysis' }); const result = await pending; changed({ reason: 'analysis' }); return result; }),
-    command: async request => workflow(async () => { const result = await controller.command(request); changed({ reason: 'mutation' }); return result; }),
+    command: async request => workflow(async () => { const result = await controller.command(request); changed({ reason: 'mutation', domains: result.ok && result.data.conversationState?.domain === 'ledger' ? ['planner', 'ledger'] : ['planner'] }); return result; }),
     importCourses: async request => workflow(async () => { const pending = controller.importCourses(request); changed({ reason: 'import' }); const result = await pending; changed({ reason: 'import' }); return result; }),
     saveSettings: async request => { const result = await controller.saveSettings(request); if (result.ok) { applyAutoLaunch(result.data.autoLaunch); changed({ reason: 'settings' }); } return result; },
     setApiKey: async request => { const status = await keys.set(request.key); account.resetKey(); changed({ reason: 'key' }); return { ok: true, data: status }; },
@@ -324,6 +341,7 @@ async function start() {
       if (result.canceled || !result.filePaths[0]) return { ok: true, data: null };
       const path = result.filePaths[0]; return { ok: true, data: imageFromBytes(path, await boundedFile(path, MAX_IMAGE_BYTES)) };
     },
+    backupStatus: async () => ({ ok: true, data: automaticBackupStatus(repository!) }),
     backup: async () => {
       const result = await dialog.showSaveDialog(window!, { title: '备份日历（包含来源原文与截图，不包含 API 密钥）', defaultPath: join(resolveBackupDirectory(data), `终极日历-${nowInstant().slice(0, 10)}.sqlite`), filters: [{ name: '日历备份', extensions: ['sqlite'] }], properties: ['createDirectory', 'showOverwriteConfirmation'] });
       if (result.canceled || !result.filePath) throw new WorkflowError('CANCELLED', '已取消备份');
@@ -357,8 +375,18 @@ async function start() {
     item.setSaveDialogOptions({ title: '保存课表 CSV 模板', defaultPath: join(app.getPath('documents'), '终极日历课表模板.csv'), filters: [{ name: 'CSV 模板', extensions: ['csv'] }], properties: ['showOverwriteConfirmation'] });
   });
   const updateMethods = new Set(['updateSnapshot', 'checkForUpdates', 'downloadUpdate', 'installUpdate']);
+  quiesceForBackup = async () => {
+    const deadline = Date.now() + 25_000;
+    while (activeRequests || activeWorkflows || capture.busy() || wechat.busy()) {
+      if (Date.now() >= deadline) throw Error('等待正在进行的操作完成');
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    suspendCaptures(); stopAllowance?.();
+    if (timer) clearInterval(timer);
+  };
   for (const method of methods) ipcMain.handle(`planner:${method}`, (event, input: unknown) => dispatchRequest(method, input, actual(event), owner(), {
     [method]: async (request: unknown) => {
+      if (backupClosing) throw new WorkflowError('CONFLICT', '日历正在退出，请稍候');
       const handler = api[method] as (value: unknown) => Promise<unknown>;
       if (updateMethods.has(method)) return handler(request);
       if (updates.isInstalling()) throw new WorkflowError('CONFLICT', '正在备份并准备重启更新，请稍候再操作。');
@@ -366,7 +394,15 @@ async function start() {
       // Cleanup checks other active requests; do not count its own IPC request as a conflict.
       if (method === 'spaceCleanup') return handler(request);
       activeRequests++;
-      try { return await resources.handle(method, request) ?? await handler(request); } finally { activeRequests--; }
+      try {
+        const cursor = repo.cursor(), result = await resources.handle(method, request) ?? await handler(request);
+        if (['mutate', 'undo', 'importSource', 'analyzeSource', 'command', 'importCourses', 'saveSettings', 'planImportConfirm'].includes(method)
+          && result && typeof result === 'object' && 'ok' in result && result.ok) {
+          const changes = repo.changes(cursor);
+          if (changes.status === 'patch') return { ...result, sync: changes.patch };
+        }
+        return result;
+      } finally { activeRequests--; }
     },
   }));
   ipcMain.on('planner:navigation-ready', event => { if (!trustedCaller(actual(event), owner())) return; navigationReady = true; void showRetainedSummary(); });

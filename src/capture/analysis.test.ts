@@ -25,6 +25,59 @@ function candidate(sourceId: string): ExtractedCandidate {
 function response(value: unknown) { return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } })); }
 const options = (store: CaptureStore, repository: Repository) => ({ store, repository, getApiKey: async () => 'synthetic', canContinue: () => true });
 describe('capture analysis and durable candidate application', () => {
+  it('persists a bounded detail request and resumes it within the next paid-request budget', async () => {
+    const { store, repository, batch, message } = setup(); const saved = batch(); let calls = 0;
+    await analyzeCapture({ ...options(store, repository), batch: saved, requestBudget: 1, fetch: async () => {
+      calls++; return response({ needsDetails: { context: ['m1'], candidates: [] } });
+    } });
+    expect(calls).toBe(1); expect(store.batch(saved.id)?.status).toBe('pending');
+    expect(store.batch(saved.id)?.result).toMatchObject({ completed: [], detailRequests: [{ context: [message], candidates: [] }] });
+    await analyzeCapture({ ...options(store, repository), batch: store.claimBatch()!, requestBudget: 1, fetch: async (_url, request) => {
+      calls++; const input = JSON.parse(JSON.parse(String(request?.body)).messages[1].content[0].text);
+      expect(input.detailsExpanded).toBe(true);
+      return response({ candidates: [candidate(input.units[0].id)] });
+    } });
+    expect(calls).toBe(2); expect(repository.snapshot().candidates).toHaveLength(1);
+    expect(repository.snapshot().sources[0]?.captureRef?.messageId).toBe(message);
+    expect(repository.snapshot().tokenUsage).toHaveLength(2);
+    expect(store.batch(saved.id)?.status).toBe('applied');
+  });
+
+  it('retains a second detail request for review instead of looping or paying a third time', async () => {
+    const { store, repository, batch } = setup(); const saved = batch(); let calls = 0;
+    await expect(analyzeCapture({ ...options(store, repository), batch: saved, fetch: async () => {
+      calls++; return response({ needsDetails: { context: ['m1'], candidates: [] } });
+    } })).rejects.toMatchObject({ code: 'AI_RESPONSE' });
+    expect(calls).toBe(2); expect(repository.snapshot().candidates).toHaveLength(0);
+    expect(store.batch(saved.id)?.result).toHaveProperty('pendingResponse');
+    await expect(analyzeCapture({ ...options(store, repository), batch: store.batch(saved.id)!, fetch: async () => {
+      calls++; return response({ candidates: [] });
+    } })).rejects.toMatchObject({ code: 'AI_RESPONSE' });
+    expect(calls).toBe(2);
+  });
+
+  it('saves an unknown detail reference for review without a repeated request', async () => {
+    const { store, repository, batch } = setup(); const saved = batch(); let calls = 0;
+    await expect(analyzeCapture({ ...options(store, repository), batch: saved, fetch: async () => {
+      calls++; return response({ needsDetails: { context: ['m999'], candidates: [] } });
+    } })).rejects.toMatchObject({ code: 'AI_RESPONSE' });
+    expect(store.batch(saved.id)?.result).toMatchObject({ pendingResponse: { value: { needsDetails: { context: ['invalid-wire-id:m999'] } } } });
+    await expect(analyzeCapture({ ...options(store, repository), batch: store.batch(saved.id)!, fetch: async () => {
+      calls++; return response({ candidates: [] });
+    } })).rejects.toMatchObject({ code: 'AI_RESPONSE' });
+    expect(calls).toBe(1);
+  });
+  it('does not pay for detail expansion when the referenced original has changed', async () => {
+    const { store, repository, batch, message } = setup(); const saved = batch(); let calls = 0;
+    await analyzeCapture({ ...options(store, repository), batch: saved, requestBudget: 1, fetch: async () => {
+      calls++; return response({ needsDetails: { context: ['m1'], candidates: [] } });
+    } });
+    store.markMessageChanged(message);
+    await expect(analyzeCapture({ ...options(store, repository), batch: store.claimBatch()!, fetch: async () => {
+      calls++; return response({ candidates: [] });
+    } })).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(calls).toBe(1); expect(repository.snapshot().candidates).toEqual([]);
+  });
   it('keeps all system instructions stable across batches while retaining current source IDs and evidence in user data', () => {
     const { store, batch } = setup();
     const plan = prepareAnalysis(store, batch());
@@ -57,7 +110,7 @@ describe('capture analysis and durable candidate application', () => {
   });
   it('keeps ordinary, self and all notifications but excludes another recipient within the same batch', async () => {
     const { store, repository, batch, message: ordinary } = setup();
-    const imported = ['999', '100', 'all'].map((qq, index) => store.ingest([{
+    ['999', '100', 'all'].map((qq, index) => store.ingest([{
       accountId: '100', groupId: '200', messageId: `recipient-${index}`, senderId: '300',
       sentAt: '2026-10-23T12:00:00+08:00', text: `@群成员 明天18点提交报告 ${index}`,
       segments: [{ type: 'at', data: { qq } }, { type: 'text', data: { text: ` 明天18点提交报告 ${index}` } }],
@@ -70,10 +123,10 @@ describe('capture analysis and durable candidate application', () => {
       expect(messages.find((message: { role: string }) => message.role === 'system').content).toContain('不复制网址（URL）、本机路径、附件文件名或 QQ 账号/群号');
       expect(messages.find((message: { role: string }) => message.role === 'system').content).toContain('sourceQuote、supportingSources[].quote、temporalEvidence[].quote 必须保留对应来源的连续原文');
       const input = JSON.parse(messages.find((message: { role: string }) => message.role === 'user').content[0].text);
-      expect(input.units.map((unit: { messageId: string }) => unit.messageId)).toEqual([ordinary, imported[1], imported[2]]);
+      expect(input.units.map((unit: { messageId: string }) => unit.messageId)).toEqual(['m1', 'm2', 'm3']);
       expect(input.units.map((unit: { recipient: { audience: string } }) => unit.recipient.audience)).toEqual(['unspecified', 'self', 'all']);
-      expect(input.context.find((item: { id: string }) => item.id === imported[0])).toMatchObject({ recipient: { audience: 'others', sender: 'other' }, contextOnly: true });
-      expect(input.units.find((unit: { messageId: string }) => unit.messageId === imported[1]).recipient.addressedText).toContain('@我');
+      expect(input.context.find((item: { id: string }) => item.id === 'm4')).toMatchObject({ recipient: { audience: 'others', sender: 'other' } });
+      expect(input.units[1].recipient.addressedText).toContain('@我');
       return response({ candidates: [candidate(normalUnit.id)] });
     } });
     expect(calls).toBe(1);

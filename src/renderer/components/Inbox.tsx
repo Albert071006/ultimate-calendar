@@ -1,3 +1,4 @@
+import { operationPending } from '../operation-feedback';
 import { useEffect, useRef, useState } from "react";
 import { ChevronLeft, History, Import, Plus } from "lucide-react";
 import type { Candidate, Snapshot } from "../../shared/contracts";
@@ -131,8 +132,8 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
     setSelectedId(id);
   }
 
-  const keys = useRef({ items, current, quick, busy: ui.busy, decide, setSnoozing, pick });
-  keys.current = { items, current, quick, busy: ui.busy, decide, setSnoozing, pick };
+  const keys = useRef({ items, current, quick, busy: current ? operationPending(ui, `candidate:${current.id}`) : false, decide, setSnoozing, pick });
+  keys.current = { items, current, quick, busy: current ? operationPending(ui, `candidate:${current.id}`) : false, decide, setSnoozing, pick };
   useEffect(() => {
     const press = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -163,7 +164,7 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
   const tabs: [Tab, string, number | null][] = [["pending", "待判断", counts.pending], ["snoozed", "稍后", counts.snoozed], ["done", "已处理", null]];
   const switchTab = (id: Tab) => { setTab(id); setSelectedId(null); setFallback(0); };
   const doneFilters = [["all", "全部"], ["accepted", "已接受"], ["ignored", "已忽略"], ["expired", "已过期"]] as const;
-  const detail = current && (!mobile || detailOpen) && <DetailFrame mobile={mobile} close={() => setDetailOpen(false)}><CandidateDetail key={current.id} snapshot={snapshot} candidate={current} today={today} now={now} busy={ui.busy}
+  const detail = current && (!mobile || detailOpen) && <DetailFrame mobile={mobile} close={() => setDetailOpen(false)}><CandidateDetail key={current.id} snapshot={snapshot} candidate={current} today={today} now={now} busy={operationPending(ui, `candidate:${current.id}`)}
     localSourceAccess={Boolean(host) && !mobile} host={mobile ? undefined : host}
     hideQQOriginal={current.sourceIds.some(id => { const source = snapshot.sources.find(value => value.id === id); return source ? isExtractedQQSource(source) || ((mobile || !host) && Boolean(source.captureRef)) : mobile || !host; })}
     clearedPhoneInput={current.sourceIds.some(id => { const source = snapshot.sources.find(value => value.id === id); return source ? isClearedPhoneSource(source) : false; })}
@@ -212,7 +213,7 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
           {doneFilters.map(([id, label]) => <button key={id} className="m-link" aria-pressed={doneFilter === id} onClick={() => { setDoneFilter(id); setSelectedId(null); setFallback(0); }}>{label}</button>)}
         </div>}
         {items.length ? <>
-          <InboxList snapshot={snapshot} items={items} selectedId={current?.id} today={today} quick={quick} busy={ui.busy}
+          <InboxList snapshot={snapshot} items={items} selectedId={current?.id} today={today} quick={quick} busy={ui.busy} pending={id => operationPending(ui, `candidate:${id}`)}
             select={pick} decide={(candidate, type) => void decide(candidate, type)} toast={null} undo={() => {}} />
           {detail}
         </> : <div className="m-ib-empty">
@@ -258,7 +259,7 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
         </div>
         {items.length ? (
           <div className="a2-ib-body">
-            <InboxList snapshot={snapshot} items={items} selectedId={current?.id} today={today} quick={quick} busy={ui.busy}
+            <InboxList snapshot={snapshot} items={items} selectedId={current?.id} today={today} quick={quick} busy={ui.busy} pending={id => operationPending(ui, `candidate:${id}`)}
               select={pick} decide={(candidate, type) => void decide(candidate, type)} toast={toast} undo={() => void undo()} />
             {detail}
           </div>

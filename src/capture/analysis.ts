@@ -18,6 +18,7 @@ import { normalizeCaptureResponseTimes } from './response-time';
 import { assertArrivalFollowup } from './arrival-followup';
 import { reasoningRequest } from '../shared/ai-reasoning';
 import { AttachmentContextSchema, cachedAttachmentContext } from './attachment-context';
+import { compactCaptureMessages, CaptureDetailRequestSchema, type CaptureDetailEvidence } from './request-wire';
 export { attachmentEvidenceUnits } from './attachment-deduplication';
 
 export const ANALYSIS_VERSION = 'qq-v2';
@@ -38,6 +39,7 @@ const CheckpointSchema = z.strictObject({ version: z.literal(2), planFingerprint
   passiveQuestionFilter: z.literal(1).optional(),
   noticeFirst: z.literal(1).optional(),
   attachmentContext: z.literal(1).optional(),
+  detailRequests: z.array(z.strictObject({ key: z.string(), context: z.array(z.string()).max(60), candidates: z.array(z.string()).max(30) })).optional(),
 });
 type Checkpoint = z.infer<typeof CheckpointSchema>;
 type Plan = Omit<Checkpoint, 'units' | 'planFingerprint' | 'completed' | 'final' | 'pendingResponse'> & { units: AnalysisUnit[] };
@@ -328,7 +330,8 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
   });
   const runModel: ModelRequestRunner = options.runModel ?? (work => work());
   let paidRequests = 0;
-  for (const units of requests) {
+  for (let requestIndex = 0; requestIndex < requests.length; requestIndex++) {
+    const units = requests[requestIndex]!;
     const key = hashInput(units.map(u => u.id));
     if (checkpoint.completed.some(c => c.key === key)) continue;
     if (checkpoint.pendingResponse && checkpoint.pendingResponse.key !== key) throw new WorkflowError('CONFLICT', '已保存回答与当前分片顺序不符，停止重复付费');
@@ -342,6 +345,16 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
     const requestSchema = captureRequestSchema(eligibleUnits.map(unit => unit.id));
     const promoteResponse = () => {
       const pending = checkpoint.pendingResponse!;
+      const detail = CaptureDetailRequestSchema.safeParse(pending.value);
+      if (detail.success) {
+        if (checkpoint.detailRequests?.some(request => request.key === key)) throw new WorkflowError('AI_RESPONSE', '补充原文后仍缺少必要资料，请校对。已保留回答，未继续付费');
+        const { context, candidates } = detail.data.needsDetails;
+        if (!context.length && !candidates.length || context.some(id => !checkpoint.context.some(message => message.id === id))
+          || candidates.some(id => !pending.candidateIds?.includes(id))) throw new WorkflowError('AI_RESPONSE', '补读请求未指定本批次有效资料。已保留回答，未继续付费');
+        (checkpoint.detailRequests ??= []).push({ key, context, candidates }); delete checkpoint.pendingResponse;
+        store.checkpointResult(batch.id, checkpoint);
+        return false;
+      }
       let value: CaptureExtraction;
       try {
         const parsed = requestSchema.safeParse(normalizeCaptureResponseTimes(pending.value, settings.timezone, eligibleUnits));
@@ -360,11 +373,13 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
       checkpoint.completed.push({ key, value }); delete checkpoint.pendingResponse;
       store.checkpointResult(batch.id, checkpoint);
       applyCaptureProgress(repository, batch, checkpoint, actualUnits, eligible, checkpoint.warnings, options.onProgress);
+      return true;
     };
     // A durable response is local work: no key lookup, model queue or second paid request.
     if (checkpoint.pendingResponse) {
       if (!options.canContinue()) throw new WorkflowError('CANCELLED', '分析已暂停，已保存的回答保留');
-      promoteResponse(); continue;
+      if (!promoteResponse()) requestIndex--;
+      continue;
     }
     if (paidRequests >= Math.max(1, options.requestBudget ?? Infinity)) {
       store.yieldBatch(batch.id); return;
@@ -383,17 +398,35 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
       const state = repository.read();
       const staged = stagedCandidates(checkpoint.completed, batch, actualUnits, eligible, checkpoint.warnings, state, planFingerprint, checkpoint.documentGrouping === 1, questionRecipients(checkpoint), checkpoint.noticeFirst === 1);
       const existing = recentCaptureCandidates(staged.candidates, staged.sources, batch, staged.preferred, new Set(checkpoint.context.map(message => message.id)));
-      const messages = batchMessages(eligibleUnits, checkpoint.context, existing, checkpoint.warnings, profile, recipients, staged.sources);
-      store.startAttempt(batch.id, hashInput({ planFingerprint, key }));
+      const details = checkpoint.detailRequests?.find(request => request.key === key);
+      const evidence: CaptureDetailEvidence = {};
+      if (details) {
+        evidence.context = new Map(details.context.map(id => {
+          const original = store.message(id);
+          if (!original || original.deleted || original.changed || original.accountId !== batch.accountId || original.groupId !== batch.groupId) throw new WorkflowError('CONFLICT', '补读原文已删除或变化，请校对；未继续付费');
+          return [id, { text: original.text }];
+        }));
+        evidence.candidates = new Map(details.candidates.map(id => {
+          const candidate = existing.find(candidate => candidate.id === id);
+          if (!candidate) throw new WorkflowError('CONFLICT', '补读事项已变化或删除，请校对；未继续付费');
+          const originals = candidate.sourceIds.map(sourceId => staged.sources.find(source => source.id === sourceId));
+          if (originals.some(source => !source)) throw new WorkflowError('CONFLICT', '补读事项的原始证据缺失，请校对；未继续付费');
+          return [id, originals.map(source => ({ text: source!.text, sentAt: source!.sentAt }))];
+        }));
+        if (JSON.stringify([...evidence.context, ...evidence.candidates]).length > 200_000) throw new WorkflowError('VALIDATION', '请求补读的原文超过单次分析上限，请缩小范围后校对；未静默截断或继续付费');
+      }
+      const wire = compactCaptureMessages(batchMessages(eligibleUnits, checkpoint.context, existing, checkpoint.warnings, profile, recipients, staged.sources), details, evidence);
+      const messages = wire.messages;
+      store.startAttempt(batch.id, hashInput({ planFingerprint, key, ...(details ? { details } : {}) }));
       paidRequests++;
       try {
         await completeJson({ key: apiKey, settings: requestSettings, messages, schema: z.json(), operationId: 'qq-request:' + randomUUID(), purpose: 'source', now: nowInstant(), maxAttempts: 1, timeoutMs: Math.max(90_000, reasoningRequest(requestSettings).timeoutMs), autoQuote: options.getPriceQuote?.(settings.model, settings.pricingCurrency), fetch: options.fetch, onUsage: usage => repository.addUsage(usage),
           onParsedResponse(value) {
-            checkpoint.pendingResponse = { key, value: z.json().parse(value), candidateIds: existing.map(candidate => candidate.id) };
+            checkpoint.pendingResponse = { key, value: z.json().parse(wire.decode(value)), candidateIds: existing.map(candidate => candidate.id) };
             store.savePendingResponse(batch.id, checkpoint);
           },
         });
-        promoteResponse();
+        if (!promoteResponse()) requestIndex--;
       } finally { options.afterRequest?.(); }
     });
   }

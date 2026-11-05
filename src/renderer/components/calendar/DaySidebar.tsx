@@ -1,3 +1,4 @@
+import { operationPending } from '../../operation-feedback';
 import type { ReactNode } from "react";
 import type { CalendarItem, Snapshot } from "../../../shared/contracts";
 import type { PlannerUI } from "../../hooks/usePlanner";
@@ -46,8 +47,8 @@ export function DaySidebar({ snapshot, day, today, items, now, ui, open, openCan
             <button className="tt" onClick={() => open(item)}>{candidate.title}</button>
             <div className="tx">{[candidate.eventStart ? `${candidate.eventStart.slice(11, 16)}${candidate.eventEnd ? `–${candidate.eventEnd.slice(11, 16)}` : ""}` : candidate.deadline ? `截止 ${candidate.deadline.time ?? "当天"}` : "", candidate.location].filter(Boolean).join(" · ")}</div>
             <div className="acts">
-              <button className="ui-btn sm primary" disabled={ui.busy} onClick={() => decide(candidate.id, candidate.version, "acceptCandidate")}>参加</button>
-              <button className="ui-btn sm" disabled={ui.busy} onClick={() => decide(candidate.id, candidate.version, "ignoreCandidate")}>忽略</button>
+              <button className="ui-btn sm primary" disabled={operationPending(ui, `candidate:${candidate.id}`)} onClick={() => decide(candidate.id, candidate.version, "acceptCandidate")}>{operationPending(ui, `candidate:${candidate.id}`) ? "正在保存…" : "参加"}</button>
+              <button className="ui-btn sm" disabled={operationPending(ui, `candidate:${candidate.id}`)} onClick={() => decide(candidate.id, candidate.version, "ignoreCandidate")}>忽略</button>
               {openCandidate && <button className="ui-btn sm ghost" onClick={() => openCandidate(candidate.id)}>稍后</button>}
             </div>
           </div>

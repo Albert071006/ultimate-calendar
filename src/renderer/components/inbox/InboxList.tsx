@@ -29,7 +29,7 @@ export function sourceLine(snapshot: Snapshot, candidate: Candidate, today: stri
   return { label: source.label || (source.kind === "image" ? "截图" : "粘贴的消息"), at: arrival(noticeArrival(snapshot, candidate), today) };
 }
 
-export function InboxList({ snapshot, items, selectedId, today, quick, busy, select, decide, toast, undo }: {
+export function InboxList({ snapshot, items, selectedId, today, quick, busy, pending, select, decide, toast, undo }: {
   snapshot: Snapshot;
   items: Candidate[];
   selectedId: string | undefined;
@@ -37,6 +37,7 @@ export function InboxList({ snapshot, items, selectedId, today, quick, busy, sel
   /** Whether rows carry the quick ✓ / ✕ (only while a decision is still open). */
   quick: boolean;
   busy: boolean;
+  pending?: (id: string) => boolean;
   select: (id: string) => void;
   decide: (candidate: Candidate, type: "acceptCandidate" | "ignoreCandidate") => void;
   toast: Toast | null;
@@ -53,8 +54,8 @@ export function InboxList({ snapshot, items, selectedId, today, quick, busy, sel
             <TimeLine candidate={candidate} today={today} />
           </div>
           {quick && <div className="m-ib-acts" onClick={event => event.stopPropagation()}>
-            <button className="m-text-btn quiet" disabled={busy} aria-label={`忽略 ${candidate.title}`} onClick={() => decide(candidate, "ignoreCandidate")}>忽略</button>
-            <button className="m-text-btn" disabled={busy} aria-label={`接受 ${candidate.title}`} onClick={() => decide(candidate, "acceptCandidate")}>接受</button>
+            <button className="m-text-btn quiet" disabled={pending?.(candidate.id) ?? busy} aria-label={`忽略 ${candidate.title}`} onClick={() => decide(candidate, "ignoreCandidate")}>忽略</button>
+            <button className="m-text-btn" disabled={pending?.(candidate.id) ?? busy} aria-label={`接受 ${candidate.title}`} onClick={() => decide(candidate, "acceptCandidate")}>{(pending?.(candidate.id) ?? busy) ? '正在保存…' : '接受'}</button>
           </div>}
         </article>
       ))}
@@ -71,9 +72,10 @@ export function InboxList({ snapshot, items, selectedId, today, quick, busy, sel
             <h3><button className="pick" onClick={() => select(candidate.id)}>{candidate.title}</button></h3>
             <Chips candidate={candidate} today={today} />
             {quick && <div className="qa" onClick={event => event.stopPropagation()}>
-              <button className="ok" disabled={busy} aria-label={`接受 ${candidate.title}`} title="接受（A）" onClick={() => decide(candidate, "acceptCandidate")}><Check aria-hidden="true" /></button>
-              <button className="no" disabled={busy} aria-label={`忽略 ${candidate.title}`} title="忽略（I）" onClick={() => decide(candidate, "ignoreCandidate")}><X aria-hidden="true" /></button>
+              <button className="ok" disabled={pending?.(candidate.id) ?? busy} aria-label={`接受 ${candidate.title}`} title="接受（A）" onClick={() => decide(candidate, "acceptCandidate")}><Check aria-hidden="true" /></button>
+              <button className="no" disabled={pending?.(candidate.id) ?? busy} aria-label={`忽略 ${candidate.title}`} title="忽略（I）" onClick={() => decide(candidate, "ignoreCandidate")}><X aria-hidden="true" /></button>
             </div>}
+            {(pending?.(candidate.id) ?? busy) && <small role="status">正在保存…</small>}
           </article>
         );
       })}

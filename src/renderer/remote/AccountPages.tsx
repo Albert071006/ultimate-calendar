@@ -1,3 +1,6 @@
+import { BackupStatusPanel } from '../components/BackupStatusPanel';
+import { BackupProgressSchema } from '../../shared/backup-progress';
+import { useCallback } from 'react';
 import { useEffect, useState, type FormEvent } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import type { AiConfigurationStatus } from '../../shared/ai-configuration';
@@ -145,6 +148,7 @@ export function ReminderPage({ controller, online }: { controller: RemoteControl
 
 /** This device, other authorised devices, cache and sign-out, and archives kept from an earlier pairing. */
 export function DevicePage({ controller, state }: { controller: RemoteController; state: RemoteClientState }) {
+  const readBackup = useCallback(async () => { const status = await controller.request<unknown>('/api/v1/backup/status'); return { ok: true as const, data: BackupProgressSchema.parse(status) }; }, [controller]);
   const [devices, setDevices] = useState<DeviceSummary[] | null>(null), [archives, setArchives] = useState<RecoveryArchive[]>([]);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState<Message>(null), [confirm, setConfirm] = useState<string | null>(null);
   useEffect(() => {
@@ -165,6 +169,7 @@ export function DevicePage({ controller, state }: { controller: RemoteController
       <div className="m-kv"><span>{state.session?.device.name ?? '此设备'}</span><b className={state.status === 'online' ? 'ok' : 'warn'}>{connectionNames[state.status]}</b></div>
       {state.status !== 'online' && <button className="m-btn" disabled={busy} onClick={() => void run(() => controller.reconnect())}>重新连接</button>}
       <Note message={message} />
+      <BackupStatusPanel read={readBackup} cloud active={state.status === "online"} />
       <h3 className="m-subhead">已授权的设备</h3>
       {!devices ? <p className="m-empty">{state.status === 'online' ? '正在读取…' : '联网后可以查看。'}</p> : <ul className="m-list">
         {devices.map(device => <li key={device.id} className="m-row">

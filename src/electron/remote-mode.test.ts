@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { writePrivate } from '../remote/private-file';
-import { SnapshotSchema } from '../shared/contracts';
+import { SettingsSchema, SnapshotSchema } from '../shared/contracts';
 import { fixtureXlsx } from '../capture/documents/fixtures';
 const documentWorker = vi.hoisted(() => ({ started: vi.fn(), terminate: vi.fn(), hold: false }));
 vi.mock('node:worker_threads', async () => {
@@ -29,7 +29,7 @@ vi.mock('electron',async()=>{
 });
 vi.mock('../remote/node-client',async importOriginal=>({...await importOriginal<typeof import('../remote/node-client')>(),createNodeRemoteClient:mock.createClient}));
 vi.mock('../remote/write-journal',()=>({createWriteJournal:()=>mock.journal}));
-vi.mock('./remote-desktop-shell',()=>({createRemoteDesktopShell:()=>({handle:async()=>null,snapshot:(value:unknown)=>value,saveDeviceSettings:vi.fn(),isInstalling:()=>false,close:vi.fn(),setTrayItems:(items:typeof mock.menu)=>{mock.menu=items;}})}));
+vi.mock('./remote-desktop-shell',()=>({createRemoteDesktopShell:(options:{changed:()=>void})=>({handle:async()=>null,snapshot:(value:unknown)=>value,saveDeviceSettings:vi.fn(()=>options.changed()),isInstalling:()=>false,close:vi.fn(),setTrayItems:(items:typeof mock.menu)=>{mock.menu=items;}})}));
 import { startNativeRemote } from './remote-mode';
 import { RemoteClientError } from '../remote/node-client';
 
@@ -39,6 +39,17 @@ beforeEach(()=>{mock.handlers.clear();mock.menu=[];mock.canEncrypt=true;vi.clear
 afterEach(()=>{for(const close of closers.splice(0))close();for(const root of roots.splice(0)){const part=relative(tmpdir(),root);if(!part||part.startsWith('..')||isAbsolute(part))throw Error('Unsafe test cleanup');rmSync(root,{recursive:true,force:true});}});
 function fixture(){const directory=mkdtempSync(join(tmpdir(),'calendar-native-mode-'));roots.push(directory);const code=join(directory,'pairing-code.txt');writePrivate(code,'synthetic-high-entropy-pair-code');return{directory,config:{origin:'https://synthetic.example',deviceName:'合成Windows',pairingCodeFile:code},document:'file:///synthetic/index.html'};}
 describe('native cloud-mode boundary',()=>{
+  it('emits only the device-shell change notification after saving shared and device settings', async () => {
+    const f = fixture(), runtime = await startNativeRemote(f.config, f.directory, f.document); closers.push(runtime.close);
+    const event = { sender: { id: 1 }, senderFrame: { routingId: 2, url: f.document } };
+    const expectedSettings = SettingsSchema.parse({}), settings = { ...expectedSettings, autoLaunch: true };
+    mock.journal.rpc.mockResolvedValueOnce({ ok: true, data: settings });
+    vi.mocked(runtime.window.webContents.send).mockClear();
+    expect(await mock.handlers.get('planner:saveSettings')!(event, { settings, expectedSettings })).toEqual({ ok: true, data: settings });
+    expect(mock.journal.rpc).toHaveBeenCalledExactlyOnceWith('saveSettings', { settings, expectedSettings });
+    expect(runtime.window.webContents.send).toHaveBeenCalledExactlyOnceWith('planner:changed', { reason: 'mutation' });
+  });
+
   it('reads a selected synthetic Excel locally through the native document runtime without forwarding its path', async () => {
     const f = fixture(), path = join(f.directory, '合成名单.xlsx'), bytes = fixtureXlsx(); writeFileSync(path, bytes);
     const runtime = await startNativeRemote(f.config, f.directory, f.document); closers.push(runtime.close);

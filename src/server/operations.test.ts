@@ -26,6 +26,7 @@ describe('service operations', () => {
   it('exposes minimal anonymous probes and authenticated backup diagnostics, then recovers a failed backup', async () => {
     const root = folder(), blocked = join(root, 'blocked-backups'); writeFileSync(blocked, 'synthetic-blocking-file');
     const service = createRemoteService({ dataDirectory: join(root, 'data'), backupDirectory: blocked, getApiKey: async () => null });
+    await expect(service.backup()).rejects.toMatchObject({ status: 503 });
     const http = createRemoteHttpServer({ service, origin: 'http://localhost:3210' }); const port = await http.listen(0);
     cleanup.push(async () => { await http.close(); await service.close(); });
     expect(await call(port, '/healthz')).toEqual({ status: 200, data: { status: 'ok' } });
@@ -39,9 +40,9 @@ describe('service operations', () => {
     const token = service.state.pair(service.state.createPairingCode(), '虚构设备').token, cookie = `planner_dev_session=${token}`;
     expect(await call(port, '/api/v1/status', cookie)).toMatchObject({ data: { lifecycle: 'running', backup: { status: 'failed', failureCode: 'BACKUP_FAILED', consecutiveFailures: 1 } } });
     expect(JSON.stringify((await call(port, '/api/v1/status', cookie)).data)).not.toContain(root);
-    rmSync(blocked); mkdirSync(blocked); service.backup();
+    rmSync(blocked); mkdirSync(blocked); await service.backup();
     expect(service.status().backup).toMatchObject({ status: 'ok', failureCode: null, consecutiveFailures: 0 });
-    expect(service.state.backupStatus()).toEqual(service.status().backup);
+    expect(service.status().backup).toMatchObject(service.state.backupStatus());
     expect((await call(port, '/readyz')).data).toMatchObject({ ready: true, status: 'ready' });
     expect(await probe()).toEqual({ code: 0, output: 'HEALTHY\n' });
     service.beginShutdown(); expect((await call(port, '/readyz')).status).toBe(503);

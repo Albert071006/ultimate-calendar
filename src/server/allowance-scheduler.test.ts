@@ -32,13 +32,13 @@ it('cloud records and broadcasts the allowance with no connected client or ledge
   const start = () => { const service = createRemoteService({ dataDirectory, backupDirectory, getApiKey: async () => null, controller: { fetch } }); services.push(service); return service; };
   const service = start(), changed = vi.fn(); service.subscribe(changed);
   vi.advanceTimersByTime(30_000);
-  expect(changed).toHaveBeenCalledExactlyOnceWith({ reason: 'mutation' });
+  expect(changed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ reason: 'mutation' }));
   const result = remoteOutputs.ledgerExportData.parse(await service.rpc('ledgerExportData', { requestId: 'export', identity: service.state.identity(), input: { format: 'json' } }, 'synthetic-device'));
   expect(result.ok).toBe(true);
   if (!result.ok) throw Error('Export failed');
   const saved = LedgerImportPayloadSchema.parse(JSON.parse(result.data.content));
   expect(saved.entries).toMatchObject([{ ruleKey: 'rule:monthly-allowance:2026-11', cashflows: [{ accountId: 'alipay', deltaCents: 100000 }] }]);
-  expect(service.status().backup.lastSuccessAt).toBe('2026-10-31T16:00:20.000Z');
+  expect(service.status().backup).toMatchObject({ pending: true, lastSuccessAt: null });
   await service.close();
   const reopened = start();
   const second = await reopened.rpc('ledgerExportData', { requestId: 'export-after-restart', identity: reopened.state.identity(), input: { format: 'json' } }, 'synthetic-device');

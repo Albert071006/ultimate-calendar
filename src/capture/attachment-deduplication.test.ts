@@ -1,3 +1,4 @@
+import { expandCaptureTable } from './request-wire';
 import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -110,7 +111,7 @@ describe('batch-local attachment deduplication', () => {
       calls++;
       const input = JSON.parse(JSON.parse(String(request?.body)).messages.find((item: { role: string }) => item.role === 'user').content[0].text);
       expect(input.units).toHaveLength(20);
-      expect(input.allowedSourceIds).toEqual(prepared.units.map(item => item.id));
+      expect(input.units.map((item: { id: string }) => item.id)).toEqual(prepared.units.map((_item, index) => `u${index + 1}`));
       expect(input.units.every((item: AnalysisUnit) => !('attachmentAliases' in item))).toBe(true);
       return response({ candidates: [candidate(input.units[0])] });
     } });
@@ -192,7 +193,7 @@ describe('batch-local attachment deduplication', () => {
       expect(input.units).toHaveLength(calls === 1 ? 30 : 21);
       return response({ candidates: [{ ...candidate(input.units[0]!),
         supportingSources: input.units.slice(1).map(source => ({ sourceId: source.id, quote: source.text })),
-        ...(calls === 2 ? { relation: { kind: 'supplement', candidateId: input.existingCandidates[0]!.id } } : {}),
+        ...(calls === 2 ? { relation: { kind: 'supplement', candidateId: expandCaptureTable(input.existingCandidates)[0]!.id } } : {}),
       }] });
     } })).rejects.toMatchObject({ code: 'VALIDATION' });
     const before = f.repository.snapshot(), checkpoint = f.store.batch(f.batch.id)!.result;

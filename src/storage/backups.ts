@@ -10,9 +10,10 @@ import { WorkflowError } from '../ai/deepseek';
 import { readLedgerDatabase, replaceLedgerDatabase } from '../ledger/service';
 import { copyCaptureBackupFile, inspectCaptureBackupFile } from '../capture/backup-file';
 import { emptyCaptureState, replaceCaptureDatabaseState } from '../capture/store';
-import { pruneManagedBackups } from './backup-retention';
 import { resolveBackupDirectory } from './space-policy';
 import { includeLocalResourcesInBackup, readLocalResourcesFromBackup, mergeLocalResources } from './local-resources';
+import { createBackupScheduler } from './backup-scheduler';
+import { createBackupWorker } from './backup-worker-client';
 
 const MiB = 1024 * 1024;
 function requireDiskSpace(directory: string, bytes: number, purpose: string): void {
@@ -22,7 +23,7 @@ function requireDiskSpace(directory: string, bytes: number, purpose: string): vo
 export function requireRestoreStagingSpace(directory: string, bytes: number): void {
   requireDiskSpace(directory, bytes + 16 * MiB, '恢复预览的暂存副本');
 }
-export function createBackup(repository: Repository, path: string): { path: string; includesSources: true } {
+export function createBackup(repository: Pick<Repository, 'path' | 'estimatedBackupBytes' | 'vacuumInto'>, path: string): { path: string; includesSources: true } {
   if (path === repository.path || existsSync(path)) throw Error('备份目标已存在');
   mkdirSync(dirname(path), { recursive: true });
   requireDiskSpace(dirname(path), repository.estimatedBackupBytes() + 16 * MiB, '保存完整备份');
@@ -31,6 +32,16 @@ export function createBackup(repository: Repository, path: string): { path: stri
   try { includeLocalResourcesInBackup(db, dirname(repository.path)); db.exec('PRAGMA journal_mode=DELETE'); }
   finally { db.close(); }
   return { path, includesSources: true };
+}
+/** SQLite VACUUM INTO reads a consistent snapshot; never copy a live DB/WAL file. */
+export function createBackupFromDatabase(databasePath: string, target: string) {
+  const db = openDatabase(databasePath, true);
+  try {
+    return createBackup({ path: databasePath, vacuumInto: path => { db.prepare('VACUUM INTO ?').run(path); }, estimatedBackupBytes: () => {
+      const pages = Number(db.prepare('PRAGMA page_count').get()!['page_count']), free = Number(db.prepare('PRAGMA freelist_count').get()!['freelist_count']);
+      return Math.max(0, pages - free) * Number(db.prepare('PRAGMA page_size').get()!['page_size']);
+    } }, target);
+  } finally { db.close(); }
 }
 /** Small-data inspection compatibility helper. Desktop restore/update use inspectBackupFile instead. */
 export function inspectBackupBundle(path: string) {
@@ -101,16 +112,59 @@ export function restoreBackup(repository: Repository, path: string, captureStore
   try {
     requireRestoreSpace(repository, file);
     const safetyBackupPath = join(resolveBackupDirectory(dirname(repository.path)), `before-restore-${randomUUID()}.sqlite`);
-    createBackup(repository, safetyBackupPath); restoreOpenedBackup(repository, file, captureStore); return { safetyBackupPath };
+    createBackup(repository, safetyBackupPath); inspectBackupFile(safetyBackupPath);
+    restoreOpenedBackup(repository, file, captureStore); return { safetyBackupPath };
   } finally { file.close(); }
 }
-/** Runs only after durable commit. Failure cannot turn an already-applied operation into an apparent failure. */
+const automaticBackups = new WeakMap<Repository, { dueAt: number; status: 'never' | 'ok' | 'failed'; lastSuccessAt: string | null; scheduler: ReturnType<typeof createBackupScheduler>; worker: ReturnType<typeof createBackupWorker> }>();
+/** Desktop complete backups include the potentially large capture database.
+ * Keep the existing daily cadence and retention policy, but do all copying and
+ * validation off the UI process, 60 seconds after the first due change. */
+function automaticBackupState(repository: Repository) {
+    let pending = automaticBackups.get(repository);
+    if (!pending) {
+      const last = repository.read().lastBackupAt, worker = createBackupWorker();
+      const scheduler = createBackupScheduler({
+        run: signal => {
+          const now = nowInstant(), directory = resolveBackupDirectory(dirname(repository.path));
+          return worker.run({ kind: 'desktop', databasePath: repository.path, target: join(directory, `auto-${now.replace(/[:+.]/g, '-')}-${randomUUID()}.sqlite`) }, signal);
+        },
+        onSuccess: (_path, at) => {
+          // This metadata is only a cadence hint, never evidence that a business
+          // write was persisted. A failure here merely permits an extra backup.
+          const savedAt = nowInstant();
+          try { repository.transact(live => { live.lastBackupAt = savedAt; }); }
+          catch { /* The verified file exists; a missing cadence hint may cause an extra backup after restart. */ }
+          const current = automaticBackups.get(repository);
+          if (current) { current.dueAt = Date.parse(at) + 86400_000; current.lastSuccessAt = savedAt; current.status = 'ok'; }
+        },
+        onFailure: () => { const current = automaticBackups.get(repository); if (current) current.status = 'failed'; },
+      });
+      pending = { dueAt: last ? Date.parse(last) + 86400_000 : 0, status: last ? 'ok' : 'never', lastSuccessAt: last, scheduler, worker }; automaticBackups.set(repository, pending);
+    }
+    return pending;
+}
 export function automaticBackup(repository: Repository): void {
   if (repository.path === ':memory:') return;
-  const state = repository.read(); const now = nowInstant(); if (state.lastBackupAt && Date.parse(now) - Date.parse(state.lastBackupAt) < 86400_000) return;
   try {
-    const directory = resolveBackupDirectory(dirname(repository.path)); const name = `auto-${now.replace(/[:+.]/g, '-')}-${randomUUID()}.sqlite`;
-    createBackup(repository, join(directory, name)); repository.transact(live => { live.lastBackupAt = now; });
-    pruneManagedBackups(dirname(repository.path));
+    const pending = automaticBackupState(repository);
+    // A daily snapshot already in progress counts as today's attempt. Captured
+    // data stays a consistent point in time; later edits remain in the live WAL.
+    if (Date.now() >= pending.dueAt && !pending.scheduler.status().running) pending.scheduler.markDirty();
   } catch { /* Current data remains durable; manual backup exposes storage errors directly. */ }
+}
+export function automaticBackupStatus(repository: Repository) {
+  const pending = automaticBackupState(repository);
+  return { status: pending.status, lastSuccessAt: pending.lastSuccessAt, ...pending.scheduler.status() };
+}
+/** Call after writers stop and before closing the repository on normal exit. */
+export async function flushAutomaticBackups(repository: Repository, timeoutMs = 25_000): Promise<void> {
+  const pending = automaticBackups.get(repository); if (!pending) return;
+  try { await pending.scheduler.close(timeoutMs); }
+  finally { await pending.worker.close(); automaticBackups.delete(repository); }
+}
+/** Emergency/non-application close must not leave a timer using a closed DB. */
+export function cancelAutomaticBackups(repository: Repository): void {
+  const pending = automaticBackups.get(repository); if (!pending) return;
+  pending.scheduler.cancel(); void pending.worker.close(); automaticBackups.delete(repository);
 }

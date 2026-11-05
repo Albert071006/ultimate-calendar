@@ -1,3 +1,4 @@
+import { operationPending } from '../../operation-feedback';
 import { Fragment, useState } from 'react';
 import { ChevronRight, Plus } from 'lucide-react';
 import type { CalendarItem, Snapshot, Task } from '../../../shared/contracts';
@@ -124,13 +125,14 @@ function TaskItem({ task, snapshot, ui, now, today, actions, select }: {
   const urgent = !!attention || (task.status === 'open' && !!task.deadline && task.deadline.date <= today);
   return (
     <article className={`m-task${attention ? ' warn' : ''}${task.status === 'done' ? ' done' : ''}`} data-task-id={task.id}>
-      <label className="m-check"><input type="checkbox" aria-label={`完成 ${task.title}`} checked={task.status === 'done'} disabled={ui.busy}
+      <label className="m-check"><input type="checkbox" aria-label={`完成 ${task.title}`} checked={task.status === 'done'} disabled={operationPending(ui, `task:${task.id}`)}
         onChange={() => void ui.mutate([{ type: 'finishTask', id: task.id, expectedVersion: task.version, completed: task.status !== 'done' }])} /></label>
       <button className="m-task-main" onClick={() => select({ entity: 'task', id: task.id })}>
         <strong>{task.title}</strong>
+        {operationPending(ui, `task:${task.id}`) && <small role="status">正在保存…</small>}
         {meta && <small className={urgent ? 'due' : undefined}>{meta}</small>}
       </button>
-      {task.status !== 'done' && <button className="m-text-btn" disabled={ui.busy && !!attention} onClick={primary.run}>{primary.label}</button>}
+      {task.status !== 'done' && <button className="m-text-btn" disabled={operationPending(ui, `task:${task.id}`) && !!attention} onClick={primary.run}>{primary.label}</button>}
     </article>
   );
 }

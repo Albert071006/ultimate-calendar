@@ -1,4 +1,6 @@
+import { BackupProgressSchema } from '../shared/backup-progress';
 import { z } from 'zod';
+import { PlannerChangesRequestSchema, PlannerChangesSchema } from '../shared/contracts';
 import { PlanImportConfirmSchema, PlanImportPreviewSchema, PlanImportResultSchema } from '../shared/plan-import';
 import { PlanExportRequestSchema, PlanExportPreviewSchema, PlanExportSaveRequestSchema, PlanExportSaveResultSchema } from '../shared/plan-context';
 import { BusyExportRequestSchema, BusyExportPreviewSchema } from '../shared/busy-context';
@@ -28,10 +30,10 @@ export const requests = {
   captureSnapshot: z.undefined(), captureConfigure: CaptureConfigSchema, captureConnect: CaptureConnectSchema, captureGroups: z.undefined(), captureMessages: CapturePageRequestSchema, captureBatches: CapturePageRequestSchema, captureAction: CaptureActionSchema, captureChunks: CaptureChunksRequestSchema, captureCleanup: CaptureCleanupRequestSchema,
   wechatCaptureSnapshot: z.undefined(), wechatCaptureConfigure: CaptureConfigSchema, wechatCaptureConnect: CaptureConnectSchema, wechatCaptureGroups: z.undefined(), wechatCaptureMessages: CapturePageRequestSchema, wechatCaptureBatches: CapturePageRequestSchema, wechatCaptureAction: CaptureActionSchema, wechatCaptureChunks: CaptureChunksRequestSchema, wechatCaptureCleanup: CaptureCleanupRequestSchema,
   accountSnapshot: z.undefined(), refreshAccount: z.undefined(),
-  snapshot: z.undefined(), selectImage: z.undefined(), selectCommandDocuments: z.undefined(), mutate: MutationRequestSchema, undo: IdSchema.optional(),
+  snapshot: z.undefined(), changes: PlannerChangesRequestSchema, selectImage: z.undefined(), selectCommandDocuments: z.undefined(), mutate: MutationRequestSchema, undo: IdSchema.optional(),
   importSource: ImportSourceRequestSchema, analyzeSource: AnalyzeSourceRequestSchema, command: CommandRequestSchema,
   importCourses: CourseImportRequestSchema, saveSettings: SaveSettingsRequestSchema, setApiKey: SetApiKeyRequestSchema, retryApiKey: z.undefined(),
-  backup: z.undefined(), restore: RestoreRequestSchema,
+  backupStatus: z.undefined(), backup: z.undefined(), restore: RestoreRequestSchema,
 } as const;
 export const responses = {
   busyExportPreview: apiResultSchema(BusyExportPreviewSchema), busyExportSave: apiResultSchema(PlanExportSaveResultSchema),
@@ -47,11 +49,11 @@ export const responses = {
   captureSnapshot: apiResultSchema(CaptureSnapshotSchema), captureConfigure: apiResultSchema(CaptureSnapshotSchema), captureConnect: apiResultSchema(CaptureSnapshotSchema), captureGroups: apiResultSchema(z.array(CaptureGroupSchema)), captureMessages: apiResultSchema(CaptureMessagePageSchema), captureBatches: apiResultSchema(CaptureBatchPageSchema), captureAction: apiResultSchema(CaptureSnapshotSchema), captureChunks: apiResultSchema(CaptureChunksSchema), captureCleanup: apiResultSchema(CaptureSnapshotSchema),
   wechatCaptureSnapshot: apiResultSchema(CaptureSnapshotSchema), wechatCaptureConfigure: apiResultSchema(CaptureSnapshotSchema), wechatCaptureConnect: apiResultSchema(CaptureSnapshotSchema), wechatCaptureGroups: apiResultSchema(z.array(CaptureGroupSchema)), wechatCaptureMessages: apiResultSchema(CaptureMessagePageSchema), wechatCaptureBatches: apiResultSchema(CaptureBatchPageSchema), wechatCaptureAction: apiResultSchema(CaptureSnapshotSchema), wechatCaptureChunks: apiResultSchema(CaptureChunksSchema), wechatCaptureCleanup: apiResultSchema(CaptureSnapshotSchema),
   accountSnapshot: apiResultSchema(AccountStateSchema), refreshAccount: apiResultSchema(AccountStateSchema),
-  snapshot: apiResultSchema(SnapshotSchema), selectImage: apiResultSchema(SelectedImageSchema.nullable()), selectCommandDocuments: apiResultSchema(z.array(CommandDocumentSchema).max(MAX_COMMAND_DOCUMENTS).nullable()),
+  snapshot: apiResultSchema(SnapshotSchema), changes: apiResultSchema(PlannerChangesSchema), selectImage: apiResultSchema(SelectedImageSchema.nullable()), selectCommandDocuments: apiResultSchema(z.array(CommandDocumentSchema).max(MAX_COMMAND_DOCUMENTS).nullable()),
   mutate: apiResultSchema(MutationResultSchema), undo: apiResultSchema(MutationResultSchema),
   importSource: apiResultSchema(SourceSchema), analyzeSource: apiResultSchema(AnalysisResultSchema),
   command: apiResultSchema(CommandResultSchema), importCourses: apiResultSchema(CourseImportResultSchema),
-  saveSettings: apiResultSchema(SettingsSchema), setApiKey: apiResultSchema(KeyStatusSchema), retryApiKey: apiResultSchema(KeyStatusSchema), backup: apiResultSchema(BackupResultSchema), restore: apiResultSchema(RestoreResultSchema),
+  saveSettings: apiResultSchema(SettingsSchema), setApiKey: apiResultSchema(KeyStatusSchema), retryApiKey: apiResultSchema(KeyStatusSchema), backupStatus: apiResultSchema(BackupProgressSchema), backup: apiResultSchema(BackupResultSchema), restore: apiResultSchema(RestoreResultSchema),
 } as const;
 export type Method = keyof typeof requests;
 export const methods = Object.keys(requests) as Method[];

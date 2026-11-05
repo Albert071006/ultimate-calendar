@@ -247,10 +247,16 @@ export function createCaptureService(options: {
         const resolvedName = attachmentFileName(locator, a.name);
         bytes = await (options.downloader ?? downloadAttachment)(locator, { fileName: resolvedName });
         if (!permitted(message.accountId, message.groupId, false)) throw new WorkflowError('CANCELLED', '来源群已取消选择，已停止附件处理');
-        const saved = store.putAttachment(a.id, bytes);
+        store.putAttachment(a.id, bytes);
         if (resolvedName !== a.name) store.renameAttachment(a.id, resolvedName);
-        const cached = saved.hash && store.findExtraction(saved.hash, EXTRACTOR_VERSION);
-        if (cached) { store.saveExtraction(a.id, { extractorVersion: EXTRACTOR_VERSION, chunks: cached.chunks.map(({ id: _id, attachmentId: _attachmentId, ...c }) => c) }); return; }
+      }
+      // Cached bytes and freshly downloaded bytes share the same versioned
+      // extraction cache. Retrying a download/extraction must not parse again
+      // when another attachment has already produced the complete result.
+      const hash = store.attachment(a.id)?.hash;
+      const cached = hash && store.findExtraction(hash, EXTRACTOR_VERSION);
+      if (cached && !cached.attachment.error && cached.chunks.length && cached.chunks.every(chunk => chunk.status === 'ready' && !chunk.error)) {
+        store.saveExtraction(a.id, { extractorVersion: EXTRACTOR_VERSION, chunks: cached.chunks.map(({ id: _id, attachmentId: _attachmentId, ...c }) => c) }); return;
       }
       store.setAttachmentStatus(a.id, 'extracting'); emit();
       const result = await options.extract({ bytes, name: store.attachment(a.id)?.name ?? a.name });

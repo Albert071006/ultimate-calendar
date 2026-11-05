@@ -78,6 +78,7 @@
 | method | input | 成功 data |
 | --- | --- | --- |
 | `snapshot` | 省略 `input` | `Snapshot`，含实体、设置、有限操作摘要、用量、密钥是否配置；不含密钥 |
+| `changes` | `{ cursor: { streamId, revision } }` | 自游标以来的有界增量，或要求重新读取快照的 `reset` |
 | `mutate` | `MutationRequestSchema` | `MutationResult`：`applied / preview / clarification` |
 | `undo` | 明确的 transactionId 字符串 | `MutationResult`；不允许无目标撤销 |
 | `command` | `CommandRequestSchema` | `CommandResult`，可能附带 mutationResult，不等于一定保存 |
@@ -239,7 +240,11 @@ GET 初始示例：
 
 普通 RPC 写请求需要持久传输回执；`snapshot`、`ledgerSnapshot`、账户读取/刷新、账本导出、安全备份导出和恢复预览不写普通回执。连接中断、超时或 500 不能当作未执行。先查询原 requestId；确认结果以前保留草稿。独立 API Key 配置及特殊恢复确认不使用此回执机制，分别按配置状态和恢复状态核对，不能自动重发。
 
-`GET /api/v1/events` 是同源 Cookie 的 SSE，不使用 query token。先发 `event: ready`，data 含 identity、sequence；变更使用 `event: changed`，含 reason 和 identity。约 20 秒一次注释心跳。事件用于提示重新读取，不是完整实体 diff 或永久事件日志；sequence 不是可依赖的跨进程历史游标。重连应重新核对 session/identity 并刷新快照。不要关闭 EventSource 后停止所有恢复尝试。
+`GET /api/v1/events` 是同源 Cookie 的 SSE，不使用 query token。先发 `event: ready`，data 含 identity、sequence；变更使用 `event: changed`，含 reason、identity，以及可选的 domains 和 cursor。约 20 秒一次注释心跳。事件用于提示读取增量，不携带完整实体，也不是永久事件日志；sequence 不是可依赖的跨进程历史游标。重连先重新核对 session/identity，再读取增量；游标缺失、历史断档或资料实例改变时回退完整快照。不要关闭 EventSource 后停止所有恢复尝试。
+
+支持增量的客户端发送 `X-Calendar-Sync: 1`。快照带持久化 `cursor`，成功写回执可带 `sync` 补丁，包含本次实际提交的所有关联实体、设置、操作摘要或用量变化。客户端按流标识和版本顺序应用，拒绝缺口和身份改变，忽略已应用的旧回执；正常写后不再重复下载完整快照。服务保留最多 256 次变更、合计 4 MiB 的增量日志，和业务修改在同一事务提交。恢复时生成新流标识。没有能力请求头的旧客户端仍收到原响应形状，旧服务器则沿用完整快照回退。
+
+手机按变更域刷新：日历变更不重新获取所有账本月份；桌面的跨端通知轮询也读取有界增量。保存状态按正在操作的事项显示，只有持久提交回执成功才确认完成；网络结果未知仍查询原操作编号。
 
 HTTP 层失败结构通常为 `{ok:false,error:{code,message}}`，**没有保证带 retryable**，也不保证 error.code 属于领域 ApiErrorSchema。401 的 HTTP code 为 `UNAUTHORIZED`；RPC 内的授权类错误可为 `AUTH`。前端应先处理 HTTP 状态，再解析 RPC 业务结果。
 

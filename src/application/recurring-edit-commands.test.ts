@@ -40,7 +40,8 @@ describe('natural-language recurring occurrence edits', () => {
     const { planner, controller, confirm, task } = setup(async (_url, init) => {
       const request = JSON.parse(String(init?.body)); const { context } = JSON.parse(request.messages[1].content);
       expect(JSON.parse(request.messages.at(-1).content).context.toDate).toBe('2026-11-06');
-      expect(context.blocks).toContainEqual(expect.objectContaining({ id: anchor.id, version: anchor.version, recurrence: anchor.recurrence }));
+      const blocks = Array.isArray(context.blocks) ? context.blocks : context.blocks.rows.map((row: unknown[]) => Object.fromEntries(context.blocks.columns.map((key: string, index: number) => [key, row[index]])));
+      expect(blocks).toContainEqual(expect.objectContaining({ id: anchor.id, version: anchor.version, recurrence: anchor.recurrence }));
       expect(context.recurringSeries).toContainEqual(expect.objectContaining({ seriesId: anchor.recurrence!.seriesId, occurrenceCount: 6 }));
       expect(request.messages[0].content).toContain('scope=this-and-following');
       expect(request.messages[0].content).toContain('scope=this-and-following 允许以已经取消/完成的活动为锚点');

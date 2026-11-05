@@ -19,7 +19,7 @@ export function useLedger(api: PlannerClient, host?: HostCapabilities) {
       else setError(result.error.message);
     } catch { setError('账本暂未读取成功，请重新载入。'); }
   }, [api, month]);
-  useEffect(() => { void refresh(); return api.onChanged(() => void refresh(true)); }, [api, refresh]);
+  useEffect(() => { void refresh(); return api.onChanged(event => { if (!event?.domains || event.domains.includes('ledger')) void refresh(true); }); }, [api, refresh]);
   const save = async (changes: Change[]) => {
     if (!snapshot || busy) return false;
     const signature = JSON.stringify(changes);

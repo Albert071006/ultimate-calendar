@@ -31,6 +31,70 @@ function importSynthetic(ledger: LedgerService, entries: LedgerEntry[]) {
   ledger.import({ format: 'ultimate-calendar-ledger', formatVersion: 1, entries, balanceSnapshots: [], rules: DEFAULT_LEDGER_RULES, audit: [], sources: [] }, 'synthetic-receivable-import');
 }
 describe('main assistant local ledger commands',()=>{
+  it('hydrates a summary-only target before accepting a proposed correction, and commits once', async () => {
+    const edit = { kind: 'mutate', changes: [{ type: 'updateEntry', id: 'index-19', expectedVersion: 1, patch: { note: '核对后的说明' }, note: '用户要求更正' }] };
+    const { controller, ledger, payloads } = setup([route, edit, edit]);
+    importSynthetic(ledger, Array.from({ length: 20 }, (_, i) => syntheticEntry(`index-${String(i).padStart(2, '0')}`, { title: '合成交通费', originalText: `私人原文标记-${i}` })));
+    const before = ledger.snapshot().revision;
+    const result = await controller.command({ operationId: 'hydrate-target', text: '更正之前那笔说明' });
+    expect(result.ok).toBe(true);
+    expect(payloads).toHaveLength(3);
+    const first = JSON.parse(payloads[1]!.messages[1]!.content).context;
+    const second = JSON.parse(payloads[2]!.messages[1]!.content).context;
+    expect(first.entryIndex.rows).toHaveLength(20);
+    expect(first.entries).toHaveLength(8);
+    expect(first.entries.some((entry: { id: string }) => entry.id === 'index-19')).toBe(false);
+    expect(JSON.stringify(first)).not.toContain('私人原文标记-19');
+    expect(second.entries.find((entry: { id: string }) => entry.id === 'index-19').originalText).toBe('私人原文标记-19');
+    expect(ledger.snapshot().entries.find(entry => entry.id === 'index-19')?.note).toBe('核对后的说明');
+    expect(ledger.snapshot().revision).toBe(before + 1);
+  });
+  it('bounds explicit detail reads and never turns a read request into a write', async () => {
+    const { controller, ledger, payloads } = setup([route, { kind: 'read_entries', ids: ['index-19'] }, { kind: 'read_entries', ids: ['index-19'] }]);
+    importSynthetic(ledger, Array.from({ length: 20 }, (_, i) => syntheticEntry(`index-${String(i).padStart(2, '0')}`, { title: '合成交通费' })));
+    const before = ledger.snapshot();
+    const result = await controller.command({ operationId: 'read-only-detail', text: '那笔账目怎么回事' });
+    expect(result.ok && result.data.conversationState?.phase).toBe('clarification');
+    expect(payloads).toHaveLength(3);
+    expect(ledger.snapshot().entries).toEqual(before.entries);
+    expect(ledger.snapshot().revision).toBe(before.revision);
+  });
+
+  it.each(['initial', 'requested'] as const)('includes related refunds and AA returns with %s details, and saves the new refund once', async mode => {
+    const originalId = mode === 'initial' ? 'index-00' : 'index-16';
+    const refund = { kind: 'mutate', changes: [{ type: 'createEntry', key: 'new:0', values: {
+      kind: 'refund', date: '2026-10-23', month: '2026-10', title: '合成追加退款', category: '退款', amountCents: 1000, personalCents: 0,
+      cashflows: [{ accountId: 'alipay', deltaCents: 1000 }], relatedEntryIds: [originalId], adjustments: [{ targetEntryIds: [originalId], amountCents: 1000 }],
+    } }] };
+    const { controller, ledger, payloads } = setup(mode === 'initial' ? [route, refund] : [route, refund, refund]);
+    const entries = Array.from({ length: 20 }, (_, i) => syntheticEntry(`index-${String(i).padStart(2, '0')}`, { title: '合成交通费' }));
+    entries[mode === 'initial' ? 0 : 16] = syntheticEntry(originalId, { title: '合成交通费', amountCents: 10000, personalCents: 8000,
+      cashflows: [{ accountId: 'alipay', deltaCents: -10000 }], relatedEntryIds: ['index-19'] });
+    entries[18] = syntheticEntry('index-18', { title: '合成回款甲', kind: 'refund', amountCents: 3000, personalCents: 0,
+      cashflows: [{ accountId: 'alipay', deltaCents: 3000 }], adjustments: [{ targetEntryIds: [originalId], amountCents: 3000, note: '' }] });
+    entries[19] = syntheticEntry('index-19', { title: '合成回款乙', kind: 'aa_return', amountCents: 2000, personalCents: 0,
+      cashflows: [{ accountId: 'wechat', deltaCents: 2000 }], relatedEntryIds: [originalId] });
+    importSynthetic(ledger, entries);
+    const before = ledger.snapshot();
+    const request = { operationId: `linked-refund-${mode}`, text: '给之前那笔再记10元退款到支付宝' };
+    const result = await controller.command(request);
+    expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: 'saved' } } });
+    const first = JSON.parse(payloads[1]!.messages[1]!.content).context;
+    const provided = JSON.parse(payloads.at(-1)!.messages[1]!.content).context;
+    if (mode === 'requested') expect(first.entries.some((entry: { id: string }) => [originalId, 'index-18', 'index-19'].includes(entry.id))).toBe(false);
+    expect(provided.entries.find((entry: { id: string }) => entry.id === 'index-18').adjustments).toEqual([{ targetEntryIds: [originalId], amountCents: 3000, note: '' }]);
+    expect(provided.entries.find((entry: { id: string }) => entry.id === 'index-19').relatedEntryIds).toEqual([originalId]);
+    expect(provided.entries.find((entry: { id: string }) => entry.id === originalId).personalCents).toBe(8000);
+    const after = ledger.snapshot();
+    expect(after.entries).toHaveLength(before.entries.length + 1);
+    expect(after.entries.filter(entry => entries.some(original => original.id === entry.id))).toEqual(before.entries);
+    expect(after.summary.personalCents).toBe(before.summary.personalCents - 1000);
+    expect(after.revision).toBe(before.revision + 1);
+    expect(await controller.command(request)).toEqual(result);
+    expect(ledger.snapshot()).toEqual(after);
+    expect(payloads).toHaveLength(mode === 'initial' ? 2 : 3);
+  });
+
   it('routes a text expense without sending calendar records, and retains earlier facts for the full ledger parser', async () => {
     const { controller, repository, payloads } = setup([route, expense('alipay')]);
     const planner = createPlanner(repository);

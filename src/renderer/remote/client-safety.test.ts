@@ -25,7 +25,7 @@ async function fixture() {
   cleanup.push(() => service.close());
   const memory = createMemoryStorage(); let failWrite: (key: string, value: unknown) => boolean = () => false;
   const storage: OfflineStorage = { read: memory.read, remove: memory.remove, async write(key, value) { if (failWrite(key, value)) throw Error('Synthetic IndexedDB interruption'); await memory.write(key, value); } };
-  let token: string | undefined; let online = true; let afterCommittedWrite: (() => void) | undefined;
+  let token: string | undefined; let online = true; let afterCommittedWrite: (() => void) | undefined, legacyReceipt = false;
   const calls: { path: string; input: unknown }[] = [];
   const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
   const fetcher: typeof fetch = async (input, init = {}) => {
@@ -43,7 +43,10 @@ async function fixture() {
       const rpc = /^\/api\/v1\/rpc\/(.+)$/.exec(url.pathname);
       if (rpc) {
         const method = RemoteMethodSchema.parse(rpc[1]); const result = await service.rpc(method, RemoteRequestSchema.parse(payload), session.device.id);
-        if (!['snapshot', 'ledgerSnapshot'].includes(method)) { const hook = afterCommittedWrite; afterCommittedWrite = undefined; hook?.(); }
+        if (!['snapshot', 'changes', 'ledgerSnapshot'].includes(method)) {
+          const hook = afterCommittedWrite; afterCommittedWrite = undefined; hook?.();
+          if (legacyReceipt && result && typeof result === 'object') { legacyReceipt = false; const { sync: _sync, ...receipt } = result as Record<string, unknown>; return json(receipt); }
+        }
         return json(result);
       }
       const operation = /^\/api\/v1\/operations\/(.+)$/.exec(url.pathname);
@@ -56,7 +59,7 @@ async function fixture() {
   const other = service.state.pair(service.state.createPairingCode(), '合成其他设备');
   const invokeOther = (method: 'mutate' | 'ledgerMutate' | 'ledgerSnapshot', input: unknown) => service.rpc(method, RemoteRequestSchema.parse({ requestId: crypto.randomUUID(), identity: service.state.identity(), input }), other.device.id);
   const setOnline = async (value: boolean, active: RemoteController = controller) => { online = value; await active.reconnect(); };
-  return { service, controller, calls, open, invokeOther, setOnline, fault: (test: typeof failWrite) => { failWrite = test; }, afterCommit: (hook: () => void) => { afterCommittedWrite = hook; } };
+  return { service, controller, calls, open, invokeOther, setOnline, fault: (test: typeof failWrite) => { failWrite = test; }, afterCommit: (hook: () => void, legacy = false) => { afterCommittedWrite = hook; legacyReceipt = legacy; } };
 }
 
 describe('remote client safety regressions', () => {
@@ -126,8 +129,8 @@ describe('remote client safety regressions', () => {
     expect(f.service.snapshot().tasks).toHaveLength(0); expect(f.calls.filter(call => call.path === '/api/v1/rpc/mutate')).toHaveLength(0);
   });
 
-  it('does not downgrade an already confirmed receipt to a discardable conflict when canonical generation changes', async () => {
-    const f = await fixture(); f.afterCommit(() => f.service.state.advanceGeneration());
+  it('does not downgrade a confirmed legacy receipt to a discardable conflict when its required canonical refresh crosses generations', async () => {
+    const f = await fixture(); f.afterCommit(() => f.service.state.advanceGeneration(), true);
     expect(await f.controller.client.mutate(taskInput('已确认后遇代际变化的合成任务'))).toMatchObject({ ok: true, data: { status: 'applied' } });
     expect(f.service.snapshot().tasks).toHaveLength(1);
     const item = f.controller.getState().pending[0]!; expect(item.result).toMatchObject({ ok: true, data: { status: 'applied' } });

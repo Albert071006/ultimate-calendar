@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { createRepository, type Repository } from '../storage/repository';
 import { createPlanner } from '../domain/planner';
 import { MutationRequestSchema, type DesktopAPI } from '../shared/contracts';
@@ -94,7 +94,7 @@ it('separates one work session from completing its whole task and can undo the t
   expect(mutate.mock.calls.at(-1)![0]).toMatchObject({ mutations: [{ type: 'finishTask', id: afterSession.tasks[0]!.id, expectedVersion: afterSession.tasks[0]!.version, completed: true }] });
   expect(planner.snapshot().tasks[0]!.status).toBe('done');
   expect(planner.snapshot().blocks).toEqual(afterSession.blocks);
-  expect(card.getByText('任务状态').nextElementSibling?.textContent).toBe('已完成');
+  await waitFor(() => expect(card.getByText('任务状态').nextElementSibling?.textContent).toBe('已完成'));
   expect(within(drawer).queryByRole('button', { name: '合成作业' })).toBeNull();
 
   fireEvent.click(screen.getByRole('button', { name: '撤销上次操作' }));

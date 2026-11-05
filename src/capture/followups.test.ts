@@ -1,3 +1,4 @@
+import { expandCaptureTable } from './request-wire';
 import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -53,17 +54,17 @@ describe('QQ event supplements', () => {
     }]).ids[0]!;
     const deleted = ingest('deleted', at, '已删除的旧说法');
     f.store.cleanup({ accountId: '100', groupId: '200', before: '2026-10-23T12:01:00+08:00' });
-    const correction = ingest('correction', '2026-10-23T12:30:00+08:00', '小组人数不限，先确定要参加', '200', ['all']);
-    const other = ingest('other-recipient', '2026-10-23T12:40:00+08:00', '请另一个同学收表', '200', ['999']);
+    ingest('correction', '2026-10-23T12:30:00+08:00', '小组人数不限，先确定要参加', '200', ['all']);
+    ingest('other-recipient', '2026-10-23T12:40:00+08:00', '请另一个同学收表', '200', ['999']);
     const recalled = ingest('recalled', '2026-10-23T12:45:00+08:00', '已撤回的更改'); f.store.markMessageChanged(recalled);
     const excluded = [deleted, recalled, ingest('stale', '2026-10-22T12:59:00+08:00', '超过24小时'),
       ingest('different-group', '2026-10-23T12:50:00+08:00', '另一个群', '201'),
       ingest('future', '2026-10-23T14:00:00+08:00', '后来的消息')];
     await analyzeCapture({ ...options(f), fetch: async (_url, request) => {
       const input = JSON.parse(JSON.parse(String(request?.body)).messages.find((m: { role: string }) => m.role === 'user').content[0].text);
-      expect(input.context.find((item: { id: string }) => item.id === correction)).toMatchObject({ text: '小组人数不限，先确定要参加', contextOnly: true, recipient: { audience: 'all', sender: 'other' } });
-      expect(input.context.find((item: { id: string }) => item.id === other)).toMatchObject({ recipient: { audience: 'others' }, contextOnly: true });
-      for (const id of excluded) expect(input.context.some((item: { id: string }) => item.id === id)).toBe(false);
+      expect(input.context.find((item: { text: string }) => item.text === '小组人数不限，先确定要参加')).toMatchObject({ text: '小组人数不限，先确定要参加', recipient: { audience: 'all', sender: 'other' } });
+      expect(input.context.find((item: { text: string }) => item.text === '请另一个同学收表')).toMatchObject({ recipient: { audience: 'others' } });
+      for (const id of excluded) expect(input.context.some((item: { text: string }) => item.text === f.store.message(id)?.text)).toBe(false);
       expect(input.units).toHaveLength(1);
       return response([f.extracted]);
     } });
@@ -88,8 +89,9 @@ describe('QQ event supplements', () => {
     f.repository.writeInternal({ operationId: 'long-action', changes: [{ entity: 'candidate', id: f.original.id, expectedVersion: f.original.version, values: { action: longAction } }] });
     await analyzeCapture({ ...options(f), fetch: async (_url, request) => {
       const input = JSON.parse(JSON.parse(String(request?.body)).messages.find((m: { role: string }) => m.role === 'user').content[0].text);
+      input.existingCandidates = expandCaptureTable(input.existingCandidates);
       expect(input.existingCandidates).toHaveLength(1);
-      expect(input.existingCandidates[0]).toMatchObject({ id: f.original.id, action: longAction, conditions: ['按分组入座'], location: '示例教室', sourceSentAt: [at] });
+      expect(input.existingCandidates[0]).toMatchObject({ id: 'c1', action: longAction, conditions: ['按分组入座'], location: '示例教室', sourceSentAt: [at] });
       expect(JSON.stringify(input.existingCandidates)).not.toContain(other.id);
       return response([f.extracted]);
     } });

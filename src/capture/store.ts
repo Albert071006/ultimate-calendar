@@ -523,8 +523,10 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
       InstantSchema.parse(at);
       return transaction(() => {
         const value = batch(id), result = value?.result;
+        const savedDetailRequest = result && typeof result === 'object' && !Array.isArray(result)
+          && Array.isArray(result.detailRequests) && result.detailRequests.length > 0 && value?.attempts.at(-1)?.status === 'succeeded';
         if (!value || value.status !== 'preparing' || !result || typeof result !== 'object' || Array.isArray(result)
-          || !Array.isArray(result.completed) || !result.completed.length || result.pendingResponse || result.final !== false
+          || !Array.isArray(result.completed) || !result.completed.length && !savedDetailRequest || result.pendingResponse || result.final !== false
           || value.attempts.at(-1)?.status === 'requesting') throw Error('仅已保存分片进度的准备中批次可让出队列');
         value.status = 'pending'; value.updatedAt = at; value.error = null; saveBatch(value); return value;
       });

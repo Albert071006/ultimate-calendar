@@ -4,7 +4,8 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { SnapshotSchema, apiResultSchema, type ApiResult, type Settings, type Snapshot } from '../shared/contracts';
+import { SnapshotSchema, PlannerChangesSchema, apiResultSchema, type ApiResult, type Settings, type Snapshot, type PlannerPatch } from '../shared/contracts';
+import { applyPlannerPatch } from '../shared/planner-sync';
 import { RemoteIdentitySchema, type RemoteIdentity, type RemoteMethod } from '../shared/remote';
 import { BackupExportDataSchema, MAX_CLOUD_EXPORT_BYTES } from '../shared/cloud-management';
 import { nowInstant } from '../domain/time';
@@ -61,6 +62,11 @@ export function createRemoteDesktopShell(options: Options) {
   function snapshot(value: Snapshot): Snapshot {
     latest = { ...value, settings: { ...value.settings, closeToTray: device.closeToTray, autoLaunch: device.autoLaunch } };
     return latest;
+  }
+  function patch(value: PlannerPatch): PlannerPatch {
+    const overlay = { ...value, ...(value.settings ? { settings: { ...value.settings, closeToTray: device.closeToTray, autoLaunch: device.autoLaunch } } : {}) };
+    if (latest) { const next = applyPlannerPatch(latest, overlay); if (next) snapshot(next); }
+    return overlay;
   }
   function saveDeviceSettings(value: Pick<Settings, 'closeToTray' | 'autoLaunch'>) {
     const next = DeviceSettings.parse({ version: 1, closeToTray: value.closeToTray, autoLaunch: value.autoLaunch });
@@ -168,7 +174,13 @@ export function createRemoteDesktopShell(options: Options) {
     try {
       const identity = RemoteIdentitySchema.parse(await options.getIdentity()), encoded = JSON.stringify(identity);
       // A failed read must not advance the reminder cursor using an old in-memory snapshot.
-      const result = successfulSnapshot.parse(await options.rpc('snapshot'));
+      let result: ApiResult<Snapshot>;
+      if (latest?.cursor && (!currentIdentity || currentIdentity === encoded)) {
+        const changes = apiResultSchema(PlannerChangesSchema).parse(await options.rpc('changes', { cursor: latest.cursor }));
+        if (!changes.ok) return;
+        const next = changes.data.status === 'patch' ? applyPlannerPatch(latest, changes.data.patch) : null;
+        result = next ? { ok: true, data: next } : successfulSnapshot.parse(await options.rpc('snapshot'));
+      } else result = successfulSnapshot.parse(await options.rpc('snapshot'));
       if (!result.ok || closed) return;
       const value = snapshot(result.data);
       if (!scheduler || currentIdentity !== encoded) {
@@ -242,7 +254,7 @@ export function createRemoteDesktopShell(options: Options) {
   }
   window.once('closed', close);
   return {
-    snapshot, saveDeviceSettings, close, isInstalling: updates.isInstalling,
+    snapshot, patch, saveDeviceSettings, close, isInstalling: updates.isInstalling,
     setTrayItems(items: MenuItemConstructorOptions[]) { extraTrayItems = items; refreshTray(); },
     async handle(method: string): Promise<ApiResult<unknown> | null> {
       if (method === 'updateSnapshot') return { ok: true, data: updates.snapshot() };

@@ -1,3 +1,4 @@
+import { LedgerContextIntentSchema, expandLedgerDetailIds, initialLedgerDetailIds, referencedLedgerEntries } from '../ai/ledger-context-details';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { commandImages, hasCommandAttachments, ImportSourceRequestSchema, AnalyzeSourceRequestSchema, CommandRequestSchema, CommandIntentSchema, CourseImportRequestSchema, SaveSettingsRequestSchema, WorkflowReceiptSchema, SourceSchema, CandidateSchema, InstantSchema, type PlannerService, type Source, type ApiResult, type AnalysisResult, type CommandResult, type CourseImportResult, type Settings, type WorkflowReceipt, type ImportSourceRequest, type AnalyzeSourceRequest, type CommandRequest, type CourseImportRequest } from '../shared/contracts';
@@ -180,7 +181,21 @@ export function createController(options: ControllerOptions) {
           const defaultQueryMonth = request.domain === 'ledger' ? request.ledgerView?.month ?? currentMonth : currentMonth;
           const snapshot = ledger.snapshot(defaultQueryMonth);
           const ledgerView = ledgerContext(snapshot, request, now());
-          const proposal: z.infer<typeof LedgerCommandProposalSchema> = prior?.ledgerProposal ?? { intent: await model(LedgerIntentSchema, ledgerMessages(ledgerView, request), `${input.operationId}:ledger`, 'command', '账本解析'), revision: snapshot.revision };
+          const readLedgerIntent = async (): Promise<z.infer<typeof LedgerIntentSchema>> => {
+            const known = new Set(ledgerView.entries.map(entry => entry.id));
+            const details = new Set(initialLedgerDetailIds(ledgerView));
+            for (let round = 0; round < 3; round++) {
+              const value = await model(LedgerContextIntentSchema, ledgerMessages(ledgerView, request, [...details]), `${input.operationId}:ledger:${round}`, 'command', '账本解析');
+              const requested = value.kind === 'read_entries' ? value.ids : referencedLedgerEntries(value);
+              if (requested.some(id => !known.has(id))) throw new WorkflowError('AI_RESPONSE', '未找到提案关联的原账目，请提供日期或项目');
+              const missing = expandLedgerDetailIds(ledgerView, requested).filter(id => !details.has(id));
+              if (value.kind !== 'read_entries' && !missing.length) return value;
+              if (!missing.length || round === 2) return { kind: 'clarification', question: '尚未能根据原记录确定这次操作，账目未保存。请补充需要处理的日期或项目。' };
+              for (const id of missing) details.add(id);
+            }
+            throw new WorkflowError('AI_RESPONSE', '账目详情尚未核对，请重新查询');
+          };
+          const proposal: z.infer<typeof LedgerCommandProposalSchema> = prior?.ledgerProposal ?? { intent: await readLedgerIntent(), revision: snapshot.revision };
           // Resolve the visible ledger range once, so a retried query stays on the
           // same month. Calendar selection never changes a transaction's date.
           if (proposal.intent.kind === 'query' && proposal.intent.detail !== 'loans' && !proposal.intent.query.month && !proposal.intent.query.from && !proposal.intent.query.to) {

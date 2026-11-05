@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { copyFile, mkdir, stat } from 'node:fs/promises';
 import { rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { createBackup, openBackupFile, requireRestoreSpace, requireRestoreStagingSpace, restoreOpenedBackup, type OpenBackupFile } from '../storage/backups';
+import { createBackup, inspectBackupFile, openBackupFile, requireRestoreSpace, requireRestoreStagingSpace, restoreOpenedBackup, type OpenBackupFile } from '../storage/backups';
 import { kinds, type Repository } from '../storage/repository';
 import { WorkflowError } from '../ai/deepseek';
 import type { RestoreResult } from '../shared/contracts';
@@ -57,6 +57,7 @@ export function createRestoreManager(repository: Repository, canRestore: () => b
       requireRestoreSpace(repository, chosen.file);
       const safetyBackupPath = join(resolveBackupDirectory(dirname(repository.path)), `before-restore-${randomUUID()}.sqlite`);
       createBackup(repository, safetyBackupPath);
+      inspectBackupFile(safetyBackupPath);
       try { restoreOpenedBackup(repository, chosen.file, captureStore); }
       finally { dispose(); }
       return { status: 'restored', message: `已恢复备份；恢复前数据已另存安全备份。${captureStore ? 'QQ 收集与自动分析已暂停，请核对资料后再启用。' : ''}`, safetyBackupPath };

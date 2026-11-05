@@ -31,7 +31,7 @@ async function main() {
   }
   if (command === 'backup') {
     const service = createRemoteService({ dataDirectory: directory, backupDirectory: values.get('--backup-dir'), startupBackup: false, scheduleMonthlyAllowance: false, getApiKey: async () => null });
-    try { process.stdout.write(`已导出脱敏安全备份：${service.backup()}\n`); } finally { await service.close(); }
+    try { process.stdout.write(`已导出脱敏安全备份：${await service.backup()}\n`); } finally { await service.close(); }
     return;
   }
   if (command === 'advance-generation') {

@@ -27,7 +27,7 @@ export const documentCommandInstructions = '文件理解：文件资料是用户
 // Every value comes from this request's snapshot; no application data is cached here.
 const referenceFields = [
   'timezone', 'availableServices', 'userProfile', 'preferences', 'accounts', 'rules', 'academicTerm',
-  'courses', 'courseExceptions', 'goals', 'tasks', 'blocks', 'candidates', 'recurringSeries', 'entries', 'categories',
+  'courses', 'courseExceptions', 'goals', 'tasks', 'blocks', 'candidates', 'recurringSeries', 'entryIndex', 'entries', 'categories',
   'calendar', 'resourceLinks',
 ] as const;
 

@@ -8,7 +8,7 @@ import { withoutOriginalText } from './cloud-export';
 import type { RemoteState } from './state';
 
 const hash = (value: unknown) => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
-export function createCloudRestore(options: { repository: Repository; ledger: LedgerService; state: RemoteState; backup(): string | undefined; hasPendingWrites(): boolean; now?(): number }) {
+export function createCloudRestore(options: { repository: Repository; ledger: LedgerService; state: RemoteState; backup(): string | undefined | Promise<string | undefined>; hasPendingWrites(): boolean; now?(): number }) {
   const now = options.now ?? Date.now;
   type Preview = { deviceId: string; digest: string; identity: string; liveDigest: string; expires: number; payload: ReturnType<typeof validateSafeBackup> };
   const previews = new Map<string, Preview>();
@@ -28,12 +28,17 @@ export function createCloudRestore(options: { repository: Repository; ledger: Le
       previews.set(token, { deviceId, digest, expires, identity: hash(options.state.identity()), liveDigest: liveDigest(), payload });
       return { token, digest, expiresAt: new Date(expires).toISOString(), createdAt: (raw as { createdAt: string }).createdAt, ...counts(payload), goalCount: payload.planner.entities.goal.length };
     },
-    confirm(input: unknown, deviceId: string) {
+    async confirm(input: unknown, deviceId: string) {
       const { token, digest } = CloudRestoreConfirmRequestSchema.parse(input), preview = previews.get(token);
       if (!preview || preview.deviceId !== deviceId || preview.digest !== digest || preview.expires <= now()) throw new WorkflowError('CONFLICT', '恢复预览已失效或不属于当前设备，请重新选择并预览备份');
       if (preview.identity !== hash(options.state.identity()) || preview.liveDigest !== liveDigest()) { previews.delete(token); throw new WorkflowError('CONFLICT', '预览后云端资料已变化，未覆盖；请重新预览并确认'); }
       if (options.hasPendingWrites()) throw new WorkflowError('CONFLICT', '云端还有进行中的修改，请等待完成后重新预览恢复');
-      if (!options.backup()) throw new WorkflowError('STORAGE', '恢复前安全备份未完成，云端资料未替换');
+      if (!await options.backup()) throw new WorkflowError('STORAGE', '恢复前安全备份未完成，云端资料未替换');
+      // The worker yields to other callbacks. Recheck before replacing either
+      // business store, even when a caller already holds a restore write barrier.
+      if (options.hasPendingWrites() || preview.identity !== hash(options.state.identity()) || preview.liveDigest !== liveDigest()) {
+        previews.delete(token); throw new WorkflowError('CONFLICT', '备份期间云端资料已变化，未覆盖；请重新预览并确认');
+      }
       previews.clear();
       const marker = { status: 'processing' as const, at: new Date(now()).toISOString(), generation: options.state.identity().generation + 1 };
       options.state.saveRestoreStatus(marker);

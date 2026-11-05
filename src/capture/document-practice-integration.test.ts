@@ -1,3 +1,4 @@
+import { expandCaptureTable } from './request-wire';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -40,7 +41,9 @@ function options(f: ReturnType<typeof fixture>) {
   return { store: f.store, repository: f.repository, batch: f.batch, getApiKey: async () => 'synthetic', canContinue: () => true };
 }
 function input(request?: RequestInit): Input {
-  return JSON.parse(JSON.parse(String(request?.body)).messages.find((message: { role: string }) => message.role === 'user').content[0].text);
+  const value = JSON.parse(JSON.parse(String(request?.body)).messages.find((message: { role: string }) => message.role === 'user').content[0].text);
+  value.existingCandidates = expandCaptureTable(value.existingCandidates);
+  return value;
 }
 function extracted(sent: Input, index: number, relation: ExtractedCandidate['relation'] = { kind: 'new', candidateId: null }): Extracted {
   return { title: `完成第 ${index + 1} 个具体练习`, action: steps[index]!, benefit: '', benefitKind: 'unknown', potentialBenefit: '',

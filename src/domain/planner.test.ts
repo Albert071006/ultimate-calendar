@@ -7,7 +7,7 @@ import { createRepository, type Repository } from '../storage/repository';
 import { createPlanner } from './planner';
 import { buildCalendar } from './calendar';
 import { collectReminders } from './reminders';
-import { createBackup, restoreBackup } from '../storage/backups';
+import { createBackup, flushAutomaticBackups, restoreBackup } from '../storage/backups';
 import { DEFAULT_SETTINGS, MutationRequestSchema, type MutationInput, type MutationResult } from '../shared/contracts';
 
 const roots: string[] = [];
@@ -412,11 +412,12 @@ describe('calendar, reminders and backups', () => {
     const badJournal = join(dir, 'journal.sqlite'); copyFileSync(path, badJournal); const db2 = new DatabaseSync(badJournal); const row = db2.prepare('SELECT id,payload FROM journal LIMIT 1').get()!; const journal = JSON.parse(row['payload'] as string); journal.details[0].entity = 'source'; db2.prepare('UPDATE journal SET payload=? WHERE id=?').run(JSON.stringify(journal), row['id'] as string); db2.close();
     expect(() => restoreBackup(r, badJournal)).toThrow(); expect(p.snapshot().tasks).toHaveLength(1);
   });
-  it('persists settings/preferences/usage and retains seven daily backups', () => {
+  it('persists settings/preferences/usage and retains seven daily backups', async () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-01T10:00:00+08:00'));
     const { repository: r, planner: p, mutate, dir, path } = setup();
     r.saveSettings({ showPending: false }); mutate({ type: 'create', entity: 'preference', values: { text: '上午学习' } });
-    for (let d = 2; d <= 10; d++) { vi.setSystemTime(new Date(`2026-10-${String(d).padStart(2, '0')}T10:00:00+08:00`)); mutate({ type: 'create', entity: 'task', values: { title: `day${d}` } }); }
+    await flushAutomaticBackups(r);
+    for (let d = 2; d <= 10; d++) { vi.setSystemTime(new Date(`2026-10-${String(d).padStart(2, '0')}T10:00:00+08:00`)); mutate({ type: 'create', entity: 'task', values: { title: `day${d}` } }); await flushAutomaticBackups(r); }
     expect(readdirSync(join(dir, 'backups')).filter(f => f.startsWith('auto-'))).toHaveLength(7);
     r.addUsage({ id: 'usage', operationId: 'synthetic', createdAt: '2026-10-10T10:00:00+08:00', model: 'fixture', purpose: 'source', inputTokens: 10, outputTokens: 5, cachedInputTokens: 0, totalTokens: 15, estimatedCost: null, currency: null });
     expect(p.snapshot().settings.showPending).toBe(false); r.close(); const reopened = createRepository(path); repos.push(reopened); expect(reopened.snapshot().preferences[0]!.text).toBe('上午学习'); expect(reopened.snapshot().tokenUsage[0]!.totalTokens).toBe(15);

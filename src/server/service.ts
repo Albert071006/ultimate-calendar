@@ -15,7 +15,9 @@ import { sharedSettings } from '../shared/cloud-management';
 import { CaptureUserProfileSchema } from '../shared/profile-settings';
 import { remoteInputs, remoteOutputs } from './protocol';
 import { RemoteFault, RemoteState, type BackupStatus } from './state';
-import { createSafeBackup, redactEvidence, SOURCE_PLACEHOLDER } from './backup';
+import { redactEvidence, SOURCE_PLACEHOLDER } from './backup';
+import { createBackupScheduler } from '../storage/backup-scheduler';
+import { createBackupWorker } from '../storage/backup-worker-client';
 import { importDistilled } from './distilled';
 import { DistilledRequestSchema, type DistilledRequest } from '../shared/distilled';
 import { AiConfigurationUpdateSchema, AiConfigurationClearSchema } from '../shared/ai-configuration';
@@ -69,7 +71,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
     let repository: Repository | undefined, ledger: LedgerService | undefined, state: RemoteState | undefined;
     try {
       // Raw mobile inputs are temporary and must never enter the desktop full-DB backup.
-      repository = createRepository(join(options.dataDirectory, 'planner.sqlite'), { automaticBackup: () => {} });
+      repository = createRepository(join(options.dataDirectory, 'planner.sqlite'), { automaticBackup: () => {}, sanitizeSync: redactEvidence });
       const planner = createPlanner(repository, { automaticBackup: () => {} }); ledger = createLedgerService(repository.path);
       state = options.state ?? new RemoteState(join(options.dataDirectory, 'remote-state.sqlite'));
       return { repository, planner, ledger, state };
@@ -114,21 +116,19 @@ export function createRemoteService(options: RemoteServiceOptions) {
   if (![maxWrites, maxDeviceWrites].every(value => Number.isInteger(value) && value > 0 && value <= 128)) { account.stop(); ledger.close(); repository.close(); if (!options.state) state.close(); releaseDirectory(); throw Error('写请求并发上限必须为1–128'); }
   let backupStatus: BackupStatus = state.backupStatus();
   let restoreStatus = state.restoreStatus();
-  let lastBackup = 0;
-  function backup(force = false) {
-    if (!force && Date.now() - lastBackup < 60_000) return;
-    const at = new Date().toISOString(); backupStatus = { ...backupStatus, lastAttemptAt: at };
-    try {
-      const path = createSafeBackup({ repository, ledger, directory: options.backupDirectory }); lastBackup = Date.now();
-      backupStatus = { status: 'ok', lastAttemptAt: at, lastSuccessAt: new Date().toISOString(), consecutiveFailures: 0, failureCode: null };
-      try { state.saveBackupStatus(backupStatus); } catch { /* In-memory status remains visible if status persistence is unavailable. */ }
-      return path;
-    } catch (error) {
-      backupStatus = { ...backupStatus, status: 'failed', consecutiveFailures: backupStatus.consecutiveFailures + 1, failureCode: 'BACKUP_FAILED' };
-      try { state.saveBackupStatus(backupStatus); } catch { /* Backup failure must not hide an already committed business result. */ }
-      try { options.onBackupError?.(error); } catch { /* Diagnostics are not a business transaction. */ }
-    }
-  }
+  const backupWorker = createBackupWorker();
+  const persistBackupStatus = () => { try { state.saveBackupStatus(backupStatus); } catch { /* Keep operational status visible in memory. */ } };
+  const backups = createBackupScheduler({
+    run: signal => backupWorker.run({ kind: 'safe', databasePath: repository.path, directory: options.backupDirectory }, signal),
+    onAttempt: at => { backupStatus = { ...backupStatus, lastAttemptAt: at }; },
+    onSuccess: (_path, at) => { backupStatus = { status: 'ok', lastAttemptAt: backupStatus.lastAttemptAt, lastSuccessAt: at, consecutiveFailures: 0, failureCode: null }; persistBackupStatus(); },
+    onFailure: error => {
+      backupStatus = { ...backupStatus, status: 'failed', consecutiveFailures: backupStatus.consecutiveFailures + 1, failureCode: 'BACKUP_FAILED' }; persistBackupStatus();
+      try { options.onBackupError?.(error); } catch { /* Diagnostics must not reject a committed business write. */ }
+    },
+  });
+  async function backup(force = false) { try { return await backups.flush(force); } catch { return undefined; } }
+  let restoring: Promise<unknown> | undefined;
   function cleanupEvidence() {
     repository.transact(value => {
       for (const source of records(value, 'source')) {
@@ -142,18 +142,20 @@ export function createRemoteService(options: RemoteServiceOptions) {
     });
   }
   try { cleanupEvidence(); } catch (error) { account.stop(); ledger.close(); repository.close(); if (!options.state) state.close(); releaseDirectory(); throw error; }
-  if (options.startupBackup !== false) backup(true);
-  const maintenance = setInterval(() => { try { cleanupEvidence(); backup(); } catch (error) { options.onBackupError?.(error); } }, 60 * 60_000); maintenance.unref();
-  const emit = (reason: ChangedEvent['reason']) => { for (const listener of listeners) { try { listener({ reason }); } catch { /* a disconnected observer cannot reject a committed operation */ } } };
+  // Startup also recovers a dirty state whose process ended before the timer ran.
+  if (options.startupBackup !== false) backups.markDirty();
+  const maintenance = setInterval(() => { if (restoring) return; try { cleanupEvidence(); backups.markDirty(); } catch (error) { options.onBackupError?.(error); } }, 60 * 60_000); maintenance.unref();
+  const emit = (reason: ChangedEvent['reason'], domains: ChangedEvent['domains'] = ['planner']) => { for (const listener of listeners) { try { listener({ reason, domains, cursor: repository.cursor() }); } catch { /* a disconnected observer cannot reject a committed operation */ } } };
   const restore = createCloudRestore({ repository, ledger, state, backup: () => backup(true), hasPendingWrites: () => running.size > 0 });
   const allowance = options.scheduleMonthlyAllowance === false ? null : startAllowanceScheduler({ ledger,
-    isIdle: () => lifecycle === 'running' && running.size === 0,
-    onChanged: () => { backup(true); emit('mutation'); },
+    isIdle: () => lifecycle === 'running' && running.size === 0 && !restoring,
+    onChanged: () => { backups.markDirty(); emit('mutation', ['ledger']); },
     onError: () => { console.error('Monthly allowance check failed; will retry automatically.'); },
   });
   async function invoke(method: RemoteMethod, input: unknown, deviceId: string, modernAiSettings: boolean, modernProfileSettings: boolean): Promise<unknown> {
     switch (method) {
       case 'snapshot': return { ok: true, data: { ...planner.snapshot(), keyStatus: { configured: !!await getApiKey(), sessionOnly: false } } };
+      case 'changes': return { ok: true, data: repository.changes(remoteInputs.changes.parse(input).cursor) };
       case 'mutate': { const result = planner.mutate(remoteInputs.mutate.parse(input)); if (result.status === 'applied') emit('mutation'); return { ok: true, data: result }; }
       case 'undo': { const result = planner.undo(remoteInputs.undo.parse(input)); if (result.status === 'applied') emit('undo'); return { ok: true, data: result }; }
       case 'importSource': { const result = await controller.importSource(remoteInputs.importSource.parse(input)); if (result.ok) emit('import'); return result; }
@@ -162,7 +164,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
         if (source && (source.text === SOURCE_PLACEHOLDER || source.label === '采集电脑提炼')) throw new WorkflowError('VALIDATION', '原文已清理或留在采集电脑，不能重新分析；请重新提供需要分析的内容');
         const result = await controller.analyzeSource(request); cleanupEvidence(); emit('analysis'); return result;
       }
-      case 'command': { const result = await controller.command(remoteInputs.command.parse(input)); emit('mutation'); return result; }
+      case 'command': { const result = await controller.command(remoteInputs.command.parse(input)); emit('mutation', result.ok && result.data.conversationState?.domain === 'ledger' ? ['planner', 'ledger'] : ['planner']); return result; }
       case 'saveSettings': {
         const request = remoteInputs.saveSettings.parse(input);
         const pending = settingsWrites.then(async () => {
@@ -184,12 +186,17 @@ export function createRemoteService(options: RemoteServiceOptions) {
       case 'refreshAccount': { startAccount(); return { ok: true, data: await account.refresh({ force: true }) }; }
       case 'importCourses': { const result = await controller.importCourses(remoteInputs.importCourses.parse(input)); cleanupEvidence(); if (result.ok) emit('import'); return result; }
       case 'ledgerExportData': { const request = remoteInputs.ledgerExportData.parse(input); return { ok: true, data: ledgerExportData(request.format === 'json' ? JSON.stringify(ledger.exportJson(), null, 2) : ledger.exportCsv(request.month), request.format) }; }
-      case 'backupExportData': { const path = backup(true); if (!path) throw new WorkflowError('STORAGE', '安全备份未完成，请检查服务状态'); return { ok: true, data: backupExportData(path) }; }
+      case 'backupExportData': { const path = await backup(true); if (!path) throw new WorkflowError('STORAGE', '安全备份未完成，请检查服务状态'); return { ok: true, data: backupExportData(path) }; }
       case 'restorePreview': return { ok: true, data: restore.preview(input, deviceId) };
-      case 'restoreConfirm': { const result = restore.confirm(input, deviceId); emit('restore'); return { ok: true, data: result }; }
-      case 'ledgerSnapshot': { if (ledger.ensureMonthlyAllowance()) { backup(); emit('mutation'); } return { ok: true, data: ledger.snapshot(remoteInputs.ledgerSnapshot.parse(input)?.month) }; }
-      case 'ledgerMutate': { const result = ledger.mutate(remoteInputs.ledgerMutate.parse(input)); emit('mutation'); return { ok: true, data: { ...result, message: result.message.replaceAll('本地账本', '资料服务账本') } }; }
-      case 'ledgerUndo': { const result = ledger.undo(remoteInputs.ledgerUndo.parse(input)); emit('undo'); return { ok: true, data: { ...result, message: result.message.replaceAll('本地账本', '资料服务账本') } }; }
+      case 'restoreConfirm': {
+        if (restoring || running.size) throw new WorkflowError('CONFLICT', '云端还有进行中的修改或恢复，请等待完成后重新预览恢复');
+        restoring = restore.confirm(input, deviceId);
+        try { const result = await restoring; backups.markDirty(); emit('restore'); return { ok: true, data: result }; }
+        finally { restoring = undefined; }
+      }
+      case 'ledgerSnapshot': { if (!restoring && ledger.ensureMonthlyAllowance()) { backups.markDirty(); emit('mutation', ['ledger']); } return { ok: true, data: ledger.snapshot(remoteInputs.ledgerSnapshot.parse(input)?.month) }; }
+      case 'ledgerMutate': { const result = ledger.mutate(remoteInputs.ledgerMutate.parse(input)); emit('mutation', ['ledger']); return { ok: true, data: { ...result, message: result.message.replaceAll('本地账本', '资料服务账本') } }; }
+      case 'ledgerUndo': { const result = ledger.undo(remoteInputs.ledgerUndo.parse(input)); emit('undo', ['ledger']); return { ok: true, data: { ...result, message: result.message.replaceAll('本地账本', '资料服务账本') } }; }
     }
   }
   return {
@@ -197,7 +204,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
     state,
     status() {
       const bytes = (name: string) => ['', '-wal', '-shm'].reduce((total, suffix) => { try { const file = lstatSync(join(options.dataDirectory, `${name}${suffix}`)); return total + (file.isFile() ? file.size : 0); } catch { return total; } }, 0);
-      return { lifecycle, activeWrites: running.size, backup: { ...backupStatus }, restore: lifecycle === 'closed' ? restoreStatus : (restoreStatus = state.restoreStatus()), storageBytes: { planner: bytes('planner.sqlite'), receipts: bytes('remote-state.sqlite'), notifications: bytes('notifications.sqlite') } };
+      return { lifecycle, activeWrites: running.size, backup: { ...backupStatus, ...backups.status() }, restore: lifecycle === 'closed' ? restoreStatus : (restoreStatus = state.restoreStatus()), storageBytes: { planner: bytes('planner.sqlite'), receipts: bytes('remote-state.sqlite'), notifications: bytes('notifications.sqlite') } };
     },
     readiness() {
       if (lifecycle !== 'running') return { ready: false, status: lifecycle, checks: { storage: 'unavailable', backup: backupStatus.status } };
@@ -233,7 +240,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
       // Dedicated credential storage: never place keys in RPC receipts or business backups.
       const configuration = await aiConfiguration.set(request.expectedRevision, request.apiKey);
       account.resetKey();
-      emit('key');
+      emit('key', ['key']);
       return { ok: true as const, identity, configuration };
     },
     async clearAiConfiguration(input: unknown) {
@@ -242,19 +249,21 @@ export function createRemoteService(options: RemoteServiceOptions) {
       if (JSON.stringify(request.identity) !== JSON.stringify(identity)) throw new RemoteFault(409, '资料实例或恢复代际已改变，请刷新并核对配置');
       const configuration = await aiConfiguration.clear(request.expectedRevision);
       account.resetKey();
-      emit('key');
+      emit('key', ['key']);
       return { ok: true as const, identity, configuration };
     },
-    backup() { if (lifecycle !== 'running') throw new RemoteFault(503, '服务正在退出'); const path = backup(true); if (!path) throw new RemoteFault(503, '安全备份未完成，请检查服务状态'); return path; },
+    async backup() { if (lifecycle !== 'running') throw new RemoteFault(503, '服务正在退出'); const path = await backup(true); if (!path) throw new RemoteFault(503, '安全备份未完成，请检查服务状态'); return path; },
     importDistilled(input: DistilledRequest) {
       if (lifecycle !== 'running') throw new RemoteFault(503, '服务正在退出，请稍后重试原请求');
+      if (restoring) throw new RemoteFault(409, '云端正在恢复资料，请完成后重新连接');
       const request = DistilledRequestSchema.parse(input);
       if (JSON.stringify(request.identity) !== JSON.stringify(state.identity())) throw new RemoteFault(409, '资料实例或恢复代际已改变');
-      const result = importDistilled(repository, request); emit('import'); backup(true); return result;
+      const result = importDistilled(repository, request); emit('import'); backups.markDirty(); return result;
     },
     subscribe(listener: (event: ChangedEvent) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     async rpc(method: RemoteMethod, request: RemoteRequest, deviceId: string, modernAiSettings = false, modernProfileSettings = true): Promise<unknown> {
       if (lifecycle !== 'running') throw new RemoteFault(503, '服务正在退出，请稍后重试原请求');
+      if (restoring && (!(REMOTE_READ_METHODS as readonly RemoteMethod[]).includes(method) || method === 'restorePreview')) throw new RemoteFault(409, '云端正在恢复资料，请完成后重新连接');
       const identity = RemoteIdentitySchema.parse(request.identity);
       if (JSON.stringify(identity) !== JSON.stringify(state.identity())) throw new RemoteFault(409, '资料实例或恢复代际已改变，请刷新并核对待提交内容');
       const input = remoteInputs[method].parse(request.input);
@@ -297,11 +306,14 @@ export function createRemoteService(options: RemoteServiceOptions) {
       if (prior) throw new RemoteFault(409, prior.status === 'interrupted' ? '上次请求中断，结果待核对；未自动重新执行' : '请求正在处理，请查询原操作');
       const promise = (async () => {
         try {
+          const beforeCursor = repository.cursor();
           let raw: unknown;
           try { raw = await invoke(method, input, deviceId, modernAiSettings, canEditProfile); } catch (error) { raw = { ok: false, error: safeError(error) } satisfies ApiResult<never>; }
-          const result = remoteOutputs[method].parse(redactEvidence(raw));
+          const parsed = remoteOutputs[method].parse(redactEvidence(raw));
+          const changes = repository.changes(beforeCursor);
+          const result = parsed.ok && changes.status === 'patch' ? { ...parsed, sync: changes.patch } : parsed;
           state.complete(request.requestId, result);
-          backup(true);
+          backups.markDirty();
           return result;
         } catch (error) { state.interrupt(request.requestId); throw error; }
         finally { running.delete(request.requestId); }
@@ -316,7 +328,9 @@ export function createRemoteService(options: RemoteServiceOptions) {
         const timer = setTimeout(() => shutdownAbort.abort(), Math.max(0, config.graceMs ?? 25_000)); timer.unref();
         try {
           await Promise.allSettled([...running.values()].map(value => value.promise));
-          if (backupStatus.status === 'failed') backup(true);
+          await restoring?.catch(() => {});
+          try { await backups.close(config.graceMs ?? 25_000); } catch { /* Durable DB stays authoritative; retry backup on the next startup. */ }
+          await backupWorker.close();
           listeners.clear(); restoreStatus = state.restoreStatus(); ledger.close(); repository.close(); if (!options.state) state.close();
         } finally { clearTimeout(timer); lifecycle = 'closed'; releaseDirectory(); }
       })();

@@ -1,3 +1,5 @@
+import { BackupStatusPanel } from './BackupStatusPanel';
+import { operationPending } from '../operation-feedback';
 import { useRef, useState } from "react";
 import {
   SettingsSchema,
@@ -127,6 +129,7 @@ function LocalSettings({
       await ui.run(
         () => ui.host!.saveSettings({ settings, ...(cloud ? { expectedSettings: expectedSettings.current } : {}) }),
         () => { expectedSettings.current = settings; ui.setNotice("设置已保存"); },
+        { targets: ["settings"], label: "正在保存设置" },
       );
       setError("");
     } catch (e) {
@@ -588,6 +591,7 @@ function LocalSettings({
         <section className="settings-card settings-group" aria-labelledby="settings-data-title" data-section="data" hidden={hide("data")}>
           <h3 id="settings-data-title">数据与备份</h3>
           <p className="settings-data-mode"><strong>{cloud ? '当前使用云端共用资料' : '当前使用本机独立资料'}</strong><span>{cloud ? '手机与电脑使用同一份日历和账本' : '日历和账本保存在这台电脑，不会自动同步到手机'}</span></p>
+          <BackupStatusPanel read={ui.host?.backupStatus} active={!hide("data")} cloud={cloud} />
           <details className="settings-disclosure settings-backup">
             <summary><strong>{cloud ? '云端资料备份与恢复' : '本机资料备份与恢复'}</strong><span className="settings-summary">{cloud ? '下载到电脑 · 恢复影响手机和电脑' : '导出或恢复这台电脑的资料'}</span></summary>
             <div className="settings-disclosure-body">{cloud ? <><p>下载云端日历、任务、课表、完整账本和设置。不包含 API Key、本机 QQ 原文和附件。</p><p>电脑文件的位置记录另存为同名的 .local-resources.json 文件，请与备份一起保留；关联的原文件不会复制。</p></> : <><p>本机备份包含日历、账单、操作记录和现存的 QQ 原文、附件；不含 API Key，也不复制关联的外部原文件。</p><p>大备份不再受 512 MB 限制；恢复时请预留暂存文件和安全备份所需的磁盘空间。</p></>}
@@ -674,7 +678,7 @@ function LocalSettings({
       </details>
         </section>
         {error && <p className="error prewrap" role="alert">{error}</p>}
-        <div className="sticky-save" hidden={section === "update" || section === "data"}><span className="hint">切换分区或收起不会丢失修改</span><button type="submit" className="primary" disabled={ui.busy}>保存全部设置</button></div>
+        <div className="sticky-save" hidden={section === "update" || section === "data"}><span className="hint">切换分区或收起不会丢失修改</span><button type="submit" className="primary" disabled={operationPending(ui, "settings")}>{operationPending(ui, "settings") ? "正在保存设置…" : "保存全部设置"}</button></div>
       </form>
     </div>
   );

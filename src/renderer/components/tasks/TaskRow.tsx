@@ -1,3 +1,4 @@
+import { operationPending } from '../../operation-feedback';
 import type { Snapshot, Task } from "../../../shared/contracts";
 import type { PlannerUI } from "../../hooks/usePlanner";
 import { taskArrangements, taskArrangementSummary, taskNoticeTiming, taskNoticeSummary } from "../../task-schedule";
@@ -42,7 +43,7 @@ export function TaskRow({ task, snapshot, ui, now, today, actions }: {
     ...(task.status !== 'done' && arrangements.length > 0 && actions.scheduleAdditional && taskScheduleMode(task, snapshot.blocks) === 'multiple'
       ? [{ label: '再安排一个时段', onSelect: () => actions.scheduleAdditional!(task.id) }] : []),
     ...(task.status !== "done" && actions.scheduleRecurring ? [{ label: "重复安排", onSelect: () => actions.scheduleRecurring!(task.id) }] : []),
-    { label: "移除", danger: true, disabled: ui.busy, ariaLabel: `移除 ${task.title}`, onSelect: () => actions.removeTask(task.id) },
+    { label: "移除", danger: true, disabled: operationPending(ui, `task:${task.id}`), ariaLabel: `移除 ${task.title}`, onSelect: () => actions.removeTask(task.id) },
   ];
   const meta = [
     task.deadline ? `截止 ${deadlineLabel(task, today)}` : "",
@@ -51,11 +52,12 @@ export function TaskRow({ task, snapshot, ui, now, today, actions }: {
   return (
     <article className={`a2-task-row${attention ? " warn" : ""}${task.status === "done" ? " done" : ""}`} data-task-id={task.id} data-attention={attention?.kind}
       draggable onDragStart={(e) => e.dataTransfer.setData("application/x-planner", JSON.stringify({ kind: "task", id: task.id }))}>
-      <input type="checkbox" aria-label={`完成 ${task.title}`} checked={task.status === "done"} disabled={ui.busy}
+      <input type="checkbox" aria-label={`完成 ${task.title}`} checked={task.status === "done"} disabled={operationPending(ui, `task:${task.id}`)}
         onChange={() => void ui.mutate([{ type: "finishTask", id: task.id, expectedVersion: task.version, completed: task.status !== "done" }])} />
       <div className="a2-task-main">
         <button className="a2-task-title" onClick={() => actions.select ? actions.select({ entity: "task", id: task.id }) : actions.editTask(task.id)}>{task.title}</button>
         <div className="a2-task-meta">
+          {operationPending(ui, `task:${task.id}`) && <span role="status">正在保存…</span>}
           {meta && <span className={attention ? "warn" : ""}>{meta}</span>}
           {(course || goal) && <span className="a2-task-belonging">
             {color && <i className="ui-dot" style={{ "--c": color } as React.CSSProperties} aria-hidden="true" />}
@@ -65,7 +67,7 @@ export function TaskRow({ task, snapshot, ui, now, today, actions }: {
           {timing && <span>{taskNoticeSummary(timing, now)}</span>}
         </div>
       </div>
-      {task.status !== "done" ? <button className="ui-btn sm" disabled={ui.busy && !!attention} onClick={primary.run}>{primary.label}</button> : <span />}
+      {task.status !== "done" ? <button className="ui-btn sm" disabled={operationPending(ui, `task:${task.id}`) && !!attention} onClick={primary.run}>{primary.label}</button> : <span />}
       <MoreMenu label={`${task.title} 的更多操作`} items={menu} />
     </article>
   );

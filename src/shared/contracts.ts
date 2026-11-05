@@ -318,12 +318,27 @@ export const TokenUsageSchema = z.strictObject({ id: IdSchema, operationId: IdSc
   estimatedCostMax: z.number().finite().nonnegative().nullable().optional(), pricingSource: z.enum(['official', 'manual']).nullable().optional(),
   pricingUpdatedAt: InstantSchema.nullable().optional() });
 export type TokenUsage = z.infer<typeof TokenUsageSchema>;
-export const SnapshotSchema = z.strictObject({ schemaVersion: z.literal(SCHEMA_VERSION),
+export const PlannerCursorSchema = z.strictObject({ streamId: z.string().uuid(), revision: z.number().int().nonnegative() });
+export type PlannerCursor = z.infer<typeof PlannerCursorSchema>;
+export const SnapshotSchema = z.strictObject({ schemaVersion: z.literal(SCHEMA_VERSION), cursor: PlannerCursorSchema.optional(),
   sources: z.array(SourceSchema), candidates: z.array(CandidateSchema), tasks: z.array(TaskSchema), blocks: z.array(BlockSchema), goals: z.array(GoalSchema),
   courses: z.array(CourseSchema), courseExceptions: z.array(CourseExceptionSchema), preferences: z.array(PreferenceSchema), feedback: z.array(FeedbackSchema),
   settings: SettingsSchema, journal: z.array(JournalSummarySchema), tokenUsage: z.array(TokenUsageSchema), keyStatus: KeyStatusSchema,
 });
 export type Snapshot = z.infer<typeof SnapshotSchema>;
+export const PlannerPatchSchema = z.strictObject({
+  from: PlannerCursorSchema, to: PlannerCursorSchema,
+  entities: z.array(z.strictObject({ entity: EntityKindSchema, id: IdSchema, value: EntitySchema.nullable() })),
+  settings: SettingsSchema.optional(), journal: z.array(JournalSummarySchema).optional(),
+  usage: z.strictObject({ upserts: z.array(TokenUsageSchema), deletedIds: z.array(IdSchema) }).optional(),
+});
+export type PlannerPatch = z.infer<typeof PlannerPatchSchema>;
+export const PlannerChangesRequestSchema = z.strictObject({ cursor: PlannerCursorSchema });
+export const PlannerChangesSchema = z.discriminatedUnion('status', [
+  z.strictObject({ status: z.literal('patch'), patch: PlannerPatchSchema }),
+  z.strictObject({ status: z.literal('reset') }),
+]);
+export type PlannerChanges = z.infer<typeof PlannerChangesSchema>;
 export const CalendarItemSchema = z.strictObject({ id: IdSchema, refId: IdSchema, refKind: EntityKindSchema,
   occurrenceDate: DateOnlySchema.optional(),
   title: TitleSchema, start: InstantSchema.nullable(), end: InstantSchema.nullable(), date: DateOnlySchema, busy: z.boolean(), pending: z.boolean(),
@@ -349,9 +364,9 @@ export const ApiErrorSchema = z.strictObject({
   delivery: z.enum(['not-sent', 'unknown']).optional(),
 });
 export type ApiError = z.infer<typeof ApiErrorSchema>;
-export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: ApiError };
+export type ApiResult<T> = { ok: true; data: T; sync?: PlannerPatch } | { ok: false; error: ApiError };
 export function apiResultSchema<T extends z.ZodType>(schema: T) {
-  return z.discriminatedUnion('ok', [z.strictObject({ ok: z.literal(true), data: schema }), z.strictObject({ ok: z.literal(false), error: ApiErrorSchema })]);
+  return z.discriminatedUnion('ok', [z.strictObject({ ok: z.literal(true), data: schema, sync: PlannerPatchSchema.optional() }), z.strictObject({ ok: z.literal(false), error: ApiErrorSchema })]);
 }
 export const ImportSourceRequestSchema = z.strictObject({ operationId: IdSchema, source: SourceImportSchema });
 export type ImportSourceRequest = z.input<typeof ImportSourceRequestSchema>;
@@ -450,7 +465,7 @@ export const RestoreResultSchema = z.discriminatedUnion('status', [
   z.strictObject({ status: z.literal('restored'), message: shortText, safetyBackupPath: z.string() }),
 ]);
 export type RestoreResult = z.infer<typeof RestoreResultSchema>;
-export const ChangedEventSchema = z.strictObject({ reason: z.enum(['mutation', 'undo', 'import', 'analysis', 'settings', 'restore', 'key']), transactionId: IdSchema.optional() });
+export const ChangedEventSchema = z.strictObject({ reason: z.enum(['mutation', 'undo', 'import', 'analysis', 'settings', 'restore', 'key']), transactionId: IdSchema.optional(), cursor: PlannerCursorSchema.optional(), domains: z.array(z.enum(['planner', 'ledger', 'key'])).optional() });
 export type ChangedEvent = z.infer<typeof ChangedEventSchema>;
 export const SelectedImageSchema = z.strictObject({ imageDataUrl: ImageDataUrlSchema, label: z.string().max(2000) });
 export const SelectImageResultSchema = apiResultSchema(SelectedImageSchema.nullable());
@@ -481,6 +496,7 @@ export interface DesktopAPI extends importCaptureAPI, ResourceDesktopAPI, Partia
   selectCommandDocuments?(): Promise<ApiResult<CommandDocument[] | null>>;
   onNavigate(listener: (event: NavigateEvent) => void): () => void;
   snapshot(): Promise<ApiResult<Snapshot>>;
+  changes?(request: z.input<typeof PlannerChangesRequestSchema>): Promise<ApiResult<PlannerChanges>>;
   mutate(request: MutationRequestInput): Promise<ApiResult<MutationResult>>;
   undo(transactionId?: string): Promise<ApiResult<MutationResult>>;
   importSource(request: ImportSourceRequest): Promise<ApiResult<Source>>;
@@ -490,6 +506,7 @@ export interface DesktopAPI extends importCaptureAPI, ResourceDesktopAPI, Partia
   saveSettings(request: z.input<typeof SaveSettingsRequestSchema>): Promise<ApiResult<Settings>>;
   setApiKey(request: z.input<typeof SetApiKeyRequestSchema>): Promise<ApiResult<KeyStatus>>;
   retryApiKey(): Promise<ApiResult<KeyStatus>>;
+  backupStatus?(): Promise<ApiResult<import('./backup-progress').BackupProgress>>;
   backup(): Promise<ApiResult<BackupResult>>;
   restore(request: RestoreRequest): Promise<ApiResult<RestoreResult>>;
   onChanged(listener: (event: ChangedEvent) => void): () => void;

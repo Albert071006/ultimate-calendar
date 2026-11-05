@@ -56,9 +56,9 @@ describe('assistant reusable prompt prefixes', () => {
       const first = ledgerMessages(firstContext, request);
       const next = ledgerMessages(nextContext, { ...request, history: [{ role: 'user', text: '核对余额' }] });
       expect(first.slice(0, 2)).toEqual(next.slice(0, 2));
-      expect(unpack(first).combined).toEqual(JSON.parse(JSON.stringify(firstContext)));
+      expect(unpack(first).combined).toMatchObject(JSON.parse(JSON.stringify(firstContext)));
       const nextData = unpack(next);
-      expect(nextData.combined).toEqual(JSON.parse(JSON.stringify(nextContext)));
+      expect(nextData.combined).toMatchObject(JSON.parse(JSON.stringify(nextContext)));
       expect(nextData.reference).toMatchObject({ rules: newer.rules, entries: newer.entries });
       expect(nextData.current).toMatchObject({ now: later, revision: newer.revision, summary: { personalCents: newer.summary.personalCents } });
       newer.rules.notes = '更新后的个人规则';
