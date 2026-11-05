@@ -56,8 +56,10 @@ function fixture(initial?: Partial<CaptureSnapshot>, reference?: NonNullable<Sou
 describe('QQ capture page', () => {
   it('shows automatic key synchronization and allows cancelling credential recovery without stopping collection', async () => {
     const f = fixture({ config: CaptureConfigSchema.parse({ accountId: '10001', groupIds: ['g1'], enabled: true, analysisEnabled: false }),
+      stats: { messages: 9, attachments: 0, attachmentBytes: 0, pendingMessages: 7, batches: 2, pendingBatches: 0, uncertainBatches: 0, failedAttachments: 0 },
       analysisWaitingForKey: true, cloudKeySync: { state: 'ready', revision: null, configured: false, lastSyncedAt: new Date(time).toISOString(), message: null } }, undefined, undefined, 'cloud');
     expect(await screen.findByText('等待有效密钥，更新后自动继续')).toBeTruthy();
+    expect(screen.getByText('另有 7 条消息尚未分批')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '停止等待密钥' }));
     await waitFor(() => expect(f.action).toHaveBeenCalledExactlyOnceWith({ action: 'pause-analysis' }));
     expect(f.config).not.toHaveBeenCalled();

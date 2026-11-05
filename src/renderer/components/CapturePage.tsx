@@ -251,7 +251,13 @@ export function CapturePage({ ui, initialReference, platform = 'qq' }: { ui: Pla
         <div className="capture-switch-row"><div><strong>{snapshot.config.enabled ? '正在收集选定群' : '收集已暂停'}</strong><p className="hint">最近收到：{snapshot.lastReceivedAt ? displayInstant(snapshot.lastReceivedAt) : '尚未收到消息'}</p></div><button disabled={busy || (!snapshot.config.enabled && (snapshot.connection !== 'online' || !snapshot.config.groupIds.length))} onClick={() => void configure({ enabled: !snapshot.config.enabled }, snapshot.config.enabled ? '已暂停收集。' : '已启用选定群收集。')}>{snapshot.config.enabled ? '暂停收集' : '开始收集'}</button></div>
         {snapshot.cloudKeySync && <p className={snapshot.cloudKeySync.state === 'error' ? 'warning' : 'hint'} role="status">{snapshot.cloudKeySync.state === 'ready' ? snapshot.cloudKeySync.configured ? '密钥已与云端同步；手机或电脑修改后会自动更新。' : '云端密钥已清除；保存新密钥后会自动同步。' : snapshot.cloudKeySync.state === 'syncing' ? '正在同步云端密钥…' : snapshot.cloudKeySync.message || '密钥暂未同步，连接恢复后会自动重试。'}</p>}
         <div className="capture-switch-row"><div><strong>{snapshot.config.analysisEnabled ? '自动分析已开启' : snapshot.analysisWaitingForKey ? '等待有效密钥，更新后自动继续' : '自动分析已暂停'}</strong><p className="hint">暂停分析后继续收集；已发出的请求会保存结果。</p>{analysisPausedReason && <p className="warning" role="alert">暂停原因：{analysisPausedReason}</p>}</div><button disabled={busy} onClick={() => snapshot.analysisWaitingForKey ? void action('pause-analysis') : void configure({ analysisEnabled: !snapshot.config.analysisEnabled }, snapshot.config.analysisEnabled ? '已暂停新的 AI 分析请求。' : analysisStartedNotice)}>{snapshot.config.analysisEnabled ? '暂停分析' : snapshot.analysisWaitingForKey ? '停止等待密钥' : '开启分析'}</button></div>
-        <div className="capture-stats"><div><strong>{snapshot.stats.messages}</strong><span>已收消息</span></div><div><strong>{snapshot.stats.pendingBatches}</strong><span>待处理批次</span></div><div><strong>{snapshot.stats.failedAttachments}</strong><span>附件待查看</span></div></div>
+        <div className="capture-stats">
+          <div><strong>{snapshot.stats.messages}</strong><span>已收消息</span></div>
+          <div><strong>{snapshot.stats.pendingBatches}</strong><span>待处理批次</span>
+            {snapshot.stats.pendingMessages > 0 && <span>另有 {snapshot.stats.pendingMessages} 条消息尚未分批</span>}
+          </div>
+          <div><strong>{snapshot.stats.failedAttachments}</strong><span>附件待查看</span></div>
+        </div>
         <div className="toolbar"><button disabled={busy || !configuredAccount || !snapshot.config.analysisEnabled} onClick={() => void action('analyze')}>立即分析</button><button disabled={busy || snapshot.connection !== 'online' || !snapshot.config.enabled} onClick={() => void action('backfill')}>补采最近 7 天</button></div>
         <p className="fine-print">自动分析不设每日预算上限，沿用设置中的 DeepSeek 模型与真实余额。{wechat ? '可分析文字、卡片标题，以及电脑微信已缓存或下载的图片和文件；尚未下载时，请先在微信中打开或下载，再重试对应批次。最近 7 天曾未读到的附件，也可点“补采最近 7 天”重新检查。语音、视频和压缩包需手动查看。' : '语音、视频和压缩包需手动查看。'}</p>
       </section>

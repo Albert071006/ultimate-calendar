@@ -41,6 +41,7 @@ export interface CollectorKeySyncOptions {
   createClient?(options: Parameters<typeof createNodeRemoteClient>[0]): SyncClient;
   onChanged?(value: CollectorKeyChange): void | Promise<void>;
   onSettings?(settings: NonNullable<AiKeySyncPlaintext['settings']>): void;
+  onConfiguredKeyVerified?(): void;
   onStatusChanged?(): void;
   timeoutMs?: number;
   pollMs?: number;
@@ -80,7 +81,7 @@ async function writeNewPrivate(file: string, value: Buffer | string) {
 }
 
 function failure(code: 'configuration' | 'receiver' | 'network' | 'identity' | 'protocol' | 'storage' | 'closed') {
-  return new WorkflowError(code === 'storage' || code === 'receiver' ? 'STORAGE' : code === 'closed' ? 'CANCELLED' : 'AUTH', {
+  return new WorkflowError(code === 'storage' || code === 'receiver' ? 'STORAGE' : code === 'closed' || code === 'network' ? 'CANCELLED' : 'AUTH', {
     configuration: '云端密钥同步配置无效，未使用旧密钥；请核对本机同步配置',
     receiver: '本机密钥接收凭据暂不可用，原文件已保留；请核对后重试',
     network: '云端密钥同步暂未完成，未使用旧密钥；连接恢复后会自动重试',
@@ -88,7 +89,7 @@ function failure(code: 'configuration' | 'receiver' | 'network' | 'identity' | '
     protocol: '云端密钥同步校验未通过，未使用旧密钥；请核对后重试',
     storage: '云端密钥同步未能安全保存，未继续使用密钥；请核对本机存储后重试',
     closed: '采集模式正在退出，密钥同步已停止',
-  }[code]);
+  }[code], code === 'network');
 }
 
 /** The configured cloud remains authoritative even when configuration, transport or storage fails. */
@@ -100,6 +101,7 @@ export function createCollectorKeySync(options: CollectorKeySyncOptions) {
   let client: SyncClient | undefined, credential: RemoteCredential | undefined, privateKey: KeyObject | undefined, keyId: string | undefined;
   let closed = false, started = false, timer: ReturnType<typeof setTimeout> | undefined, attemptAbort: AbortController | undefined;
   let inFlight: Promise<void> | undefined, closePromise: Promise<void> | undefined, failures = 0, applied = false;
+  let retryAfter: { time: number; error: WorkflowError } | undefined;
   let appliedKey: string | null = null;
   let receipt: z.infer<typeof ReceiptSchema> | undefined;
   let current: CollectorKeySyncStatus = { state: 'syncing', revision: null, configured: false, lastSyncedAt: null, message: null };
@@ -173,7 +175,10 @@ export function createCollectorKeySync(options: CollectorKeySyncOptions) {
     }
     catch (error) {
       checkOpen(signal);
-      throw failure(error instanceof RemoteClientError && [401, 403, 409].includes(error.status) ? 'identity' : 'network');
+      if (error instanceof RemoteClientError && error.status >= 400 && error.status < 500 && ![408, 425, 429].includes(error.status)) {
+        throw failure([401, 403, 409].includes(error.status) ? 'identity' : 'protocol');
+      }
+      throw failure('network');
     } finally { signal.removeEventListener('abort', cancel); }
     checkOpen(signal);
     let key: string | null, revision: Revision, settings: AiKeySyncPlaintext['settings'];
@@ -226,24 +231,30 @@ export function createCollectorKeySync(options: CollectorKeySyncOptions) {
       } catch { throw failure('storage'); }
     }
     if (applied && revision !== current.revision) retiredRevisions.add(current.revision);
-    applied = true; appliedKey = key; failures = 0;
+    applied = true; appliedKey = key; failures = 0; retryAfter = undefined;
     publish({ state: 'ready', revision, configured: key !== null, lastSyncedAt: new Date(now()).toISOString(), message: null });
+    if (key !== null) options.onConfiguredKeyVerified?.();
+  }
+  function pollDelay() {
+    const base = Math.max(10, options.pollMs ?? 10_000);
+    return Math.min(60_000, base * 2 ** Math.min(failures, 3));
   }
   function schedule() {
     if (!started || closed) return;
-    const base = Math.max(10, options.pollMs ?? 10_000);
-    timer = setTimeout(() => { timer = undefined; void refresh().catch(() => {}); }, Math.min(60_000, base * 2 ** Math.min(failures, 3)));
+    timer = setTimeout(() => { timer = undefined; void refresh().catch(() => {}); }, pollDelay());
     timer.unref();
   }
-  function refresh(): Promise<void> {
+  function refresh({ respectBackoff = false } = {}): Promise<void> {
     if (closed) return Promise.reject(failure('closed'));
     if (inFlight) return inFlight;
+    if (respectBackoff && retryAfter && now() < retryAfter.time) return Promise.reject(retryAfter.error);
     if (timer) { clearTimeout(timer); timer = undefined; }
     const controller = new AbortController(); attemptAbort = controller;
     const timeout = setTimeout(() => controller.abort(), Math.max(100, Math.min(30_000, options.timeoutMs ?? 8000))); timeout.unref();
     const pending = perform(controller.signal).catch(error => {
       failures++;
       const safe = error instanceof WorkflowError ? error : failure('protocol');
+      retryAfter = safe.retryable ? { time: now() + pollDelay(), error: safe } : undefined;
       if (!closed) publish({ state: 'error', message: safe.message });
       throw safe;
     }).finally(() => {
@@ -258,8 +269,10 @@ export function createCollectorKeySync(options: CollectorKeySyncOptions) {
     start() { if (closed || started) return; started = true; void refresh().catch(() => {}); },
     refresh,
     async getApiKey() {
-      try { await refresh(); checkOpen(); if (current.state !== 'ready') throw failure('network'); return appliedKey; }
-      catch { throw new WorkflowError('CANCELLED', closed ? '采集模式正在退出' : '等待云端密钥同步，连接恢复后会自动重试'); }
+      await refresh({ respectBackoff: true });
+      checkOpen();
+      if (current.state !== 'ready') throw failure('network');
+      return appliedKey;
     },
     status(): CollectorKeySyncStatus { return { ...current }; },
     close(): Promise<void> {

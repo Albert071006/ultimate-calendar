@@ -80,6 +80,22 @@ describe('capture orchestration against real local OneBot websocket', () => {
     expect(service.snapshot()).toMatchObject({ error: null, analysisWaitingForKey: false, config: { analysisEnabled: true } });
     expect(store.batch(unknown.id)?.status).toBe('uncertain'); expect(fetcher).toHaveBeenCalledTimes(2);
   });
+  it('recovers a persisted unsent sync timeout once after a successful sync of the same key', async () => {
+    const fetcher = vi.fn(async () => successfulAnalysis());
+    const { service, store } = await setup(fetcher);
+    await service.configure({ ...store.config(), enabled: true, groupIds: ['200'] }); await waitFor(() => !service.busy());
+    const sentAt = fromUnix(Date.now() / 1000 - 20)!;
+    store.ingest([{ accountId: '100', groupId: '200', messageId: 'legacy-preflight', text: '合成通知', sentAt }], sentAt);
+    store.saveConfig({ ...store.config(), analysisEnabled: true });
+    const batch = store.sealBatches({ force: true })[0]!; store.claimBatch();
+    store.failBatch(batch.id, '云端密钥同步暂未完成，未使用旧密钥；连接恢复后会自动重试'); store.pauseForCredentials('AUTH', batch.id);
+    expect(service.resumeAfterCloudKeySync()).toBe(true);
+    expect(service.resumeAfterCloudKeySync()).toBe(false);
+    expect(service.snapshot()).toMatchObject({ analysisWaitingForKey: false, config: { analysisEnabled: true } });
+    expect(store.batch(batch.id)).toMatchObject({ status: 'pending', attempts: [] }); expect(fetcher).not.toHaveBeenCalled();
+    service.action({ action: 'analyze' }); await waitFor(() => !service.busy());
+    expect(store.batch(batch.id)?.status).toBe('applied'); expect(fetcher).toHaveBeenCalledTimes(1);
+  });
   it('ignores duplicate revision callbacks when the worker lost its receipt and the new key was also rejected', async () => {
     const fetcher = vi.fn(async () => new Response('{}', { status: 401 }));
     const { service, store, send } = await setup(fetcher);

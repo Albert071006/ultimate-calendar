@@ -61,6 +61,23 @@ async function fixture(initialReceiver = true) {
 }
 
 describe('collector cloud-key receiver', () => {
+  it('signals a verified configured key after a same-revision recovery, never on failure or clear', async () => {
+    const f = await fixture(), onConfiguredKeyVerified = vi.fn();
+    const worker = createCollectorKeySync({ directory: f.root, keys: f.keys, encryption: f.encrypted,
+      createClient: f.createClient, onChanged: f.onChanged, onConfiguredKeyVerified })!;
+    workers.push(worker);
+    await worker.refresh();
+    f.sync.mockRejectedValueOnce(Error('offline'));
+    await expect(worker.refresh()).rejects.toThrow();
+    expect(onConfiguredKeyVerified).toHaveBeenCalledTimes(1);
+    await worker.refresh();
+    expect(f.onChanged).toHaveBeenCalledTimes(1);
+    expect(onConfiguredKeyVerified).toHaveBeenCalledTimes(2);
+    f.cloud(null, revisionB);
+    await worker.refresh();
+    expect(onConfiguredKeyVerified).toHaveBeenCalledTimes(2);
+  });
+
   it('accepts profile-only changes under an unchanged key and never exposes profile text in status', async () => {
     const f = await fixture(), onSettings = vi.fn();
     const worker = createCollectorKeySync({ directory: f.root, keys: f.keys, encryption: f.encrypted, createClient: f.createClient, onSettings })!;
@@ -122,7 +139,7 @@ describe('collector cloud-key receiver', () => {
   it('replays the same notification identity after receipt persistence fails without returning a key or rewriting it', async () => {
     const f = await fixture(), worker = f.make(), receiptFile = join(f.root, 'credentials', 'cloud-key-receiver-receipt.bin');
     f.onChanged.mockImplementationOnce(() => { mkdirSync(receiptFile); });
-    await expect(worker.getApiKey()).rejects.toMatchObject({ code: 'CANCELLED' });
+    await expect(worker.getApiKey()).rejects.toMatchObject({ code: 'STORAGE' });
     expect(f.set).toHaveBeenCalledExactlyOnceWith(newKey); expect(f.onChanged).toHaveBeenCalledOnce(); expect(worker.status().state).toBe('error');
     rmSync(receiptFile, { recursive: true }); await worker.refresh();
     expect(f.onChanged).toHaveBeenCalledTimes(2); expect(f.onChanged.mock.calls[1]).toEqual(f.onChanged.mock.calls[0]);
@@ -150,7 +167,7 @@ describe('collector cloud-key receiver', () => {
     await expect(worker.refresh()).rejects.toThrow(/安全保存/); expect(readFileSync(f.keyFile)).toEqual(bytes); expect(await f.keys.get()).toBe(newKey);
     expect(f.keys.status()).toEqual({ configured: true, sessionOnly: false }); expect(f.onChanged).toHaveBeenCalledTimes(1);
     vi.mocked(f.encrypted.isAsyncEncryptionAvailable).mockResolvedValue(false); f.cloud(null, revisionB);
-    await expect(worker.getApiKey()).rejects.toMatchObject({ code: 'CANCELLED' }); expect(readFileSync(f.keyFile)).toEqual(bytes);
+    await expect(worker.getApiKey()).rejects.toMatchObject({ code: 'STORAGE' }); expect(readFileSync(f.keyFile)).toEqual(bytes);
   });
   it('coalesces requests and cancels close without accepting a late response or logging a response body', async () => {
     const f = await fixture(), worker = f.make(); await worker.refresh(); f.set.mockClear();
@@ -172,6 +189,20 @@ describe('collector cloud-key receiver', () => {
     await vi.advanceTimersByTimeAsync(1); expect(f.sync).toHaveBeenCalledTimes(count + 1);
     await worker.close(); await vi.advanceTimersByTimeAsync(60_000); expect(f.sync).toHaveBeenCalledTimes(count + 1);
   });
+  it('defers an unsent batch while offline and shares the retry interval across both collectors', async () => {
+    const f = await fixture();
+    vi.useFakeTimers();
+    const worker = f.make(); await worker.refresh();
+    f.sync.mockRejectedValueOnce(Error('synthetic offline'));
+    await expect(worker.refresh({ respectBackoff: true })).rejects.toMatchObject({ code: 'CANCELLED', retryable: true });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(worker.refresh({ respectBackoff: true })).rejects.toMatchObject({ code: 'CANCELLED' });
+    await expect(worker.getApiKey()).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(f.sync).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(await worker.getApiKey()).toBe(newKey);
+    expect(f.sync).toHaveBeenCalledTimes(3); expect(f.onChanged).toHaveBeenCalledOnce();
+  });
   it('generates the receiver once, writes only an encrypted private key and preserves unreadable or orphaned receivers', async () => {
     const f = await fixture(false), worker = f.make();
     // The first request is deliberately refused; receiver setup must still be available for an administrator to bind.
@@ -185,7 +216,7 @@ describe('collector cloud-key receiver', () => {
   });
   it('requires a strict existing configuration and never falls back to a local key', async () => {
     const f = await fixture(); writePrivate(f.configFile, JSON.stringify({ version: 1, origin: 'https://synthetic.invalid', credentialsFile: 'relative.json' }));
-    const worker = f.make(); await expect(worker.getApiKey()).rejects.toMatchObject({ code: 'CANCELLED' }); expect(f.createClient).not.toHaveBeenCalled(); expect(f.set).not.toHaveBeenCalled();
+    const worker = f.make(); await expect(worker.getApiKey()).rejects.toMatchObject({ code: 'AUTH' }); expect(f.createClient).not.toHaveBeenCalled(); expect(f.set).not.toHaveBeenCalled();
     writePrivate(f.configFile, JSON.stringify({ version: 1, origin: 'https://synthetic.invalid', credentialsFile: join(f.root, 'missing.json'), extra: true }));
     await expect(worker.refresh()).rejects.toThrow(/同步配置无效/); expect(f.set).not.toHaveBeenCalled();
     rmSync(f.configFile); expect(createCollectorKeySync({ directory: f.root, keys: f.keys, encryption: f.encrypted })).toBeUndefined();

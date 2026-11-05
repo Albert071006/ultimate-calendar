@@ -71,6 +71,21 @@ describe('capture store', () => {
     store.replaceState(store.exportState().state);
     expect(store.credentialPause()).toBeNull(); expect(store.resumeAfterCredentials()).toBe(false);
   });
+  it.each(['manual pause', 'changed batch', 'request sent', 'actual key rejection', 'missing key', 'uncertain request'] as const)(
+    'never resumes %s just because the same cloud key synced successfully', scenario => {
+      const store = make(); enabled(store); store.ingest([incoming('legacy-preflight')]);
+      const batch = store.sealBatches({ force: true })[0]!; store.claimBatch();
+      const oldError = '云端密钥同步暂未完成，未使用旧密钥；连接恢复后会自动重试';
+      if (scenario === 'request sent' || scenario === 'uncertain request') store.startAttempt(batch.id, 'synthetic-input');
+      store.failBatch(batch.id, scenario === 'actual key rejection' ? '密钥无效' : oldError, false, t1);
+      store.pauseForCredentials(scenario === 'missing key' ? 'NO_API_KEY' : 'AUTH', batch.id);
+      if (scenario === 'manual pause') store.clearCredentialPause();
+      if (scenario === 'changed batch' || scenario === 'uncertain request') store.failBatch(batch.id, oldError, scenario === 'uncertain request', t2);
+      const before = store.batch(batch.id);
+      expect(store.resumeAfterCloudKeySync()).toBe(false);
+      expect(store.config().analysisEnabled).toBe(false);
+      expect(store.batch(batch.id)).toEqual(before);
+    });
   it('atomically acknowledges a credential revision and never resumes it twice after another rejection or restart', () => {
     const dir = mkdtempSync(join(tmpdir(), 'qq-credential-receipt-')); dirs.push(dir); const path = join(dir, 'planner.sqlite');
     let store = make(path); enabled(store); store.ingest([incoming('credential')]);

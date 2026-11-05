@@ -82,7 +82,10 @@ describe('Windows collection-only backend', () => {
     const snapshot = CaptureSnapshotSchema.parse({ config: {}, connection: 'disconnected', accountLabel: null, error: null, lastReceivedAt: null, credentialConfigured: true,
       stats: { messages: 0, attachments: 0, attachmentBytes: 0, pendingMessages: 0, batches: 0, pendingBatches: 0, uncertainBatches: 0, failedAttachments: 0 }, coverage: [] });
     const credentialsChanged = vi.fn(async () => snapshot);
-    value.dependencies.createCaptureService = options => options.platform === 'wechat' ? original(options) : ({ ...original(options), snapshot: () => snapshot, credentialsChanged });
+    const recovered = { qq: vi.fn(() => false), wechat: vi.fn(() => false) };
+    value.dependencies.createCaptureService = options => ({ ...original(options), snapshot: () => snapshot,
+      credentialsChanged: options.platform === 'wechat' ? undefined : credentialsChanged,
+      resumeAfterCloudKeySync: recovered[options.platform ?? 'qq'] });
     const state = { state: 'ready' as const, configured: true, revision: '33333333-3333-4333-8333-333333333333', lastSyncedAt: new Date(0).toISOString(), message: null };
     const startSync = vi.fn(), refresh = vi.fn(async () => {}), getApiKey = vi.fn(async () => 'synthetic-cloud-exclusive-key');
     let release: () => void = () => {};
@@ -91,9 +94,12 @@ describe('Windows collection-only backend', () => {
     value.dependencies.createCollectorKeySync = options => { syncOptions = options; return { start: startSync, refresh, getApiKey, status: () => state, close: closeSync }; };
     try {
       const mode = await startCollectorMode(value.root, value.dependencies); expect(startSync).toHaveBeenCalledOnce();
+      syncOptions!.onConfiguredKeyVerified!();
+      expect(recovered.qq).toHaveBeenCalledOnce(); expect(recovered.wechat).toHaveBeenCalledOnce();
       expect(await value.options().getApiKey()).toBe('synthetic-cloud-exclusive-key'); expect(value.keyGet).not.toHaveBeenCalled();
       expect(await mode.api.invoke('captureSetApiKey', { key: 'synthetic-manual-replacement' })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } }); expect(value.set).not.toHaveBeenCalled();
-      expect(await mode.api.invoke('captureRefreshApiKey')).toMatchObject({ ok: true, data: { cloudKeySync: state } }); expect(refresh).toHaveBeenCalledOnce();
+      await value.options().refreshModelSettings!(); expect(refresh).toHaveBeenCalledExactlyOnceWith({ respectBackoff: true });
+      expect(await mode.api.invoke('captureRefreshApiKey')).toMatchObject({ ok: true, data: { cloudKeySync: state } }); expect(refresh).toHaveBeenLastCalledWith();
       expect(await mode.api.invoke('captureRefreshApiKey', { key: 'synthetic-wrong-input' })).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
       const listener = vi.fn(), unsubscribe = mode.subscribe(listener); syncOptions!.onStatusChanged!(); expect(listener).toHaveBeenCalledWith({ ...snapshot, cloudKeySync: state });
       unsubscribe(); await syncOptions!.onChanged!({ previousRevision: undefined, revision: state.revision, configured: true, sourceId: 'a'.repeat(64) });
@@ -108,7 +114,7 @@ describe('Windows collection-only backend', () => {
     const value = fixture(); mkdirSync(join(value.root, 'credentials')); writeFileSync(join(value.root, 'credentials', 'cloud-key-sync.json'), '{invalid synthetic config}', { mode: 0o600 });
     try {
       const mode = await startCollectorMode(value.root, value.dependencies); expect(value.start).toHaveBeenCalledOnce();
-      await expect(value.options().getApiKey()).rejects.toMatchObject({ code: 'CANCELLED' }); expect(value.keyGet).not.toHaveBeenCalled(); expect(value.set).not.toHaveBeenCalled();
+      await expect(value.options().getApiKey()).rejects.toMatchObject({ code: 'AUTH' }); expect(value.keyGet).not.toHaveBeenCalled(); expect(value.set).not.toHaveBeenCalled();
       expect(await mode.api.invoke('captureSetApiKey', { key: 'synthetic-manual-replacement' })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
       await mode.close(); expect(value.repoClose).toHaveBeenCalledOnce();
     } finally { rmSync(value.root, { recursive: true, force: true }); }

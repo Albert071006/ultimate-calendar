@@ -163,7 +163,7 @@ describe('phone → HTTP server → authorized encrypted collector synchronizati
     await fixture.phone.updateAiConfiguration(keyA, null); expect(await worker.getApiKey()).toBe(keyA);
     const before = readFileSync(fixture.keyFile);
     fixture.service.state.revoke(fixture.collectorSession.deviceId);
-    await expect(worker.getApiKey()).rejects.toMatchObject({ code: 'CANCELLED' });
+    await expect(worker.getApiKey()).rejects.toMatchObject({ code: 'AUTH', retryable: false });
     expect(worker.status().state).toBe('error'); expect(readFileSync(fixture.keyFile)).toEqual(before);
     expect(await keys.get()).toBe(keyA); // Durable data remains available for diagnosis, while model access fails closed.
     expect(fixture.onChanged).toHaveBeenCalledTimes(1); expect(fixture.modelFetch).not.toHaveBeenCalled();

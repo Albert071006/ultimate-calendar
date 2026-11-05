@@ -156,6 +156,11 @@ export function createCaptureService(options: {
     // Never await model work here: key retrieval can wait for the synchronizer invoking this callback.
     emit(); return snapshot();
   }
+  function resumeAfterCloudKeySync() {
+    if (stopped || !store.resumeAfterCloudKeySync()) return false;
+    error = null; emit();
+    return true; // The regular tick picks up the restored batch after the sync callback returns.
+  }
   async function backfill() {
     if (historyRunning || stopped || suspended || !bridge || !health?.online || !store.config().enabled) return;
     historyRunning = true; const client = bridge;
@@ -318,7 +323,7 @@ export function createCaptureService(options: {
     finally { running = false; emit(); }
   }
   return {
-    snapshot, connect, configure, credentialsChanged, groups: getGroups,
+    snapshot, connect, configure, credentialsChanged, resumeAfterCloudKeySync, groups: getGroups,
     async start() {
       stopped = false; suspended = false;
       if (!timer) timer = setInterval(() => {
