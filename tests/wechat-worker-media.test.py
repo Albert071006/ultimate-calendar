@@ -162,7 +162,7 @@ class LocalFilesTests(unittest.TestCase):
         self.image_path(digest, '_t.dat', b'\xff\xd8\xffdata\xff\xd9')
         with self.assertRaises(media.MediaError) as caught:
             self.reader.materialize({'local_type': 3}, '<msg><img md5="' + digest + '"/></msg>', self.group, 'image')
-        self.assertEqual(caught.exception.code, 'NOT_DOWNLOADED')
+        self.assertEqual(caught.exception.code, 'THUMBNAIL_ONLY')
 
     def test_original_preferred_and_output_is_private_copy(self):
         digest = 'a' * 32

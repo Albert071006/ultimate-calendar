@@ -1,4 +1,5 @@
-import { InstantSchema, TIMEZONE } from '../shared/contracts';
+import { isRealDate, InstantSchema, TIMEZONE } from '../shared/contracts';
+import { evidenceTimes, fieldEvidenceDate } from '../domain/temporal-evidence';
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -15,12 +16,27 @@ function explicitLocalTime(value: unknown): unknown {
  * derive that context from model output. Paid completed checkpoints bypass it.
  * Input objects are never mutated; missing fields and explicit offsets stay
  * untouched. */
-export function normalizeCaptureResponseTimes(value: unknown, timezone: string): unknown {
+type TimeSource = { id: string; text: string; sentAt: string | null };
+
+function eventTime(candidate: Record<string, unknown>, field: 'eventStart' | 'eventEnd', sources: TimeSource[]): unknown {
+  const value = candidate[field];
+  if (typeof value !== 'string' || !isRealDate(value)) return explicitLocalTime(value);
+  if (!Array.isArray(candidate.sourceIds) || candidate.sourceIds.length !== 1 || !Array.isArray(candidate.temporalEvidence)) return value;
+  const primaryId = candidate.sourceIds[0], source = sources.find(item => item.id === primaryId);
+  if (!source) return value;
+  // A calendar instant needs a clock. Preserve the verified day in the evidence, including words like “左右”.
+  const quotes = candidate.temporalEvidence.filter(e => object(e) && e.field === field);
+  const verified = quotes.length > 0 && quotes.every(e => typeof e.quote === 'string' && e.quote.length > 0
+    && source.text.includes(e.quote) && fieldEvidenceDate(e.quote, source.sentAt, field) === value && !evidenceTimes(e.quote).length);
+  return verified ? null : value;
+}
+
+export function normalizeCaptureResponseTimes(value: unknown, timezone: string, sources: TimeSource[] = []): unknown {
   if (timezone !== TIMEZONE || !object(value) || !Array.isArray(value.candidates)) return value;
   let changed = false;
   const candidates = value.candidates.map(candidate => {
     if (!object(candidate)) return candidate;
-    const start = explicitLocalTime(candidate.eventStart), end = explicitLocalTime(candidate.eventEnd);
+    const start = eventTime(candidate, 'eventStart', sources), end = eventTime(candidate, 'eventEnd', sources);
     if (start === candidate.eventStart && end === candidate.eventEnd) return candidate;
     changed = true;
     return { ...candidate,

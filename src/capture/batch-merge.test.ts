@@ -57,6 +57,22 @@ function tableBatch(f: ReturnType<typeof fixture>) {
 }
 
 describe('QQ batch event evidence and incremental candidate application', () => {
+  it.each([true, false])('grounds a separate registration deadline only inside the quoted supplement (%s)', async citedDeadline => {
+    const f = fixture(), meeting = '本周日晚上举行讲座，具体钟点另行通知', invitation = '请报名参加讲座', cutoff = '报名截止到本周六24：00';
+    f.message('notice', meeting); f.message('registration', invitation + '。' + cutoff, 1);
+    await analyzeCapture({ ...options(f), batch: f.seal(), fetch: async (_url, request) => {
+      const [primary, supplement] = input(request).units;
+      return response([extracted(primary!.id, meeting, {
+        eventStart: '2026-10-25', deadline: { date: '2026-10-24', time: null },
+        temporalEvidence: [{ field: 'eventStart', basis: 'relative', quote: meeting }, { field: 'deadline', basis: 'relative', quote: cutoff }],
+        supportingSources: [{ sourceId: supplement!.id, quote: citedDeadline ? cutoff : invitation }],
+      })]);
+    } });
+    expect(f.repository.snapshot().candidates[0]).toMatchObject({ eventStart: null,
+      deadline: citedDeadline ? { date: '2026-10-24', time: null } : null,
+      temporalEvidence: expect.arrayContaining([{ field: 'eventStart', basis: 'relative', quote: meeting }]) });
+  });
+
   it('keeps a fire-safety image and its following text as two actual sources of one candidate', async () => {
     const f = fixture();
     const imageMessage = f.store.ingest([{ accountId: '100', groupId: '200', messageId: 'safety-image', sentAt: at, importedAt: at,

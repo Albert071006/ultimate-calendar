@@ -69,12 +69,13 @@ const evidenceContinuation = '原通知的来源较多，本次补充单独保�
 const exceedsEvidenceLimit = (left: string[], right: string[]) => new Set([...left, ...right]).size > 100;
 
 /** Both staged context and the final transaction use these exact same additive decisions. */
-export function reconcileCaptureCandidate(item: ExtractedCandidate, source: Source, sourceIds: string[], existing: Candidate[], warnings: string[], sources: Source[] = []): CaptureDecision {
+export function reconcileCaptureCandidate(item: ExtractedCandidate, source: Source, sourceIds: string[], existing: Candidate[], warnings: string[], sources: Source[] = [],
+  supportingDeadlineQuotes: { quote: string; sentAt: string | null }[] = []): CaptureDecision {
   // An explicit same-event relation can use different wording. Apply the same guarded, additive
   // merge as a supplement instead of creating a fresh root from that paraphrase.
   if (item.relation.kind === 'duplicate' && item.relation.candidateId) item = { ...item, relation: { ...item.relation, kind: 'supplement' } };
   const evidenceSources = [...sources.filter(saved => saved.id !== source.id), source];
-  const normalized = normalizeCandidate(item, source, existing, evidenceSources);
+  const normalized = normalizeCandidate(item, source, existing, evidenceSources, supportingDeadlineQuotes);
   item = { ...item, relation: normalized.relation };
   const target = item.relation.candidateId ? existing.find(candidate => candidate.id === item.relation.candidateId) : null;
   if (item.relation.kind === 'supplement' && target?.status === 'ignored') return { kind: 'ignore', id: target.id };

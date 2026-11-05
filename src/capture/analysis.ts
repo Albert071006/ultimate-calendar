@@ -168,7 +168,7 @@ export function batchMessages(units: AnalysisUnit[], context: Checkpoint['contex
   const content: Exclude<ChatMessage['content'], string> = [{ type: 'text', text: JSON.stringify({ units: units.map(({ imageDataUrl, attachmentAliases: _aliases, ...u }) => ({ ...u, hasImage: !!imageDataUrl, recipient: recipientHint(recipients?.get(u.messageId)) })), allowedSourceIds: units.map(unit => unit.id), context: context.map(message => ({ ...message, recipient: recipientHint(message.recipient ?? recipients?.get(message.id)), contextOnly: true })), warnings, userProfile: locationProfile(profile), existingCandidates: existing.map(c => captureCandidateContext(c, sources)) }) }];
   for (const unit of units) if (unit.imageDataUrl) content.push({ type: 'text', text: `以下图片属于 unit.id=${unit.id}，位置=${unit.locator}` }, { type: 'image_url', image_url: { url: unit.imageDataUrl } });
   const summaryPrivacy = '业务摘要与原文证据分开：title、action、benefit、potentialBenefit、conditions、uncertainties、location 不复制网址（URL）、本机路径、附件文件名或 QQ 账号/群号、微信账号/群号/wxid。保留必要的平台名称、行动、条件与地点；登录、下载等要求概括为“登录通知中的平台”“查看通知附件中的操作说明”，缺失信息只描述待核对的问题，不复述这些标识。sourceQuote、supportingSources[].quote、temporalEvidence[].quote 必须保留对应来源的连续原文，不为摘要隐私规则改写、替换或删去引文内容；原始资料和来源证据仍在本机保留。';
-  return [{ role: 'system', content: `${system}\n${captureActionabilityInstructions}\n${eventExtractionInstructions}\n${candidateFieldInstructions}\n${temporalExtractionInstructions}\n${summaryPrivacy}` }, { role: 'user', content }];
+  return [{ role: 'system', content: `${system}\n${captureActionabilityInstructions}\n${eventExtractionInstructions}\n${candidateFieldInstructions}\n${temporalExtractionInstructions}\n活动只给日期或“周六晚上”等时段时，eventStart、eventEnd 相应字段填 null，在 temporalEvidence 和 uncertainties 保留原话。\n${summaryPrivacy}` }, { role: 'user', content }];
 }
 function virtualSource(unit: AnalysisUnit): Source {
   const at = nowInstant();
@@ -233,8 +233,12 @@ function replayCandidates(completed: CompletedCapture[], batch: CaptureBatch, un
     if (entry.candidate.relation.candidateId && aliases.has(entry.candidate.relation.candidateId) && !existing.some(candidate => candidate.id === item.relation.candidateId)) {
       throw new WorkflowError('CONFLICT', '已保存的关联事项已删除或来源范围改变，保留当前结果供校对，不会重新创建该事项');
     }
+    const supportingDeadlineQuotes = entry.supportingSources.flatMap(ref => {
+      const source = sources.get(ref.sourceId);
+      return source?.kind === 'text' ? [{ quote: ref.quote, sentAt: source.sentAt }] : [];
+    });
     const decision = reconcileCaptureCandidate(item, sources.get(unit.id)!, evidenceIds, existing,
-      [...warnings, ...(evidenceIds.some(id => byId.get(id)!.imageDataUrl) ? ['图片文字由 AI 转写，请对照原图核对'] : [])], [...sink.sources(), ...sources.values()]);
+      [...warnings, ...(evidenceIds.some(id => byId.get(id)!.imageDataUrl) ? ['图片文字由 AI 转写，请对照原图核对'] : [])], [...sink.sources(), ...sources.values()], supportingDeadlineQuotes);
     if (decision.kind === 'ignore') { aliases.set(entry.id, decision.id); rememberPractice(decision.id); sink.remember?.(entry, decision.id); continue; }
     if (practice && practiceTarget) {
       // Append only the newly observed exercise to the live text. Never replay deleted steps or replace a user's edited summary.
@@ -340,7 +344,7 @@ export async function analyzeCapture(options: { store: CaptureStore; repository:
       const pending = checkpoint.pendingResponse!;
       let value: CaptureExtraction;
       try {
-        const parsed = requestSchema.safeParse(normalizeCaptureResponseTimes(pending.value, settings.timezone));
+        const parsed = requestSchema.safeParse(normalizeCaptureResponseTimes(pending.value, settings.timezone, eligibleUnits));
         if (!parsed.success) throw new WorkflowError('AI_RESPONSE', '回答的主来源、补充来源或字段不符合当前分片要求');
         value = parsed.data;
         const state = repository.read();

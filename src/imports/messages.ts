@@ -36,7 +36,8 @@ export function supplementCandidate(target: Candidate, incoming: CandidateInput,
   });
   return { values, conflicts };
 }
-export function normalizeCandidate(extracted: ExtractedCandidate, source: Source, existing: Candidate[], sources: Source[] = []): { values: CandidateInput; duplicate: Candidate | null; relation: ExtractedCandidate['relation'] } {
+export function normalizeCandidate(extracted: ExtractedCandidate, source: Source, existing: Candidate[], sources: Source[] = [],
+  supportingDeadlineQuotes: { quote: string; sentAt: string | null }[] = []): { values: CandidateInput; duplicate: Candidate | null; relation: ExtractedCandidate['relation'] } {
   if (extracted.sourceIds.some(id => id !== source.id) || new Set(extracted.sourceIds).size !== 1) throw new WorkflowError('AI_RESPONSE', 'AI 引用了本次来源之外的 ID，请人工校对');
   if (source.kind === 'text' && !source.text.includes(extracted.sourceQuote)) throw new WorkflowError('AI_RESPONSE', 'AI 引用与原文不符，请人工校对');
   const { relation: requestedRelation, ...input } = extracted; let relation = requestedRelation;
@@ -46,12 +47,13 @@ export function normalizeCandidate(extracted: ExtractedCandidate, source: Source
     const value = values[field]; if (!value) continue;
     const date = typeof value === 'string' ? value.slice(0, 10) : value.date;
     const evidence = extracted.temporalEvidence.find(e => e.field === field);
-    const quoted = !!evidence && (source.kind === 'image' || source.text.includes(evidence.quote));
-    const grounded = evidence ? fieldEvidenceDate(evidence.quote, source.sentAt, field) : null;
-    const explicit = quoted && evidence.basis === 'explicit' && grounded === date;
-    const expectedRelative = grounded;
-    const relative = quoted && evidence.basis === 'relative' && source.sentAt !== null && expectedRelative !== null && expectedRelative === date;
-    if (!explicit && !relative) {
+    const anchors: (string | null)[] = [];
+    if (evidence && (source.kind === 'image' || source.text.includes(evidence.quote))) anchors.push(source.sentAt);
+    if (evidence && field === 'deadline') for (const ref of supportingDeadlineQuotes) {
+      if (ref.quote.includes(evidence.quote)) anchors.push(ref.sentAt);
+    }
+    if (!evidence || evidence.basis === 'unknown' || !anchors.length || !anchors.every(sentAt =>
+      (evidence.basis !== 'relative' || sentAt !== null) && fieldEvidenceDate(evidence.quote, sentAt, field) === date)) {
       values[field] = null; values.uncertainties!.push(source.sentAt === null ? '原消息发送时间未知，时间需校对；不能按导入时间推算' : '时间缺少可核对的原文依据，请校对');
     } else {
       const time = typeof value === 'string' ? value.slice(11, 16) : value.time;

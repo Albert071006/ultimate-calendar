@@ -12,6 +12,18 @@ const candidate = () => ({ title: '参加合成讲座', action: '参加合成讲
 const fingerprint = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 describe('capture response local time adapter', () => {
+  it('requires matching date-only evidence in the primary source before leaving the time open', () => {
+    const quote = '本周六晚上进行展示，具体时刻另行通知', base = candidate();
+    const item = { ...base, eventStart: '2032-04-17', eventEnd: null,
+      temporalEvidence: [{ field: 'eventStart', basis: 'relative', quote }] };
+    const raw = { candidates: [item] };
+    const source = { id: base.sourceIds[0]!, text: quote, sentAt: '2032-04-16T18:00:00+08:00' };
+    expect(normalizeCaptureResponseTimes(raw, timezone, [source])).toEqual({ candidates: [{ ...item, eventStart: null }] });
+    for (const wrong of [{ ...source, id: 'other' }, { ...source, text: '无该引用' }, { ...source, sentAt: '2032-04-23T18:00:00+08:00' }]) {
+      expect(normalizeCaptureResponseTimes(raw, timezone, [wrong])).toBe(raw);
+    }
+  });
+
   it('fixes only the missing seconds and offset that otherwise fail the live request schema', () => {
     const raw = { candidates: [candidate()] }, schema = captureRequestSchema(['synthetic-source']);
     const rejected = schema.safeParse(raw);

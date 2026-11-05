@@ -106,12 +106,12 @@ describe('WeChat bounded media extraction', () => {
     expect(JSON.stringify(f.repository.snapshot())).not.toContain(f.workdir);
   });
 
-  it.each(['NOT_DOWNLOADED', 'IMAGE_KEY_UNAVAILABLE'])('does not pay or apply placeholder-only results and retries %s', async code => {
+  it.each([['NOT_DOWNLOADED', '打开或下载原件'], ['IMAGE_KEY_UNAVAILABLE', '无法解密'], ['THUMBNAIL_ONLY', '只有缩略图'], ['READ_PENDING', '正在写入']])('retains the specific media failure and resumes %s', async (code, reason) => {
     const f = await pipeline(code); await f.run();
     const batch = f.store.listBatches().items[0]!;
     expect(batch.status).toBe('failed'); expect(batch.attemptCount).toBe(0); expect(f.fetcher).not.toHaveBeenCalled();
     expect(f.store.batch(batch.id)?.waitingForAttachments).toBe(true);
-    expect(batch.error).not.toContain('PRIVATE_MEDIA_PATH');
+    expect(batch.error).toContain(reason); expect(batch.error).not.toContain('PRIVATE_MEDIA_PATH');
     writeFileSync(f.ready, 'ready'); expect(f.store.retryWaitingAttachments()).toBe(2);
     f.service.action({ action: 'analyze' }); await until(() => !f.service.busy());
     expect(f.store.batch(batch.id)?.status).toBe('applied'); expect(f.fetcher).toHaveBeenCalledTimes(2);
