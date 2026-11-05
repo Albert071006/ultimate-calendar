@@ -41,6 +41,7 @@ jobs:
           ./scripts/wechat/setup.ps1 -Edition Local -PythonPath (Get-Command python).Source -RuntimeDirectory (Join-Path $env:RUNNER_TEMP 'wechat-setup-runtime') -DataDirectory $data
           $config = Get-Content -LiteralPath (Join-Path $data 'wechat-runtime.json') -Raw | ConvertFrom-Json
           if (-not (Test-Path -LiteralPath $config.python -PathType Leaf)) { throw 'WeChat setup did not create the expected runtime.' }
-      # Hosted Windows disk flushes can exceed Vitest's 5 s default in SQLite integration tests.
-      - run: npm test -- --testTimeout=15000
+      # Hosted Windows SQLite FULL flushes can pause beyond 15 s under shared disk load.
+      # Keep real durability and every assertion; only allow these integration tests more time.
+      - run: npm test -- --testTimeout=45000
       - run: npm run build
