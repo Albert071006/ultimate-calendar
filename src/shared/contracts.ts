@@ -7,7 +7,7 @@ import type { PlanExportDesktopAPI } from './plan-context';
 import type { BusyExportDesktopAPI } from './busy-context';
 import type { CaptureDesktopAPI as importCaptureAPI } from './capture-api';
 import { LedgerCommandProposalSchema } from './ledger-command';
-import { LedgerMonthSchema } from './ledger';
+import { LedgerMonthSchema, LedgerQueryChoicesSchema } from './ledger';
 import { PALETTE_COLORS } from './palette';
 import { AiConfigurationRevisionSchema, AiConfigurationStatusSchema } from './ai-configuration-status';
 import { imageDataUrlByteLength, imageDataUrlSignatureValid } from './images';
@@ -374,7 +374,7 @@ export const AnalyzeSourceRequestSchema = z.strictObject({ operationId: IdSchema
 export type AnalyzeSourceRequest = z.infer<typeof AnalyzeSourceRequestSchema>;
 export const AnalysisResultSchema = z.strictObject({ sourceId: IdSchema, status: z.enum(['needs-review', 'succeeded', 'failed']), candidateIds: z.array(IdSchema), message: shortText });
 export type AnalysisResult = z.infer<typeof AnalysisResultSchema>;
-export const ConversationStateSchema = z.strictObject({ domain: z.enum(['calendar', 'ledger']), phase: z.enum(['clarification', 'saved', 'query', 'preview']) });
+export const ConversationStateSchema = z.strictObject({ domain: z.enum(['calendar', 'ledger']), phase: z.enum(['clarification', 'saved', 'query', 'preview']), ledgerQueryChoices: LedgerQueryChoicesSchema.optional() });
 export type ConversationState = z.infer<typeof ConversationStateSchema>;
 /** Visible ledger scope helps interpret questions; it never sets a new transaction's date. */
 export const LedgerViewContextSchema = z.strictObject({ month: LedgerMonthSchema, tab: z.enum(['flows', 'accounts']), selectedEntryId: IdSchema.optional() });

@@ -160,7 +160,8 @@ describe('main assistant local ledger commands',()=>{
     expect(await controller.command(request)).toEqual(first);
     expect(payloads).toHaveLength(2);
 
-    intents.push(route, { ...batch, changes: batch.changes.map(change => ({ ...change, confirmDuplicate: true })) });
+    // A clear answer to a pending ledger question goes straight to its parser.
+    intents.push({ ...batch, changes: batch.changes.map(change => ({ ...change, confirmDuplicate: true })) });
     const confirmation: CommandRequest = { operationId: `synthetic-confirm-duplicate-${existing}`, text: '是', history: [
       ...oldHistory, { role: 'user', text: request.text }, { role: 'assistant', text: first.data.reply, outcome: first.data.conversationState },
     ] };
@@ -182,7 +183,7 @@ describe('main assistant local ledger commands',()=>{
     }
     expect(await controller.command(confirmation)).toEqual(saved);
     expect(ledger.snapshot()).toEqual(after);
-    expect(payloads).toHaveLength(4);
+    expect(payloads).toHaveLength(3);
   });
 
   it.each([false, true])('does not present an unproven or mismatched duplicate as a safe clarification (mismatch=%s)', async mismatch => {

@@ -4,7 +4,7 @@ export const ReasoningEffortSchema = z.enum(['none', 'low', 'high', 'max']);
 export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
 export const AI_SETTINGS_HEADER = 'X-Planner-AI-Settings-Version';
 export const AI_SETTINGS_VERSION = '1';
-// A ledger command has at most two serial model calls (240 s each), plus transport margin.
+// Transport budget for AI RPCs; a timeout must recover the original operation, never resend it.
 export const AI_RPC_TIMEOUT_MS = 510_000;
 export const isAiRpcPath = (path: string) => /^\/api\/v1\/rpc\/(command|analyzeSource|importCourses)$/.test(path);
 export const reasoningOptions = [

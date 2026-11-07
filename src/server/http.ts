@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { LEDGER_API_HEADER, LEDGER_API_VERSION } from '../shared/ledger-compatibility';
 import { AI_SETTINGS_HEADER, AI_SETTINGS_VERSION, legacyAiSettingsResult } from '../shared/ai-reasoning';
 import { PROFILE_SETTINGS_HEADER, PROFILE_SETTINGS_VERSION, legacyProfileSettingsResult } from '../shared/profile-settings';
+import { LEDGER_QUERY_HEADER, LEDGER_QUERY_VERSION, legacyLedgerQueryResult } from '../shared/ledger-query-compatibility';
 import { PLANNER_SYNC_HEADER, PLANNER_SYNC_VERSION, legacyPlannerSyncResult } from '../shared/planner-sync';
 import { PairRequestSchema, RemoteMethodSchema, RemoteRequestSchema, RemoteSessionSchema, type RemoteDevice } from '../shared/remote';
 import type { RemoteService } from './service';
@@ -140,7 +141,8 @@ export function createRemoteHttpServer(options: RemoteHttpOptions) {
       const settingsResult = (method: string, result: unknown) => {
         const synced = request.headers[PLANNER_SYNC_HEADER.toLowerCase()] === PLANNER_SYNC_VERSION ? result : legacyPlannerSyncResult(method, result);
         const compatible = modernAiSettings ? synced : legacyAiSettingsResult(method, synced);
-        return modernProfileSettings ? compatible : legacyProfileSettingsResult(method, compatible);
+        const profiled = modernProfileSettings ? compatible : legacyProfileSettingsResult(method, compatible);
+        return request.headers[LEDGER_QUERY_HEADER.toLowerCase()] === LEDGER_QUERY_VERSION ? profiled : legacyLedgerQueryResult(method, profiled);
       };
       const publicRequest = incomingOrigin === publicOrigin;
       const bucket = publicRequest ? rateBucket(request, response) : undefined;

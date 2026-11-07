@@ -3,7 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { openDatabase } from '../storage/database';
 import {
   DEFAULT_LEDGER_RULES, LEDGER_ACCOUNTS, LedgerDataSchema, LedgerImportPayloadSchema, LedgerMutationRequestSchema,
-  LedgerMonthSchema, LedgerQuerySchema, LedgerUndoRequestSchema, ledgerAccounts, ledgerAllowanceKey, ledgerToday,
+  LedgerMonthSchema, LedgerQuerySchema, LedgerUndoRequestSchema, ledgerAccounts, ledgerAllowanceKey, ledgerToday, ledgerQueryWithDefaultMonth,
   type LedgerAccount, type LedgerData, type LedgerEntry, type LedgerImportPayload, type LedgerMutationRequest, type LedgerMutationResult,
   type LedgerQuery, type LedgerSnapshot, type LedgerUndoRequest,
 } from '../shared/ledger';
@@ -182,8 +182,8 @@ export class LedgerService {
   query(input: LedgerQuery = {}) {
     const query = LedgerQuerySchema.parse(input); const data = readLedgerDatabase(this.db);
     if (query.accountId && !ledgerAccounts(data).some(account => account.id === query.accountId)) fail('查询的账户不存在');
-    const month = query.month ?? ((!query.from && !query.to) ? ledgerToday(this.now()).slice(0, 7) : undefined);
-    return { entries: data.entries.filter(entry => ledgerEntryMatches(entry, { ...query, month })), summary: summarizeLedger(data, query, this.now()), receivables: ledgerReceivable(data.entries, { ...query, month }) };
+    const now = this.now(); const effectiveQuery = ledgerQueryWithDefaultMonth(query, now);
+    return { entries: data.entries.filter(entry => ledgerEntryMatches(entry, effectiveQuery)), summary: summarizeLedger(data, effectiveQuery, now), receivables: ledgerReceivable(data.entries, effectiveQuery) };
   }
   private toSnapshot(data: LedgerData, month?: string): LedgerSnapshot {
     return { ...data, sources: data.sources.map(({ content: _content, ...source }) => source), summary: summarizeLedger(data, { month: month ? LedgerMonthSchema.parse(month) : undefined }, this.now()) };

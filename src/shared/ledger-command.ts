@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { LedgerAccountIdSchema, LedgerAccountSchema, LedgerBalanceSnapshotDraftSchema, LedgerDateSchema, LedgerEntryDraftSchema, LedgerMutationRequestSchema, LedgerQuerySchema, LedgerRulesSchema } from './ledger';
+import { LedgerAccountIdSchema, LedgerAccountSchema, LedgerBalanceSnapshotDraftSchema, LedgerDateSchema, LedgerEntryDraftSchema, LedgerMutationRequestSchema, LedgerQuerySchema, LedgerQueryChoiceSchema, LedgerRulesSchema } from './ledger';
 
 const entryValues = LedgerEntryDraftSchema.omit({ id: true, sourceId: true, sourceKey: true, ruleKey: true, originalText: true });
 // Zod 4 applies an inner default even underneath .optional(). A patch must leave
@@ -27,7 +27,7 @@ export const LedgerIntentSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('query'), query: LedgerQuerySchema, detail: z.enum(['summary', 'entries', 'balances', 'receivables', 'loans']).default('summary') }),
   z.strictObject({ kind: z.literal('mutate'), changes: z.array(LedgerAIChangeSchema).min(1).max(50) }),
   z.strictObject({ kind: z.literal('undo') }),
-  z.strictObject({ kind: z.literal('clarification'), question: z.string().trim().min(1).max(2000) }),
+  z.strictObject({ kind: z.literal('clarification'), question: z.string().trim().min(1).max(2000), queryChoices: z.array(LedgerQueryChoiceSchema).min(2).max(5).optional() }),
 ]);
 export type LedgerIntent = z.infer<typeof LedgerIntentSchema>;
 export const LedgerCommandProposalSchema = z.strictObject({ intent: LedgerIntentSchema, revision: z.number().int().nonnegative(), mutationRequest: LedgerMutationRequestSchema.optional() });

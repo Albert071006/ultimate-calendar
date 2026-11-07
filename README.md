@@ -4,12 +4,12 @@
 
 **推荐使用「终极日历本地版」：下载安装即可使用，无需部署服务器、注册日历账号或进行设备配对。** 资料保存在自己的电脑上；需要 AI 时，填写自己的 DeepSeek API Key，由本机直接调用。它只提供桌面端，没有手机端或跨设备同步。
 
-[下载本地版 0.10.0（Windows x64）](https://github.com/Albert071006/ultimate-calendar/releases/download/v0.10.0/UltimateCalendar-Local-Setup-0.10.0.exe) · [服务器版与手机端 0.10.0](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.10.0) · [反馈问题](https://github.com/Albert071006/ultimate-calendar/issues)
+[下载本地版 0.10.1（Windows x64）](https://github.com/Albert071006/ultimate-calendar/releases/download/v0.10.1/UltimateCalendar-Local-Setup-0.10.1.exe) · [服务器版与手机端 0.10.1](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.10.1) · [反馈问题](https://github.com/Albert071006/ultimate-calendar/issues)
 
 | 版本 | 适合谁 | 资料与 AI |
 | --- | --- | --- |
-| [本地版](https://github.com/Albert071006/ultimate-calendar/releases/tag/v0.10.0) | 只在 Windows 电脑使用，下载安装即可 | 资料在本机，AI 由本机调用自己的 DeepSeek API Key |
-| [服务器版与手机端](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.10.0) | 希望手机与电脑共用资料，愿意维护常在线服务器 | 资料在自己的服务器，AI 由服务器调用，手机通过 HTTPS 网页/PWA 使用 |
+| [本地版](https://github.com/Albert071006/ultimate-calendar/releases/tag/v0.10.1) | 只在 Windows 电脑使用，下载安装即可 | 资料在本机，AI 由本机调用自己的 DeepSeek API Key |
+| [服务器版与手机端](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.10.1) | 希望手机与电脑共用资料，愿意维护常在线服务器 | 资料在自己的服务器，AI 由服务器调用，手机通过 HTTPS 网页/PWA 使用 |
 
 ## 开始使用
 
@@ -37,7 +37,7 @@
 
 QQ 与微信采集都是需另行配置的可选功能。微信只读采集已同步到电脑的消息及已缓存、下载的附件，不自动操作微信下载；未就绪附件独立等待，不拖住其他消息。语音、视频不做内容分析。提醒需要日历进程保持运行，关机、休眠或退出期间不能即时通知。附件格式与其他边界见[本地版说明](docs/local-desktop.md)。
 
-**0.10.0 改善操作响应，并减少 AI 重复输入。** 日历和任务按增量更新，自动备份移到后台；记账分流少带无关日历资料，群通知采用紧凑表示，必要时补读原记录或附件证据。仍使用最新资料并保留来源、去重及结果未知保护，实际 token 用量和缓存命中率随请求内容变化。另修复临时云端密钥同步失败后采集持续暂停，以及微信附件状态和仅有日期的通知处理。手动“记一笔”继续纯手动，升级不补账或重分类。服务器用户需协调更新后端、Windows 标准版及手机页面，并同时部署后台备份 worker；回退前核对新回执和采集检查点的兼容性。详见[本地版发布说明](docs/release-notes/0.10.0.md)和[服务器版发布说明](docs/release-notes/server-0.10.0.md)。
+**0.10.1 修复账本查询、连续追问和报销处理。** 生活助手区分单笔项目/备注与整批记账原文，查询显示筛选依据；澄清选项的短答保留所选范围，多轮补充保留原需求和已提供的账户。明确全额报销可跨分类、跨月份逐笔冲减，分配不明时继续正常追问；实际到账只记一次。手动分类下拉可直接展开完整列表，并支持自定义输入。另包含微信临时账号未就绪的恢复修复。升级不补记失败账目或批量改分类；电脑、后端和手机页面需协调更新，保留资料与配对。详见[本地版发布说明](docs/release-notes/0.10.1.md)和[服务器版发布说明](docs/release-notes/server-0.10.1.md)。
 
 ## 数据与隐私
 
@@ -89,11 +89,11 @@ npm run smoke
 
 ## 服务器版与手机端
 
-[服务器版 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.10.0) 单独提供 `UltimateCalendar-Server-Mobile-0.10.0.tar.gz`，内含已构建的 Node 后端、后台备份 worker、手机网页、systemd 配置、NGINX 示例与部署说明。你需要自行部署并维护常在线的 Linux 云服务器，项目不提供公共托管账号。目标服务器安装 Node.js 24 后即可运行部署包，无需再执行 `npm ci`；管理员还需配置域名、HTTPS 和持久资料目录。部署时完整保留 `cli.mjs` 和同次构建的 `backup-worker.cjs`。
+[服务器版 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.10.1) 单独提供 `UltimateCalendar-Server-Mobile-0.10.1.tar.gz`，内含已构建的 Node 后端、后台备份 worker、手机网页、systemd 配置、NGINX 示例与部署说明。你需要自行部署并维护常在线的 Linux 云服务器，项目不提供公共托管账号。目标服务器安装 Node.js 24 后即可运行部署包，无需再执行 `npm ci`；管理员还需配置域名、HTTPS 和持久资料目录。部署时完整保留 `cli.mjs` 和同次构建的 `backup-worker.cjs`。
 
 部署后，手机打开自己的 HTTPS 地址，输入服务器生成的一次性码配对，再添加到主屏幕。服务器持续运行时，Windows 电脑可以关机；服务器停机或不可达时，共享读写与 AI 会受影响。每个服务实例是一套共享资料，适合自己或可信设备使用。
 
-同一 Release 还提供可选 Windows 标准版 `UltimateCalendar-Setup-0.10.0.exe`，可配置为连接该服务器；独立本地版不会连接服务器。两种桌面版分别安装、保存资料和更新，标准版继续使用 `latest.yml`。
+同一 Release 还提供可选 Windows 标准版 `UltimateCalendar-Setup-0.10.1.exe`，可配置为连接该服务器；独立本地版不会连接服务器。两种桌面版分别安装、保存资料和更新，标准版继续使用 `latest.yml`。
 
 [Linux 部署与手机使用步骤](docs/server-mobile-deployment.md) · [Windows 连接说明](docs/windows-cloud-mode.md) · [自托管开发与接口说明](docs/self-hosted.md)
 

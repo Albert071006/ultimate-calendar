@@ -3,6 +3,7 @@ import { ledgerAccounts, type LedgerAccount, type LedgerMutationRequest, type Le
 import type { LedgerIntent } from '../shared/ledger-command';
 import type { CommandRequest } from '../shared/contracts';
 import { WorkflowError } from './deepseek';
+import { pendingUserEvidence } from '../shared/command-continuation';
 
 const bankNames = [
   ['中国银行', '中行'], ['招商银行', '招行'], ['中国工商银行', '工商银行', '工行'],
@@ -16,11 +17,7 @@ const bankPattern = new RegExp([...bankAliases.keys()].sort((a, b) => b.length -
 const normalize = (value: string) => compact(value).replace(bankPattern, alias => bankAliases.get(alias)!);
 const genericName = (name: string) => /^(?:银行(?:卡|账户)?|储蓄(?:卡|账户)?|借记卡|现金账户|现金|会员卡|储值卡|储值会员卡|会员账户|储值账户|银行卡账户|未命名账户|新账户)$/.test(compact(name));
 const labels = (account: LedgerAccount) => [account.name, ...account.aliases];
-const evidence = (request: CommandRequest) => {
-  const history = request.history ?? [];
-  const prior = history.at(-1), user = history.at(-2);
-  return [request.text, ...(prior?.role === 'assistant' && prior.outcome?.phase === 'clarification' && user?.role === 'user' ? [user.text] : [])].join('\n');
-};
+const evidence = pendingUserEvidence;
 const mentionedBanks = (value: string): string[] => bankNames.filter(names => names.some(name => value.includes(name))).map(names => names[0]);
 // Unknown bank names remain literal identities; this is not a bank-name allowlist.
 const bankIdentity = (label: string) => normalize(label).match(/^[\p{Script=Han}a-z]{2,24}?银行/u)?.[0];
@@ -115,9 +112,12 @@ export function prepareLedgerAccounts(intent: Extract<LedgerIntent, { kind: 'mut
   return { changes, accounts, resolve, assertGrounded: (ids: Array<string | null>) => assertGroundedAccounts(ids, accounts, request) };
 }
 
-export function validateLedgerQueryAccount(query: LedgerQuery, snapshot: LedgerSnapshot, request: CommandRequest): void {
+export function validateLedgerQueryAccountExists(query: LedgerQuery, snapshot: LedgerSnapshot): void {
   if (query.accountId === undefined) return;
   const accounts = ledgerAccounts(snapshot);
   if (!accounts.some(account => account.id === query.accountId)) throw new WorkflowError('AI_RESPONSE', '查询引用了不存在的账户，请重新分析');
-  assertGroundedAccounts([query.accountId], accounts, request);
+}
+export function validateLedgerQueryAccount(query: LedgerQuery, snapshot: LedgerSnapshot, request: CommandRequest): void {
+  validateLedgerQueryAccountExists(query, snapshot);
+  if (query.accountId !== undefined) assertGroundedAccounts([query.accountId], ledgerAccounts(snapshot), request);
 }

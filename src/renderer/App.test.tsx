@@ -480,7 +480,7 @@ describe("desktop workspace interaction", () => {
     await screen.findByText('本月还没有账目');
     expect(await send('本页收入是多少', 5)).toMatchObject({ ledgerView: { month, tab: 'flows' } });
   });
-  it("retains an answered clarification while excluding an intervening failed instruction from a new request", async () => {
+  it("does not expose an older clarification as pending after a failed instruction", async () => {
     const { api } = fixture();
     const clarification = '这笔 VPN 14 元、支付宝的记录是实际消费吗？';
     const clarificationState = { domain: 'ledger', phase: 'clarification' } as const;
@@ -501,10 +501,7 @@ describe("desktop workspace interaction", () => {
     fireEvent.click(screen.getByRole('button', { name: '发送指令' }));
     await screen.findByText('查询完成');
     expect(api.command).toHaveBeenCalledTimes(3);
-    expect(vi.mocked(api.command).mock.calls[2]![0].history).toEqual([
-      { role: 'user', text: 'vpn14 支付宝' },
-      { role: 'assistant', text: clarification, outcome: clarificationState },
-    ]);
+    expect(vi.mocked(api.command).mock.calls[2]![0].history).toEqual([]);
     expect(vi.mocked(api.command).mock.calls[2]![0].operationId)
       .not.toBe(vi.mocked(api.command).mock.calls[1]![0].operationId);
     expect(screen.getByRole('button', { name: '核对这条指令' })).toBeTruthy();

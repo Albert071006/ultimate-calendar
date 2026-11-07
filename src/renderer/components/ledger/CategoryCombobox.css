@@ -1,0 +1,26 @@
+.ledger-category-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ledger-category-combobox { position: relative; min-width: 0; }
+.ledger-category-combobox > input, .a2 .editor-form .ledger-category-combobox > input { width: 100%; padding-right: 42px; }
+.ledger-category-combobox > .ledger-category-toggle, .a2 .editor-form .ledger-category-toggle {
+  position: absolute; inset: 1px 1px 1px auto; display: flex; align-items: center; justify-content: center;
+  width: 38px; height: auto; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--ink-2);
+}
+.ledger-category-toggle svg { width: 16px; height: 16px; }
+.ledger-category-options {
+  position: absolute; inset: calc(100% + 4px) 0 auto; z-index: 6; max-height: min(240px, 35vh);
+  overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; margin: 0; padding: 4px;
+  list-style: none; border: 1px solid var(--line-2); border-radius: var(--radius);
+  background: var(--bg, #fffef9); color: var(--ink); box-shadow: 0 6px 20px #0002;
+}
+.ledger-category-options > [role="option"] {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px;
+  padding: 7px 9px; border-radius: var(--radius); cursor: pointer; font-size: 14px; overflow-wrap: anywhere;
+}
+.ledger-category-options > [role="option"].active { background: var(--surface-2); outline: 1px solid var(--line-2); outline-offset: -1px; }
+.ledger-category-options > [aria-selected="true"] { font-weight: 600; }
+.ledger-category-check { flex: none; color: var(--accent); }
+.ledger-category-empty { padding: 9px; font-size: 13px; color: var(--ink-3); overflow-wrap: anywhere; }
+@media (hover: hover) { .ledger-category-options > [role="option"]:hover { background: var(--surface-2); } }
+.is-mobile .editor-form .ledger-category-combobox > .ledger-category-toggle { width: 44px; min-height: 0; }
+.is-mobile .editor-form .ledger-category-combobox > input { padding-right: 48px; }
+.is-mobile .ledger-category-options > [role="option"] { min-height: 44px; font-size: 16px; }
