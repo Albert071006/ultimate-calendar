@@ -133,9 +133,14 @@ export function createWechatBridgeFactory(runtime: WechatReaderRuntime): Capture
                 if (packet.ok) request.resolve(packet.data);
                 else {
                   // Only controlled categories are surfaced; raw exceptions may contain paths or plaintext.
-                  if (/ACCOUNT|IDENTITY/.test(packet.error.code)) {
+                  if (packet.error.code === 'ACCOUNT_CHANGED') {
                     request.reject(Error('微信账号验证失败')); shutdown();
-                    publish({ state: 'account-mismatch', online: false, connected: false, error: '微信账号已改变或无法验证，请重新连接' });
+                    publish({ state: 'account-mismatch', online: false, connected: false, error: '微信账号已改变，请解除原账号绑定后重新连接' });
+                  } else if (/ACCOUNT|IDENTITY/.test(packet.error.code)) {
+                    // An unavailable/ambiguous account is not proof of an account change. Stop
+                    // this reader, preserving the binding and collection intent for the next poll.
+                    request.reject(Error('微信账号暂未就绪，稍后自动重试'));
+                    failed('微信账号暂未就绪，请保持原账号登录，稍后自动重试');
                   } else {
                     if (packet.error.code === 'TOO_LARGE') request.reject(new AttachmentDownloadError('微信附件超过 25 MB 自动读取上限，请手动查看', 'too-large'));
                     else if (packet.error.code === 'UNSUPPORTED') request.reject(new AttachmentDownloadError('此微信附件格式尚不支持自动读取，请手动查看', 'unsupported'));

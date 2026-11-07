@@ -230,6 +230,37 @@ class BoundDatabaseTests(unittest.TestCase):
         self.assertIsNone(db.extract_master_key())
         self.assertEqual([path.name for path in Path(self.temp.name).iterdir()], ['media'])
 
+    def test_missing_bound_account_never_falls_back_to_another_account(self):
+        original_db = self.reader.db
+        self.reader.module.list_accounts = Mock(return_value=[{'wxid': 'wxid_other', 'account': 'wxid_other_0000'}])
+        self.reader.refresh_groups.reset_mock()
+        with self.assertRaises(worker.ReaderError) as caught:
+            self.reader.connect('wechat:wxid_fictional')
+        self.assertEqual(caught.exception.code, 'ACCOUNT_SELECTION_REQUIRED')
+        self.assertIs(self.reader.db, original_db)
+        self.reader.refresh_groups.assert_not_called()
+
+    def test_ambiguous_unbound_accounts_are_not_read(self):
+        original_db = self.reader.db
+        self.reader.module.list_accounts = Mock(return_value=[
+            {'wxid': 'wxid_fictional', 'account': 'wxid_fictional_0000'},
+            {'wxid': 'wxid_other', 'account': 'wxid_other_0000'}])
+        self.reader.refresh_groups.reset_mock()
+        with self.assertRaises(worker.ReaderError) as caught:
+            self.reader.connect()
+        self.assertEqual(caught.exception.code, 'ACCOUNT_SELECTION_REQUIRED')
+        self.assertIs(self.reader.db, original_db)
+        self.reader.refresh_groups.assert_not_called()
+
+    def test_temporarily_unavailable_identity_stops_reads_without_claiming_account_changed(self):
+        self.reader.validated_at = worker.time.monotonic() - 61
+        self.reader.db.extract_keys = Mock(return_value={})
+        self.reader.refresh_groups.reset_mock()
+        with self.assertRaises(worker.ReaderError) as caught:
+            self.reader.handle({'id': 'synthetic', 'action': 'groups', 'accountId': 'wechat:wxid_fictional'})
+        self.assertEqual(caught.exception.code, 'IDENTITY_UNAVAILABLE')
+        self.reader.refresh_groups.assert_not_called()
+
 
 class RequestTests(unittest.TestCase):
     def setUp(self):

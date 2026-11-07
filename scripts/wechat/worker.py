@@ -223,7 +223,7 @@ class Reader:
             keys = self.db.extract_keys()
             contacts = [rel for rel in keys if 'contact' in rel]
             if not contacts:
-                raise ReaderError('ACCOUNT_CHANGED', '无法确认当前微信账号，请重新连接')
+                raise ReaderError('IDENTITY_UNAVAILABLE', '暂时无法确认当前微信账号，稍后重新连接')
             self.db._keys = keys
             self.validated_at = time.monotonic()
         return actual
