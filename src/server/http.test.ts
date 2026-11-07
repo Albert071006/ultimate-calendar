@@ -14,7 +14,8 @@ import { ledgerLoans } from '../shared/ledger-loans';
 import { LEDGER_API_HEADER, LEDGER_API_VERSION } from '../shared/ledger-compatibility';
 import { AI_SETTINGS_HEADER, AI_SETTINGS_VERSION } from '../shared/ai-reasoning';
 import { PROFILE_SETTINGS_HEADER, PROFILE_SETTINGS_VERSION } from '../shared/profile-settings';
-import { SettingsSchema } from '../shared/contracts';
+import { LEDGER_QUERY_HEADER, LEDGER_QUERY_VERSION } from '../shared/ledger-query-compatibility';
+import { CommandRequestSchema, CommandResultSchema, ConversationStateSchema, SettingsSchema } from '../shared/contracts';
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -49,6 +50,39 @@ async function setup(directory?: string) {
 const goalInput = (title = '虚构目标') => ({ operationId: 'goal-business-1', origin: 'manual', mutations: [{ type: 'create', entity: 'goal', values: { title } }] });
 
 describe('remote HTTP boundary', () => {
+  it('adapts query choices for old command clients and receipt reads without changing saved history', async () => {
+    const f = await setup(), device = await f.pair();
+    const requestId = 'synthetic-query-choices', input = CommandRequestSchema.parse({ operationId: 'synthetic-birthday-query', text: '生日花了多少' });
+    const data = CommandResultSchema.parse({ reply: '请选择：1.生日消费；2.当天全部。', mutationResult: null, items: [], conversationState: {
+      domain: 'ledger', phase: 'clarification', ledgerQueryChoices: [
+        { label: '生日消费', query: { month: '2026-11', search: '生日', searchFields: ['note'], entryIds: ['synthetic-a'] }, detail: 'entries' },
+        { label: '当天全部', query: { from: '2026-11-01', to: '2026-11-01' }, detail: 'entries' },
+      ],
+    } });
+    const fingerprint = createHash('sha256').update(JSON.stringify({ method: 'command', identity: device.session.identity, input })).digest('hex');
+    f.service.state.begin(requestId, device.session.device.id, 'command', fingerprint);
+    f.service.state.complete(requestId, { ok: true, data });
+    const before = f.service.state.operation(requestId, device.session.device.id);
+    const legacySchema = CommandResultSchema.extend({ conversationState: ConversationStateSchema.omit({ ledgerQueryChoices: true }).optional() });
+    for (const capability of [undefined, '0', LEDGER_QUERY_VERSION]) {
+      const headers = { ...device.headers, ...(capability ? { [LEDGER_QUERY_HEADER]: capability } : {}) };
+      const response = await f.call('/api/v1/rpc/command', { method: 'POST', headers, body: JSON.stringify({ requestId, identity: device.session.identity, input }) });
+      expect(response.status).toBe(200);
+      const direct = await response.json();
+      const receiptResponse = await f.call(`/api/v1/operations/${requestId}`, { headers });
+      expect(receiptResponse.status).toBe(200);
+      const receipt = await receiptResponse.json();
+      expect(direct.ok).toBe(true); expect(receipt.status).toBe('completed'); expect(receipt.result).toEqual(direct);
+      if (capability === LEDGER_QUERY_VERSION) {
+        expect(CommandResultSchema.parse(direct.data)).toEqual(data);
+        expect(direct.data.conversationState.ledgerQueryChoices).toHaveLength(2);
+      } else {
+        expect(legacySchema.parse(direct.data)).toEqual({ ...data, conversationState: { domain: 'ledger', phase: 'clarification' } });
+      }
+      expect(f.service.state.operation(requestId, device.session.device.id)).toEqual(before);
+    }
+  });
+
   it('persists personal context across restart, protects it from old forms, and keeps old responses parseable', async () => {
     let f = await setup(); const device = await f.pair(); let sequence = 0;
     const rpc = async (method: string, input?: unknown, modern = true, id = `profile-${++sequence}`) => {

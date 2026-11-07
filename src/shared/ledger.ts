@@ -97,8 +97,24 @@ export const LedgerMutationResultSchema = z.strictObject({ status: z.enum(['save
 export type LedgerMutationResult = z.infer<typeof LedgerMutationResultSchema>;
 export const LedgerImportPayloadSchema = z.strictObject({ format: z.literal('ultimate-calendar-ledger'), formatVersion: z.literal(1), entries: z.array(LedgerEntrySchema).max(100_000), accounts: z.array(LedgerAccountSchema).max(1000).optional(), balanceSnapshots: z.array(LedgerBalanceSnapshotSchema).max(100_000), rules: LedgerRulesSchema, audit: z.array(LedgerAuditSchema).default([]), sources: z.array(LedgerSourceSchema).default([]) });
 export type LedgerImportPayload = z.infer<typeof LedgerImportPayloadSchema>;
-export const LedgerQuerySchema = z.strictObject({ month: LedgerMonthSchema.optional(), from: LedgerDateSchema.optional(), to: LedgerDateSchema.optional(), accountId: LedgerAccountIdSchema.optional(), category: z.string().max(100).optional(), search: z.string().max(500).optional() });
+export const LedgerSearchFieldSchema = z.enum(['title', 'note', 'counterparty', 'originalText']);
+export const LedgerQuerySchema = z.strictObject({ month: LedgerMonthSchema.optional(), from: LedgerDateSchema.optional(), to: LedgerDateSchema.optional(), accountId: LedgerAccountIdSchema.optional(), category: z.string().max(100).optional(), search: z.string().max(500).optional(),
+  // Absence retains legacy full-text search; an explicit field list narrows it.
+  searchFields: z.array(LedgerSearchFieldSchema).min(1).max(4).optional(),
+  // An empty explicit selection matches nothing, never the complete ledger.
+  entryIds: z.array(id).max(1000).optional(),
+});
 export type LedgerQuery = z.infer<typeof LedgerQuerySchema>;
+/** An exact record selection supplies its own scope, even when explicitly empty.
+ * Only a query with neither IDs nor an explicit period defaults to this month. */
+export function ledgerQueryWithDefaultMonth(query: LedgerQuery, now = new Date()): LedgerQuery {
+  return query.month || query.from || query.to || query.entryIds !== undefined
+    ? query : { ...query, month: ledgerToday(now).slice(0, 7) };
+}
+export const LedgerQueryChoiceSchema = z.strictObject({ label: z.string().trim().min(1).max(200), query: LedgerQuerySchema,
+  detail: z.enum(['summary', 'entries', 'balances', 'receivables', 'loans']).default('summary') });
+export const LedgerQueryChoicesSchema = z.array(LedgerQueryChoiceSchema).min(2).max(5);
+export type LedgerQueryChoice = z.infer<typeof LedgerQueryChoiceSchema>;
 export function formatLedgerMoney(cents: number | null): string { return cents === null ? '未知' : (cents / 100).toFixed(2); }
 export function ledgerToday(now = new Date()): string { return new Date(now.getTime() + 8 * 3_600_000).toISOString().slice(0, 10); }
 export function ledgerAllowanceKey(month: string): string { return `rule:monthly-allowance:${LedgerMonthSchema.parse(month)}`; }

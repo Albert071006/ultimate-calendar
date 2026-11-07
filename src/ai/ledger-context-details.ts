@@ -39,10 +39,10 @@ export function initialLedgerDetailIds(context: Context): string[] {
 /** Keep the index lossless for locating records, and fetch full facts before edits. */
 export function ledgerPromptContext(context: Context, detailIds = initialLedgerDetailIds(context)) {
   const wanted = new Set(expandLedgerDetailIds(context, detailIds));
-  const columns = ['id', 'version', 'title', 'kind', 'date', 'month', 'amountCents', 'counterparty', 'voided'] as const;
+  const columns = ['id', 'version', 'title', 'kind', 'date', 'month', 'amountCents', 'counterparty', 'voided', 'category', 'note', 'noteTruncated'] as const;
   return {
     ...context,
-    entryIndex: { columns, rows: context.entries.map(entry => columns.map(column => entry[column])) },
+    entryIndex: { columns, rows: context.entries.map(entry => columns.map(column => column === 'noteTruncated' ? entry.note.length > 300 : column === 'note' ? entry.note.slice(0, 300) : entry[column])) },
     entries: context.entries.filter(entry => wanted.has(entry.id)),
     providedDetailCount: context.entries.filter(entry => wanted.has(entry.id)).length,
   };

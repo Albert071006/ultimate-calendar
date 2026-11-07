@@ -24,7 +24,8 @@ describe('open ledger category input', () => {
     const save = setup();
     const category = screen.getByLabelText('分类') as HTMLInputElement;
     expect(category.value).toBe('其他');
-    const suggestions = Array.from(document.querySelectorAll<HTMLOptionElement>('#ledger-category-options option')).map(option => option.value);
+    fireEvent.click(screen.getByRole('button', { name: '显示全部分类' }));
+    const suggestions = screen.getAllByRole('option').map(option => option.textContent);
     expect(suggestions).toContain('快递物流');
     expect(suggestions).toContain('自定义寄件');
     fireEvent.change(screen.getByLabelText('项目'), { target: { value: '合成社团物资' } });

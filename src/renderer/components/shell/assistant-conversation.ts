@@ -6,6 +6,7 @@ import type { Selection } from "../Calendar";
 import type { ResourceReference } from '../../../shared/resources';
 import { needsResourcePreparation, openCommandResources, prepareResourceCommand, redactResourcePaths } from '../../resource-command';
 import { useAssistantImage } from './assistant-image-input';
+import { assistantRequestHistory } from './assistant-history';
 
 export type ConversationEntry = {
   id: string;
@@ -160,11 +161,8 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
     const attachments = { ...(images.length ? { images } : {}), ...(documents.length ? { documents } : {}) };
     if (!ui.client || (!text.trim() && !hasCommandAttachments(attachments)) || inFlight.current || imageInput.reading.current || ui.busy) return;
     const id = operationId();
-    // Keep only successful pairs. Failed attachments must never leak into a later instruction.
-    const successfulHistory = history.flatMap((entry, index) => {
-      const reply = history[index + 1];
-      return entry.role === 'user' && reply?.role === 'assistant' && !reply.status ? [entry, reply] : [];
-    }).slice(-20);
+    // Failed/unknown requests are boundaries; only an explicitly edited unsent answer can continue its original chain.
+    const successfulHistory = assistantRequestHistory(history, editingReplyId);
     const lastAttachmentId = hasCommandAttachments(attachments) ? undefined : successfulHistory.findLast(entry =>
       entry.role === 'user' && (hasCommandAttachments(entry) || entry.imageUnavailable || entry.documentsUnavailable))?.id;
     const request: CommandRequest = {

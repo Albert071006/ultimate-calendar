@@ -4,6 +4,7 @@ import type { LedgerSnapshot } from '../../shared/ledger';
 import { LEDGER_API_HEADER, LEDGER_API_VERSION } from '../../shared/ledger-compatibility';
 import { AI_SETTINGS_HEADER, AI_SETTINGS_VERSION, AI_RPC_TIMEOUT_MS, isAiRpcPath } from '../../shared/ai-reasoning';
 import { PROFILE_SETTINGS_HEADER, PROFILE_SETTINGS_VERSION } from '../../shared/profile-settings';
+import { LEDGER_QUERY_HEADER, LEDGER_QUERY_VERSION } from '../../shared/ledger-query-compatibility';
 import { applyPlannerPatch, PLANNER_SYNC_HEADER, PLANNER_SYNC_VERSION } from '../../shared/planner-sync';
 import { RemoteOperationSchema, RemoteSessionSchema, type RemoteMethod } from '../../shared/remote';
 import { remoteInputs, remoteOutputs } from '../../server/protocol';
@@ -134,7 +135,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? (readOnly ? READ_TIMEOUT_MS : modelRequest ? AI_RPC_TIMEOUT_MS : 60_000));
     try {
       const response = await fetcher(new URL(path, origin), { method, credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: controller.signal,
-        headers: { [AI_SETTINGS_HEADER]: AI_SETTINGS_VERSION, [PROFILE_SETTINGS_HEADER]: PROFILE_SETTINGS_VERSION, [PLANNER_SYNC_HEADER]: PLANNER_SYNC_VERSION, ...(path.startsWith('/api/v1/rpc/ledger') ? { [LEDGER_API_HEADER]: LEDGER_API_VERSION } : {}), ...(input === undefined ? {} : { 'Content-Type': 'application/json' }), ...(method === 'GET' ? {} : { 'X-CSRF-Token': session?.csrfToken ?? '' }) },
+        headers: { [AI_SETTINGS_HEADER]: AI_SETTINGS_VERSION, [PROFILE_SETTINGS_HEADER]: PROFILE_SETTINGS_VERSION, [LEDGER_QUERY_HEADER]: LEDGER_QUERY_VERSION, [PLANNER_SYNC_HEADER]: PLANNER_SYNC_VERSION, ...(path.startsWith('/api/v1/rpc/ledger') ? { [LEDGER_API_HEADER]: LEDGER_API_VERSION } : {}), ...(input === undefined ? {} : { 'Content-Type': 'application/json' }), ...(method === 'GET' ? {} : { 'X-CSRF-Token': session?.csrfToken ?? '' }) },
         ...(input === undefined ? {} : { body: JSON.stringify(input) }) });
       const value: unknown = await response.json();
       if (!response.ok) {

@@ -130,6 +130,21 @@ describe('assistant connection failures and visible continuation', () => {
     expect(command.mock.calls[2]![0]).toEqual(original);
   });
 
+  it('does not expose an earlier ledger question as pending after an unknown answer and a new short message', async () => {
+    const { api, command } = fixture();
+    command.mockResolvedValueOnce({ ok: true, data: { reply: '报销两笔分别多少？', items: [], mutationResult: null,
+      conversationState: { domain: 'ledger', phase: 'clarification' } } }).mockResolvedValueOnce(unknown);
+    render(<Phone api={api} />);
+    await send('合成车票报销200元到微信'); await send('各80和120');
+    const original = command.mock.calls[1]![0];
+    await send('是');
+    expect(command.mock.calls[2]![0].history).toEqual([]);
+    expect(command.mock.calls[2]![0].text).toBe('是');
+    fireEvent.click(screen.getByRole('button', { name: '查询处理结果' }));
+    await waitFor(() => expect(command).toHaveBeenCalledTimes(4));
+    expect(command.mock.calls[3]![0]).toEqual(original);
+  });
+
   it('does not overwrite text typed while a request is in progress', async () => {
     const { api, command } = fixture(); command.mockResolvedValueOnce(clarification); render(<Phone api={api} />);
     await send('明天到滋兰苑集合');

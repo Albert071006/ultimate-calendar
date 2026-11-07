@@ -101,6 +101,21 @@ describe('grounded new account proposals', () => {
     ] });
     expect(plan.changes).toHaveLength(1);
   });
+  it('retains the user-provided bank through multiple pending questions without accepting assistant suggestions', () => {
+    const intent = LedgerIntentSchema.parse({ kind: 'mutate', changes: [{ type: 'createAccount', key: 'new-account:0', name: '杭州银行', kind: 'cash' }] });
+    if (intent.kind !== 'mutate') throw Error('Expected mutation');
+    const history = [
+      { role: 'user' as const, text: '杭州银行付了合成车票，请记账' },
+      { role: 'assistant' as const, text: '金额多少？例如中国银行也可以记录。', outcome: { domain: 'ledger' as const, phase: 'clarification' as const } },
+      { role: 'user' as const, text: '80元' },
+      { role: 'assistant' as const, text: '全部个人承担吗？', outcome: { domain: 'ledger' as const, phase: 'clarification' as const } },
+    ];
+    expect(prepareLedgerAccounts(intent, snapshot(), { ...request('是'), history }).changes).toHaveLength(1);
+    const ungrounded = LedgerIntentSchema.parse({ kind: 'mutate', changes: [{ type: 'createAccount', key: 'new-account:0', name: '中国银行', kind: 'cash' }] });
+    if (ungrounded.kind !== 'mutate') throw Error('Expected mutation');
+    expect(() => prepareLedgerAccounts(ungrounded, snapshot(), { ...request('是'), history })).toThrow(/未由本条指令明确提供/);
+    expect(() => prepareLedgerAccounts(intent, snapshot(), { ...request('另外，记早餐'), history })).toThrow(/未由本条指令明确提供/);
+  });
   it('reuses a unique existing name or canonical alias without creating another account', () => {
     const source = snapshot([bank('boc-existing', '中国银行', ['中行'])]);
     const plan = prepare(source, '新增中行账户', '中行');

@@ -1,13 +1,15 @@
-import { ledgerAccounts, LedgerQuerySchema, ledgerToday, type LedgerData, type LedgerEntry, type LedgerQuery, type LedgerSummary } from '../shared/ledger';
+import { ledgerAccounts, LedgerQuerySchema, ledgerToday, ledgerQueryWithDefaultMonth, type LedgerData, type LedgerEntry, type LedgerQuery, type LedgerSummary } from '../shared/ledger';
 
 export function ledgerEntryMatches(entry: LedgerEntry, query: LedgerQuery): boolean {
   if (entry.voided) return false;
+  if (query.entryIds && !query.entryIds.includes(entry.id)) return false;
   if (query.month && entry.month !== query.month) return false;
   if (query.from && (!entry.date || entry.date < query.from)) return false;
   if (query.to && (!entry.date || entry.date > query.to)) return false;
   if (query.accountId && !entry.cashflows.some(flow => flow.accountId === query.accountId)) return false;
   if (query.category && entry.category !== query.category) return false;
-  if (query.search && !`${entry.title}\n${entry.note}\n${entry.originalText}\n${entry.counterparty ?? ''}`.toLowerCase().includes(query.search.toLowerCase())) return false;
+  const searchFields = query.searchFields ?? ['title', 'note', 'originalText', 'counterparty'];
+  if (query.search && !searchFields.map(field => entry[field] ?? '').join('\n').toLowerCase().includes(query.search.toLowerCase())) return false;
   return true;
 }
 
@@ -15,7 +17,7 @@ export function ledgerEntryMatches(entry: LedgerEntry, query: LedgerQuery): bool
 export function summarizeLedger(data: Pick<LedgerData, 'entries' | 'balanceSnapshots' | 'accounts'>, input: LedgerQuery = {}, now = new Date()): LedgerSummary {
   const query = LedgerQuerySchema.parse(input);
   const month = query.month ?? query.from?.slice(0, 7) ?? ledgerToday(now).slice(0, 7);
-  const effectiveQuery = (query.from || query.to) ? query : { ...query, month };
+  const effectiveQuery = ledgerQueryWithDefaultMonth(query, now);
   const live = data.entries.filter(entry => !entry.voided);
   const selected = live.filter(entry => ledgerEntryMatches(entry, effectiveQuery));
   const categories = new Map<string, number>(); const days = new Map<string, number>();

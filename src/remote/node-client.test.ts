@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createNodeRemoteClient, normalizeRemoteOrigin, type RemoteCredential } from './node-client';
 import { REMOTE_READ_METHODS } from '../shared/remote';
+import { LEDGER_QUERY_HEADER, LEDGER_QUERY_VERSION } from '../shared/ledger-query-compatibility';
 
 const origin='https://synthetic.example',identity={protocolVersion:1 as const,dataInstanceId:'11111111-1111-4111-8111-111111111111',generation:1},deviceId='22222222-2222-4222-8222-222222222222';
 const session={paired:true,identity,device:{id:deviceId,name:'合成Windows'},csrfToken:'synthetic-csrf',aiConfigured:false};
@@ -9,6 +10,19 @@ const json=(value:unknown,status=200,headers:Record<string,string>={})=>new Resp
 function setup(respond:(path:string,init:RequestInit)=>Response|Promise<Response>,credential:RemoteCredential|null=saved,timeoutMs?:number){const store={read:()=>credential,write:vi.fn()};const fetcher=vi.fn(async(url:RequestInfo|URL,init?:RequestInit)=>respond(new URL(String(url)).pathname,init??{}));return{client:createNodeRemoteClient({origin,credentials:store,fetch:fetcher,timeoutMs}),fetcher,store};}
 
 describe('native Node remote transport',()=>{
+  it('advertises query-choice support on command and operation requests and retains the structured reply', async () => {
+    const data = { reply: '合成查询选项', mutationResult: null, items: [], conversationState: { domain: 'ledger', phase: 'clarification', ledgerQueryChoices: [
+      { label: '仅生日消费', query: { search: '生日', searchFields: ['note'] }, detail: 'entries' },
+      { label: '当月全部', query: { month: '2026-11' }, detail: 'entries' },
+    ] } };
+    const result = { ok: true, data }, requestId = 'synthetic-capability';
+    const f = setup(path => path.endsWith('/session') ? json(session) : path.includes('/operations/') ? json({ status: 'completed', requestId, method: 'command', result }) : json(result));
+    expect(await f.client.rpc('command', { operationId: 'synthetic-query', text: '生日花费' }, requestId)).toEqual(result);
+    expect(await f.client.operation(requestId)).toMatchObject({ result });
+    for (const [, init] of f.fetcher.mock.calls) expect(new Headers(init!.headers).get(LEDGER_QUERY_HEADER)).toBe(LEDGER_QUERY_VERSION);
+    f.client.close();
+  });
+
   it('adopts only the immediately next identity after explicit successful restore and never uses ordinary retryable RPC',async()=>{
     const next={...identity,generation:2}; const f=setup(path=>path.endsWith('/session')?json(session):json({ok:true,data:{identity:next,backupCreated:true,taskCount:1,courseCount:0,ledgerEntryCount:0}}));
     const input={token:'33333333-3333-4333-8333-333333333333',digest:'a'.repeat(64)};

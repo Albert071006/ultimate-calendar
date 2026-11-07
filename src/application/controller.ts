@@ -21,9 +21,12 @@ import type { ModelRequestRunner } from '../ai/request-queue';
 import { LedgerDuplicateRejection, LedgerValidationRejection, type LedgerService } from '../ledger/service';
 import { LedgerIntentSchema, LedgerCommandProposalSchema } from '../shared/ledger-command';
 import { ledgerLoans } from '../shared/ledger-loans';
-import { validateLedgerQueryAccount } from '../ai/ledger-accounts';
+import { validateLedgerQueryAccount, validateLedgerQueryAccountExists } from '../ai/ledger-accounts';
 import { ledgerChanges, ledgerContext, ledgerMessages, ledgerQueryReply, ledgerSavedReply } from '../ai/ledger';
 import { ledgerToday } from '../shared/ledger';
+import { normalizeLedgerQueryScope, resolveLedgerQueryChoice } from '../ai/ledger-query';
+import { LedgerReimbursementClarification } from '../ai/ledger-reimbursements';
+import { isLedgerClarificationAnswer } from '../shared/command-continuation';
 
 export interface ControllerOptions { automaticBackup?(repository: Repository): void; planner: PlannerService; repository: Repository; ledger?: LedgerService; getApiKey(): Promise<string | null>; getPriceQuote?(model: string, currency: 'CNY' | 'USD'): PriceQuote | null; getModelInputModalities?(model: string): string[] | null; runModel?: ModelRequestRunner; afterModelRequest?(): void; fetch?: typeof fetch; now?(): string; selectCourseFile?(): Promise<SelectedCourseFile | null> }
 const hash = (input: unknown) => createHash('sha256').update(JSON.stringify(input)).digest('hex');
@@ -155,8 +158,10 @@ export function createController(options: ControllerOptions) {
           availableServices: { ledger: !!options.ledger }, currentLedgerView: request.domain === 'ledger' ? request.ledgerView : undefined });
         let fullContext: ReturnType<typeof buildCalendarContext> | undefined;
         const calendarContext = () => fullContext ??= buildCalendarContext();
-        let compactIntent: { kind: 'ledger'; reply: string } | undefined;
-        if (!prior?.intent && options.ledger && canUseCompactLedgerRoute(request)) {
+        const selectedQuery = options.ledger ? resolveLedgerQueryChoice(request) : undefined;
+        const ledgerAnswer = !!options.ledger && isLedgerClarificationAnswer(request);
+        let compactIntent: { kind: 'ledger'; reply: string } | undefined = selectedQuery || ledgerAnswer ? { kind: 'ledger', reply: '继续处理账本请求' } : undefined;
+        if (!prior?.intent && !compactIntent && options.ledger && canUseCompactLedgerRoute(request)) {
           if ([request, ...request.history].some(turn => commandImages(turn).length)) requireImageModel(planner.snapshot().settings.model);
           const route = await model(LedgerRouteSchema, compactLedgerRouteMessages(request), input.operationId, 'command');
           if (route.kind === 'ledger') compactIntent = { kind: 'ledger', reply: route.reply || '交由账本处理' };
@@ -195,16 +200,37 @@ export function createController(options: ControllerOptions) {
             }
             throw new WorkflowError('AI_RESPONSE', '账目详情尚未核对，请重新查询');
           };
-          const proposal: z.infer<typeof LedgerCommandProposalSchema> = prior?.ledgerProposal ?? { intent: await readLedgerIntent(), revision: snapshot.revision };
+          const proposal: z.infer<typeof LedgerCommandProposalSchema> = prior?.ledgerProposal ?? { intent: selectedQuery ?? await readLedgerIntent(), revision: snapshot.revision };
+          const prepareQuery = (query: Parameters<typeof normalizeLedgerQueryScope>[0], detail: string, choice = false) => {
+            const scope = normalizeLedgerQueryScope(query);
+            if (detail !== 'loans' && scope.entryIds === undefined && !scope.month && !scope.from && !scope.to) scope.month = defaultQueryMonth;
+            // A read-only option names the account before the user chooses it.
+            // Choosing that option selects its scope, without authorizing any mutation.
+            if (choice) validateLedgerQueryAccountExists(scope, snapshot);
+            else validateLedgerQueryAccount(scope, snapshot, request);
+            return scope;
+          };
           // Resolve the visible ledger range once, so a retried query stays on the
           // same month. Calendar selection never changes a transaction's date.
-          if (proposal.intent.kind === 'query' && proposal.intent.detail !== 'loans' && !proposal.intent.query.month && !proposal.intent.query.from && !proposal.intent.query.to) {
-            proposal.intent.query = { ...proposal.intent.query, month: defaultQueryMonth };
+          if (proposal.intent.kind === 'query') {
+            proposal.intent.query = prepareQuery(proposal.intent.query, proposal.intent.detail, !!selectedQuery);
+            if (proposal.intent.query.entryIds?.some(entryId => !snapshot.entries.some(entry => entry.id === entryId && !entry.voided))) {
+              proposal.intent = { kind: 'clarification', question: '所选账目中有记录已移除或不存在，未扩大查询范围。请重新确认要统计的账目。' };
+            }
+          }
+          if (proposal.intent.kind === 'clarification' && proposal.intent.queryChoices) {
+            proposal.intent.queryChoices = proposal.intent.queryChoices.map(choice => ({ ...choice, query: prepareQuery(choice.query, choice.detail, true) }));
           }
           if (proposal.intent.kind === 'mutate' && !proposal.mutationRequest) {
-            const changes = ledgerChanges(proposal.intent,snapshot,request,new Set(ledgerView.entries.map(entry=>entry.id)),now());
-            const months = [...new Set(changes.flatMap(change => change.type === 'putEntry' ? [change.entry.month] : []))];
-            proposal.mutationRequest = {operationId:`ai-ledger:${hash(input.operationId)}`,expectedRevision:proposal.revision,changes,month:months.length === 1 ? months[0] : currentMonth};
+            try {
+              const changes = ledgerChanges(proposal.intent,snapshot,request,new Set(ledgerView.entries.map(entry=>entry.id)),now());
+              const months = [...new Set(changes.flatMap(change => change.type === 'putEntry' ? [change.entry.month] : []))];
+              proposal.mutationRequest = {operationId:`ai-ledger:${hash(input.operationId)}`,expectedRevision:proposal.revision,changes,month:months.length === 1 ? months[0] : currentMonth};
+            } catch (error) {
+              if (!(error instanceof LedgerReimbursementClarification)) throw error;
+              // This normalization runs before mutate: no part of this batch was submitted.
+              proposal.intent = { kind: 'clarification', question: `本次整批账目尚未保存。${error.question}` };
+            }
           }
           repository.transact(state => save(state, id, fingerprint, { kind:'command', intent, result:null, ledgerProposal:proposal }));
           const savedReply = (result: ReturnType<LedgerService['mutate']>) => {
@@ -218,10 +244,9 @@ export function createController(options: ControllerOptions) {
             return [mainReply,...otherMonths.map(month=>`${month} 个人开销 ¥${(ledger.snapshot(month).summary.personalCents/100).toFixed(2)}。`)].join('\n');
           };
           let reply: string;
-          if (proposal.intent.kind === 'clarification') reply = proposal.intent.question;
+          if (proposal.intent.kind === 'clarification') reply = [proposal.intent.question, ...(proposal.intent.queryChoices?.map((choice, index) => `${index + 1}. ${choice.label}`) ?? [])].join('\n');
           else if (proposal.intent.kind === 'query') {
             const query = proposal.intent.query;
-            validateLedgerQueryAccount(query, snapshot, request);
             const latest = ledger.query(query);
             const querySnapshot = ledger.snapshot(currentMonth);
             reply = ledgerQueryReply(query, { ...latest, rules:querySnapshot.rules,
@@ -250,7 +275,8 @@ export function createController(options: ControllerOptions) {
             }
             reply = savedReply(result);
           }
-          const result: CommandResult = { reply, mutationResult:null, items:[], conversationState:{domain:'ledger',phase:proposal.intent.kind === 'clarification' ? 'clarification' : proposal.intent.kind === 'query' ? 'query' : 'saved'} };
+          const result: CommandResult = { reply, mutationResult:null, items:[], conversationState:{domain:'ledger',phase:proposal.intent.kind === 'clarification' ? 'clarification' : proposal.intent.kind === 'query' ? 'query' : 'saved',
+            ...(proposal.intent.kind === 'clarification' && proposal.intent.queryChoices ? { ledgerQueryChoices: proposal.intent.queryChoices } : {}) } };
           repository.transact(state => save(state,id,fingerprint,{kind:'command',intent,result,ledgerProposal:proposal}));
           return result;
         }
