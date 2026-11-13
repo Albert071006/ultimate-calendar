@@ -1,7 +1,19 @@
 import { mondayWeekday, type Candidate, type Snapshot } from "../../../shared/contracts";
 import { dayDistance } from "../../../domain/time";
+import { candidateDates } from '../../../domain/candidate-dates';
+
+export function unresolvedActivityDay(candidate: Candidate, snapshot: Pick<Snapshot, 'sources'>): string | null {
+  if (candidate.eventStart) return null;
+  const dates = candidateDates(candidate, snapshot.sources).eventStart;
+  return dates?.length === 1 ? dates[0]! : null;
+}
 
 const weekdays = ["一", "二", "三", "四", "五", "六", "日"];
+
+/** Hide the ordinary-body chunk locator, retaining useful file/page locations. */
+export function displaySourceLabel(label: string): string {
+  return label.replace(/\s*·\s*消息正文\s+\d+\s*$/, '').trim();
+}
 
 /** Use the same available source for the visible date and chronological ordering. */
 export function noticeSource(snapshot: Snapshot, candidate: Candidate) {

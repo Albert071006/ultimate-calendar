@@ -61,7 +61,7 @@ describe('notice first and compact document analysis', () => {
     expect(f.repository.snapshot().candidates).toHaveLength(1);
   });
   it('resumes a legacy paid answer first, then prioritizes the notice without changing old keys or repaying', async () => {
-    const f = fixture(90), prepared = prepareAnalysis(f.store, f.batch, { noticeFirst: false, attachmentContext: false });
+    const f = fixture(90), prepared = prepareAnalysis(f.store, f.batch, { noticeFirst: false, attachmentContext: false, sharedCards: false });
     expect(prepared.units).toHaveLength(91);
     const units = prepared.units.map(({ text, imageDataUrl, ...unit }) => ({ ...unit, textHash: hashInput(text), imageHash: imageDataUrl ? hashInput(imageDataUrl) : null }));
     const profile = locationProfile(f.repository.snapshot().settings);

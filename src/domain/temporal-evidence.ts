@@ -1,4 +1,4 @@
-import { addCalendarDays, isRealDate, mondayWeekday, type CandidateInput, type Source } from '../shared/contracts';
+import { addCalendarDays, isRealDate, mondayWeekday, type Candidate, type CandidateInput, type Source } from '../shared/contracts';
 
 function relativeDate(quote: string, sentAt: string): string | null {
   const base = sentAt.slice(0, 10);
@@ -30,19 +30,34 @@ function smallNumber(value: string): number {
 }
 export function evidenceTimes(quote: string, requireUnambiguousPeriod = false): string[] {
   const times = new Set<string>(); let period = '';
-  const clocks = /(?:(凌晨|早晨|上午|早上|下午|晚上|傍晚|中午))?\s*([零〇一二两三四五六七八九十\d]{1,3})(?:[:：](\d{2})|[点时](?:(半|一刻|三刻)|([零〇一二两三四五六七八九十\d]{1,3})分?)?)/g;
+  const clocks = /(?:(凌晨|早晨|上午|早上|下午|晚上|傍晚|中午|晚|早|午))?\s*([零〇一二两三四五六七八九十\d]{1,3})\s*(?:[:：]\s*(\d{2})|[点时]\s*(?:(半|一刻|三刻)|([零〇一二两三四五六七八九十\d]{1,3})\s*分?)?)/g;
   for (const match of quote.matchAll(clocks)) {
     if (match[1]) period = match[1];
     let hour = smallNumber(match[2]!);
     if (requireUnambiguousPeriod && !period && !match[3] && hour >= 1 && hour <= 12) continue;
-    if (['下午', '晚上', '傍晚'].includes(period) && hour < 12) hour += 12;
-    if (period === '中午' && hour >= 1 && hour <= 2) hour += 12;
+    if (['下午', '晚上', '傍晚', '晚'].includes(period) && hour < 12) hour += 12;
+    if (['中午', '午'].includes(period) && hour >= 1 && hour <= 2) hour += 12;
     if (period === '凌晨' && hour === 12) hour = 0;
-    if (period === '晚上' && hour === 12) continue; // Midnight may belong to the following date.
+    if (['晚上', '晚'].includes(period) && hour === 12) continue; // Midnight may belong to the following date.
     const minute = match[3] ? Number(match[3]) : match[4] === '半' ? 30 : match[4] === '一刻' ? 15 : match[4] === '三刻' ? 45 : match[5] ? smallNumber(match[5]) : 0;
     if (Number.isInteger(hour) && hour >= 0 && hour < 24 && Number.isInteger(minute) && minute >= 0 && minute < 60) times.add(`${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`);
   }
   return [...times];
+}
+
+/** Expand a clipped quote only within its own unambiguous date-bearing clause. */
+export function completeTemporalQuote(quote: string, source: Source, field: 'deadline' | 'eventStart' | 'eventEnd'): string {
+  if (source.kind !== 'text' || !quote.trim() || !source.text.includes(quote) || evidenceTimes(quote).length) return quote;
+  const date = fieldEvidenceDate(quote, source.sentAt, field);
+  if (!date) return quote;
+  const matches = source.text.split(/[，,。！？!?；;\n]/).map(text => text.trim()).filter(text =>
+    text.includes(quote)
+    // An explicit date resolver must not hide another relative day in the same sentence.
+    && !/(?:\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}|\d{1,2}月\d{1,2}|(?:周|星期|礼拜)[一二三四五六日天末]|大后天|后天|明天|今天|昨天|次日|翌日|当日|当天)/.test(text.replaceAll(quote, ''))
+    && fieldEvidenceDate(text, source.sentAt, field) === date
+    && evidenceTimes(text).length === 1 && evidenceTimes(text, true).length === 1);
+  const times = new Set(matches.flatMap(text => evidenceTimes(text, true)));
+  return times.size === 1 ? matches[0]! : quote;
 }
 
 /** Bounded grounding in the message's own sending date; never uses import time. */
@@ -88,10 +103,11 @@ export function recoverCandidateTiming(candidate: Pick<CandidateInput, 'sourceId
     const possibilities = new Map<string, NonNullable<CandidateInput[typeof field]>>();
     for (const e of (candidate.temporalEvidence ?? []).filter(e => e.field === field && e.basis !== 'unknown')) {
       for (const source of sources.filter(s => candidate.sourceIds.includes(s.id) && (s.kind === 'image' || s.text.includes(e.quote)))) {
-        const date = fieldEvidenceDate(e.quote, source.sentAt, field); if (!date) continue;
-        const times = evidenceTimes(e.quote);
+        const quote = completeTemporalQuote(e.quote, source, field);
+        const date = fieldEvidenceDate(quote, source.sentAt, field); if (!date) continue;
+        const times = evidenceTimes(quote);
         // “周六五点” does not tell us morning or afternoon. Preserve it for review.
-        if (times.length !== evidenceTimes(e.quote, true).length) continue;
+        if (times.length !== evidenceTimes(quote, true).length) continue;
         const time = times.length === 1 ? times[0]! : null;
         if (field === 'deadline') {
           if (times.length > 1) continue;
@@ -106,4 +122,12 @@ export function recoverCandidateTiming(candidate: Pick<CandidateInput, 'sourceId
   const start = patch.eventStart ?? candidate.eventStart, end = patch.eventEnd ?? candidate.eventEnd;
   if (!start || (end && Date.parse(end) <= Date.parse(start))) delete patch.eventEnd;
   return patch;
+}
+
+/** Read-only projection for old notices; acceptance persists the same grounded fields atomically. */
+export function candidateWithRecoveredTiming(candidate: Candidate, sources: Source[]): Candidate {
+  const timing = recoverCandidateTiming(candidate, sources);
+  if (!Object.keys(timing).length) return candidate;
+  return { ...candidate, ...timing, uncertainties: candidate.uncertainties.filter(value =>
+    !timing.eventStart || value !== '原文未提供可核对的具体钟点，已保留日期依据，请校对时间') } as Candidate;
 }

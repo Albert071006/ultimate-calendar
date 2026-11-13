@@ -21,7 +21,7 @@ export function Loans({ entries, busy, edit }: { entries: LedgerEntry[]; busy: b
         const original = byId.get(item.entryId)!;
         const borrowing = item.kind === 'loan_borrow';
         return <details className="ledger-loan-item" key={item.entryId}><summary>
-          <span><b>{item.counterparty || '对方待确认'}</b><small>{borrowing ? '借入' : '借出'} · {original.title} · {original.date ?? original.month}</small></span>
+          <span><b>{item.counterparty || '对方待确认'}</b><small>{borrowing ? '借入' : '借出'} {ledgerMoney(item.principalCents)} · {original.title} · {original.date ?? original.month}</small></span>
           <strong>{item.outstandingCents ? `${borrowing ? '待还' : '待收'} ${ledgerMoney(item.outstandingCents)}` : '已结清'}</strong>
         </summary><div className="ledger-loan-detail">
           <dl><div><dt>原本金</dt><dd>{ledgerMoney(item.principalCents)}</dd></div><div><dt>{borrowing ? '已归还' : '已收回'}</dt><dd>{ledgerMoney(item.settledCents)}</dd></div><div><dt>剩余本金</dt><dd>{ledgerMoney(item.outstandingCents)}</dd></div></dl>

@@ -12,6 +12,7 @@ import type { CaptureStore, CapturedMessageInput, StoredCaptureMessage, StoredCa
 import type { Repository } from '../storage/repository';
 import type { PriceQuote } from '../shared/account';
 import type { ModelRequestRunner } from '../ai/request-queue';
+import { sharedCardText } from './shared-card';
 
 type Raw = Record<string, unknown>;
 function unreadWechatAttachments(items: StoredCaptureAttachment[], retryable: boolean) {
@@ -40,6 +41,11 @@ export function normalizeMessage(raw: Raw, accountId: string, groupNames: Map<st
     if (type === 'text') text.push(string(data.text));
     else if (type === 'at') text.push(mentionLabel(accountId.startsWith('wechat:') ? data.wechat : data.qq, accountId));
     else if (type === 'face') text.push('[表情]');
+    else if (type === 'json') {
+      const card = sharedCardText(segment);
+      if (card) text.push(`\n${card}\n`);
+      else warnings.push('分享卡片未取得可读标题或链接，请手动查看');
+    }
     else if (['image', 'file', 'record', 'video', 'reply', 'forward', 'node'].includes(type)) {
       const kind = type === 'record' ? 'voice' : ['reply', 'forward', 'node'].includes(type) ? 'other' : type as 'image' | 'file' | 'video';
       const fallback = type === 'image' ? '群图片.jpg' : type === 'reply' ? '引用消息' : type === 'forward' || type === 'node' ? '合并转发' : type === 'record' ? '语音' : type === 'video' ? '视频' : '未命名文件';

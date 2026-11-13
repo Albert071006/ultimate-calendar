@@ -15,5 +15,8 @@
 .a2 .plan-export-meta dd { margin: 0; overflow-wrap: anywhere; }
 .a2 .plan-export .warning ul { margin: 0; padding-left: 18px; }
 .a2 .plan-export-feedback { padding: 8px 12px; color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.a2 .plan-export-help { color: var(--ink-2); font-size: 12px; line-height: 1.7; }
+.a2 .plan-export-help summary { cursor: pointer; }
+.a2 .plan-export-help p { margin-top: 7px; }
 .a2-goal-list .main .goal-export-entry { margin-top: 6px; padding-left: 0; font-size: 12px; }
 @media (max-width: 640px) { .a2 .plan-export-counts { grid-template-columns: repeat(3, minmax(0, 1fr)); } }

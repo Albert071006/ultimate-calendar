@@ -148,7 +148,7 @@ describe('passive group questions in durable capture analysis', () => {
 
   it('reuses an unmarked legacy question checkpoint without newly suppressing its stored candidate', async () => {
     const f = fixture(ruleDialogue), prepared = prepareAnalysis(f.store, f.batch, {
-      deduplicateAttachments: false, documentGrouping: false, passiveQuestionFilter: false, noticeFirst: false, attachmentContext: false,
+      deduplicateAttachments: false, documentGrouping: false, passiveQuestionFilter: false, noticeFirst: false, attachmentContext: false, sharedCards: false,
     });
     const units = prepared.units.map(({ text, imageDataUrl, ...unit }) => ({ ...unit, textHash: hashInput(text), imageHash: imageDataUrl ? hashInput(imageDataUrl) : null }));
     const profile = locationProfile(f.repository.snapshot().settings), profileFingerprint = profile.campus || profile.locationContext ? { userProfile: profile } : {};

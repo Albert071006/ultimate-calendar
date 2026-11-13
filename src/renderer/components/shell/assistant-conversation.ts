@@ -49,6 +49,13 @@ export function assistantRetryLabel(entry: ConversationEntry): string {
   return canReanalyze(entry) ? '重新分析' : '核对这条指令';
 }
 
+/** The server may already prefix its detailed reply with this same receipt. */
+export function appliedAssistantReply(message: string, reply: string): string {
+  const receipt = message.trim(), body = reply.trim();
+  if (!receipt || body === receipt || body.startsWith(`${receipt}\n`) || body.startsWith(`${receipt}。`)) return body || receipt;
+  return [receipt, body].filter(Boolean).join('\n');
+}
+
 function failureText(error: ApiError | undefined): string {
   if (!error) return '未能确认处理结果。请查询这条指令的处理结果，不要另建重复指令。';
   if (error.delivery === 'unknown') return `结果待核对 · ${error.message}\n请查询这条指令的处理结果，不要另建重复指令。`;
@@ -133,7 +140,7 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
       ui.receive(mutation);
       reply =
         mutation.status === "applied"
-          ? `已执行 · ${mutation.message}\n${result.reply}`
+          ? appliedAssistantReply(mutation.message, result.reply)
           : mutation.status === "preview"
             ? `尚未执行 · 请核对预览后确认。\n${mutation.message}`
             : `尚未执行 · ${mutation.questions.join("；")}`;

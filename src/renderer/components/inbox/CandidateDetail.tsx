@@ -4,7 +4,7 @@ import type { Candidate, Snapshot } from "../../../shared/contracts";
 import { candidateDisplay, compactCandidateText } from "../../candidate-display";
 import { candidateExpiry } from "../../../domain/candidate-eligibility";
 import { displayInstant } from "../../calendar-layout";
-import { dayWord, fullDay } from "./format";
+import { dayWord, fullDay, unresolvedActivityDay } from "./format";
 import { sourceLine } from "./InboxList";
 import { useMobile } from '../../mobile/layout';
 import type { HostCapabilities } from '../../../shared/client';
@@ -117,7 +117,7 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
           <div className="k">活动时间</div>
           <div className={`v${candidate.eventStart ? "" : " none"}`}>{candidate.eventStart
             ? `${fullDay(candidate.eventStart.slice(0, 10))} ${candidate.eventStart.slice(11, 16)}${candidate.eventEnd ? `–${candidate.eventEnd.slice(0, 10) === candidate.eventStart.slice(0, 10) ? "" : `${fullDay(candidate.eventEnd.slice(0, 10))} `}${candidate.eventEnd.slice(11, 16)}` : " 起"}`
-            : "未明确"}</div>
+            : unresolvedActivityDay(candidate, snapshot) ? `${fullDay(unresolvedActivityDay(candidate, snapshot)!)} · 钟点待核对` : "未明确"}</div>
           {!hideRawInput && (evidence("eventStart") ?? evidence("eventEnd")) && <div className="q">原文“{(evidence("eventStart") ?? evidence("eventEnd"))!.quote}”</div>}
           {candidate.eventStart && !candidate.eventEnd && <div className="q">结束时间未提供</div>}
         </div>

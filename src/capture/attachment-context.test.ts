@@ -123,7 +123,7 @@ describe('bounded cached attachment context', () => {
 
   it('replays a legacy paid checkpoint without adding new attachment context, changing its fingerprint or charging again', async () => {
     const f = fixture(); f.file('historical-roster'); f.archive(); const current = f.notice();
-    const prepared = prepareAnalysis(f.store, current.batch, { deduplicateAttachments: false, documentGrouping: false, passiveQuestionFilter: false, noticeFirst: false, attachmentContext: false });
+    const prepared = prepareAnalysis(f.store, current.batch, { deduplicateAttachments: false, documentGrouping: false, passiveQuestionFilter: false, noticeFirst: false, attachmentContext: false, sharedCards: false });
     const units = prepared.units.map(({ text, imageDataUrl, ...unit }) => ({ ...unit, textHash: hashInput(text), imageHash: imageDataUrl ? hashInput(imageDataUrl) : null }));
     const planFingerprint = hashInput({ version: ANALYSIS_VERSION, model: f.repository.snapshot().settings.model, units, context: prepared.context, warnings: prepared.warnings });
     f.store.startAttempt(current.batch.id, 'synthetic-old-paid');

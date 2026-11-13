@@ -2,6 +2,7 @@ import type { Block, Entity, MutationResult } from "../../shared/contracts";
 import { effectiveActivityEnd } from '../../domain/activity-duration';
 import { displayInstant } from "../calendar-layout";
 import { entityNames } from "./detail/records";
+import { formatFriendlyRange } from '../../shared/display-time';
 const labels: Record<string, string> = {
   title: "名称",
   description: "说明",
@@ -116,6 +117,10 @@ function noun(detail: Detail) {
 /** One plain sentence per change; the field-by-field table stays behind 查看具体变更. */
 function sentence(detail: Detail, name: Lookup, removed: Set<string>) {
   const title = titleOf(detail), quoted = title ? `「${title}」` : "";
+  if (!detail.before && detail.entity === 'block' && detail.after && 'start' in detail.after) {
+    const block = detail.after as Block;
+    return `加入日历：${quoted} · ${formatFriendlyRange(block.start, block.end)}${block.location ? ` · ${block.location}` : ''}`;
+  }
   if (!detail.before) return `新建${noun(detail)}${quoted}`;
   if (!detail.after) {
     const start = fieldsOf(detail.before).start;
@@ -137,7 +142,7 @@ function ActivityArrangement({ block }: { block: Block }) {
   const reminder = block.reminders;
   return <>
     <strong>{block.title}</strong>
-    <p>{displayInstant(block.start)} – {displayInstant(effectiveActivityEnd(block.start, block.end))}{!block.end && ' · 默认30分钟'}</p>
+    <p>{formatFriendlyRange(block.start, effectiveActivityEnd(block.start, block.end))}{!block.end && ' · 默认30分钟'}</p>
     <p>地点 · {block.location || '未设置'}</p>
     <p>提醒 · {!reminder.enabled ? '关闭' : reminder.leadMinutes === null ? '按全局设置' : reminder.leadMinutes.length === 0 ? '不设提前提醒' : reminder.leadMinutes.map(minutes => minutes === 0 ? '准时' : `提前${minutes}分钟`).join('、')}{reminder.enabled && reminder.dateOnlyTime ? `；仅日期事项 ${reminder.dateOnlyTime}` : ''}</p>
   </>;
@@ -169,12 +174,27 @@ export function Preview({
   const inPreview = new Map(value.details.map(d => [d.id, titleOf(d)]));
   const name: Lookup = id => inPreview.get(id) || names?.(id);
   const removed = new Set(value.details.filter(d => d.before && !d.after).map(d => d.id));
+  const accepting = value.proposedRequest.mutations.some(mutation => mutation.type === 'acceptCandidate');
+  const scheduledTasks = new Set(others.filter(d => d.entity === 'block' && !d.before && d.after).map(d => fieldsOf(d.after).taskId));
+  const summaryDetails = others.filter(d => {
+    if (d.entity === 'feedback') return false;
+    if (!accepting) return true;
+    // Accepting one notice creates a linked task and calendar block internally;
+    // the person reviews that as one arrangement, while all fields remain below.
+    if (d.entity === 'task' && !d.before && scheduledTasks.has(d.id)) return false;
+    // Acceptance can also restore a verified clock from the notice's evidence.
+    // Its resulting time is already in the calendar arrangement; keep the
+    // candidate bookkeeping and recovered fields in the full details only.
+    if (d.entity === 'candidate' && fieldsOf(d.after).status === 'accepted') return false;
+    return true;
+  });
   const lines = [
     ...(occurrences.length ? [`新增 ${occurrences.length} 次固定活动`] : []),
     ...(seriesChanges.length ? [`${cancelling ? '取消' : '修改'} ${seriesChanges.length} 次活动`] : []),
     // Removals first, then additions, then edits, so the consequential part reads first.
-    ...[...others].sort((a, b) => Number(!!a.after) - Number(!!b.after) || Number(!!a.before) - Number(!!b.before)).map(d => sentence(d, name, removed)),
+    ...[...summaryDetails].sort((a, b) => Number(!!a.after) - Number(!!b.after) || Number(!!a.before) - Number(!!b.before)).map(d => sentence(d, name, removed)),
   ];
+  if (!lines.length) lines.push(accepting ? '接受这条通知，并保留你的选择' : '保存你的选择');
   const shownLines = lines.length > 7 ? lines.slice(0, 6) : lines;
   return (
     <div className="preview-content">
@@ -191,7 +211,7 @@ export function Preview({
           <strong>{c.kind === "time" ? "时间重叠" : "需要确认"}</strong>
           <p>{c.message}</p>
           {c.conflictingIds.length > 0 && (
-            <small>关联：{c.conflictingIds.map(id => name(id) ?? "另一条记录").join("、")}</small>
+            <small>重叠事项：{c.conflictingIds.map(id => name(id) ?? "另一条记录").join("、")}</small>
           )}
         </div>
       ))}

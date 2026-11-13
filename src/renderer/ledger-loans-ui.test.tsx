@@ -23,6 +23,32 @@ function editor(entries: LedgerEntry[] = [], entry?: LedgerEntry) {
 }
 
 describe('loan recording and balances on desktop and mobile', () => {
+  it.each([false, true])('combines outstanding advances and lent principal once across months (mobile=%s)', mobile => {
+    const advanced = loan({ id: 'advanced', kind: 'expense', title: '合成聚餐代垫', amountCents: 23000, personalCents: 8000,
+      cashflows: [{ accountId: 'alipay', deltaCents: -23000 }] });
+    const returned = loan({ id: 'returned', kind: 'aa_return', title: '合成AA返款', month: '2026-02', date: '2026-02-02', amountCents: 3000,
+      cashflows: [{ accountId: 'alipay', deltaCents: 3000 }], relatedEntryIds: ['advanced'] });
+    const lent = loan({ id: 'lent', kind: 'loan_lend', title: '合成借出', amountCents: 20000, counterparty: '合成同学乙',
+      cashflows: [{ accountId: 'wechat', deltaCents: -20000 }] });
+    const collected = loan({ id: 'collected', kind: 'loan_collect', title: '合成收回', month: '2026-02', date: '2026-02-03', amountCents: 5000,
+      cashflows: [{ accountId: 'wechat', deltaCents: 5000 }], relatedEntryIds: ['lent'] });
+    const voided = loan({ id: 'voided', kind: 'loan_lend', title: '已作废合成借出', amountCents: 90000, voided: true,
+      cashflows: [{ accountId: 'wechat', deltaCents: -90000 }] });
+    const entries = [advanced, returned, lent, collected, voided, loan()];
+    const view = (month: string) => <MobileProvider mobile={mobile}><Flows snapshot={snapshot(entries)} month={month} busy={false}
+      filter={noFilter} setFilter={vi.fn()} create={vi.fn()} edit={vi.fn()} voidEntry={vi.fn()} /></MobileProvider>;
+    const { rerender } = render(view('2026-01'));
+    const total = screen.getByText('待收回合计').parentElement!;
+    expect(total.textContent).toContain('270.00');
+    expect(screen.getByText(/全部月份 · 代垫 ¥120.00 · 借出本金 ¥150.00/)).toBeTruthy();
+    const loanSummary = within(screen.getByRole('region', { name: '借款往来' })).getByText('合成同学乙').closest('summary')!;
+    expect(loanSummary.textContent).toContain('借出 ¥200.00');
+    expect(loanSummary.textContent).toContain('待收 ¥150.00');
+    rerender(view('2026-03'));
+    expect(screen.getByText('待收回合计').parentElement!.textContent).toContain('270.00');
+    expect(screen.getByText('本月还没有账目')).toBeTruthy();
+  });
+
   it.each([
     ['loan_borrow', '实际收到（元）', '收款账户', 1],
     ['loan_lend', '实际支付（元）', '支付账户', -1],

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { friendlyReplyText } from './AssistantText';
 import { Undo2 } from "lucide-react";
 import type { PlannerUI } from "../../hooks/usePlanner";
 
@@ -12,7 +13,7 @@ export function PageToolbar({ title, sub, ui, undo = true, lead, children }: {
     <header className="a2-toolbar">
       {lead}
       <h1 className="a2-title">{title}{sub && <small>{sub}</small>}</h1>
-      {notice && <span className="a2-notice" role="status" aria-live="polite" aria-atomic="true" title={notice}>{notice}</span>}
+      {notice && <span className="a2-notice" role="status" aria-live="polite" aria-atomic="true" title={friendlyReplyText(notice)}>{friendlyReplyText(notice)}</span>}
       <div className="a2-toolbar-actions">
         {children}
         {undo && ui && snapshot && (

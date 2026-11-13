@@ -1,7 +1,7 @@
 import { CandidateInputSchema, type Candidate, type CandidateInput, type Source } from '../shared/contracts';
 import type { ExtractedCandidate } from '../ai/schemas';
 import { WorkflowError } from '../ai/deepseek';
-import { evidenceTimes, fieldEvidenceDate, recoverCandidateTiming } from '../domain/temporal-evidence';
+import { completeTemporalQuote, evidenceTimes, fieldEvidenceDate, recoverCandidateTiming } from '../domain/temporal-evidence';
 import { candidateDatesConflict, hasExplicitReschedule } from '../domain/candidate-dates';
 export { evidenceDate, evidenceTimes, recoverCandidateTiming } from '../domain/temporal-evidence';
 
@@ -42,11 +42,12 @@ export function normalizeCandidate(extracted: ExtractedCandidate, source: Source
   if (source.kind === 'text' && !source.text.includes(extracted.sourceQuote)) throw new WorkflowError('AI_RESPONSE', 'AI 引用与原文不符，请人工校对');
   const { relation: requestedRelation, ...input } = extracted; let relation = requestedRelation;
   const values: CandidateInput = { ...input, uncertainties: [...input.uncertainties], sourceIds: [source.id] };
+  values.temporalEvidence = input.temporalEvidence.map(e => e.basis === 'unknown' ? e : { ...e, quote: completeTemporalQuote(e.quote, source, e.field) });
   const evidenceSources = [...sources.filter(saved => saved.id !== source.id), source];
   for (const field of ['deadline', 'eventStart', 'eventEnd'] as const) {
     const value = values[field]; if (!value) continue;
     const date = typeof value === 'string' ? value.slice(0, 10) : value.date;
-    const evidence = extracted.temporalEvidence.find(e => e.field === field);
+    const evidence = values.temporalEvidence.find(e => e.field === field);
     const anchors: (string | null)[] = [];
     if (evidence && (source.kind === 'image' || source.text.includes(evidence.quote))) anchors.push(source.sentAt);
     if (evidence && field === 'deadline') for (const ref of supportingDeadlineQuotes) {

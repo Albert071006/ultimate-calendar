@@ -42,13 +42,25 @@ describe('JSON plan import', () => {
     fireEvent.click(button('选择 JSON 文件'));
     expect(await screen.findByText('一周学习计划')).toBeTruthy();
     expect(screen.getByText('目标：掌握基础知识 · 截止：2026-11-04 21:00')).toBeTruthy();
-    expect(screen.getByText('2026/11/02 19:00–20:00')).toBeTruthy();
+    expect(screen.getByText('周一 11月2日 19:00–20:00 · 任务：阅读第一章 · 资料：课程笔记')).toBeTruthy();
     expect(screen.getByText('https://example.com/course')).toBeTruthy();
     expect(screen.getByLabelText('条目统计').textContent).toBe('待新增 2已存在 1需处理 0');
     expect(f.host.planImportConfirm).not.toHaveBeenCalled();
     fireEvent.click(button('取消'));
     expect(f.onClose).toHaveBeenCalledTimes(1);
     expect(f.host.planImportConfirm).not.toHaveBeenCalled();
+  });
+
+  it('removes a server-provided duplicate ISO range while preserving the place and validation message', async () => {
+    const start = '2026-11-13T21:15:00+08:00', end = '2026-11-13T22:00:00+08:00';
+    const f = fixture(preview({ rows: [{ kind: 'block', localId: 'session', title: '合成学习', state: 'blocked', start, end,
+      detail: `请核对关联任务；${start} 至 ${end}；宿舍` }] }));
+    f.show(); fireEvent.click(button('选择 JSON 文件')); await screen.findByText('一周学习计划');
+    const list = screen.getByRole('list', { name: '导入条目' });
+    expect(list.textContent).toContain('周五 11月13日 21:15–22:00 · 请核对关联任务；宿舍');
+    expect(list.textContent).not.toContain('T21:15');
+    expect(list.textContent?.match(/21:15/g)).toHaveLength(1);
+    expect(button('确认批量导入').disabled).toBe(true);
   });
 
   it('keeps a canceled picker harmless and saves a template without importing', async () => {

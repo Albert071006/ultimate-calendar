@@ -451,13 +451,13 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
       });
     },
     batch, batchMessages(id: string) { const value = batch(id); return value ? value.messageIds.map(message).filter((item): item is StoredCaptureMessage => item !== null) : []; },
-    contextMessagesBefore(id: string, options: { includeAttachments?: boolean } = {}): StoredCaptureMessage[] {
+    contextMessagesBefore(id: string, options: { includeAttachments?: boolean; includeSharedCards?: boolean } = {}): StoredCaptureMessage[] {
       const value = batch(id); if (!value) return [];
       const dates = value.messageIds.map(message).filter((item): item is StoredCaptureMessage => item !== null && !item.deleted).map(item => Date.parse(item.sentAt));
       if (!dates.length) return [];
       const before = Math.min(...dates), since = before - 24 * 3600_000;
       return db.prepare(`SELECT payload FROM capture_messages WHERE account_id=? AND group_id=? AND deleted=0
-        AND coalesce(json_extract(payload,'$.changed'),0)=0 AND (length(json_extract(payload,'$.text'))>0${options.includeAttachments ? ' OR EXISTS (SELECT 1 FROM capture_attachments a WHERE a.message_id=capture_messages.id)' : ''})
+        AND coalesce(json_extract(payload,'$.changed'),0)=0 AND (length(json_extract(payload,'$.text'))>0${options.includeAttachments ? ' OR EXISTS (SELECT 1 FROM capture_attachments a WHERE a.message_id=capture_messages.id)' : ''}${options.includeSharedCards ? " OR EXISTS (SELECT 1 FROM json_each(capture_messages.payload,'$.segments') part WHERE CASE WHEN part.type='object' THEN json_extract(part.value,'$.type') END='json')" : ''})
         AND julianday(sent_at)>=julianday(?) AND julianday(sent_at)<julianday(?)
         ORDER BY julianday(sent_at) DESC,id DESC LIMIT 20`)
         .all(value.accountId, value.groupId, new Date(since).toISOString(), new Date(before).toISOString())

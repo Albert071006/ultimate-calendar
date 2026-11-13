@@ -1,5 +1,7 @@
 import { operationPending } from '../operation-feedback';
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { candidateWithRecoveredTiming } from '../../domain/temporal-evidence';
+import { friendlyReplyText } from './shell/AssistantText';
 import { ChevronLeft, History, Import, Plus } from "lucide-react";
 import type { Candidate, Snapshot } from "../../shared/contracts";
 import { CAPTURE_BATCH_WAIT_SECONDS, type CaptureSnapshot } from "../../shared/capture";
@@ -44,7 +46,7 @@ function useCaptureStatus(host: HostCapabilities | undefined) {
  * 待判断: a list with quick ✓ / ✕ on every open notice and the selected notice's detail beside it.
  * Arrow keys move through the list; A, I and L accept, ignore or postpone the selected notice.
  */
-export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, focus, host }: {
+export function Inbox({ snapshot: storedSnapshot, ui, select, edit, importMessage, openSource, focus, host }: {
   snapshot: Snapshot;
   ui: PlannerUI;
   select: (s: Selection) => void;
@@ -55,6 +57,7 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
   focus?: string | null;
   host?: HostCapabilities;
 }) {
+  const snapshot = useMemo(() => ({ ...storedSnapshot, candidates: storedSnapshot.candidates.map(candidate => candidateWithRecoveredTiming(candidate, storedSnapshot.sources)) }), [storedSnapshot]);
   const mobile = useMobile();
   const [detailOpen, setDetailOpen] = useState(Boolean(focus));
   const now = useCurrentTime();
@@ -265,7 +268,7 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
           </div>
         ) : (
           <div className="a2-ib-empty">
-            {toast && <div className="ui-toast a2-ib-toast" role="status">{toast.text}<button onClick={() => void undo()}>撤销</button></div>}
+            {toast && <div className="ui-toast a2-ib-toast" role="status">{friendlyReplyText(toast.text)}<button onClick={() => void undo()}>撤销</button></div>}
             {tab === "pending" ? <div className="ui-empty center">
               <h4>都处理完了</h4>
               {(capture || snoozedList.length > 0) && <p>{waiting}</p>}

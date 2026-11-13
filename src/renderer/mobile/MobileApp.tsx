@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { friendlyReplyText } from '../components/shell/AssistantText';
 import { CalendarDays, Inbox as InboxIcon, Sun, UserRound, Wallet } from 'lucide-react';
 import type { CourseImportResult, LedgerViewContext } from '../../shared/contracts';
 import type { PlannerClient } from '../../shared/client';
@@ -184,7 +185,7 @@ function Toast({ ui }: { ui: ReturnType<typeof usePlanner> }) {
   const undoable = !ui.busy && !/^(尚未执行|已取消)/.test(text) && !!ui.snapshot?.journal.some(entry => entry.undoable && !entry.undoneAt);
   return (
     <div className="m-toast" role="status" aria-live="polite">
-      <span>{undoable ? text.replace(/[，,]?\s*可撤销$/, '') : text}</span>
+      <span>{friendlyReplyText(undoable ? text.replace(/[，,]?\s*可撤销$/, '') : text)}</span>
       {undoable && <button className="m-link" onClick={() => { setShown(''); void ui.undo(); }}>撤销</button>}
     </div>
   );

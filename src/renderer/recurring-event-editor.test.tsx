@@ -162,14 +162,14 @@ describe('recurring activity change preview', () => {
     render(<Preview value={value} confirm={vi.fn()} cancel={vi.fn()} busy={false} />);
     const table = screen.getByRole('region', { name: '重复活动更改清单' });
     expect(within(table).getAllByRole('row')).toHaveLength(3);
-    expect(table.textContent).toContain('2026-11-17 20:40');
-    expect(table.textContent).toContain('2026-12-01 20:40');
+    expect(table.textContent).toContain('周二 11月17日 20:40');
+    expect(table.textContent).toContain('周二 12月1日 20:40');
     expect(table.textContent).toContain('活动室');
     expect(table.textContent).toContain('提前30分钟');
     expect(table.textContent).not.toMatch(/seriesId|occurrenceStart|recurrence/);
     if (mutationType === 'updateRecurringEvent') {
-      expect(table.textContent).toContain('2026-11-17 19:00');
-      expect(table.textContent).toContain('2026-12-01 19:30');
+      expect(table.textContent).toContain('周二 11月17日 19:00');
+      expect(table.textContent).toContain('周二 12月1日 19:00–19:30');
       expect(table.textContent).toContain('办公室'); expect(table.textContent).toContain('提前10分钟');
     } else expect(within(table).getAllByText('已取消 · 不再提醒')).toHaveLength(2);
     expect(planner.snapshot()).toEqual(before);

@@ -209,7 +209,7 @@ function ledgerQueryReplyBody(query: LedgerQuery, data: LedgerQueryData, detail:
   if (summary.uncertainDateCents) lines.push(`¥${money(summary.uncertainDateCents)} 尚未确定具体日期，已计入所属月份。`);
   if (summary.excludedUncertainDateCents) lines.push(`另有 ¥${money(summary.excludedUncertainDateCents)} 只确定月份、具体日期待确认，未计入本次日期范围。`);
   if (summary.unallocatedAdjustmentCents) lines.push(`相关组合消费另有 ¥${money(summary.unallocatedAdjustmentCents)} 的共同报销或退款，尚未确定分摊到本次筛选部分的金额；上述开销未扣这部分，完整月份合计已扣一次。`);
-  if (detail === 'balances') lines.push(...summary.accounts.map(account => `${account.name}：${account.kind === 'family' ? `当前真实剩余额度 ${amountText(data.rules?.familyActualRemainingCents ?? null)}` : `账面余额 ${amountText(account.balanceCents)}`}${account.pendingEntryIds.length ? `（${account.pendingEntryIds.length} 笔与快照先后待核对）` : ''}`));
+  if (detail === 'balances') lines.push(...summary.accounts.map(account => `${account.name}：${account.kind === 'family' ? `当前真实剩余额度 ${amountText(data.rules?.familyActualRemainingCents ?? null)}` : account.balanceCents === null ? '余额未设置' : `账面余额 ${amountText(account.balanceCents)}`}${account.pendingEntryIds.length ? `（${account.pendingEntryIds.length} 笔与快照先后待核对）` : ''}`));
   else if (detail === 'entries') lines.push(...data.entries.slice(0,40).map(entry => `${entry.date ?? `${entry.month} 日期待确认`} ${entry.title} ¥${money(entry.amountCents)} · ${[...new Set(entry.cashflows.map(flow => accountName(flow.accountId, data.summary.accounts)))].join(' / ')} · 个人开销 ${amountText(entry.personalCents)}`),...(data.entries.length > 40 ? [`共 ${data.entries.length} 笔，更多明细请打开账单页。`] : []));
   else lines.push(...summary.categories.filter(c => c.cents).map(c => `${c.category} ¥${money(c.cents)}`));
   return lines.join('\n');
@@ -218,7 +218,7 @@ export function ledgerSavedReply(snapshot: LedgerSnapshot, entryIds: string[], m
   const entries = snapshot.entries.filter(entry => entryIds.includes(entry.id));
   const affected = new Set([...affectedAccounts, ...entries.flatMap(entry => entry.cashflows.map(flow => flow.accountId))]);
   const lines = [message, ...entries.slice(0,8).map(entry => `${entry.date ?? `${entry.month} 日期待确认`} · ${entry.title} · ¥${money(entry.amountCents)} · ${[...new Set(entry.cashflows.map(flow => accountName(flow.accountId, ledgerAccounts(snapshot))))].join(' / ')}`)];
-  for (const account of snapshot.summary.accounts.filter(a => affected.has(a.id))) lines.push(`${account.name}：${account.kind === 'family' ? `本月已记录使用 ¥${money(account.recordedUsageCents)}，当前真实剩余额度 ${amountText(snapshot.rules.familyActualRemainingCents)}` : `账面余额 ${amountText(account.balanceCents)}`}${account.pendingEntryIds.length ? `（${account.pendingEntryIds.length} 笔与余额快照的先后待核对）` : ''}`);
+  for (const account of snapshot.summary.accounts.filter(a => affected.has(a.id))) lines.push(`${account.name}：${account.kind === 'family' ? `本月已记录使用 ¥${money(account.recordedUsageCents)}，当前真实剩余额度 ${amountText(snapshot.rules.familyActualRemainingCents)}` : account.balanceCents === null ? '余额未设置' : `账面余额 ${amountText(account.balanceCents)}`}${account.pendingEntryIds.length ? `（${account.pendingEntryIds.length} 笔与余额快照的先后待核对）` : ''}`);
   lines.push(`${snapshot.summary.month} 个人开销 ¥${money(snapshot.summary.personalCents)}，普通收入 ¥${money(snapshot.summary.incomeCents)}，资产变现 ¥${money(snapshot.summary.assetSaleCents)}。`);
   if (entries.some(entry => isLedgerLoanKind(entry.kind))) {
     const loans = ledgerLoans(snapshot.entries);

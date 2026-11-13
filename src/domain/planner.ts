@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { MutationRequestSchema, MutationResultSchema, type MutationRequest, type MutationResult, type PlannerService, type Conflict, type PreviewDetail } from '../shared/contracts';
+import { MutationRequestSchema, MutationResultSchema, type MutationRequest, type MutationResult, type PlannerService, type Conflict, type PreviewDetail, type CalendarItem } from '../shared/contracts';
+import { formatFriendlyInstant } from '../shared/display-time';
 import { type Repository, type StoredState, stateSnapshot, diffStates, summarize, findEntity, putEntity, deleteEntity, records } from '../storage/repository';
 import { automaticBackup } from '../storage/backups';
 import { nowInstant, instantAt } from './time';
@@ -35,7 +36,7 @@ function appliedMessage(state: StoredState, request: MutationRequest, details: P
   const event = records(state, 'block').find(b => b.kind === 'event' && b.taskId === candidate.taskId && b.candidateId === candidate.id);
   if (event) {
     const updated = details.some(d => d.entity === 'block' && d.id === event.id && d.before);
-    return `已接受，活动${updated ? '时间已更新到' : '已加入'}日历：${event.start.slice(0, 16).replace('T', ' ')}${event.end ? '' : '（默认安排30分钟，可调整）'}，可撤销`;
+    return `已接受，活动${updated ? '时间已更新到' : '已加入'}日历：${formatFriendlyInstant(event.start)}${event.end ? '' : '（默认安排30分钟，可调整）'}，可撤销`;
   }
   const task = candidate.taskId ? findEntity(state, 'task', candidate.taskId) : undefined;
   return task?.deadline ? '已接受，截止时间已保留，执行时间待安排，可撤销' : '已接受，任务待安排，可撤销';
@@ -45,6 +46,25 @@ type TimeConflictFact = { conflict: Conflict; baseline: CancellationUndoBaseline
 const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function participantFingerprint(state: StoredState, entity: 'block' | 'course', id: string): string {
   return hash({ record: findEntity(state, entity, id) ?? null, exceptions: entity === 'course' ? records(state, 'courseException').filter(e => e.courseId === id).sort((a, b) => a.id.localeCompare(b.id)) : [] });
+}
+function isOwnCourseAssessment(state: StoredState, event: CalendarItem, lesson: CalendarItem): boolean {
+  if (event.refKind !== 'block' || event.category !== 'event' || lesson.refKind !== 'course') return false;
+  // An assessment within its own lesson occupies that lesson; homework/work sessions still conflict.
+  if (Date.parse(event.start!) < Date.parse(lesson.start!) || Date.parse(event.end!) > Date.parse(lesson.end!)) return false;
+  const block = findEntity(state, 'block', event.refId);
+  const course = findEntity(state, 'course', lesson.refId);
+  const task = block?.taskId ? findEntity(state, 'task', block.taskId) : undefined;
+  if (!block || !course || !/(?:考试|考核|测验|测评)/.test(block.title) || /复习|备考|准备|练习|讲座|报名|说明会|资格|认证|竞赛|培训|选拔/.test(block.title)) return false;
+  if (task?.courseId) return task.courseId === course.id;
+  const compact = (text: string) => text.replace(/\s+/g, '');
+  const title = compact(block.title), courseTitle = compact(course.title);
+  if (courseTitle.length < 2 || !title.includes(courseTitle)) return false;
+  const suffix = title.slice(title.indexOf(courseTitle) + courseTitle.length);
+  const assessment = /^(?:的)?(?:期中|期末|随堂|课堂)?(?:考试|考核|测验|测评)(?:$|[（(])/;
+  const lessonSuffix = /课(?:程)?$/.test(courseTitle) ? suffix : suffix.replace(/^课(?:程)?/, '');
+  if (lessonSuffix === suffix && !/课(?:程)?$/.test(courseTitle) || !assessment.test(lessonSuffix)) return false;
+  const matchingTitles = new Set(records(state, 'course').map(c => compact(c.title)).filter(name => name.length >= 2 && title.includes(name)));
+  return matchingTitles.size === 1;
 }
 function timeConflictFacts(state: StoredState, details: PreviewDetail[]): TimeConflictFact[] {
   const changed = new Set(details.filter(d => d.after).map(d => d.id));
@@ -59,6 +79,7 @@ function timeConflictFacts(state: StoredState, details: PreviewDetail[]): TimeCo
   for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
     const a = items[i]!; const b = items[j]!;
     if (Date.parse(b.start!) >= Date.parse(a.end!)) break;
+    if (isOwnCourseAssessment(state, a, b) || isOwnCourseAssessment(state, b, a)) continue;
     const affected = changed.has(a.refId) || changed.has(b.refId);
     if (affected && Date.parse(a.start!) < Date.parse(b.end!) && Date.parse(b.start!) < Date.parse(a.end!)) {
       const witnesses = [a, b].map(item => ({ entity: item.refKind as 'block' | 'course', id: item.refId, fingerprint: participantFingerprint(state, item.refKind as 'block' | 'course', item.refId) }));
