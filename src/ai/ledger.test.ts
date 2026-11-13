@@ -25,6 +25,23 @@ function mutation(value: unknown) {
 }
 
 describe('ledger AI adaptation', () => {
+  it('keeps save receipts concise while retaining zero totals in explicit statistics queries', () => {
+    const { service, snapshot } = fixture([entry({ amountCents: 2350, personalCents: 2350, cashflows: [{ accountId: 'alipay', deltaCents: -2350 }] })]);
+    const before = service.snapshot('2026-01');
+    const saved = ledgerSavedReply(snapshot, ['original'], '已保存，可撤销');
+    expect(saved).toContain('2026年1月：个人开销 ¥23.50。');
+    for (const noise of ['2026-01 个人开销', '普通收入 ¥0.00', '资产变现 ¥0.00', '亲情卡已记录使用 ¥0.00']) expect(saved).not.toContain(noise);
+    const queried = ledgerQueryReply({ month: '2026-01' }, service.query({ month: '2026-01' }), 'summary');
+    expect(queried).toContain('2026年1月：个人开销 ¥23.50，普通收入 ¥0.00，资产变现 ¥0.00');
+    expect(service.snapshot('2026-01')).toEqual(before);
+    const nonzero = structuredClone(snapshot);
+    nonzero.summary.incomeCents = 12000; nonzero.summary.assetSaleCents = 3400;
+    const amounts = ledgerSavedReply(nonzero, [], '已保存');
+    expect(amounts).toContain('普通收入 ¥120.00，资产变现 ¥34.00');
+    nonzero.summary.personalCents = 0;
+    expect(ledgerSavedReply(nonzero, [], '已保存')).toContain('个人开销 ¥0.00');
+  });
+
   it('keeps the same expense records in a stable order and points to the matches for each question', () => {
     const { snapshot } = fixture([entry({ id: 'z', title: '合成打车' }), entry({ id: 'a', title: '合成早餐' })]);
     const context = (text: string) => ledgerContext(snapshot, { operationId: 'stable', text }, now);

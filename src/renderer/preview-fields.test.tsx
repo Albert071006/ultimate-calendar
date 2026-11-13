@@ -8,6 +8,20 @@ import { Preview } from './components/Preview';
 
 const repositories: Repository[] = [];
 afterEach(() => { cleanup(); repositories.splice(0).forEach(r => r.close()); });
+it('names the existing task-linked item under overlap details when the new activity starts later', () => {
+  const repository = createRepository(':memory:'); repositories.push(repository);
+  const planner = createPlanner(repository, { automaticBackup: () => {} });
+  const task = repository.writeInternal({ operationId: 'existing-task', changes: [{ entity: 'task', values: { title: '已有安排对应任务' } }] }).entities[0]!;
+  const existing = repository.writeInternal({ operationId: 'existing-block', changes: [{ entity: 'block', values: {
+    title: '已有安排', kind: 'event', taskId: task.id, start: '2031-04-18T14:00:00+08:00', end: '2031-04-18T15:00:00+08:00',
+  } }] }).entities[0]!;
+  const value = planner.mutate(MutationRequestSchema.parse({ operationId: 'overlapping-new-event', origin: 'manual', mutations: [{ type: 'create', entity: 'block', values: {
+    title: '新增活动', kind: 'event', start: '2031-04-18T14:30:00+08:00', end: '2031-04-18T15:30:00+08:00',
+  } }] }));
+  if (value.status !== 'preview') throw Error('Expected overlap preview');
+  const { container } = render(<Preview value={value} confirm={() => {}} cancel={() => {}} busy={false} names={id => id === existing.id ? '已有安排' : undefined} />);
+  expect(container.querySelector('.conflict small')?.textContent).toBe('重叠事项：已有安排');
+});
 it('shows every changed business field in a real bulk preview, including conditions and attribution', () => {
   const repository = createRepository(':memory:'); repositories.push(repository);
   const planner = createPlanner(repository);

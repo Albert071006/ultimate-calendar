@@ -1,7 +1,7 @@
 import { CandidateInputSchema, type Candidate, type CandidateInput, type Source } from '../shared/contracts';
 import type { ExtractedCandidate } from '../ai/schemas';
 import { WorkflowError } from '../ai/deepseek';
-import { completeTemporalQuote, evidenceTimes, fieldEvidenceDate, recoverCandidateTiming } from '../domain/temporal-evidence';
+import { completeTemporalQuote, evidenceTimes, fieldEvidenceDate, groundedEventRangeEnd, recoverCandidateTiming } from '../domain/temporal-evidence';
 import { candidateDatesConflict, hasExplicitReschedule } from '../domain/candidate-dates';
 export { evidenceDate, evidenceTimes, recoverCandidateTiming } from '../domain/temporal-evidence';
 
@@ -42,12 +42,17 @@ export function normalizeCandidate(extracted: ExtractedCandidate, source: Source
   if (source.kind === 'text' && !source.text.includes(extracted.sourceQuote)) throw new WorkflowError('AI_RESPONSE', 'AI 引用与原文不符，请人工校对');
   const { relation: requestedRelation, ...input } = extracted; let relation = requestedRelation;
   const values: CandidateInput = { ...input, uncertainties: [...input.uncertainties], sourceIds: [source.id] };
+  const timingWarnings: { field: 'deadline' | 'eventStart' | 'eventEnd'; original: CandidateInput['deadline'] | string; message: string; clockOnly?: boolean }[] = [];
   values.temporalEvidence = input.temporalEvidence.map(e => e.basis === 'unknown' ? e : { ...e, quote: completeTemporalQuote(e.quote, source, e.field) });
   const evidenceSources = [...sources.filter(saved => saved.id !== source.id), source];
   for (const field of ['deadline', 'eventStart', 'eventEnd'] as const) {
     const value = values[field]; if (!value) continue;
     const date = typeof value === 'string' ? value.slice(0, 10) : value.date;
     const evidence = values.temporalEvidence.find(e => e.field === field);
+    if (field === 'eventEnd' && evidence && evidence.basis !== 'unknown') {
+      const range = groundedEventRangeEnd(values, source, evidence.quote);
+      if (range) evidence.quote = range.quote;
+    }
     const anchors: (string | null)[] = [];
     if (evidence && (source.kind === 'image' || source.text.includes(evidence.quote))) anchors.push(source.sentAt);
     if (evidence && field === 'deadline') for (const ref of supportingDeadlineQuotes) {
@@ -55,18 +60,20 @@ export function normalizeCandidate(extracted: ExtractedCandidate, source: Source
     }
     if (!evidence || evidence.basis === 'unknown' || !anchors.length || !anchors.every(sentAt =>
       (evidence.basis !== 'relative' || sentAt !== null) && fieldEvidenceDate(evidence.quote, sentAt, field) === date)) {
-      values[field] = null; values.uncertainties!.push(source.sentAt === null ? '原消息发送时间未知，时间需校对；不能按导入时间推算' : '时间缺少可核对的原文依据，请校对');
+      values[field] = null; timingWarnings.push({ field, original: value, message: source.sentAt === null ? '原消息发送时间未知，时间需校对；不能按导入时间推算' : '时间缺少可核对的原文依据，请校对' });
     } else {
       const time = typeof value === 'string' ? value.slice(11, 16) : value.time;
       if (time && !quotedTime(evidence!.quote, time)) {
         if (field === 'deadline' && typeof value !== 'string') values.deadline = { date, time: null };
         else values[field] = null;
-        values.uncertainties!.push('原文未提供可核对的具体钟点，已保留日期依据，请校对时间');
+        timingWarnings.push({ field, original: value, clockOnly: true, message: '原文未提供可核对的具体钟点，已保留日期依据，请校对时间' });
       }
     }
   }
   Object.assign(values, recoverCandidateTiming(values, [source]));
   if (!values.eventStart) values.eventEnd = null;
+  for (const warning of timingWarnings) if (!values[warning.field] || JSON.stringify(values[warning.field]) !== JSON.stringify(warning.original)
+    || warning.clockOnly && warning.field === 'deadline' && !values.deadline?.time) values.uncertainties!.push(warning.message);
   if (values.benefitKind === 'inferred') { values.potentialBenefit = [values.potentialBenefit, values.benefit].filter(Boolean).join('；'); values.benefit = ''; }
   if (values.benefitKind === 'unknown') values.benefit = '';
   let target = relation.candidateId ? existing.find(c => c.id === relation.candidateId) : null;

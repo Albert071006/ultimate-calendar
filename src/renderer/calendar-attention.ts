@@ -2,7 +2,7 @@ import { effectiveActivityEnd } from '../domain/activity-duration';
 import type { CalendarItem, Snapshot } from '../shared/contracts';
 
 export interface CalendarAttention {
-  tone: 'normal' | 'attention' | 'completed';
+  tone: 'normal' | 'attention' | 'completed' | 'elapsed';
   label: string;
 }
 
@@ -17,7 +17,10 @@ export function calendarAttention(item: CalendarItem, snapshot: Pick<Snapshot, '
     const task = block.taskId ? snapshot.tasks.find(value => value.id === block.taskId) : undefined;
     if (block.completed || task?.status === 'done') return completed;
     const end = block.kind === 'event' ? effectiveActivityEnd(block.start, block.end) : block.end;
-    return Number.isFinite(now) && end && Date.parse(end) <= now ? { tone: 'attention', label: '已结束 · 待处理' } : normal;
+    if (!Number.isFinite(now) || !end || !Number.isFinite(Date.parse(end)) || Date.parse(end) > now) return normal;
+    // A fixed event has simply elapsed. It is not unfinished work and the clock
+    // alone cannot prove attendance or mark its linked task completed.
+    return block.kind === 'event' ? { tone: 'elapsed', label: '已结束' } : { tone: 'attention', label: '已结束 · 待处理' };
   }
   if (item.refKind === 'task' && item.category === 'deadline') {
     const task = snapshot.tasks.find(value => value.id === item.refId);

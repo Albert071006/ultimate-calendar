@@ -79,8 +79,8 @@ describe('ledger query interpretation helpers', () => {
   it('labels an exact cross-month or empty selection without claiming it is the current month', () => {
     expect(ledgerQueryRangeDescription({ entryIds: ['old', 'older'] }, '2026-11')).toBe('指定账目（不限月份）');
     expect(ledgerQueryRangeDescription({ entryIds: [] }, '2026-11')).toBe('指定账目（不限月份）');
-    expect(ledgerQueryRangeDescription({}, '2026-11')).toBe('2026-11');
-    expect(ledgerQueryRangeDescription({ month: '2026-09', entryIds: ['old'] }, '2026-11')).toBe('2026-09');
+    expect(ledgerQueryRangeDescription({}, '2026-11')).toBe('2026年11月');
+    expect(ledgerQueryRangeDescription({ month: '2026-09', entryIds: ['old'] }, '2026-11')).toBe('2026年9月');
     expect(ledgerQueryRangeDescription({ from: '2026-09-01', to: '2026-10-31', entryIds: ['old'] }, '2026-11')).toBe('2026-09-01 至 2026-10-31');
     expect(ledgerQueryRangeDescription({ to: '2026-10-31', entryIds: ['old'] }, '2026-11')).toBe('最早记录 至 2026-10-31');
     expect(ledgerQueryRangeDescription({ from: '2026-09-01', entryIds: ['old'] }, '2026-11')).toBe('2026-09-01 至 今天');

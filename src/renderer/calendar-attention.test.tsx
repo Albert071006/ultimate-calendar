@@ -54,8 +54,24 @@ describe('personal calendar attention states', () => {
     expect(items()).toHaveLength(2);
     expect(items().every(item => !item.classList.contains('calendar-attention'))).toBe(true);
     act(() => vi.advanceTimersByTime(30_000));
-    expect(items().every(item => item.classList.contains('calendar-attention'))).toBe(true);
+    expect(items().every(item => item.classList.contains('calendar-elapsed'))).toBe(true);
+    expect(items().every(item => !item.classList.contains('calendar-attention'))).toBe(true);
+    expect(screen.queryByText('已结束 · 待处理')).toBeNull();
     expect(state.blocks[0]!.end).toBeNull();
+  });
+
+  it('shows an elapsed fixed event neutrally without marking its linked task completed', () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-23T10:30:00+08:00'));
+    const state = snapshot(); state.tasks.push(task('meeting-task'));
+    state.blocks.push(block('年级大会', { kind: 'event', taskId: 'meeting-task' }), block('练习时段'));
+    const ui = calendar(state);
+    expect(ui.container.querySelector('[data-timeline-item="年级大会"]')?.classList.contains('calendar-elapsed')).toBe(true);
+    expect(screen.getByRole('button', { name: /年级大会.*已结束$/ })).toBeTruthy();
+    expect(ui.container.querySelector('[data-timeline-item="练习时段"]')?.classList.contains('calendar-attention')).toBe(true);
+    expect(state.tasks[0]!.status).toBe('open');
+    expect(state.blocks[0]!.completed).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '月' }));
+    expect(ui.container.querySelector('.month-item.calendar-elapsed')?.classList.contains('unfinished')).toBe(false);
   });
 
   it('renders completed blocks and blocks belonging to completed tasks as quiet history', () => {

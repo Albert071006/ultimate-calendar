@@ -13,3 +13,9 @@
 .m-msg .assistant-text { font-size: 15px; }
 .m-msg .assistant-text > p { margin-bottom: .65em; }
 .m-msg .assistant-text > p:last-child { margin-bottom: 0; }
+.assistant-calendar-items { margin-top: .65em; white-space: normal; }
+.assistant-calendar-items summary { cursor: pointer; color: var(--ink-2); }
+.assistant-calendar-items ul { padding-left: 1.4em; margin: .5em 0 0; }
+.assistant-calendar-items li { margin: .5em 0; }
+.assistant-calendar-items li span, .assistant-calendar-items li strong { display: block; }
+.assistant-calendar-items li span { color: var(--ink-2); font-size: .9em; }

@@ -13,7 +13,7 @@ import { ledgerEntryMatches } from '../ledger/summary';
 import { prepareLedgerAccounts } from './ledger-accounts';
 import { normalizeAAReturns } from './ledger-aa';
 import { normalizeReimbursements } from './ledger-reimbursements';
-import { ledgerQueryScopeDescription, ledgerQueryRangeDescription } from './ledger-query';
+import { ledgerQueryScopeDescription, ledgerQueryRangeDescription, ledgerMonthDescription } from './ledger-query';
 import { LEDGER_CATEGORY_SUGGESTIONS } from '../shared/ledger-categories';
 
 const accountName = (id: string | null, accounts: readonly { id: string; name: string }[]) => accounts.find(account => account.id === id)?.name ?? '账户待确认';
@@ -204,7 +204,7 @@ function ledgerQueryReplyBody(query: LedgerQuery, data: LedgerQueryData, detail:
     lines.push('关联的 AA 返款、退款和报销只抵扣一次；个人开销及账户余额沿用原账本记录。');
     return lines.join('\n');
   }
-  const lines = [`${range}：个人开销 ¥${money(summary.personalCents)}，普通收入 ¥${money(summary.incomeCents)}，资产变现 ¥${money(summary.assetSaleCents)}；亲情卡已记录使用 ¥${money(summary.familyUsageCents)}。`];
+  const lines = [`${range}：${ledgerSummaryAmounts(summary, true)}。`];
   if (summary.pendingPersonalCount) lines.push(`另有 ${summary.pendingPersonalCount} 笔个人承担金额待确认，未计入上述开销。`);
   if (summary.uncertainDateCents) lines.push(`¥${money(summary.uncertainDateCents)} 尚未确定具体日期，已计入所属月份。`);
   if (summary.excludedUncertainDateCents) lines.push(`另有 ¥${money(summary.excludedUncertainDateCents)} 只确定月份、具体日期待确认，未计入本次日期范围。`);
@@ -219,7 +219,7 @@ export function ledgerSavedReply(snapshot: LedgerSnapshot, entryIds: string[], m
   const affected = new Set([...affectedAccounts, ...entries.flatMap(entry => entry.cashflows.map(flow => flow.accountId))]);
   const lines = [message, ...entries.slice(0,8).map(entry => `${entry.date ?? `${entry.month} 日期待确认`} · ${entry.title} · ¥${money(entry.amountCents)} · ${[...new Set(entry.cashflows.map(flow => accountName(flow.accountId, ledgerAccounts(snapshot))))].join(' / ')}`)];
   for (const account of snapshot.summary.accounts.filter(a => affected.has(a.id))) lines.push(`${account.name}：${account.kind === 'family' ? `本月已记录使用 ¥${money(account.recordedUsageCents)}，当前真实剩余额度 ${amountText(snapshot.rules.familyActualRemainingCents)}` : account.balanceCents === null ? '余额未设置' : `账面余额 ${amountText(account.balanceCents)}`}${account.pendingEntryIds.length ? `（${account.pendingEntryIds.length} 笔与余额快照的先后待核对）` : ''}`);
-  lines.push(`${snapshot.summary.month} 个人开销 ¥${money(snapshot.summary.personalCents)}，普通收入 ¥${money(snapshot.summary.incomeCents)}，资产变现 ¥${money(snapshot.summary.assetSaleCents)}。`);
+  lines.push(`${ledgerMonthDescription(snapshot.summary.month)}：${ledgerSummaryAmounts(snapshot.summary)}。`);
   if (entries.some(entry => isLedgerLoanKind(entry.kind))) {
     const loans = ledgerLoans(snapshot.entries);
     lines.push(`已记录的借款本金：目前待还 ¥${money(loans.payableCents)}，待收回 ¥${money(loans.receivableCents)}；本金不计收入或个人开销。`);
@@ -230,4 +230,11 @@ export function ledgerSavedReply(snapshot: LedgerSnapshot, entryIds: string[], m
   const pendingOrder = snapshot.summary.accounts.filter(account => account.pendingEntryIds.some(id => entryIds.includes(id)));
   if (pendingOrder.length) lines.push(`请补充这笔交易发生在${pendingOrder.map(account => `${account.name}上次余额核对（${account.snapshotDate}）`).join('、')}之前还是之后，以便准确更新余额。`);
   return lines.join('\n');
+}
+
+/** Save receipts stay compact; explicit statistics queries still report every zero total. */
+function ledgerSummaryAmounts(summary: LedgerSummary, includeZeroTotals = false): string {
+  const amounts: [string, number][] = [['个人开销', summary.personalCents], ['普通收入', summary.incomeCents], ['资产变现', summary.assetSaleCents]];
+  if (includeZeroTotals || summary.familyUsageCents) amounts.push(['亲情卡已记录使用', summary.familyUsageCents]);
+  return amounts.filter(([, cents], index) => includeZeroTotals || index === 0 || cents !== 0).map(([label, cents]) => `${label} ¥${money(cents)}`).join('，');
 }

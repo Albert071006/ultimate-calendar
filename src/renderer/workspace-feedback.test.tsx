@@ -3,6 +3,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { SnapshotSchema, type ApiResult, type DesktopAPI, type JournalSummary, type MutationResult } from '../shared/contracts';
 import { App } from './App';
+import { PageToolbar } from './components/shell/PageToolbar';
+import type { PlannerUI } from './hooks/usePlanner';
 
 afterEach(cleanup);
 
@@ -10,6 +12,20 @@ const journalEntry: JournalSummary = {
   id: 'transaction-1', operationId: 'operation-1', createdAt: '2026-10-23T09:00:00+08:00',
   origin: 'manual', message: '已保存，可撤销', changes: [], undoneAt: null, undoable: true,
 };
+
+it('keeps a long calendar notification in a dismissible floating status without removing its text', () => {
+  const { snapshot } = fixture();
+  const setNotice = vi.fn();
+  const notice = '已加入日历：合成安排。请携带资料并在主楼集合，完整提示应可换行查看。';
+  const ui = { snapshot, notice, busy: false, error: '', setNotice, undo: vi.fn() } as unknown as PlannerUI;
+  const { container } = render(<PageToolbar title="11月9日 – 15日" ui={ui} floatingNotice secondary={<span>日历图例</span>}><button>周视图</button></PageToolbar>);
+  const status = screen.getByRole('status');
+  expect(status.classList.contains('a2-notice-floating')).toBe(true);
+  expect(status.textContent).toBe(notice);
+  expect(container.querySelector('.a2-toolbar-actions')?.contains(status)).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: '关闭状态提示' }));
+  expect(setNotice).toHaveBeenCalledWith('');
+});
 const applied = (message: string): ApiResult<MutationResult> => ({
   ok: true, data: { status: 'applied', message, changes: [], conflicts: [], transactionId: 'transaction-1' },
 });

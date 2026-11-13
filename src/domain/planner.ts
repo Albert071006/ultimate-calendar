@@ -67,8 +67,11 @@ function isOwnCourseAssessment(state: StoredState, event: CalendarItem, lesson: 
   return matchingTitles.size === 1;
 }
 function timeConflictFacts(state: StoredState, details: PreviewDetail[]): TimeConflictFact[] {
-  const changed = new Set(details.filter(d => d.after).map(d => d.id));
-  for (const d of details) if (d.entity === 'courseException') for (const value of [d.before, d.after]) if (value && 'originalDate' in value) changed.add(value.courseId);
+  const participantKey = (entity: string, id: string) => `${entity}:${id}`;
+  const changed = new Set(details.filter(d => d.after).map(d => participantKey(d.entity, d.id)));
+  const created = new Set(details.filter(d => d.after && !d.before).map(d => participantKey(d.entity, d.id)));
+  for (const d of details) if (d.entity === 'courseException') for (const value of [d.before, d.after]) if (value && 'originalDate' in value) changed.add(participantKey('course', value.courseId));
+  const priority = (item: CalendarItem) => created.has(participantKey(item.refKind, item.refId)) ? 2 : changed.has(participantKey(item.refKind, item.refId)) ? 1 : 0;
   if (!details.some(d => ['block', 'course', 'courseException'].includes(d.entity))) return [];
   const dates: string[] = [];
   for (const b of state.entities.block) if ('start' in b) { dates.push(b.start.slice(0, 10)); if (b.end) dates.push(b.end.slice(0, 10)); }
@@ -80,11 +83,15 @@ function timeConflictFacts(state: StoredState, details: PreviewDetail[]): TimeCo
     const a = items[i]!; const b = items[j]!;
     if (Date.parse(b.start!) >= Date.parse(a.end!)) break;
     if (isOwnCourseAssessment(state, a, b) || isOwnCourseAssessment(state, b, a)) continue;
-    const affected = changed.has(a.refId) || changed.has(b.refId);
+    const affected = priority(a) > 0 || priority(b) > 0;
     if (affected && Date.parse(a.start!) < Date.parse(b.end!) && Date.parse(b.start!) < Date.parse(a.end!)) {
       const witnesses = [a, b].map(item => ({ entity: item.refKind as 'block' | 'course', id: item.refId, fingerprint: participantFingerprint(state, item.refKind as 'block' | 'course', item.refId) }));
       const key = hash([a, b].map(item => JSON.stringify({ entity: item.refKind, id: item.refId, occurrence: item.id, start: item.start, end: item.end })).sort());
-      conflicts.push({ conflict: { kind: 'time', entity: a.refKind, id: a.refId, message: `${a.title} 与 ${b.title} 时间重叠`, conflictingIds: [b.refId] }, baseline: { key, witnesses } });
+      // Describe the other participant relative to this patch, not whichever starts
+      // later. A newly created item takes precedence over an edited existing one;
+      // when both are equally affected, retain a single deterministic pair.
+      const [subject, other] = priority(b) > priority(a) ? [b, a] : [a, b];
+      conflicts.push({ conflict: { kind: 'time', entity: subject.refKind, id: subject.refId, message: `${subject.title} 与 ${other.title} 时间重叠`, conflictingIds: [other.refId] }, baseline: { key, witnesses } });
     }
   }
   return conflicts;

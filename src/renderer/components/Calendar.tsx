@@ -273,12 +273,12 @@ export function Calendar({
   return (
     <div className="a2-page a2-calendar-page">
       <PageToolbar ui={ui} title={title} sub={termLabel ? <span className="calendar-term-week">{termLabel}</span> : undefined}
+        floatingNotice secondary={<span className="ui-legend" aria-label="日历图例"><i className="course" />课程<i className="work" />执行时段<i className="event" />活动<i className="pending" />待定</span>}
         lead={<div className="a2-cal-nav">
           <button className="ui-btn icon" onClick={() => setDate(moveDate(date, view, -1))} aria-label="上一页"><ChevronLeft aria-hidden="true" /></button>
           <button className="ui-btn" onClick={() => { setDate(today); focusCurrentTime(scroll.current, today, view); }}>今天</button>
           <button className="ui-btn icon" onClick={() => setDate(moveDate(date, view, 1))} aria-label="下一页"><ChevronRight aria-hidden="true" /></button>
         </div>}>
-        <span className="ui-legend" aria-hidden="true"><i className="course" />课程<i className="work" />执行时段<i className="event" />活动<i className="pending" />待定</span>
         <label className="a2-check"><input type="checkbox" checked={pending} onChange={(e) => setPending(e.target.checked)} />待判断标记</label>
         <div className="ui-seg" role="group" aria-label="视图">
           {(["day", "week", "month"] as const).map((v, i) => (
@@ -357,17 +357,27 @@ export function Calendar({
                     const startsHere = Date.parse(item.start!) >= dayStart(day), endsHere = Date.parse(item.end!) <= dayStart(day) + 86400_000;
                     const label = `${item.title} ${item.start!.slice(11, 16)}–${item.end!.slice(11, 16)}${item.end!.slice(0, 10) !== item.start!.slice(0, 10) ? '（跨日）' : ''}${attentionLabel(item) ? ` · ${attentionLabel(item)}` : ''}`;
                     const short = endMinute - startMinute < 34;
+                    // A compact display name removes only the generic attendance
+                    // verb. The saved title and full accessible name are unchanged.
+                    const displayTitle = item.category === 'event' ? item.title.replace(/^参加\s*(?=\S)/u, '') || item.title : item.title;
                     // Title and time take about 46px; under 80 minutes the place shares the time line instead of adding a third.
                     const inline = !short && endMinute - startMinute < 80;
+                    // Keep room for the clock and visible details before allowing
+                    // the title to wrap. Narrow overlapping cards use that height.
+                    const titleRoom = minutePosition(endMinute - startMinute) - 12 - 14
+                      - (attentionLabel(item) && endMinute - startMinute >= 70 ? 18 : 0)
+                      - (!inline && item.location ? 14 : 0);
+                    const titleLines = short ? 1 : Math.max(1, Math.min(3, Math.floor(titleRoom / 17)));
                     return <div key={item.id} data-timeline-item={item.id}
-                      className={`timeline-event ${kindClass(item)} ${attentionClass(item)} ${item.pending ? 'pending' : ''} ${short ? 'compact' : ''} ${preview?.itemId === item.id ? 'is-moving' : ''}`}
-                      style={{ ...colorStyle(item), top: minutePosition(startMinute), height: minutePosition(endMinute - startMinute), left: `calc(${column / count * 100}% + 4px)`, width: `calc(${100 / count}% - 8px)` }}>
+                      className={`timeline-event ${kindClass(item)} ${attentionClass(item)} ${item.pending ? 'pending' : ''} ${short ? 'compact' : ''} ${count > 1 ? 'crowded' : ''} ${preview?.itemId === item.id ? 'is-moving' : ''}`}
+                      style={{ ...colorStyle(item), '--calendar-title-lines': titleLines, top: minutePosition(startMinute), height: minutePosition(endMinute - startMinute), left: `calc(${column / count * 100}% + 4px)`, width: `calc(${100 / count}% - 8px)` } as CSSProperties}>
                       <button className={`timeline-event-button ${movable ? 'can-move' : ''}`} title={`${label}\n${formatFriendlyRange(item.start!.slice(0, 10), item.end!.slice(0, 10))}${movable ? '\n拖动移动；Alt + 上下方向键微调 1 分钟' : ''}`}
+                        aria-label={label}
                         onPointerDown={e => { if (movable) begin(e, day, 'move', item); else e.stopPropagation(); }}
                         onKeyDown={e => keyboardBlock(e, item, 'move')}
                         onClick={e => { if (suppressClick.current === item.id && e.detail !== 0) { suppressClick.current = null; return; } open(item, day); }}
                         onDoubleClick={() => { if (!suppressClick.current) editItem(item, day); }}>
-                        <strong>{item.title}</strong><small className={inline ? 'one-line' : undefined}>{short ? item.start!.slice(11, 16) : `${item.start!.slice(11, 16)}–${item.end!.slice(11, 16)}`}{item.end!.slice(0, 10) !== item.start!.slice(0, 10) ? ' · 跨日' : ''}{inline && item.location ? ` · ${item.location}` : ''}</small>
+                        <strong>{displayTitle}</strong><small className={inline ? 'one-line' : undefined}>{short ? item.start!.slice(11, 16) : `${item.start!.slice(11, 16)}–${item.end!.slice(11, 16)}`}{item.end!.slice(0, 10) !== item.start!.slice(0, 10) ? ' · 跨日' : ''}{inline && item.location ? ` · ${item.location}` : ''}</small>
                         {/* A status line needs about 64px; shorter blocks show it through their color and keep the text for screen readers. */}
                         {statusLabel(item, endMinute - startMinute < 70)}
                         {!inline && item.location && <small>{item.location}</small>}

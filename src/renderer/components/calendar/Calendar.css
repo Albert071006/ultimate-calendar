@@ -5,6 +5,11 @@
 .a2-check input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
 .a2-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .a2-calendar-page .calendar-term-week { font-family: var(--font-ui); font-size: 13px; color: var(--ink-3); background: none; padding: 0; }
+.a2:not(.is-mobile) .a2-calendar-page > .a2-toolbar { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px 12px; padding-top: 10px; padding-bottom: 8px; }
+.a2:not(.is-mobile) .a2-calendar-page .a2-title { min-width: 0; font-size: 19px; gap: 8px; }
+.a2:not(.is-mobile) .a2-calendar-page .a2-toolbar-actions { grid-column: 3; grid-row: 1; flex-wrap: nowrap; gap: 6px; }
+.a2-calendar-page .a2-toolbar-secondary { grid-column: 1 / -1; min-height: 18px; justify-content: flex-end; }
+.a2-calendar-page .ui-legend { font-size: 11px; }
 
 .a2-cal-body { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; overflow: hidden; }
 .a2-cal-body.with-side { grid-template-columns: minmax(0, 1fr) auto; }
@@ -44,13 +49,15 @@
 .a2-cal .continuous-day:focus-visible { outline: 2px solid var(--ink); }
 
 .a2-cal .timeline-event { border: 0; border-radius: var(--radius); overflow: hidden; }
-.a2-cal .timeline-event-button { padding: 6px 8px; color: inherit; background: none; text-align: left; font: inherit; }
-.a2-cal .timeline-event-button strong { font-family: var(--font-display); font-weight: 600; font-size: 12.5px; line-height: 1.35; white-space: nowrap; }
+.a2-cal .timeline-event-button { padding: 4px 8px; color: inherit; background: none; text-align: left; font: inherit; }
+.a2-cal .timeline-event.crowded .timeline-event-button { padding-left: 4px; padding-right: 4px; }
+.a2-cal .timeline-event-button strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--calendar-title-lines, 2); line-clamp: var(--calendar-title-lines, 2); font-family: var(--font-display); font-weight: 600; font-size: 12.5px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
 .a2-cal .timeline-event-button small { font-family: var(--font-time); font-size: 11px; opacity: 1; margin-top: 2px; }
 .a2-cal .timeline-event-button small + small { font-family: var(--font-ui); }
 .a2-cal .timeline-event-button small.one-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .a2-cal .timeline-event.compact .timeline-event-button { display: flex; align-items: center; gap: 6px; padding: 0 8px; }
-.a2-cal .timeline-event.compact .timeline-event-button strong { font-size: 12px; }
+.a2-cal .timeline-event.compact .timeline-event-button strong { min-width: 0; font-size: 12px; white-space: nowrap; display: block; }
+.a2-cal .timeline-event.compact .timeline-event-button small { flex-shrink: 0; }
 .a2-cal .timeline-event.compact small { display: inline; margin: 0; }
 .a2-cal .timeline-event.compact small + small { display: none; }
 
@@ -69,6 +76,7 @@
 .a2-cal .timeline-event.calendar-completed strong { text-decoration: line-through; text-decoration-thickness: 1px; }
 .a2-cal .calendar-item-status { display: block; margin-top: 4px; font-size: 11px; font-weight: 600; color: var(--warn); }
 .a2-cal .calendar-completed .calendar-item-status { display: none; }
+.a2-cal .calendar-elapsed .calendar-item-status { color: var(--ink-3); font-weight: 400; }
 .a2-cal .ui-chip .calendar-item-status { color: inherit; }
 .a2-cal .timeline-resize:hover, .a2-cal .timeline-resize:focus-visible { background: rgba(31, 28, 24, 0.25); }
 
