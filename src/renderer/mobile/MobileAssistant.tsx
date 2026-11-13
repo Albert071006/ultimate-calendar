@@ -6,6 +6,8 @@ import type { Selection } from '../components/Calendar';
 import { assistantRetryLabel, canContinueUnsent, canReanalyze, useAssistantConversation, type ConversationEntry, type UnsentClarificationDraft } from '../components/shell/assistant-conversation';
 import { AssistantImageButton, AssistantAttachmentDraft, AssistantMessageAttachments } from '../components/shell/assistant-image-input';
 import { AssistantText } from '../components/shell/AssistantText';
+import { AssistantCalendarItems } from '../components/shell/AssistantCalendarItems';
+import { useAssistantScroll } from '../components/shell/assistant-scroll';
 import type { RemoteClientState } from '../remote/types';
 
 const KEEP_ENTRIES = 20, KEEP_MS = 24 * 3600_000;
@@ -57,7 +59,7 @@ export function MobileAssistant({ ui, selected, date, domain, ledgerView, storag
   const layer = useRef<HTMLDivElement>(null);
   const configured = ui.snapshot?.keyStatus.configured !== false;
   useEffect(() => save(storageKey, history, unsentDraft), [storageKey, history, unsentDraft?.replyId, unsentDraft?.text]);
-  useEffect(() => { if (thread.current) thread.current.scrollTop = thread.current.scrollHeight; }, [history, open]);
+  const onConversationScroll = useAssistantScroll(thread, history, open);
   useEffect(() => {
     if (!open) return;
     const key = (event: KeyboardEvent) => {
@@ -85,11 +87,12 @@ export function MobileAssistant({ ui, selected, date, domain, ledgerView, storag
           : (running || selected) && <small>{running ? '正在处理…' : '已带上选中的事项'}</small>}</div>
         <button className="m-icon" onClick={close} aria-label="关闭生活助手" tabIndex={open ? 0 : -1}><X aria-hidden="true" /></button>
       </header>
-      <div className="m-assistant-thread" ref={thread} aria-live="polite">
+      <div className="m-assistant-thread" ref={thread} aria-live="polite" onScroll={onConversationScroll}>
         {history.length ? history.map(entry => (
-          <div key={entry.id} className={`m-msg ${entry.role}${entry.status ? ` ${entry.status}` : ''}`} aria-busy={entry.status === 'pending'}>
+          <div key={entry.id} className={`m-msg ${entry.role}${entry.status ? ` ${entry.status}` : ''}`} aria-busy={entry.status === 'pending'} data-assistant-entry={entry.role === 'assistant' ? entry.id : undefined}>
             <AssistantMessageAttachments {...entry} />
             {entry.role === 'assistant' ? <AssistantText text={entry.text} /> : <p>{entry.text}</p>}
+            {entry.role === 'assistant' && <AssistantCalendarItems items={entry.items} reply={entry.text} />}
             {entry.resources?.map(resource => resource.kind === 'web'
               ? <a key={resource.id} href={resource.url} target="_blank" rel="noopener noreferrer">{resource.name}</a>
               : <small key={resource.id}>{resource.name} · 需在电脑打开</small>)}

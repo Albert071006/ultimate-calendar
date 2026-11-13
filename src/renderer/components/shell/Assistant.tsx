@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ArrowRight, ChevronDown, ChevronUp, FileText, MessageSquare, Paperclip } from "lucide-react";
 import type { CommandRequest } from "../../../shared/contracts";
 import type { PlannerUI } from "../../hooks/usePlanner";
@@ -8,6 +8,8 @@ import { ResourceFields } from '../resources/ResourcePanel';
 import { AssistantImageButton, AssistantAttachmentDraft, AssistantMessageAttachments } from './assistant-image-input';
 import { useAssistantPanelSize } from './assistant-panel-size';
 import { AssistantText } from './AssistantText';
+import { AssistantCalendarItems } from './AssistantCalendarItems';
+import { useAssistantScroll } from './assistant-scroll';
 
 /** Compact composer that grows with its draft; its conversation opens upward over the page. */
 export function Assistant({ ui, selected, date, domain, ledgerView }: {
@@ -26,15 +28,7 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
   const input = useRef<HTMLTextAreaElement>(null);
   const panelSize = useAssistantPanelSize(root, expanded);
   const conversationId = useId();
-  const scrollPosition = useRef(0), followLatest = useRef(true), latestUser = useRef<string | undefined>(undefined);
-  useLayoutEffect(() => {
-    const newestUser = history.findLast(entry => entry.role === 'user')?.id;
-    const sent = newestUser !== latestUser.current; latestUser.current = newestUser;
-    if (!expanded || !conversation.current) return;
-    const thread = conversation.current;
-    if (sent || followLatest.current) { thread.scrollTop = thread.scrollHeight; followLatest.current = true; }
-    else thread.scrollTop = scrollPosition.current;
-  }, [history, expanded]);
+  const onConversationScroll = useAssistantScroll(conversation, history, expanded);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
@@ -66,13 +60,14 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
             <span className="ui-hint">{running ? "正在处理…" : selected ? "已携带选中事项" : "Esc 收起"}</span>
           </div>
           <div id={conversationId} className="conversation" role="log" aria-label="生活助手聊天记录" aria-live="polite" tabIndex={0} ref={conversation}
-            onWheel={event => event.stopPropagation()} onScroll={event => { const thread = event.currentTarget; scrollPosition.current = thread.scrollTop; followLatest.current = thread.scrollHeight - thread.clientHeight - thread.scrollTop < 32; }}>
+            onWheel={event => event.stopPropagation()} onScroll={onConversationScroll}>
             {history.length ? (
               history.map((entry) => (
-                <div className={`message ${entry.role}`} key={entry.id} aria-busy={entry.status === "pending"}>
+                <div className={`message ${entry.role}`} key={entry.id} aria-busy={entry.status === "pending"} data-assistant-entry={entry.role === 'assistant' ? entry.id : undefined}>
                   <small>{entry.role === "user" ? "你" : "助手"}</small>
                   <AssistantMessageAttachments {...entry} />
                   {entry.role === 'assistant' ? <AssistantText text={entry.text} /> : entry.text}
+                  {entry.role === 'assistant' && <AssistantCalendarItems items={entry.items} reply={entry.text} />}
                   {!ui.host?.resourceOpen && entry.resources?.filter(resource => resource.kind === 'web').map(resource =>
                     resource.kind === 'web' && <a key={resource.id} href={resource.url} target="_blank" rel="noopener noreferrer">{resource.name}</a>)}
                   {entry.status === "failed" && entry.request && <>

@@ -34,5 +34,6 @@ describe('assistant reply presentation', () => {
   it('formats legacy server replies while retaining invalid dates and unknown money values', () => {
     expect(friendlyReplyText('支付宝：账面余额 未知\n2026-11-15T02:00:00Z\n2026-02-30\n个人开销 未知')).toBe('支付宝：余额未设置\n周日 11月15日 10:00\n2026-02-30\n个人开销 未知');
     expect(friendlyReplyText('2026-11-15T10:00')).toBe('周日 11月15日 10:00');
+    expect(friendlyReplyText('2026-11 个人开销 ¥23.50，2026-13 待核对，2026-02-30 待核对')).toBe('2026年11月 个人开销 ¥23.50，2026-13 待核对，2026-02-30 待核对');
   });
 });

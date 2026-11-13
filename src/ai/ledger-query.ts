@@ -2,6 +2,11 @@ import { hasCommandAttachments, type CommandRequest } from '../shared/contracts'
 import { LedgerQueryChoicesSchema, LedgerQuerySchema, type LedgerQuery } from '../shared/ledger';
 import type { LedgerIntent } from '../shared/ledger-command';
 
+export function ledgerMonthDescription(month: string): string {
+  const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(month);
+  return match ? `${match[1]}年${Number(match[2])}月` : month;
+}
+
 /** AI topic searches refer to the individual record, not a shared batch transcript. */
 export function normalizeLedgerQueryScope(query: LedgerQuery): LedgerQuery {
   const parsed = LedgerQuerySchema.parse(query);
@@ -13,8 +18,8 @@ export function normalizeLedgerQueryScope(query: LedgerQuery): LedgerQuery {
 /** Summary.month remains legacy metadata, not a month filter for exact IDs. */
 export function ledgerQueryRangeDescription(query: LedgerQuery, defaultMonth: string): string {
   if (query.from || query.to) return `${query.from ?? '最早记录'} 至 ${query.to ?? '今天'}`;
-  if (query.month) return query.month;
-  return query.entryIds !== undefined ? '指定账目（不限月份）' : defaultMonth;
+  if (query.month) return ledgerMonthDescription(query.month);
+  return query.entryIds !== undefined ? '指定账目（不限月份）' : ledgerMonthDescription(defaultMonth);
 }
 
 /** Resolve only an unambiguous choice of the immediately pending read-only question. */

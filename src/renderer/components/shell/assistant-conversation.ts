@@ -15,6 +15,8 @@ export type ConversationEntry = {
   status?: "pending" | "failed";
   request?: CommandRequest;
   outcome?: CommandResult['conversationState'];
+  /** Supplementary calendar results are displayed separately and labelled explicitly in later context. */
+  items?: CommandResult['items'];
   resources?: ResourceReference[];
   image?: SelectedImage;
   images?: SelectedImage[];
@@ -156,11 +158,8 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
         role: "assistant",
         ...(result.conversationState ? { outcome: result.conversationState } : {}),
         ...(result.resourcesToOpen?.length ? { resources: result.resourcesToOpen } : {}),
-        text:
-          reply +
-          (result.items.length
-            ? "\n" + result.items.map(i => `${i.date} ${i.start?.slice(11, 16) ?? "标记"} ${i.title}`).join("\n")
-            : ""),
+        text: reply,
+        ...(result.items.length ? { items: result.items } : {}),
       } : entry));
   }
   function send() {
@@ -189,7 +188,10 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
         const priorImages = retained ? commandImages(entry) : [];
         const note = entry.imageUnavailable || entry.documentsUnavailable ? '[先前附件内容未保留，如需分析请重新选择附件]\n'
           : hasCommandAttachments(entry) && !retained ? '[该条较早的附件本次未携带，如需分析请重新选择附件]\n' : '';
-        return { role: entry.role, text: `${note}${entry.text}`.slice(0, 10_000), ...(entry.outcome ? { outcome: entry.outcome } : {}),
+        // Preserve “the second schedule” without implying every attached row is unfinished.
+        const calendarContext = entry.items?.length ? `所查日期范围的日程（不代表未完成事项）：\n${entry.items.map(item => `${item.date} ${item.start?.slice(11, 16) ?? '标记'} ${item.title}`).join('\n')}` : '';
+        const historyText = [entry.text, calendarContext].filter(Boolean).join('\n');
+        return { role: entry.role, text: `${note}${historyText}`.slice(0, 10_000), ...(entry.outcome ? { outcome: entry.outcome } : {}),
           ...(priorImages.length ? { images: priorImages } : {}), ...(retained && entry.documents?.length ? { documents: entry.documents } : {}) };
       }),
     };

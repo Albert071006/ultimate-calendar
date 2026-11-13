@@ -9,7 +9,7 @@ export function friendlyReplyText(text: string): string {
     if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) return value;
     if (!value.includes('T')) return formatFriendlyDate(value);
     return /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? formatFriendlyInstant(value) : `${formatFriendlyDate(date)} ${value.slice(11, 16)}`;
-  });
+  }).replace(/\b(\d{4})-(0[1-9]|1[0-2])\b(?!-\d)/g, (_match, year: string, month: string) => `${year}年${Number(month)}月`);
 }
 
 function linkTarget(value: string): string | null {

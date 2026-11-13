@@ -35,6 +35,23 @@ function setup(state = snapshot()) {
 }
 
 describe('continuous minute calendar', () => {
+  it('uses readable display names for overlapping events while retaining their full accessible titles', () => {
+    const state = snapshot();
+    state.blocks.push(block('meeting', `${date}T19:00:00+08:00`, `${date}T20:30:00+08:00`), block('test', `${date}T19:00:00+08:00`, `${date}T20:30:00+08:00`));
+    state.blocks[0]!.kind = 'event'; state.blocks[0]!.title = '参加合成年级大会';
+    state.blocks[1]!.kind = 'event'; state.blocks[1]!.title = '参加合成体能补测';
+    const ui = setup(state);
+    for (const title of ['参加合成年级大会', '参加合成体能补测']) {
+      const button = screen.getByRole('button', { name: new RegExp(`${title}.*19:00–20:30`) });
+      expect(button.querySelector('strong')?.textContent).toBe(title.slice(2));
+      expect(button.getAttribute('title')).toContain(title);
+      expect((button.parentElement as HTMLElement).style.getPropertyValue('--calendar-title-lines')).toBe('3');
+      expect(button.parentElement?.classList.contains('crowded')).toBe(true);
+    }
+    expect(state.blocks.map(value => value.title)).toEqual(['参加合成年级大会', '参加合成体能补测']);
+    expect(ui.container.querySelector('.a2-toolbar-secondary .ui-legend')).toBeTruthy();
+    expect(ui.container.querySelector('.a2-toolbar-actions .ui-legend')).toBeNull();
+  });
   it('shows the selected teaching week only inside the configured term', () => {
     const state = snapshot(); state.settings.termStart = '2026-08-31'; state.settings.termWeeks = 20;
     const ui = setup(state);

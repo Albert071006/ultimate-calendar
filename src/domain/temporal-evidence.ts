@@ -28,9 +28,10 @@ function smallNumber(value: string): number {
   if (value.includes('十')) { const [tens, ones] = value.split('十'); return (tens ? digits[tens] ?? NaN : 1) * 10 + (ones ? digits[ones] ?? NaN : 0); }
   return digits[value] ?? NaN;
 }
+const clockPattern = String.raw`(?:(凌晨|早晨|上午|早上|下午|晚上|傍晚|中午|晚|早|午))?\s*([零〇一二两三四五六七八九十\d]{1,3})\s*(?:[:：]\s*(\d{2})|[点时]\s*(?:(半|一刻|三刻)|([零〇一二两三四五六七八九十\d]{1,3})\s*分?)?)`;
 export function evidenceTimes(quote: string, requireUnambiguousPeriod = false): string[] {
   const times = new Set<string>(); let period = '';
-  const clocks = /(?:(凌晨|早晨|上午|早上|下午|晚上|傍晚|中午|晚|早|午))?\s*([零〇一二两三四五六七八九十\d]{1,3})\s*(?:[:：]\s*(\d{2})|[点时]\s*(?:(半|一刻|三刻)|([零〇一二两三四五六七八九十\d]{1,3})\s*分?)?)/g;
+  const clocks = new RegExp(clockPattern, 'g');
   for (const match of quote.matchAll(clocks)) {
     if (match[1]) period = match[1];
     let hour = smallNumber(match[2]!);
@@ -95,14 +96,57 @@ export function fieldEvidenceDate(quote: string, sentAt: string | null, field: '
   return first && last && first <= last ? last : null;
 }
 
+type CandidateTiming = Pick<CandidateInput, 'sourceIds' | 'temporalEvidence' | 'deadline' | 'eventStart' | 'eventEnd'>;
+const dayReference = /(?:\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}|\d{1,2}月\d{1,2}|(?:周|星期|礼拜)[一二三四五六日天末]|大后天|后天|明天|今天|昨天|次日|翌日|当日|当天|同日|隔天|第二天)/;
+
+/** A clock-only end can share the start's date only inside the same explicit time range. */
+export function groundedEventRangeEnd(candidate: CandidateTiming, source: Source, endQuote: string): { quote: string; date: string; time: string } | null {
+  const start = candidate.eventStart;
+  if (!start || source.kind !== 'text' || !endQuote.trim() || !source.text.includes(endQuote)) return null;
+  const date = start.slice(0, 10), startTime = start.slice(11, 16);
+  const starts = (candidate.temporalEvidence ?? []).filter(e => e.field === 'eventStart' && e.basis !== 'unknown'
+    && source.text.includes(e.quote) && (e.basis !== 'relative' || source.sentAt !== null))
+    .map(e => completeTemporalQuote(e.quote, source, 'eventStart'))
+    .filter(quote => fieldEvidenceDate(quote, source.sentAt, 'eventStart') === date && evidenceTimes(quote, true).includes(startTime));
+  const matches = new Map<string, { quote: string; date: string; time: string }>();
+  for (const sentence of source.text.split(/[。！？!?；;\n]/)) {
+    for (const clause of sentence.matchAll(/[^，,]+/g)) {
+      const quote = clause[0].trim(), quoteIndex = clause.index! + clause[0].indexOf(quote);
+      if (!quote.includes(endQuote) || fieldEvidenceDate(quote, source.sentAt, 'eventEnd') !== date) continue;
+      // Do not let an explicit start date mask a second relative/absolute day.
+      if (!starts.some(startQuote => quote.includes(startQuote) && !dayReference.test(quote.replace(startQuote, '')))) continue;
+      const clocks = [...quote.matchAll(new RegExp(clockPattern, 'g'))];
+      if (clocks.length !== 2) continue;
+      const [first, last] = clocks;
+      // A whole-sentence start citation must not hide “次日结束”, even after a comma.
+      if (dayReference.test(sentence.slice(quoteIndex + first!.index! + first![0].length))) continue;
+      const between = quote.slice(first!.index! + first![0].length, last!.index!);
+      if (!/^\s*(?:到|至|[-—–~～])\s*$/.test(between)) continue;
+      const range = quote.slice(first!.index!, last!.index! + last![0].length);
+      const times = evidenceTimes(range, true);
+      if (times.length !== 2 || times[0] !== startTime || times[1]! <= startTime) continue;
+      // The supplied end quote must point into the right endpoint, not a nearby clock.
+      const endPosition = last!.index! + last![0].indexOf(last![2]!, last![1]?.length ?? 0);
+      const referencesEnd = [...quote.matchAll(new RegExp(endQuote.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))]
+        .some(match => match.index! <= endPosition && match.index! + match[0].length >= last!.index! + last![0].trimEnd().length);
+      if (referencesEnd) matches.set(times[1]!, { quote, date, time: times[1]! });
+    }
+  }
+  return matches.size === 1 ? [...matches.values()][0]! : null;
+}
+
 /** Repairs only empty structured fields whose saved source evidence resolves uniquely. */
-export function recoverCandidateTiming(candidate: Pick<CandidateInput, 'sourceIds' | 'temporalEvidence' | 'deadline' | 'eventStart' | 'eventEnd'>, sources: Source[]): Partial<CandidateInput> {
+export function recoverCandidateTiming(candidate: CandidateTiming, sources: Source[]): Partial<CandidateInput> {
   const patch: Partial<CandidateInput> = {};
   for (const field of ['deadline', 'eventStart', 'eventEnd'] as const) {
     if (candidate[field]) continue;
     const possibilities = new Map<string, NonNullable<CandidateInput[typeof field]>>();
     for (const e of (candidate.temporalEvidence ?? []).filter(e => e.field === field && e.basis !== 'unknown')) {
       for (const source of sources.filter(s => candidate.sourceIds.includes(s.id) && (s.kind === 'image' || s.text.includes(e.quote)))) {
+        const rangeEnd = field === 'eventEnd' && groundedEventRangeEnd({ ...candidate, ...patch }, source, e.quote);
+        if (rangeEnd) {
+          const value = `${rangeEnd.date}T${rangeEnd.time}:00+08:00`; possibilities.set(value, value); continue;
+        }
         const quote = completeTemporalQuote(e.quote, source, field);
         const date = fieldEvidenceDate(quote, source.sentAt, field); if (!date) continue;
         const times = evidenceTimes(quote);
@@ -128,6 +172,10 @@ export function recoverCandidateTiming(candidate: Pick<CandidateInput, 'sourceId
 export function candidateWithRecoveredTiming(candidate: Candidate, sources: Source[]): Candidate {
   const timing = recoverCandidateTiming(candidate, sources);
   if (!Object.keys(timing).length) return candidate;
-  return { ...candidate, ...timing, uncertainties: candidate.uncertainties.filter(value =>
-    !timing.eventStart || value !== '原文未提供可核对的具体钟点，已保留日期依据，请校对时间') } as Candidate;
+  const result = { ...candidate, ...timing } as Candidate;
+  const complete = candidate.temporalEvidence.every(e => e.basis !== 'unknown' && result[e.field]
+    && (e.field !== 'deadline' || !evidenceTimes(e.quote).length || result.deadline?.time));
+  return { ...result, uncertainties: candidate.uncertainties.filter(value =>
+    !(timing.eventStart || complete) || value !== '原文未提供可核对的具体钟点，已保留日期依据，请校对时间')
+    .filter(value => !complete || value !== '时间缺少可核对的原文依据，请校对') };
 }

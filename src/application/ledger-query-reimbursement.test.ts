@@ -125,7 +125,7 @@ describe('ledger scoped queries and reimbursement conversation', () => {
     ] };
     const result = await controller.command(request);
     expect(result.ok).toBe(true); if (!result.ok) return;
-    expect(result.data.reply).toContain('2026-04：个人开销 ¥200.00');
+    expect(result.data.reply).toContain('2026年4月：个人开销 ¥200.00');
     expect(result.data.reply).toContain('（备注）');
     expect(result.data.reply).not.toContain('合成打印');
     expect(calls()).toBe(2);
