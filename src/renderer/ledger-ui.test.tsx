@@ -278,10 +278,10 @@ describe('收支 and 账户', () => {
     const f = fixture();
     expect((await screen.findAllByRole('tab')).map(tab => tab.textContent)).toEqual(['收支', '账户']);
     const sums = f.container.querySelector('.a2-ledger-sum')!;
-    expect([...sums.children].map(card => card.querySelector('.k')!.textContent)).toEqual(['支出', '个人开销', '收入', '待收回']);
+    expect([...sums.children].map(card => card.querySelector('.k')!.textContent)).toEqual(['支出', '个人开销', '收入', '待收回合计']);
     expect(sums.textContent).toContain('20.00'); expect(sums.textContent).toContain('12.00');
     expect(sums.children[3]!.textContent).toContain('8.00');
-    expect(sums.children[3]!.textContent).toContain('代垫 1 笔');
+    expect(sums.children[3]!.textContent).toContain('全部月份 · 代垫 ¥8.00 · 借出本金 ¥0.00');
     const row = screen.getByText('午饭').closest('details')!;
     expect(within(row).getByText('代垫 · 待收回')).toBeTruthy();
     expect(row.closest('.a2-ledger-day')!.querySelector('.day-h')!.textContent).toContain('¥20.00');

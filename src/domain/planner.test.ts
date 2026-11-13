@@ -42,7 +42,7 @@ describe('durable planner rules', () => {
   });
   it('accepts a known start-only event as a default 30-minute slot and keeps explicitly split work independent', () => {
     const { repository: r, planner: p, mutate } = setup(); const c = candidate(r, seed(r).id, { eventStart: '2026-10-24T14:00:00+08:00' });
-    expect(mutate({ type: 'acceptCandidate', id: c.id, expectedVersion: 1 })).toMatchObject({ status: 'applied', message: '已接受，活动已加入日历：2026-10-24 14:00（默认安排30分钟，可调整），可撤销' });
+    expect(mutate({ type: 'acceptCandidate', id: c.id, expectedVersion: 1 })).toMatchObject({ status: 'applied', message: '已接受，活动已加入日历：周六 10月24日 14:00（默认安排30分钟，可调整），可撤销' });
     const task = p.snapshot().tasks[0]!;
     mutate({ type: 'update', entity: 'task', id: task.id, expectedVersion: task.version, values: { scheduleMode: 'multiple' } });
     mutate({ type: 'create', entity: 'block', values: { title: '工作1', kind: 'work', taskId: task.id, start: '2026-10-23T10:00:00+08:00', end: '2026-10-23T11:00:00+08:00' } });
@@ -64,7 +64,7 @@ describe('durable planner rules', () => {
   it('accepts an explicit activity range into the calendar and reports it without requesting a new work session', () => {
     const { repository: r, planner: p, mutate } = setup();
     const c = candidate(r, seed(r).id, { deadline: null, eventStart: '2026-10-24T17:00:00+08:00', eventEnd: '2026-10-24T18:10:00+08:00' });
-    expect(mutate({ type: 'acceptCandidate', id: c.id, expectedVersion: 1 })).toMatchObject({ status: 'applied', message: '已接受，活动已加入日历：2026-10-24 17:00，可撤销' });
+    expect(mutate({ type: 'acceptCandidate', id: c.id, expectedVersion: 1 })).toMatchObject({ status: 'applied', message: '已接受，活动已加入日历：周六 10月24日 17:00，可撤销' });
     expect(p.snapshot().blocks).toMatchObject([{ kind: 'event', taskId: p.snapshot().tasks[0]!.id, candidateId: c.id, start: '2026-10-24T17:00:00+08:00', end: '2026-10-24T18:10:00+08:00' }]);
     expect(buildCalendar(p.snapshot(), '2026-10-24', '2026-10-24', false)).toMatchObject([{ category: 'event', start: '2026-10-24T17:00:00+08:00', end: '2026-10-24T18:10:00+08:00', busy: true }]);
   });
@@ -294,7 +294,7 @@ describe('durable planner rules', () => {
     mutate({ type: 'create', entity: 'block', values: { title: 'session', kind: 'work', taskId: t.id, start: '2026-10-23T10:00:00+08:00', end: '2026-10-23T11:00:00+08:00' } });
     const revision = candidate(r, source.id, { revisionOfId: c.id, title: '延期报告', deadline: { date: '2026-10-30', time: null }, eventStart: '2026-10-25T14:00:00+08:00', eventEnd: null });
     const preview = mutate({ type: 'acceptCandidate', id: revision.id, expectedVersion: 1 }); expect(preview.status).toBe('preview'); expect(p.snapshot().tasks[0]!.title).toBe('报告');
-    expect(confirm(preview)).toMatchObject({ status: 'applied', message: '已接受，活动时间已更新到日历：2026-10-25 14:00（默认安排30分钟，可调整），可撤销' }); expect(p.snapshot().tasks).toHaveLength(1); expect(p.snapshot().tasks[0]).toMatchObject({ id: t.id, title: '延期报告', goalId: g.id, status: 'done', deadline: { date: '2026-10-30', time: null } });
+    expect(confirm(preview)).toMatchObject({ status: 'applied', message: '已接受，活动时间已更新到日历：周日 10月25日 14:00（默认安排30分钟，可调整），可撤销' }); expect(p.snapshot().tasks).toHaveLength(1); expect(p.snapshot().tasks[0]).toMatchObject({ id: t.id, title: '延期报告', goalId: g.id, status: 'done', deadline: { date: '2026-10-30', time: null } });
     expect(p.snapshot().blocks.filter(b => b.kind === 'work')).toHaveLength(1); expect(p.snapshot().blocks.filter(b => b.kind === 'event')).toMatchObject([{ start: '2026-10-25T14:00:00+08:00', end: null }]);
   });
   it('does not duplicate the current source event when a second revision names an older accepted notice', () => {

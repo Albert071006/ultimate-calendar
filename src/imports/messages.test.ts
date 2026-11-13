@@ -23,6 +23,8 @@ describe('Chinese temporal evidence', () => {
     ['明天下午四点', ['16:00']], ['周四晚上九点半', ['21:30']], ['今天下午三点五十', ['15:50']],
     ['2026年10月30日下午两点到四点', ['14:00', '16:00']], ['上午9:00', ['09:00']], ['下午4：05', ['16:05']],
     ['中午一点一刻', ['13:15']], ['上午十二点', ['12:00']], ['凌晨十二点', ['00:00']], ['晚上十二点', []], ['十三点六十分', []],
+    ['周三晚7点', ['19:00']], ['早 8 点', ['08:00']], ['午1点', ['13:00']],
+    ['晚上 7 点', ['19:00']], ['下午 3 点', ['15:00']], ['晚上 7 点 半', ['19:30']],
   ])('reads supported clock evidence: %s', (quote, times) => { expect(evidenceTimes(quote)).toEqual(times); });
   it('resolves a bare upcoming weekday from its sending week and rejects ambiguous previous weekdays', () => {
     expect(evidenceDate('周四晚上九点半', at)).toBe('2026-10-22');
@@ -51,6 +53,22 @@ describe('Chinese temporal evidence', () => {
         temporalEvidence: saved.temporalEvidence, relation: { kind: 'new', candidateId: null } }, source(quote), []);
       expect(result.values.eventStart).toBe('2026-10-22T21:30:00+08:00');
       expect(result.values.eventEnd).toBeNull();
+    }
+  });
+  it('grounds a clipped date quote in the same original sentence without borrowing another event clock', () => {
+    const quote = '下周三（10月28日）';
+    const original = source('报名明天下午三点截止。年级会下周三（10月28日）晚上 7 点在报告厅举行。');
+    const saved = candidate(quote);
+    const result = normalizeCandidate({ title: saved.title, action: '', benefit: '', benefitKind: 'unknown', potentialBenefit: '', conditions: [], uncertainties: [],
+      sourceIds: saved.sourceIds, sourceQuote: quote, deadline: null, eventStart: '2026-10-28T19:00:00+08:00', eventEnd: null, location: '',
+      temporalEvidence: saved.temporalEvidence, relation: { kind: 'new', candidateId: null } }, original, []);
+    expect(result.values.eventStart).toBe('2026-10-28T19:00:00+08:00');
+    expect(result.values.uncertainties).toEqual([]);
+    expect(result.values.temporalEvidence?.[0]?.quote).toContain('晚上 7 点');
+    expect(recoverCandidateTiming(saved, [source('下周三（10月28日）开会，时间另行通知。其他活动晚上七点。')])).toEqual({});
+    expect(recoverCandidateTiming(saved, [source('下周三（10月28日）上午九点开会。下周三（10月28日）晚上七点聚餐。')])).toEqual({});
+    for (const text of ['下周三（10月28日）交报告，周四下午3点汇报。', '下周三（10月28日）交报告，次日下午3点答辩。', '下周三（10月28日）交报告，明天下午3点另有活动。', '下周三（10月28日）交报告，下午3点另有讲座。', '下周三（10月28日）参加年级大会，同日晚上7点网球考核。']) {
+      expect(recoverCandidateTiming(saved, [source(text)])).toEqual({});
     }
   });
   it.each([

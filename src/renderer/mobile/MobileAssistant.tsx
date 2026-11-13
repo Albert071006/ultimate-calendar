@@ -5,6 +5,7 @@ import type { PlannerUI } from '../hooks/usePlanner';
 import type { Selection } from '../components/Calendar';
 import { assistantRetryLabel, canContinueUnsent, canReanalyze, useAssistantConversation, type ConversationEntry, type UnsentClarificationDraft } from '../components/shell/assistant-conversation';
 import { AssistantImageButton, AssistantAttachmentDraft, AssistantMessageAttachments } from '../components/shell/assistant-image-input';
+import { AssistantText } from '../components/shell/AssistantText';
 import type { RemoteClientState } from '../remote/types';
 
 const KEEP_ENTRIES = 20, KEEP_MS = 24 * 3600_000;
@@ -88,7 +89,7 @@ export function MobileAssistant({ ui, selected, date, domain, ledgerView, storag
         {history.length ? history.map(entry => (
           <div key={entry.id} className={`m-msg ${entry.role}${entry.status ? ` ${entry.status}` : ''}`} aria-busy={entry.status === 'pending'}>
             <AssistantMessageAttachments {...entry} />
-            <p>{entry.text}</p>
+            {entry.role === 'assistant' ? <AssistantText text={entry.text} /> : <p>{entry.text}</p>}
             {entry.resources?.map(resource => resource.kind === 'web'
               ? <a key={resource.id} href={resource.url} target="_blank" rel="noopener noreferrer">{resource.name}</a>
               : <small key={resource.id}>{resource.name} · 需在电脑打开</small>)}

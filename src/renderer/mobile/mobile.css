@@ -95,6 +95,7 @@ body:has(.app-shell.is-mobile) { min-width:0; overflow:hidden; overscroll-behavi
 .is-mobile .a2-ddl-row { max-height:130px; overflow:auto; }
 .is-mobile .a2-ddl-row .ui-chip { white-space:normal; min-width:0; line-height:1.5; padding:5px; display:block; }
 .is-mobile .a2-ddl-row .ui-chip b { display:block; margin:0; }
+.is-mobile .a2-ddl-row .deadline-marker-title { display:block; }
 .is-mobile .a2-month { overflow:auto; }
 .is-mobile .a2-m-grid { grid-template-rows:none!important; grid-auto-rows:minmax(62px,1fr); }
 .is-mobile .a2-m-cell { min-height:62px; padding:0; }

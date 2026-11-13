@@ -3,7 +3,7 @@ import { afterEach, expect, it } from 'vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import { createRepository, type Repository } from '../storage/repository';
 import { createPlanner } from '../domain/planner';
-import { MutationRequestSchema } from '../shared/contracts';
+import { MutationRequestSchema, BlockSchema, CandidateSchema, FeedbackSchema, TaskSchema, type MutationResult } from '../shared/contracts';
 import { Preview } from './components/Preview';
 
 const repositories: Repository[] = [];
@@ -71,4 +71,33 @@ it('summarises removing a task in plain sentences, names links instead of ids an
   const removed = within(more).getByRole('heading', { name: '移除任务 · 合成：周五带电脑去教室' }).closest('section')!;
   expect(within(removed).queryByText('未设置')).toBeNull();
   expect(within(removed).getByText('合成说明')).toBeTruthy();
+});
+
+it('summarises accepting a notice as one calendar arrangement and retains internal changes under details', () => {
+  const base = { version: 1, createdAt: '2026-11-13T12:00:00+08:00', updatedAt: '2026-11-13T12:00:00+08:00' };
+  const before = CandidateSchema.parse({ ...base, id: 'notice', title: '合成考核', sourceIds: ['synthetic-source'] });
+  const task = TaskSchema.parse({ ...base, id: 'task', title: '合成考核', candidateId: before.id });
+  const block = BlockSchema.parse({ ...base, id: 'block', title: '合成考核', taskId: task.id, kind: 'event', start: '2026-11-18T16:00:00+08:00', end: '2026-11-18T17:00:00+08:00', location: '合成体育馆' });
+  const feedback = FeedbackSchema.parse({ ...base, id: 'feedback', candidateId: before.id, decision: 'accepted' });
+  const value: Extract<MutationResult, { status: 'preview' }> = { status: 'preview', confirmationToken: 'synthetic-token', expiresAt: '2026-11-13T12:10:00+08:00', message: '合成预览', conflicts: [], changes: [],
+    proposedRequest: MutationRequestSchema.parse({ operationId: 'synthetic-accept', origin: 'manual', mutations: [{ type: 'acceptCandidate', id: before.id, expectedVersion: before.version }] }),
+    details: [
+      { entity: 'candidate', id: before.id, before, after: { ...before, status: 'accepted', taskId: task.id,
+        eventStart: block.start, eventEnd: block.end, uncertainties: ['已依据原文恢复具体时间'],
+        temporalEvidence: [{ field: 'eventStart', basis: 'explicit', quote: '11月18日16点' }] } },
+      { entity: 'task', id: task.id, before: null, after: task },
+      { entity: 'block', id: block.id, before: null, after: block },
+      { entity: 'feedback', id: feedback.id, before: null, after: feedback },
+    ],
+  };
+  const { container } = render(<Preview value={value} confirm={() => {}} cancel={() => {}} busy={false} />);
+  const summary = screen.getByRole('region', { name: '更改摘要' });
+  expect(within(summary).getAllByRole('listitem').map(item => item.textContent)).toEqual(['加入日历：「合成考核」 · 周三 11月18日 16:00–17:00 · 合成体育馆']);
+  expect(summary.textContent).not.toMatch(/反馈|关联任务|未设置|新建任务/);
+  const more = container.querySelector('details.preview-more') as HTMLDetailsElement;
+  expect(more.open).toBe(false);
+  expect(more.textContent).toContain('新建任务');
+  expect(more.textContent).toContain('新建反馈');
+  expect(more.textContent).toContain('已依据原文恢复具体时间');
+  expect(more.textContent).toContain('活动开始');
 });

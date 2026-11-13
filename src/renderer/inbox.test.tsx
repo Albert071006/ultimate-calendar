@@ -24,6 +24,19 @@ const detail = () => screen.getByRole('article', { name: '通知详情' });
 const tab = (name: RegExp) => fireEvent.click(screen.getByRole('tab', { name }));
 
 describe('notice detail', () => {
+  it.each([false, true])('shows a known day even without a clock, and recovers spaced clocks without mutating the snapshot (mobile=%s)', mobile => {
+    const dateOnly = '10月24日活动，具体钟点另行通知';
+    const timed = '10月25日晚上 7 点开会';
+    const sources = [SourceSchema.parse({ id: 'source', version: 1, createdAt: now, updatedAt: now, importedAt: now, kind: 'text', text: `${dateOnly}。${timed}。`, sentAt: now })];
+    const f = view([
+      make('日期已知', { sourceQuote: dateOnly, temporalEvidence: [{ field: 'eventStart', basis: 'explicit', quote: '10月24日' }] }),
+      make('旧卡补时', { sourceQuote: timed, temporalEvidence: [{ field: 'eventStart', basis: 'explicit', quote: timed }] }),
+    ], {}, undefined, { mobile, sources });
+    expect(within(list()).getByText(/10月24日.*钟点待核对/)).toBeTruthy();
+    expect(within(list()).getByText(/19:00/)).toBeTruthy();
+    expect(within(list()).queryByText('时间未说明')).toBeNull();
+    expect(f.snapshot.candidates.every(c => c.eventStart === null)).toBe(true);
+  });
   it.each([false, true])('keeps other notices and navigation usable while one notice saves (mobile=%s)', mobile => {
     const result = view([make('正在提交的通知'), make('另一条通知')], {}, undefined, { mobile, pending: ['正在提交的通知'] });
     expect((within(list()).getByRole('button', { name: '接受 正在提交的通知' }) as HTMLButtonElement).disabled).toBe(true);

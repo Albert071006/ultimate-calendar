@@ -1,14 +1,17 @@
 import { Check, X } from "lucide-react";
 import type { Candidate, Snapshot } from "../../../shared/contracts";
-import { arrival, dayWord, noticeArrival, noticeSource } from "./format";
+import { arrival, dayWord, noticeArrival, noticeSource, displaySourceLabel, unresolvedActivityDay, fullDay } from "./format";
 import { useMobile } from '../../mobile/layout';
 import { dayDistance } from "../../../domain/time";
+import { friendlyReplyText } from '../shell/AssistantText';
 
 export interface Toast { text: string; transactionId: string; id: string }
 
 /** Time chips for a notice: its deadline, its activity, or that no time was given. */
-function Chips({ candidate, today }: { candidate: Candidate; today: string }) {
+function Chips({ candidate, today, snapshot }: { candidate: Candidate; today: string; snapshot: Snapshot }) {
   const chips = [];
+  const dateOnly = unresolvedActivityDay(candidate, snapshot);
+  if (dateOnly) chips.push(<span className="ui-chip unknown" key="date">{fullDay(dateOnly)} · 钟点待核对</span>);
   if (candidate.deadline) chips.push(<span className="ui-chip pending" key="d">截止 {dayWord(candidate.deadline.date, today)}{candidate.deadline.time && <b>{candidate.deadline.time}</b>}</span>);
   if (candidate.eventStart) chips.push(<span className="ui-chip event" key="e">{dayWord(candidate.eventStart.slice(0, 10), today)} <b>{candidate.eventStart.slice(11, 16)}{candidate.eventEnd && candidate.eventEnd.slice(0, 10) === candidate.eventStart.slice(0, 10) ? `–${candidate.eventEnd.slice(11, 16)}` : ""}</b></span>);
   if (!chips.length) chips.push(<span className="ui-chip unknown" key="u">时间未说明</span>);
@@ -16,8 +19,10 @@ function Chips({ candidate, today }: { candidate: Candidate; today: string }) {
 }
 
 /** The phone's one time line; a deadline due by tomorrow is the only red. */
-function TimeLine({ candidate, today }: { candidate: Candidate; today: string }) {
+function TimeLine({ candidate, today, snapshot }: { candidate: Candidate; today: string; snapshot: Snapshot }) {
   const { deadline, eventStart, eventEnd } = candidate, parts = [];
+  const dateOnly = unresolvedActivityDay(candidate, snapshot);
+  if (dateOnly) parts.push(<span key="date">{fullDay(dateOnly)} · 钟点待核对</span>);
   if (deadline) parts.push(<span key="d" className={dayDistance(today, deadline.date) <= 1 ? "due" : undefined}>截止 {dayWord(deadline.date, today)}{deadline.time && ` ${deadline.time}`}</span>);
   if (eventStart) parts.push(<span key="e">{dayWord(eventStart.slice(0, 10), today)} {eventStart.slice(11, 16)}{eventEnd && eventEnd.slice(0, 10) === eventStart.slice(0, 10) ? `–${eventEnd.slice(11, 16)}` : ""}</span>);
   return <small>{parts.length ? parts : "时间未说明"}</small>;
@@ -26,7 +31,7 @@ function TimeLine({ candidate, today }: { candidate: Candidate; today: string })
 export function sourceLine(snapshot: Snapshot, candidate: Candidate, today: string, missingLabel = '原文已删除') {
   const source = noticeSource(snapshot, candidate);
   if (!source) return { label: missingLabel, at: "" };
-  return { label: source.label || (source.kind === "image" ? "截图" : "粘贴的消息"), at: arrival(noticeArrival(snapshot, candidate), today) };
+  return { label: displaySourceLabel(source.label) || (source.kind === "image" ? "截图" : "粘贴的消息"), at: arrival(noticeArrival(snapshot, candidate), today) };
 }
 
 export function InboxList({ snapshot, items, selectedId, today, quick, busy, pending, select, decide, toast, undo }: {
@@ -51,7 +56,7 @@ export function InboxList({ snapshot, items, selectedId, today, quick, busy, pen
         <article key={candidate.id} className="m-ib-row" data-candidate-id={candidate.id} onClick={() => select(candidate.id)}>
           <div className="m-ib-main">
             <button className="pick" onClick={event => { event.stopPropagation(); select(candidate.id); }}>{candidate.title}</button>
-            <TimeLine candidate={candidate} today={today} />
+            <TimeLine candidate={candidate} today={today} snapshot={snapshot} />
           </div>
           {quick && <div className="m-ib-acts" onClick={event => event.stopPropagation()}>
             <button className="m-text-btn quiet" disabled={pending?.(candidate.id) ?? busy} aria-label={`忽略 ${candidate.title}`} onClick={() => decide(candidate, "ignoreCandidate")}>忽略</button>
@@ -70,7 +75,7 @@ export function InboxList({ snapshot, items, selectedId, today, quick, busy, pen
             onClick={() => select(candidate.id)}>
             <div className="src"><span>{source.label}</span><span>{source.at}</span></div>
             <h3><button className="pick" onClick={() => select(candidate.id)}>{candidate.title}</button></h3>
-            <Chips candidate={candidate} today={today} />
+            <Chips candidate={candidate} today={today} snapshot={snapshot} />
             {quick && <div className="qa" onClick={event => event.stopPropagation()}>
               <button className="ok" disabled={pending?.(candidate.id) ?? busy} aria-label={`接受 ${candidate.title}`} title="接受（A）" onClick={() => decide(candidate, "acceptCandidate")}><Check aria-hidden="true" /></button>
               <button className="no" disabled={pending?.(candidate.id) ?? busy} aria-label={`忽略 ${candidate.title}`} title="忽略（I）" onClick={() => decide(candidate, "ignoreCandidate")}><X aria-hidden="true" /></button>
@@ -79,7 +84,7 @@ export function InboxList({ snapshot, items, selectedId, today, quick, busy, pen
           </article>
         );
       })}
-      {toast && <div className="ui-toast a2-ib-toast" role="status">{toast.text}<button onClick={undo}>撤销</button></div>}
+      {toast && <div className="ui-toast a2-ib-toast" role="status">{friendlyReplyText(toast.text)}<button onClick={undo}>撤销</button></div>}
       {items.length > 0 && quick && <p className="a2-ib-keys">上下键切换 · A 接受 · I 忽略 · L 稍后</p>}
     </section>
   );

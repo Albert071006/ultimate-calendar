@@ -3,6 +3,7 @@ import { ChevronDown, Plus, X } from 'lucide-react';
 import { useMobile } from '../../mobile/layout';
 import { ledgerAccounts, type LedgerEntry, type LedgerSnapshot } from '../../../shared/ledger';
 import { ledgerReceivable } from '../../../ledger/receivable';
+import { ledgerLoans } from '../../../shared/ledger-loans';
 import { todayDate } from '../../calendar-layout';
 import { localDateTime } from '../../calendar-timeline';
 import { fullDay } from '../inbox/format';
@@ -118,12 +119,16 @@ export function Flows({ snapshot, month, busy, filter, setFilter, create, edit, 
   const mobile = useMobile();
   const [filtersOpen, setFiltersOpen] = useState(false);
   const monthEntries = snapshot.entries.filter(entry => entry.month === month);
-  if (!monthEntries.length && mobile) return <><Loans entries={snapshot.entries} busy={busy} edit={edit} /><div className="m-ib-empty">
+  const allReceivable = ledgerReceivable(snapshot.entries, {}), loans = ledgerLoans(snapshot.entries);
+  const totalReceivable = allReceivable.cents + loans.receivableCents;
+  const receivableNote = `全部月份 · 代垫 ${ledgerMoney(allReceivable.cents)} · 借出本金 ${ledgerMoney(loans.receivableCents)}${allReceivable.uncertainties.length ? `；${allReceivable.uncertainties.length} 项差额待核对` : ''}${loans.unlinked.length ? `；${loans.unlinked.length} 笔还款待关联` : ''}`;
+  const emptyReceivable = <div className="ledger-receivable-empty" aria-label="全部待收回"><Sum label="待收回合计" cents={totalReceivable} warn={totalReceivable > 0} note={receivableNote} /></div>;
+  if (!monthEntries.length && mobile) return <>{emptyReceivable}<Loans entries={snapshot.entries} busy={busy} edit={edit} /><div className="m-ib-empty">
     <p className="title">本月还没有账目</p>
     <p>也可以对生活助手说「午饭 15 元，微信付的」</p>
     <button className="m-link" onClick={create}>记一笔</button>
   </div></>;
-  if (!monthEntries.length) return <><Loans entries={snapshot.entries} busy={busy} edit={edit} /><div className="a2-ledger-empty"><div className="ui-empty center">
+  if (!monthEntries.length) return <>{emptyReceivable}<Loans entries={snapshot.entries} busy={busy} edit={edit} /><div className="a2-ledger-empty"><div className="ui-empty center">
     <h4>本月还没有账目</h4>
     <p>点「记一笔」，或者对助手说"午饭 15 元，微信付的"。</p>
     <div className="actions"><button className="ui-btn" onClick={create}><Plus aria-hidden="true" />记一笔</button></div>
@@ -148,13 +153,14 @@ export function Flows({ snapshot, month, busy, filter, setFilter, create, edit, 
       <dl>
         <div><dt>支出</dt><dd>{ledgerMoney(summary.actualPaidCents)}</dd></div>
         <div><dt>收入</dt><dd>{ledgerMoney(summary.incomeCents)}</dd></div>
-        <div className={receivable.cents > 0 ? 'attn' : undefined}><dt>待收回</dt><dd>{ledgerMoney(receivable.cents)}</dd></div>
+        <div className={totalReceivable > 0 ? 'attn' : undefined}><dt>待收回合计</dt><dd>{ledgerMoney(totalReceivable)}</dd></div>
       </dl>
+      <p className="ledger-receivable-note">{receivableNote}</p>
     </div> : <div className="a2-ledger-sum">
       <Sum label="支出" cents={summary.actualPaidCents} note="实际付款，含代垫、借出和还款" />
       <Sum label="个人开销" cents={summary.personalCents} note={summary.pendingPersonalCount ? `${summary.pendingPersonalCount} 笔个人承担待确认` : '扣除代垫和报销'} />
       <Sum label="收入" cents={summary.incomeCents} note={summary.assetSaleCents ? `另有资产变现 ${ledgerMoney(summary.assetSaleCents)}` : '不含借款本金、退款、返款和变现'} />
-      <Sum label="待收回" cents={receivable.cents} warn={receivable.cents > 0} note={receivable.uncertainties.length ? `${receivable.entryIds.length} 笔差额；另有 ${receivable.uncertainties.length} 项返款或承担金额待核对` : receivable.entryIds.length ? `代垫 ${receivable.entryIds.length} 笔，已扣关联返款、退款和报销` : '没有待收回的代垫'} />
+      <Sum label="待收回合计" cents={totalReceivable} warn={totalReceivable > 0} note={receivableNote} />
     </div>}
     <Loans entries={snapshot.entries} busy={busy} edit={edit} />
     <div className="a2-ledger-cols">

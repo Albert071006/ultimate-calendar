@@ -6,6 +6,7 @@ import { belongingColor } from "../../domain/belonging";
 import { buildCalendar } from "../../domain/calendar";
 import { dayDistance } from "../../domain/time";
 import { DEFAULT_ACTIVITY_MINUTES } from '../../domain/activity-duration';
+import { formatFriendlyRange } from '../../shared/display-time';
 import type { CalendarItem, Snapshot } from "../../shared/contracts";
 import {
   calendarDays,
@@ -311,7 +312,7 @@ export function Calendar({
                 {items.filter((i) => (i.category === "deadline" || i.category === "candidate" || !i.start) && !i.end && i.date === day).map((i) => (
                   <button className={`marker ui-chip ${markerClass(i, day)} ${attentionClass(i)}`} key={i.id} style={colorStyle(i)} onClick={() => open(i)} onDoubleClick={() => editItem(i)}
                     title={`${i.category === "candidate" ? "待定 · " : ""}${i.title}${i.start ? ` ${i.start.slice(11, 16)}` : ""}${attentionLabel(i) ? ` · ${attentionLabel(i)}` : ''}`}>
-                    {i.category === "candidate" ? "待定 · " : !i.start && i.category !== "deadline" ? "时间点 · " : ""}{i.title}
+                    <span className="deadline-marker-title">{i.category === "candidate" ? "待定 · " : !i.start && i.category !== "deadline" ? "时间点 · " : ""}{i.title}</span>
                     {i.start && <b>{i.start.slice(11, 16)}</b>}
                     {statusLabel(i)}
                   </button>
@@ -361,7 +362,7 @@ export function Calendar({
                     return <div key={item.id} data-timeline-item={item.id}
                       className={`timeline-event ${kindClass(item)} ${attentionClass(item)} ${item.pending ? 'pending' : ''} ${short ? 'compact' : ''} ${preview?.itemId === item.id ? 'is-moving' : ''}`}
                       style={{ ...colorStyle(item), top: minutePosition(startMinute), height: minutePosition(endMinute - startMinute), left: `calc(${column / count * 100}% + 4px)`, width: `calc(${100 / count}% - 8px)` }}>
-                      <button className={`timeline-event-button ${movable ? 'can-move' : ''}`} title={`${label}\n${item.start!.slice(0, 10)} 至 ${item.end!.slice(0, 10)}${movable ? '\n拖动移动；Alt + 上下方向键微调 1 分钟' : ''}`}
+                      <button className={`timeline-event-button ${movable ? 'can-move' : ''}`} title={`${label}\n${formatFriendlyRange(item.start!.slice(0, 10), item.end!.slice(0, 10))}${movable ? '\n拖动移动；Alt + 上下方向键微调 1 分钟' : ''}`}
                         onPointerDown={e => { if (movable) begin(e, day, 'move', item); else e.stopPropagation(); }}
                         onKeyDown={e => keyboardBlock(e, item, 'move')}
                         onClick={e => { if (suppressClick.current === item.id && e.detail !== 0) { suppressClick.current = null; return; } open(item, day); }}

@@ -7,6 +7,7 @@ import { assistantRetryLabel, canContinueUnsent, canReanalyze, useAssistantConve
 import { ResourceFields } from '../resources/ResourcePanel';
 import { AssistantImageButton, AssistantAttachmentDraft, AssistantMessageAttachments } from './assistant-image-input';
 import { useAssistantPanelSize } from './assistant-panel-size';
+import { AssistantText } from './AssistantText';
 
 /** Compact composer that grows with its draft; its conversation opens upward over the page. */
 export function Assistant({ ui, selected, date, domain, ledgerView }: {
@@ -71,7 +72,7 @@ export function Assistant({ ui, selected, date, domain, ledgerView }: {
                 <div className={`message ${entry.role}`} key={entry.id} aria-busy={entry.status === "pending"}>
                   <small>{entry.role === "user" ? "你" : "助手"}</small>
                   <AssistantMessageAttachments {...entry} />
-                  {entry.text}
+                  {entry.role === 'assistant' ? <AssistantText text={entry.text} /> : entry.text}
                   {!ui.host?.resourceOpen && entry.resources?.filter(resource => resource.kind === 'web').map(resource =>
                     resource.kind === 'web' && <a key={resource.id} href={resource.url} target="_blank" rel="noopener noreferrer">{resource.name}</a>)}
                   {entry.status === "failed" && entry.request && <>

@@ -1,0 +1,15 @@
+.assistant-text { white-space: normal; overflow-wrap: anywhere; line-height: 1.7; }
+.assistant-text > p, .assistant-text > ul, .assistant-text > ol, .assistant-text > pre, .assistant-text > blockquote { margin: 0 0 .65em; }
+.assistant-text > :last-child { margin-bottom: 0; }
+.assistant-text p, .assistant-text li, .assistant-text blockquote { white-space: pre-wrap; }
+.assistant-text ul, .assistant-text ol { padding-left: 1.5em; }
+.assistant-text li { margin: .2em 0; }
+.assistant-text .assistant-text-heading { margin-top: .75em; font-weight: 600; }
+.assistant-text .assistant-text-heading:first-child { margin-top: 0; }
+.assistant-text pre { padding: .6em .8em; overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); white-space: pre; max-width: 100%; }
+.assistant-text code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
+.assistant-text blockquote { padding-left: .8em; border-left: 2px solid var(--line); color: var(--ink-2); }
+.assistant-text a { text-decoration: underline; text-underline-offset: .15em; }
+.m-msg .assistant-text { font-size: 15px; }
+.m-msg .assistant-text > p { margin-bottom: .65em; }
+.m-msg .assistant-text > p:last-child { margin-bottom: 0; }

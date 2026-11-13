@@ -5,7 +5,7 @@
 .ledger-loan-totals dd { margin: 0; font-size: 20px; font-variant-numeric: tabular-nums; }
 .ledger-loan-list > summary { cursor: pointer; padding: 6px 0; }
 .ledger-loan-item { border-top: 1px solid var(--line); }
-.ledger-loan-item > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; padding: 12px 0; }
+.ledger-loan-item > summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; cursor: pointer; padding: 12px 0; }
 .ledger-loan-item > summary > span { min-width: 0; }
 .ledger-loan-item small { display: block; color: var(--ink-3); overflow-wrap: anywhere; margin-top: 4px; }
 .ledger-loan-item > summary > strong { flex: 0 0 auto; font-weight: 400; font-variant-numeric: tabular-nums; }
@@ -22,3 +22,9 @@
 .is-mobile .ledger-loan-totals dd { font-size: 18px; }
 .is-mobile .ledger-loan-item > summary { flex-wrap: wrap; align-items: flex-start; }
 .is-mobile .ledger-loan-detail .ui-btn,.is-mobile .ledger-loan-unlinked .ui-btn { min-height: 40px; }
+.ledger-receivable-empty { padding: 16px 0; border-bottom: 1px solid var(--line); }
+.ledger-receivable-empty .k { color: var(--ink-3); }
+.ledger-receivable-empty .v { margin: 4px 0; font-size: 28px; font-variant-numeric: tabular-nums; }
+.ledger-receivable-empty .v small { font-size: 16px; margin-right: 2px; }
+.ledger-receivable-empty .d,.ledger-receivable-note { color: var(--ink-3); font-size: 12px; line-height: 1.6; }
+.m-ledger-sum .ledger-receivable-note { margin-top: 10px; }

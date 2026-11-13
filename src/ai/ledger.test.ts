@@ -170,10 +170,11 @@ describe('ledger AI adaptation', () => {
     const { snapshot } = fixture([]);
     snapshot.rules.familyActualRemainingCents = 78900;
     const reply = ledgerSavedReply(snapshot, [], '已核对余额', ['alipay', 'family']);
-    expect(reply).toContain('支付宝余额：账面余额 未知');
+    expect(reply).toContain('支付宝余额：余额未设置');
     expect(reply).toContain('当前真实剩余额度 ¥789.00');
     expect(reply).not.toContain('¥未知');
     const query = ledgerQueryReply({ month: '2026-01' }, { entries: [], summary: snapshot.summary, rules: snapshot.rules }, 'balances');
+    expect(query).toContain('支付宝余额：余额未设置');
     expect(query).toContain('当前真实剩余额度 ¥789.00');
     expect(query).not.toContain('¥未知');
   });

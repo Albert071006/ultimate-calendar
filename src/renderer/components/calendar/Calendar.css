@@ -23,8 +23,9 @@
 .a2-ddl-row { min-height: 34px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line-2); }
 .a2-ddl-row > span { display: grid; place-items: center; font-size: 11px; color: var(--ink-3); }
 .a2-ddl-row > div { display: flex; flex-direction: column; gap: 3px; padding: 5px; border-left: 1px solid var(--line); min-width: 0; }
-.a2-ddl-row .ui-chip { width: 100%; cursor: pointer; font: inherit; font-size: 12px; text-align: left; justify-content: flex-start; }
-.a2-ddl-row .ui-chip b { margin-left: auto; }
+.a2-ddl-row .ui-chip { width: 100%; min-width: 0; cursor: pointer; font: inherit; font-size: 12px; text-align: left; justify-content: flex-start; }
+.a2-ddl-row .deadline-marker-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.a2-ddl-row .ui-chip b { margin-left: auto; flex-shrink: 0; white-space: nowrap; }
 .a2-ddl-row .ui-chip.done { color: var(--ink-3); border: 1px solid var(--line-2); background: transparent; text-decoration: line-through; }
 .a2-ddl-row .calendar-item-status { display: none; }
 

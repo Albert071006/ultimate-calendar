@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { type Mutation, type Conflict, type Course, type Task, type ReminderConfig, type RecurrenceRule, type Block } from '../shared/contracts';
+import { type Mutation, type Conflict, type Course, type Task, type ReminderConfig, type RecurrenceRule, type Block, type Candidate } from '../shared/contracts';
 import { newEntity, updateEntity, findEntity, deleteEntity, records, type StoredState } from '../storage/repository';
 import { courseOccurs } from './courses';
 import { dayDistance } from './time';
 import { expandRecurrence } from './recurrence';
 import { effectiveActivityEnd } from './activity-duration';
+import { candidateWithRecoveredTiming } from './temporal-evidence';
 import { recurringEventTargets, recurringEventPatch } from './recurring-events';
 import type { ResourceReference } from '../shared/resources';
 import { taskScheduleMode, taskScheduleLimitExceeded } from './task-scheduling';
@@ -119,9 +120,13 @@ export function expandMutations(state: StoredState, mutations: Mutation[]): { de
       continue;
     }
     if (m.type === 'acceptCandidate' || m.type === 'ignoreCandidate' || m.type === 'snoozeCandidate' || m.type === 'restoreCandidate') {
-      const candidate = findEntity(state, 'candidate', m.id)!;
+      let candidate = findEntity(state, 'candidate', m.id)!;
       if (m.type === 'acceptCandidate') {
         if (candidate.status === 'accepted' || candidate.taskId) conflict('revision', 'candidate', m.id, '候选已接受，请直接编辑已关联任务');
+        const recovered = candidateWithRecoveredTiming(candidate, records(state, 'source'));
+        if (recovered !== candidate) candidate = updateEntity(state, 'candidate', candidate.id, {
+          deadline: recovered.deadline, eventStart: recovered.eventStart, eventEnd: recovered.eventEnd, uncertainties: recovered.uncertainties,
+        }) as Candidate;
         if (candidate.duplicateOfId) {
           if (candidate.revisionOfId) conflict('revision', 'candidate', m.id, '候选同时标记重复和变更，请先明确关系');
           const duplicate = findEntity(state, 'candidate', candidate.duplicateOfId);

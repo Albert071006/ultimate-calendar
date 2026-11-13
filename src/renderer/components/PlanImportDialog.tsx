@@ -4,6 +4,7 @@ import type { BusyExportDesktopAPI } from '../../shared/busy-context';
 import type { PlannerUI } from '../hooks/usePlanner';
 import { Modal } from './Modal';
 import { BusyExportPanel, hasBusyExport } from './BusyExportPanel';
+import { formatFriendlyInstant, formatFriendlyRange } from '../../shared/display-time';
 import './plan-import.css';
 
 export function hasPlanImport(host: Partial<PlanImportDesktopAPI> | undefined): host is PlanImportDesktopAPI {
@@ -12,17 +13,13 @@ export function hasPlanImport(host: Partial<PlanImportDesktopAPI> | undefined): 
 
 const kindNames = { goal: '目标', task: '任务', block: '时段' };
 const stateNames = { new: '待新增', update: '待修改', delete: '待删除', existing: '已存在', blocked: '需处理' };
-function displayTime(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
-  }).format(date);
-}
-/** "2026/11/02 19:00–20:00" when both ends fall on the same day, otherwise both full stamps. */
-function displayRange(start?: string, end?: string) {
-  const from = start && displayTime(start), to = end && displayTime(end);
-  if (!from || !to) return from || `结束 ${to}`;
-  return from.slice(0, 10) === to.slice(0, 10) ? `${from}–${to.slice(11)}` : `${from} – ${to}`;
+function rowDescription(row: PlanImportPreview['rows'][number]): string {
+  // Older servers include the same timestamps in both detail and start/end.
+  // Remove only that exact duplicate; keep validation errors and associations.
+  const detail = (row.start && row.end ? row.detail.replace(`${row.start} 至 ${row.end}`, '') : row.detail)
+    .replace(/(?:；\s*){2,}/g, '；').replace(/^[\s；]+|[\s；]+$/g, '');
+  const when = row.start ? formatFriendlyRange(row.start, row.end) : row.end ? `结束 ${formatFriendlyInstant(row.end)}` : '';
+  return [when, detail].filter(Boolean).join(' · ');
 }
 
 export function PlanImportDialog({ host, ui, onClose }: {
@@ -120,7 +117,7 @@ export function PlanImportDialog({ host, ui, onClose }: {
         <ol className="plan-import-rows" aria-label="导入条目">
           {preview.rows.map(row => <li key={`${row.action ?? 'create'}:${row.kind}:${row.localId}`} className={`plan-import-row ${row.state}`}>
             <div className="plan-import-row-heading"><span className="plan-import-kind">{kindNames[row.kind]}</span><strong>{row.title}</strong><span className="plan-import-state">{stateNames[row.state]}</span></div>
-            {(row.detail || row.start || row.end) && <p>{row.detail && <span>{row.detail}</span>}{(row.start || row.end) && <span className="plan-import-time">{displayRange(row.start, row.end)}</span>}</p>}
+            {(row.detail || row.start || row.end) && <p>{rowDescription(row)}</p>}
             {!!row.changes?.length && <table className="plan-import-changes" aria-label={`${row.title} 修改前后`}>
               <thead><tr><th scope="col">字段</th><th scope="col">修改前</th><th scope="col">修改后</th></tr></thead>
               <tbody>{row.changes.map((change, index) => <tr key={`${change.field}:${index}`}><th scope="row">{change.field}</th><td>{change.before || '（空）'}</td><td>{change.after || '（空）'}</td></tr>)}</tbody>
