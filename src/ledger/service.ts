@@ -178,6 +178,7 @@ export class LedgerService {
     try { initializeLedgerDatabase(this.db); } catch (error) { this.db.close(); throw error; }
   }
   close(): void { this.db.close(); }
+  hasRecordedOperation(id: string): boolean { return !!this.db.prepare('SELECT 1 FROM ledger_operations WHERE id=?').get(id); }
   snapshot(month?: string): LedgerSnapshot { return this.toSnapshot(readLedgerDatabase(this.db), month); }
   query(input: LedgerQuery = {}) {
     const query = LedgerQuerySchema.parse(input); const data = readLedgerDatabase(this.db);

@@ -31,6 +31,109 @@ function importSynthetic(ledger: LedgerService, entries: LedgerEntry[]) {
   ledger.import({ format: 'ultimate-calendar-ledger', formatVersion: 1, entries, balanceSnapshots: [], rules: DEFAULT_LEDGER_RULES, audit: [], sources: [] }, 'synthetic-receivable-import');
 }
 describe('main assistant local ledger commands',()=>{
+  function receiptProposal(cents: number, accountId = 'alipay', key = 'new:0') {
+    return { type: 'createEntry', key, values: { kind: 'reimbursement', title: '合成差旅报销', category: '费用报销',
+      date: '2026-10-23', month: '2026-10', amountCents: cents, personalCents: 0, incomeCents: 0, cashflows: [{ accountId, deltaCents: cents }] } };
+  }
+  it.each([
+    { text: '合成差旅报销1000到支付宝', history: [], changes: [receiptProposal(10000)], routed: true },
+    { text: '到支付宝', history: [
+      { role: 'user', text: '合成差旅报销1000元' },
+      { role: 'assistant', text: '报销款到了哪个账户？', outcome: { domain: 'ledger', phase: 'clarification' } },
+    ], changes: [receiptProposal(10000)], routed: false },
+    { text: '差旅报销1000到支付宝，材料报销35到微信', history: [], changes: [receiptProposal(10000), receiptProposal(3500, 'wechat', 'new:1')], routed: true },
+  ] as const)('blocks the entire write when the model drops a zero: $text', async ({text, history, changes, routed}) => {
+    const proposal = { kind: 'mutate', changes };
+    const { controller, ledger } = setup(routed ? [route, proposal] : [proposal]);
+    const before = ledger.snapshot();
+    const write = vi.spyOn(ledger, 'mutate');
+    const request = { text, operationId: 'amount-check', history: [...history] };
+    const reply = await controller.command(request);
+    expect(reply).toMatchObject({ ok: true, data: { conversationState: { phase: 'clarification' } } });
+    if (!reply.ok) throw Error('Expected a clarification');
+    expect(reply.data.reply.replaceAll(',', '')).toContain('1000');
+    expect(await controller.command(request)).toEqual(reply);
+    expect(write).not.toHaveBeenCalled();
+    expect(ledger.snapshot()).toEqual(before);
+  });
+  it('saves the exact decimal amount and ignores the numeric date in the same request', async () => {
+    const { controller, ledger } = setup([route, { kind: 'mutate', changes: [receiptProposal(6372)] }]);
+    const result = await controller.command({ operationId: 'exact-decimal', text: '10月23日差旅报销63.72到支付宝' });
+    expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: 'saved' } } });
+    expect(ledger.snapshot().entries).toContainEqual(expect.objectContaining({ amountCents: 6372, cashflows: [{accountId:'alipay', deltaCents:6372}] }));
+  });
+  it('asks how much was received when a text-only request gives no amount', async () => {
+    const { controller, ledger } = setup([route, { kind: 'mutate', changes: [receiptProposal(3200)] }]);
+    const before = ledger.snapshot();
+    const result = await controller.command({ operationId: 'missing-receipt-amount', text: '差旅报销到支付宝，帮我记一下' });
+    expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: 'clarification' } } });
+    expect(ledger.snapshot()).toEqual(before);
+  });
+  it('resumes after an amount mismatch and saves the confirmed amount exactly once', async () => {
+    const { controller, ledger, intents } = setup([route, { kind: 'mutate', changes: [receiptProposal(10000)] }]);
+    const text = '合成差旅报销1000到支付宝';
+    const question = await controller.command({ operationId: 'receipt-question', text });
+    expect(question).toMatchObject({ ok: true, data: { conversationState: { phase: 'clarification' } } });
+    if (!question.ok) throw Error('Expected a clarification');
+    intents.push({ kind: 'mutate', changes: [receiptProposal(100000)] });
+    const answer: CommandRequest = { operationId: 'confirmed-receipt', text: '1000元', history: [
+      { role: 'user', text }, { role: 'assistant', text: question.data.reply, outcome: question.data.conversationState },
+    ] };
+    const saved = await controller.command(answer);
+    expect(saved).toMatchObject({ ok: true, data: { conversationState: { phase: 'saved' } } });
+    expect(await controller.command(answer)).toEqual(saved);
+    expect(ledger.snapshot().entries.filter(entry => entry.kind === 'reimbursement').map(entry => entry.amountCents)).toEqual([100000]);
+  });
+  it.each([100000, 90000])('uses the requested replacement total, not the difference (%i cents)', async cents => {
+    const original = syntheticEntry('synthetic-reimbursement', { kind: 'reimbursement', title: '合成差旅报销', amountCents: 10000, personalCents: 0,
+      cashflows: [{ accountId: 'alipay', deltaCents: 10000 }] });
+    const patch = { type: 'updateEntry', id: original.id, expectedVersion: 1, note: '更正合成报销的到账金额',
+      patch: { amountCents: cents, cashflows: [{ accountId: 'alipay', deltaCents: cents }] } };
+    const { controller, ledger } = setup([route, { kind: 'mutate', changes: [patch] }]);
+    importSynthetic(ledger, [original]);
+    const before = ledger.snapshot();
+    const request = { operationId: 'correct-in-place', text: '把差旅报销到支付宝的那笔从100改成1000，别再补一笔900' };
+    if (cents === 100000) {
+      const mutate = ledger.mutate.bind(ledger);
+      vi.spyOn(ledger, 'mutate').mockImplementationOnce(input => {
+        mutate(input);
+        throw new WorkflowError('STORAGE', '合成提交后中断');
+      });
+      expect(await controller.command(request)).toMatchObject({ ok: false, error: { code: 'STORAGE' } });
+    }
+    const result = await controller.command(request);
+    if (cents === 100000) {
+      expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: 'saved' } } });
+      expect(ledger.snapshot().entries).toHaveLength(before.entries.length);
+      expect(ledger.snapshot().entries).toContainEqual(expect.objectContaining({ id: original.id, version: 2, amountCents: cents }));
+    } else {
+      expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: 'clarification' } } });
+      expect(ledger.snapshot()).toEqual(before);
+    }
+  });
+  it.each([90000, 100000])('rejects a separate receipt for an in-place amount correction (%i cents)', async cents => {
+    const original = syntheticEntry('original-receipt', { kind: 'reimbursement', title: '差旅报销', amountCents: 10000,
+      personalCents: 0, cashflows: [{ accountId: 'alipay', deltaCents: 10000 }] });
+    const { controller, ledger } = setup([route, { kind: 'mutate', changes: [receiptProposal(cents)] }]);
+    importSynthetic(ledger, [original]);
+    const before = ledger.snapshot();
+    const result = await controller.command({ operationId: 'no-extra-receipt', text: '差旅报销从100改成1000，别补一笔900' });
+    expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: 'clarification' } } });
+    expect(ledger.snapshot()).toEqual(before);
+  });
+  it('keeps the in-place correction constraint when the user confirms only the amount', async () => {
+    const original = syntheticEntry('confirmed-receipt-target', { kind: 'reimbursement', amountCents: 10000,
+      personalCents: 0, cashflows: [{ accountId: 'alipay', deltaCents: 10000 }] });
+    const { controller, ledger } = setup([{ kind: 'mutate', changes: [receiptProposal(100000)] }]);
+    importSynthetic(ledger, [original]);
+    const before = ledger.snapshot();
+    const result = await controller.command({ operationId: 'confirmed-replacement-only', text: '1000元', history: [
+      { role: 'user', text: '把原来的支付宝报销从100改成1000，别新增' },
+      { role: 'assistant', text: '请确认原账要改为多少元？', outcome: { domain: 'ledger', phase: 'clarification' } },
+    ] });
+    expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: 'clarification' } } });
+    expect(ledger.snapshot()).toEqual(before);
+  });
   it('hydrates a summary-only target before accepting a proposed correction, and commits once', async () => {
     const edit = { kind: 'mutate', changes: [{ type: 'updateEntry', id: 'index-19', expectedVersion: 1, patch: { note: '核对后的说明' }, note: '用户要求更正' }] };
     const { controller, ledger, payloads } = setup([route, edit, edit]);
@@ -192,7 +295,7 @@ describe('main assistant local ledger commands',()=>{
     vi.spyOn(ledger, 'mutate').mockImplementation(() => {
       throw mismatch ? new LedgerDuplicateRejection('another-operation', '合成重复异常') : new LedgerError('DUPLICATE', '合成重复异常');
     });
-    expect(await controller.command({ operationId: `unproven-duplicate-${mismatch}`, text: '合成午饭' })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    expect(await controller.command({ operationId: `unproven-duplicate-${mismatch}`, text: '合成午饭20元支付宝' })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
     expect(ledger.snapshot()).toEqual(before);
   });
 
@@ -290,12 +393,13 @@ describe('main assistant local ledger commands',()=>{
   });
 
   it('rolls back every proposed entry on business validation failure and explicitly reanalyzes with a new operation only once', async () => {
-    const corrected = { kind: 'mutate', changes: Array.from({ length: 4 }, (_, index) => ({ ...expense('alipay').changes[0]!, key: `new:${index}`, values: { ...expense('alipay').changes[0]!.values, title: `合成消费${index}` } })) };
+    const items = ['早餐', '午餐', '晚餐', '夜宵'];
+    const corrected = { kind: 'mutate', changes: items.map((title, index) => ({ ...expense('alipay').changes[0]!, key: `new:${index}`, values: { ...expense('alipay').changes[0]!.values, title } })) };
     const invalid = structuredClone(corrected);
     invalid.changes[3]!.values.cashflows[0]!.deltaCents = 2000;
     const { controller, ledger, repository, payloads } = setup([route, invalid, route, corrected]);
     const before = ledger.snapshot();
-    const request = { operationId: 'rejected-business-batch', text: '合成四笔消费' };
+    const request = { operationId: 'rejected-business-batch', text: items.map(title => `${title}20元支付宝`).join('，') };
     const failed = await controller.command(request);
     expect(failed).toMatchObject({ ok: false, error: { code: 'AI_RESPONSE', retryable: false, message: expect.stringContaining('账本校验失败') } });
     if (failed.ok) throw Error('expected rejection');
@@ -317,7 +421,7 @@ describe('main assistant local ledger commands',()=>{
   it.each(['VALIDATION', 'CONFLICT', 'STORAGE'] as const)('does not reclassify an unproven %s failure as safely reanalyzable', async code => {
     const { controller, ledger } = setup([route, expense('alipay')]);
     vi.spyOn(ledger, 'mutate').mockImplementation(() => { throw new LedgerError(code, '合成未确认错误'); });
-    expect(await controller.command({ operationId: `unproven-${code}`, text: '合成午饭' })).toMatchObject({ ok: false, error: { code } });
+    expect(await controller.command({ operationId: `unproven-${code}`, text: '合成午饭20元支付宝' })).toMatchObject({ ok: false, error: { code } });
   });
   it.each(['命令理解', '账本解析'] as const)('labels %s schema failures without saving a transaction or losing billable usage', async stage => {
     const malformed = expense('alipay'); malformed.changes[0]!.values.amountCents = 2000.5;

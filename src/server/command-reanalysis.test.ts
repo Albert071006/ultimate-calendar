@@ -14,7 +14,8 @@ describe('explicit assistant reanalysis across durable service receipts', () => 
   it.each(['schema', 'ledger-business'] as const)('keeps an old %s failed receipt stable and saves a fresh reanalysis only once, including after restart', async failure => {
     const root = mkdtempSync(join(tmpdir(), 'planner-reanalysis-'));
     cleanup.push(async () => { rmSync(root, { recursive: true, force: true }); });
-    const entries = Array.from({ length: failure === 'ledger-business' ? 4 : 1 }, (_, index) => ({ type: 'createEntry', key: `new:${index}`, values: { kind: 'expense', date: '2026-10-28', month: '2026-10', title: `合成茶饮${index}`, category: '餐饮', amountCents: 620, personalCents: 620, cashflows: [{ accountId: 'alipay', deltaCents: -620 }] } }));
+    const drinks = failure === 'ledger-business' ? ['红茶', '绿茶', '乌龙茶', '花茶'] : ['红茶'];
+    const entries = drinks.map((title, index) => ({ type: 'createEntry', key: `new:${index}`, values: { kind: 'expense', date: '2026-10-28', month: '2026-10', title, category: '餐饮', amountCents: 620, personalCents: 620, cashflows: [{ accountId: 'alipay', deltaCents: -620 }] } }));
     const invalidEntries = structuredClone(entries);
     invalidEntries.at(-1)!.values.cashflows[0]!.deltaCents = 620;
     const responses = [
@@ -30,7 +31,7 @@ describe('explicit assistant reanalysis across durable service receipts', () => 
     let service = createRemoteService(options);
     cleanup.push(async () => { await service.close(); });
     const identity = service.state.identity();
-    const request = { requestId: 'failed-wire', identity, input: { operationId: 'failed-business', text: '合成茶饮6.20元支付宝' } };
+    const request = { requestId: 'failed-wire', identity, input: { operationId: 'failed-business', text: drinks.map(title => `${title}6.20元支付宝`).join('，') } };
     const ledger = async () => {
       const result = await service.rpc('ledgerSnapshot', { requestId: 'read-only', identity, input: { month: '2026-10' } }, 'synthetic-device') as ApiResult<LedgerSnapshot>;
       if (!result.ok) throw Error(result.error.message);

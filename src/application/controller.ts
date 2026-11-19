@@ -26,6 +26,7 @@ import { ledgerChanges, ledgerContext, ledgerMessages, ledgerQueryReply, ledgerS
 import { ledgerToday } from '../shared/ledger';
 import { normalizeLedgerQueryScope, resolveLedgerQueryChoice } from '../ai/ledger-query';
 import { LedgerReimbursementClarification } from '../ai/ledger-reimbursements';
+import { ledgerAmountQuestion } from '../ai/ledger-amounts';
 import { isLedgerClarificationAnswer } from '../shared/command-continuation';
 
 export interface ControllerOptions { automaticBackup?(repository: Repository): void; planner: PlannerService; repository: Repository; ledger?: LedgerService; getApiKey(): Promise<string | null>; getPriceQuote?(model: string, currency: 'CNY' | 'USD'): PriceQuote | null; getModelInputModalities?(model: string): string[] | null; runModel?: ModelRequestRunner; afterModelRequest?(): void; fetch?: typeof fetch; now?(): string; selectCourseFile?(): Promise<SelectedCourseFile | null> }
@@ -230,6 +231,18 @@ export function createController(options: ControllerOptions) {
               if (!(error instanceof LedgerReimbursementClarification)) throw error;
               // This normalization runs before mutate: no part of this batch was submitted.
               proposal.intent = { kind: 'clarification', question: `本次整批账目尚未保存。${error.question}` };
+            }
+          }
+          if (proposal.intent.kind === 'mutate' && proposal.mutationRequest) {
+            const mutation = proposal.mutationRequest;
+            // A crash between the ledger commit and the assistant receipt must
+            // replay the original mutation; its pre-edit snapshot no longer exists.
+            if (!prior?.ledgerProposal?.mutationRequest || !ledger.hasRecordedOperation(mutation.operationId)) {
+              const question = ledgerAmountQuestion(request, mutation.changes, snapshot);
+              if (question) {
+                proposal.intent = { kind: 'clarification', question: '本次整批账目尚未保存。' + question };
+                delete proposal.mutationRequest;
+              }
             }
           }
           repository.transact(state => save(state, id, fingerprint, { kind:'command', intent, result:null, ledgerProposal:proposal }));
