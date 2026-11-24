@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { createRepository, type Repository } from '../storage/repository';
 import { createPlanner } from '../domain/planner';
@@ -7,11 +7,15 @@ import { MutationRequestSchema, SettingsSchema, type DesktopAPI } from '../share
 import { PALETTE, colorName } from '../shared/palette';
 import { App } from './App';
 
-vi.mock('./calendar-layout', async importOriginal => ({ ...await importOriginal<typeof import('./calendar-layout')>(), todayDate: () => '2026-10-22' }));
-vi.mock('../domain/time', async importOriginal => ({ ...await importOriginal<typeof import('../domain/time')>(), nowInstant: () => '2026-10-22T09:00:00+08:00' }));
-
 const repositories: Repository[] = [];
-afterEach(() => { cleanup(); for (const repository of repositories.splice(0)) repository.close(); });
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-22T12:00:00+08:00') });
+});
+afterEach(() => {
+  cleanup();
+  for (const repository of repositories.splice(0)) repository.close();
+  vi.useRealTimers();
+});
 let seq = 0;
 function setup() {
   const repository = createRepository(':memory:'); repositories.push(repository);

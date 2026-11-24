@@ -180,14 +180,32 @@ describe('collector cloud-key receiver', () => {
     resolve(seal(input!, oldKey, revisionB)); await Promise.resolve(); expect(f.set).not.toHaveBeenCalled();
   });
   it('bounds a non-cooperative transport and retries background work with backoff', async () => {
-    const f = await fixture(), worker = f.make(undefined, undefined, 100); await worker.refresh();
-    vi.useFakeTimers(); f.sync.mockImplementation(async () => new Promise(() => {}));
-    worker.start(); await Promise.resolve(); const request = expect(worker.getApiKey()).rejects.toMatchObject({ code: 'CANCELLED' });
-    await vi.advanceTimersByTimeAsync(100); await request;
-    expect(worker.status().state).toBe('error'); const count = f.sync.mock.calls.length;
-    await vi.advanceTimersByTimeAsync(19_999); expect(f.sync).toHaveBeenCalledTimes(count);
-    await vi.advanceTimersByTimeAsync(1); expect(f.sync).toHaveBeenCalledTimes(count + 1);
-    await worker.close(); await vi.advanceTimersByTimeAsync(60_000); expect(f.sync).toHaveBeenCalledTimes(count + 1);
+    const f = await fixture();
+    vi.useFakeTimers();
+    const timeoutMs = 100;
+    const worker = f.make(undefined, undefined, timeoutMs);
+    await worker.refresh();
+
+    f.sync.mockImplementation(async () => new Promise(() => {}));
+    worker.start();
+    const request = expect(worker.getApiKey()).rejects.toMatchObject({ code: 'CANCELLED' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.sync).toHaveBeenCalledTimes(2);
+    const signal = f.sync.mock.lastCall?.[1]?.signal;
+    await vi.advanceTimersByTimeAsync(timeoutMs - 1);
+    expect(signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await request;
+    expect(signal?.aborted).toBe(true);
+    expect(worker.status().state).toBe('error');
+
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(f.sync).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.sync).toHaveBeenCalledTimes(3);
+    await worker.close();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(f.sync).toHaveBeenCalledTimes(3);
   });
   it('defers an unsent batch while offline and shares the retry interval across both collectors', async () => {
     const f = await fixture();
