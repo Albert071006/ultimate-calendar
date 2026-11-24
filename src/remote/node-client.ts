@@ -7,6 +7,7 @@ import { AiKeySyncRequestSchema, AiKeySyncResponseSchema, MAX_AI_KEY_SYNC_BYTES 
 import { remoteInputs, remoteOutputs } from '../server/protocol';
 import { readPrivate, writePrivate, privatePath } from './private-file';
 import { createLoopbackHttpsTransport } from './loopback-https';
+import { remoteReceiptScope } from './receipt-partitions';
 import { LEDGER_API_HEADER, LEDGER_API_VERSION } from '../shared/ledger-compatibility';
 import { AI_SETTINGS_HEADER, AI_SETTINGS_VERSION, AI_RPC_TIMEOUT_MS, isAiRpcPath } from '../shared/ai-reasoning';
 import { PROFILE_SETTINGS_HEADER, PROFILE_SETTINGS_VERSION } from '../shared/profile-settings';
@@ -125,6 +126,10 @@ export function createNodeRemoteClient(options: { origin: string; credentialsFil
     if (!session) throw new RemoteClientError(401, '设备授权已失效，请重新配对');
     return session;
   }
+  function verifyScope(expected: string | undefined) {
+    if (expected && (!credential || remoteReceiptScope(origin, credential) !== expected))
+      throw new RemoteClientError(409, '设备或资料身份已改变，保留原分区的待核对操作');
+  }
   function configurationRevision(value: unknown) {
     const checked = AiConfigurationRevisionSchema.safeParse(value);
     if (!checked.success) throw new RemoteClientError(400, '请先读取云端配置状态，再进行修改');
@@ -176,10 +181,12 @@ export function createNodeRemoteClient(options: { origin: string; credentialsFil
       store.write(next); credential = next; session = value; nextRenewal = Date.now() + SESSION_RENEW_INTERVAL_MS;
       return { identity: value.identity, deviceId: value.device.id, aiConfigured: value.aiConfigured };
     },
-    async rpc<M extends RemoteMethod>(method: M, input?: unknown, requestId: string = randomUUID()):Promise<z.output<typeof remoteOutputs[M]>> {
+    async rpc<M extends RemoteMethod>(method: M, input?: unknown, requestId: string = randomUUID(), expectedScope?: string):Promise<z.output<typeof remoteOutputs[M]>> {
       if (method === 'restoreConfirm') throw new RemoteClientError(400, '恢复确认必须使用专用确认接口，不允许重放');
       const checked = remoteInputs[method].parse(input), current = await ready();
+      verifyScope(expectedScope);
       const response = await request('/api/v1/rpc/' + method, { requestId, identity: current.identity, input: checked });
+      verifyScope(expectedScope);
       if (!credential || !sameRemoteIdentity(credential.identity, current.identity)) throw new RemoteClientError(409, '资料已恢复，已丢弃原代际的迟到响应');
       return parseRemote(remoteOutputs[method], response.body, (REMOTE_READ_METHODS as readonly RemoteMethod[]).includes(method)) as z.output<typeof remoteOutputs[M]>;
     },
@@ -193,7 +200,11 @@ export function createNodeRemoteClient(options: { origin: string; credentialsFil
       }
       return result;
     },
-    async operation(requestId: string) { await ready(); return parseRemote(RemoteOperationSchema,(await request('/api/v1/operations/' + encodeURIComponent(requestId))).body,true); },
+    async operation(requestId: string, expectedScope?: string) {
+      await ready(); verifyScope(expectedScope);
+      const { body } = await request('/api/v1/operations/' + encodeURIComponent(requestId));
+      verifyScope(expectedScope); return parseRemote(RemoteOperationSchema, body, true);
+    },
     async sendDistilled(input: DistilledRequest, config: { signal?: AbortSignal } = {}) {
       const checked = DistilledRequestSchema.parse(input), current = await ready();
       if (!sameRemoteIdentity(current.identity, checked.identity)) throw new RemoteClientError(409, '提炼资料属于另一资料代际');

@@ -19,7 +19,8 @@ import { parseCourseFile, parseCsv, previewCourseRows, type SelectedCourseFile }
 import type { PriceQuote } from '../shared/account';
 import type { ModelRequestRunner } from '../ai/request-queue';
 import { LedgerDuplicateRejection, LedgerValidationRejection, type LedgerService } from '../ledger/service';
-import { LedgerIntentSchema, LedgerCommandProposalSchema } from '../shared/ledger-command';
+import { LedgerIntentSchema, LedgerCommandProposalSchema, LedgerDuplicateMatchesSchema } from '../shared/ledger-command';
+import { confirmedLedgerDuplicate, duplicateReviewLines } from './ledger-duplicate-review';
 import { ledgerLoans } from '../shared/ledger-loans';
 import { validateLedgerQueryAccount, validateLedgerQueryAccountExists } from '../ai/ledger-accounts';
 import { ledgerChanges, ledgerContext, ledgerMessages, ledgerQueryReply, ledgerSavedReply } from '../ai/ledger';
@@ -27,7 +28,9 @@ import { ledgerToday } from '../shared/ledger';
 import { normalizeLedgerQueryScope, resolveLedgerQueryChoice } from '../ai/ledger-query';
 import { LedgerReimbursementClarification } from '../ai/ledger-reimbursements';
 import { ledgerAmountQuestion } from '../ai/ledger-amounts';
+import { ledgerCashflowQuestion } from '../ai/ledger-cashflow-evidence';
 import { isLedgerClarificationAnswer } from '../shared/command-continuation';
+import { ledgerAttachmentHistory, pendingAttachmentAction, readOnlyAttachmentTurn } from '../shared/command-attachments';
 
 export interface ControllerOptions { automaticBackup?(repository: Repository): void; planner: PlannerService; repository: Repository; ledger?: LedgerService; getApiKey(): Promise<string | null>; getPriceQuote?(model: string, currency: 'CNY' | 'USD'): PriceQuote | null; getModelInputModalities?(model: string): string[] | null; runModel?: ModelRequestRunner; afterModelRequest?(): void; fetch?: typeof fetch; now?(): string; selectCourseFile?(): Promise<SelectedCourseFile | null> }
 const hash = (input: unknown) => createHash('sha256').update(JSON.stringify(input)).digest('hex');
@@ -160,8 +163,9 @@ export function createController(options: ControllerOptions) {
         let fullContext: ReturnType<typeof buildCalendarContext> | undefined;
         const calendarContext = () => fullContext ??= buildCalendarContext();
         const selectedQuery = options.ledger ? resolveLedgerQueryChoice(request) : undefined;
+        const duplicateApproval = options.ledger ? confirmedLedgerDuplicate(request, repository) : undefined;
         const ledgerAnswer = !!options.ledger && isLedgerClarificationAnswer(request);
-        let compactIntent: { kind: 'ledger'; reply: string } | undefined = selectedQuery || ledgerAnswer ? { kind: 'ledger', reply: '继续处理账本请求' } : undefined;
+        let compactIntent: { kind: 'ledger'; reply: string } | undefined = selectedQuery || ledgerAnswer || duplicateApproval ? { kind: 'ledger', reply: '继续处理账本请求' } : undefined;
         if (!prior?.intent && !compactIntent && options.ledger && canUseCompactLedgerRoute(request)) {
           if ([request, ...request.history].some(turn => commandImages(turn).length)) requireImageModel(planner.snapshot().settings.model);
           const route = await model(LedgerRouteSchema, compactLedgerRouteMessages(request), input.operationId, 'command');
@@ -169,10 +173,8 @@ export function createController(options: ControllerOptions) {
         }
         let intent = prior?.intent ?? compactIntent ?? await model(CommandIntentSchema, commandMessages(calendarContext(), request.text, request.history, request.image, request), input.operationId, 'command');
         // Attachments can answer a pending textual request, but cannot authorize a fresh action.
-        const previousQuestion = request.history.at(-1); const previousUser = request.history.at(-2);
-        const pendingTextRequest = previousQuestion?.role === 'assistant' && previousQuestion.outcome?.phase === 'clarification'
-          && previousUser?.role === 'user' && previousUser.text.trim().length > 0;
-        if (hasCommandAttachments(request) && !request.text && !pendingTextRequest && intent.kind !== 'query' && intent.kind !== 'clarification') {
+        const attachmentOnly = hasCommandAttachments(request) && !request.text;
+        if (attachmentOnly && intent.kind !== 'query' && intent.kind !== 'clarification' && pendingAttachmentAction(request) !== intent.kind) {
           intent = { kind: 'clarification', reply: '已收到附件。', questions: ['希望我解释附件内容、根据附件记账，还是安排日历事项？'] };
         }
         if (!prior?.intent && intent.kind !== 'ledger') {
@@ -187,11 +189,12 @@ export function createController(options: ControllerOptions) {
           const defaultQueryMonth = request.domain === 'ledger' ? request.ledgerView?.month ?? currentMonth : currentMonth;
           const snapshot = ledger.snapshot(defaultQueryMonth);
           const ledgerView = ledgerContext(snapshot, request, now());
+          const ledgerInput = { ...request, history: ledgerAttachmentHistory(request) };
           const readLedgerIntent = async (): Promise<z.infer<typeof LedgerIntentSchema>> => {
             const known = new Set(ledgerView.entries.map(entry => entry.id));
             const details = new Set(initialLedgerDetailIds(ledgerView));
             for (let round = 0; round < 3; round++) {
-              const value = await model(LedgerContextIntentSchema, ledgerMessages(ledgerView, request, [...details]), `${input.operationId}:ledger:${round}`, 'command', '账本解析');
+              const value = await model(LedgerContextIntentSchema, ledgerMessages(ledgerView, ledgerInput, [...details]), `${input.operationId}:ledger:${round}`, 'command', '账本解析');
               const requested = value.kind === 'read_entries' ? value.ids : referencedLedgerEntries(value);
               if (requested.some(id => !known.has(id))) throw new WorkflowError('AI_RESPONSE', '未找到提案关联的原账目，请提供日期或项目');
               const missing = expandLedgerDetailIds(ledgerView, requested).filter(id => !details.has(id));
@@ -201,7 +204,11 @@ export function createController(options: ControllerOptions) {
             }
             throw new WorkflowError('AI_RESPONSE', '账目详情尚未核对，请重新查询');
           };
-          const proposal: z.infer<typeof LedgerCommandProposalSchema> = prior?.ledgerProposal ?? { intent: selectedQuery ?? await readLedgerIntent(), revision: snapshot.revision };
+          const proposal: z.infer<typeof LedgerCommandProposalSchema> = duplicateApproval ?? prior?.ledgerProposal ?? { intent: selectedQuery ?? await readLedgerIntent(), revision: snapshot.revision };
+          if (!prior?.ledgerProposal && (proposal.intent.kind === 'mutate' || proposal.intent.kind === 'undo') &&
+              (readOnlyAttachmentTurn(request) || proposal.intent.kind === 'undo' && attachmentOnly)) {
+            proposal.intent = { kind: 'clarification', question: '本次尚未改动账本。请说明要查看的信息，或明确需要执行的账本操作。' };
+          }
           const prepareQuery = (query: Parameters<typeof normalizeLedgerQueryScope>[0], detail: string, choice = false) => {
             const scope = normalizeLedgerQueryScope(query);
             if (detail !== 'loans' && scope.entryIds === undefined && !scope.month && !scope.from && !scope.to) scope.month = defaultQueryMonth;
@@ -237,8 +244,10 @@ export function createController(options: ControllerOptions) {
             const mutation = proposal.mutationRequest;
             // A crash between the ledger commit and the assistant receipt must
             // replay the original mutation; its pre-edit snapshot no longer exists.
-            if (!prior?.ledgerProposal?.mutationRequest || !ledger.hasRecordedOperation(mutation.operationId)) {
-              const question = ledgerAmountQuestion(request, mutation.changes, snapshot);
+            if (!duplicateApproval && (!prior?.ledgerProposal?.mutationRequest || !ledger.hasRecordedOperation(mutation.operationId))) {
+              // Pending proposals stored by older clients may contain model-supplied approval.
+              for (const change of mutation.changes) if (change.type === 'putEntry') change.confirmDuplicate = false;
+              const question = ledgerAmountQuestion(request, mutation.changes, snapshot) ?? ledgerCashflowQuestion(request, mutation.changes, snapshot);
               if (question) {
                 proposal.intent = { kind: 'clarification', question: '本次整批账目尚未保存。' + question };
                 delete proposal.mutationRequest;
@@ -272,10 +281,13 @@ export function createController(options: ControllerOptions) {
             try { result = ledger.mutate(proposal.mutationRequest!); }
             catch (error) {
               if (error instanceof LedgerDuplicateRejection && error.operationId === proposal.mutationRequest!.operationId) {
+                const details = z.object({ duplicates: LedgerDuplicateMatchesSchema }).safeParse(error.details);
+                if (!details.success) throw error;
+                proposal.duplicateMatches = details.data.duplicates;
                 // A rolled-back duplicate is an unanswered question, not a failed
                 // request to discard from the next conversational turn.
                 const clarification: CommandResult = {
-                  reply: `${error.message}。本次整批账目均未保存。\n请确认这批同日期（日期未知时为同月份）、项目和金额相同的记录，是否均为各自真实发生的不同笔交易，包括清单内重复以及与已有账目相同的记录？回复“是”可继续确认这批账目；若有误，请指出需删除或修改的条目。`,
+                  reply: `重复核对单号 ${id.slice(-16)}\n${error.message}。本次整批账目均未保存。\n${duplicateReviewLines(proposal.mutationRequest!, details.data.duplicates)}\n这些是否均为各自真实发生的不同笔交易？回复“是”按原草稿保存整批；若有误，请指出需修改的条目。`,
                   mutationResult: null, items: [], conversationState: { domain: 'ledger', phase: 'clarification' },
                 };
                 repository.transact(state => save(state, id, fingerprint, { kind: 'command', intent, result: clarification, ledgerProposal: proposal }));

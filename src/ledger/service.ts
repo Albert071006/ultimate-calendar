@@ -10,6 +10,7 @@ import {
 import { ledgerEntryMatches, summarizeLedger } from './summary';
 import { ledgerReceivable } from './receivable';
 import { isLedgerLoanKind, ledgerLoanAllowsAccount } from '../shared/ledger-loans';
+import { duplicateLedgerEntry } from '../shared/ledger-duplicates';
 
 export class LedgerError extends Error {
   constructor(readonly code: 'VALIDATION' | 'CONFLICT' | 'DUPLICATE' | 'STORAGE', message: string, readonly details?: unknown) { super(message); this.name = 'LedgerError'; }
@@ -168,7 +169,6 @@ export function validateLedgerData(data: LedgerData): void {
 
 type OperationRow = { id: string; fingerprint: string; kind: string; before_payload: string; entry_ids: string; revision: number; undone: number };
 const fingerprint = (input: unknown) => createHash('sha256').update(JSON.stringify(input)).digest('hex');
-const normalizeTitle = (value: string) => value.replace(/[\s，。！？、,.!?]/g, '').toLowerCase();
 
 export class LedgerService {
   private readonly db: DatabaseSync;
@@ -236,6 +236,8 @@ export class LedgerService {
     const request = LedgerMutationRequestSchema.parse(input);
     return this.transact(request.operationId, 'mutation', fingerprint({ kind: 'mutation', changes: request.changes }), request.expectedRevision, request.month, (data, at) => {
       const entryIds: string[] = [];
+      const duplicates: { draftId: string; existingId: string }[] = [];
+      let duplicateMessage = '';
       for (const change of request.changes) {
         if (change.type === 'putEntry') {
           const today = ledgerToday(this.now());
@@ -244,10 +246,11 @@ export class LedgerService {
           if ((old?.version ?? null) !== change.expectedVersion) throw new LedgerError('CONFLICT', '这笔账已被修改，请打开最新记录后再更正');
           if (old?.voided) throw new LedgerError('CONFLICT', '这笔账已移除，可先撤销移除再修改');
           if (!old && !change.confirmDuplicate) {
-            const duplicate = data.entries.find(entry => !entry.voided && entry.date === change.entry.date && entry.month === change.entry.month && entry.kind === change.entry.kind && entry.amountCents === change.entry.amountCents && normalizeTitle(entry.title) === normalizeTitle(change.entry.title) &&
-              (!isLedgerLoanKind(change.entry.kind) || ((entry.counterparty?.trim() ?? '') === (change.entry.counterparty?.trim() ?? '') &&
-                JSON.stringify([...new Set(entry.relatedEntryIds)].sort()) === JSON.stringify([...new Set(change.entry.relatedEntryIds)].sort()))));
-            if (duplicate) throw new LedgerError('DUPLICATE', `已有相同${duplicate.date ? '日期' : '月份（日期待确认）'}、项目和金额的“${duplicate.title}”，请先确认是否确实是另一笔`, { entryIds: [duplicate.id] });
+            const duplicate = data.entries.find(entry => duplicateLedgerEntry(entry, change.entry));
+            if (duplicate) {
+              duplicates.push({ draftId: change.entry.id, existingId: duplicate.id });
+              duplicateMessage ||= `已有相同${duplicate.date ? '日期' : '月份（日期待确认）'}、项目和金额的“${duplicate.title}”，请先确认是否确实是另一笔`;
+            }
           }
           const entry: LedgerEntry = { ...change.entry, version: (old?.version ?? 0) + 1, createdAt: old?.createdAt ?? at, updatedAt: at, voided: false,
             sameDayBalanceOrder: old?.sameDayBalanceOrder ?? data.rules.sameDayNewEntryOrder };
@@ -283,6 +286,9 @@ export class LedgerService {
           data.audit.push({ id: randomUUID(), operationId: request.operationId, at, action: '修改记账规则', entryIds: [], note: resumed ? `${note}；从 ${startMonth} 恢复，不补暂停月份` : note, beforeEntries: [] });
         }
       }
+      // Inspect the complete staged batch, including duplicates of its earlier rows.
+      // A rejected batch leaves neither staged rows nor an operation receipt behind.
+      if (duplicates.length) throw new LedgerError('DUPLICATE', duplicateMessage, { entryIds: [...new Set(duplicates.map(match => match.existingId))], duplicates });
       return [...new Set(entryIds)];
     });
   }

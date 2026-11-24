@@ -1,11 +1,11 @@
-import { hasCommandAttachments, type CommandRequest } from '../shared/contracts';
+import type { CommandRequest } from '../shared/contracts';
+import { ledgerEvidenceHistory, ledgerReceiptTurn } from '../shared/command-attachments';
 import { ledgerLoans } from '../shared/ledger-loans';
-import { pendingClarificationHistory } from '../shared/command-continuation';
 import { formatLedgerMoney, ledgerAccounts, type LedgerMutationRequest, type LedgerSnapshot } from '../shared/ledger';
 import { ledgerSavedEntryLine } from './ledger';
 
 type Changes = LedgerMutationRequest['changes'];
-type Amount = { cents: number; clause: string; prefix: string; suffix: string; between: string };
+type Amount = { cents: number; clause: string; clauseStart: number; prefix: string; suffix: string; between: string };
 type Proposed = { cents: number; title: string; labels: string[] };
 const money = (cents: number) => '¥' + formatLedgerMoney(cents);
 const digits = '零〇一二两三四五六七八九';
@@ -47,7 +47,7 @@ function scaledCents(raw: string, scale: number): number {
 
 // Mask dates, times, identifiers and counters before recognizing shorthand
 // such as “午饭41.9支付宝”. Preserve decimal points in monetary amounts.
-function amountsIn(text: string): Amount[] {
+export function amountsIn(text: string): Amount[] {
   const clean = text.normalize('NFKC').replace(/(?<=\d),(?=\d{3}(?:,\d{3})*(?!\d))/g, '')
     .replace(/(?:尾号|尾数|卡号(?:后[四4]位)?|末四位|末4位|订单号|编号|单号|流水号)\s*[:#]?\s*[A-Za-z0-9-]+/gi, ' ')
     .replace(/(?:19|20)\d{2}\.\d{1,2}\.\d{1,2}|\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?|\d{1,2}[-/]\d{1,2}|\d{1,2}:\d{2}(?::\d{2})?|\d{1,2}[点时]\d{1,2}分?/g, ' ')
@@ -82,7 +82,7 @@ function amountsIn(text: string): Amount[] {
         suffix = clause.slice(end).trimStart();
         index++;
       }
-      amounts.push({ cents, prefix, suffix, clause, between: clean.slice(previousEnd, chunk.index + match.index).trim() });
+      amounts.push({ cents, prefix, suffix, clause, clauseStart: chunk.index, between: clean.slice(previousEnd, chunk.index + match.index).trim() });
       previousEnd = chunk.index + end;
     }
   }
@@ -158,8 +158,27 @@ const mismatch = (source: Amount[], rows: Proposed[]) => '你说的金额是' + 
 // then match distinct occurrences (including equal amounts in different rows).
 function matchAmounts(amounts: Amount[], rows: Proposed[]): boolean {
   if (amounts.length !== rows.length) return false;
+  const score = (text: string, row: Proposed) => (text.includes(row.title) ? 2 : 0) + Number(row.labels.some(label => text.includes(label)));
+  const scopes = new Map<Amount, string>();
+  for (let i = 0; i < amounts.length;) {
+    const start = i, first = amounts[i++]!;
+    while (i < amounts.length && amounts[i]!.clauseStart === first.clauseStart) i++;
+    if (i - start < 2) continue;
+    // A label at the start or end tells us which side of each amount names it.
+    // A shared whole-sentence score would apply the first wallet to every row.
+    const last = amounts[i - 1]!;
+    const leading = Math.max(...rows.map(row => score(first.prefix, row)));
+    const trailing = Math.max(...rows.map(row => score(last.suffix, row)));
+    if (leading === trailing) continue;
+    for (let index = start; index < i; index++) {
+      const amount = amounts[index]!;
+      const before = index === start ? amount.prefix : amount.between;
+      const after = index + 1 === i ? amount.suffix : amounts[index + 1]!.between;
+      scopes.set(amount, leading > trailing ? before : after);
+    }
+  }
   const options = amounts.map(amount => {
-    const scores = rows.map(row => (amount.clause.includes(row.title) ? 2 : 0) + Number(row.labels.some(label => amount.clause.includes(label))));
+    const scores = rows.map(row => score(scopes.get(amount) ?? amount.clause, row));
     const max = Math.max(...scores);
     return rows.map((row, index) => scores[index] === max && row.cents === amount.cents ? index : -1).filter(index => index >= 0);
   });
@@ -201,7 +220,7 @@ function fullSettlementCents(text: string, changes: Changes, snapshot: LedgerSna
  * shared desktop/server mutation boundary. Never derive the user's evidence
  * from model notes, assistant replies or already-completed history. */
 export function ledgerAmountQuestion(request: CommandRequest, changes: Changes, snapshot: LedgerSnapshot): string | undefined {
-  const history = pendingClarificationHistory(request);
+  const history = ledgerEvidenceHistory(request);
   const turns = [...history.filter(turn => turn.role === 'user').map(turn => turn.text), request.text];
   const evidence = turns.map(text => {
     const amounts = amountsIn(text);
@@ -213,7 +232,7 @@ export function ledgerAmountQuestion(request: CommandRequest, changes: Changes, 
     if (!rows.length) return;
     if (turns.some(turn => foreignCurrency.test(turn))) return '账本按人民币记账。请补充这笔交易实际折合的人民币金额。';
     // The existing attachment flow reads the requested receipts directly.
-    if ([request, ...history.filter(turn => turn.role === 'user')].some(hasCommandAttachments)) return;
+    if (ledgerReceiptTurn(request)) return;
     const settled = fullSettlementCents(turns.join('\n'), changes, snapshot, request.ledgerView?.selectedEntryId);
     if (rows.length === 1 && settled !== undefined) {
       if (rows[0]!.cents !== settled) return '原账目可核对的全额为' + money(settled) + '，拟保存' + money(rows[0]!.cents) + '。请确认金额。';

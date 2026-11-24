@@ -10,9 +10,10 @@ import { readLocalResources } from '../storage/local-resources';
 
 export function createNativePlanImport(options: Parameters<typeof createPlanImportService>[0] & {
   resourceDirectory: string; window(): BrowserWindow; changed(): void;
-}): PlanImportDesktopAPI {
+}): PlanImportDesktopAPI & Pick<ReturnType<typeof createPlanImportService>, 'unresolved'> {
   const service = createPlanImportService(options);
   return {
+    unresolved: () => service.unresolved(),
     async planImportOpen() {
       const selection = await dialog.showOpenDialog(options.window(), { title: '选择计划 JSON 文件', properties: ['openFile'], filters: [{ name: '终极日历计划 JSON', extensions: ['json'] }] });
       if (selection.canceled || !selection.filePaths[0]) return { ok: true, data: null };

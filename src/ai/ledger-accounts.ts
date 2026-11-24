@@ -3,7 +3,7 @@ import { ledgerAccounts, type LedgerAccount, type LedgerMutationRequest, type Le
 import type { LedgerIntent } from '../shared/ledger-command';
 import type { CommandRequest } from '../shared/contracts';
 import { WorkflowError } from './deepseek';
-import { pendingUserEvidence } from '../shared/command-continuation';
+import { ledgerEvidenceHistory } from '../shared/command-attachments';
 
 const bankNames = [
   ['中国银行', '中行'], ['招商银行', '招行'], ['中国工商银行', '工商银行', '工行'],
@@ -17,7 +17,7 @@ const bankPattern = new RegExp([...bankAliases.keys()].sort((a, b) => b.length -
 const normalize = (value: string) => compact(value).replace(bankPattern, alias => bankAliases.get(alias)!);
 const genericName = (name: string) => /^(?:银行(?:卡|账户)?|储蓄(?:卡|账户)?|借记卡|现金账户|现金|会员卡|储值卡|储值会员卡|会员账户|储值账户|银行卡账户|未命名账户|新账户)$/.test(compact(name));
 const labels = (account: LedgerAccount) => [account.name, ...account.aliases];
-const evidence = pendingUserEvidence;
+const evidence = (request: CommandRequest) => [...ledgerEvidenceHistory(request).filter(turn => turn.role === 'user').map(turn => turn.text), request.text].join('\n');
 const mentionedBanks = (value: string): string[] => bankNames.filter(names => names.some(name => value.includes(name))).map(names => names[0]);
 // Unknown bank names remain literal identities; this is not a bank-name allowlist.
 const bankIdentity = (label: string) => normalize(label).match(/^[\p{Script=Han}a-z]{2,24}?银行/u)?.[0];
@@ -42,6 +42,45 @@ function sameIdentity(left: LedgerAccount, right: LedgerAccount): boolean {
   if (left.kind !== right.kind) return false;
   const rightLabels = specificLabels(right), rightBanks = accountBanks(right);
   return specificLabels(left).some(label => rightLabels.includes(label)) || accountBanks(left).some(bank => rightBanks.includes(bank));
+}
+
+// Match only labels that identify one account in this actual ledger. A generic
+// card name can identify the default card only while it is the only bank.
+function soleGenericBank(account: LedgerAccount, accounts: readonly LedgerAccount[], words: string): boolean {
+  // Do not reinterpret an unknown institution such as “杭州银行卡” as the default.
+  return /(?:^|[\s，,；;：:（(]|渠道|走|由|从|到|用|的|绑|绑定|实际|扣|支付)(?:银行卡|储蓄卡|借记卡)/u.test(words) &&
+    labels(account).some(genericName) && isBank(account) && accounts.filter(isBank).length === 1 && !mentionedBanks(words).length;
+}
+
+function soleGenericPaymentAccount(account: LedgerAccount, accounts: readonly LedgerAccount[], words: string): boolean {
+  if (soleGenericBank(account, accounts, words)) return true;
+  const explicit = words.match(/(?:^|[\s，,；;：:（(\d]|元|块|是|由|从|走|到|用|的|以|付|扣)(现金(?:账户)?|储值会员卡|储值卡|会员卡)(?!流)/u)?.[1];
+  if (!explicit) return false;
+  const cash = explicit.startsWith('现金');
+  const kind = cash ? /现金/ : /储值|会员卡/;
+  const eligible = accounts.filter(candidate => candidate.kind === (cash ? 'cash' : 'stored') && labels(candidate).some(label => kind.test(label)));
+  return eligible.length === 1 && eligible[0]!.id === account.id;
+}
+
+export function explicitFundingAccounts(accounts: readonly LedgerAccount[], words: string): LedgerAccount[] {
+  const find = (scope: string) => accounts.filter(account => uniqueMention(account, accounts, scope) || soleGenericPaymentAccount(account, accounts, scope));
+  const found = find(words);
+  if (found.length < 2 || /拆分|混合|组合支付|分别/.test(words)) return found;
+  const actual = words.match(/(?:实际|最终)(?:是)?(?:从|由|用|走)?([^,，;；。\n]{1,40}?)(?:扣款|扣钱|扣费|付款|支付)/u)?.[1] ??
+    words.match(/(?:实际|最终)(?:付款|扣款)(?:账户|方)?(?:为|是|用|从|由)([^,，;；。\n]+)/u)?.[1] ??
+    words.match(/(?:^|[,，;；。])\s*(?:从|由|用)?([^,，;；。\n]{1,40}?)(?:实际|最终)(?:扣款|付款)/u)?.[1] ??
+    words.match(/渠道(?:走|用|从|由)([^,，;；。\n]+)/u)?.[1];
+  if (actual) {
+    const payer = find(actual);
+    if (payer.length === 1) return payer;
+  }
+  const wallets = found.filter(account => account.id === 'wechat' || account.id === 'alipay');
+  const underlying = found.filter(account => isBank(account) || account.kind === 'family');
+  if (wallets.length && underlying.length &&
+      /渠道|绑(?:定|的)|(?:实际|最终|实际是从|实际由).{0,20}(?:扣|付)|(?:走|扣自|扣的是).{0,16}(?:银行|卡)|(?:银行|卡).{0,8}(?:扣款|扣钱)/.test(words)) {
+    return found.filter(account => !wallets.includes(account));
+  }
+  return found;
 }
 const namedInRequest = (name: string, words: string) => {
   const coreName = nameCore(name);
@@ -71,9 +110,9 @@ function assertGroundedAccounts(ids: Array<string | null>, accounts: readonly Le
     if (isBank(account)) {
       const identities = accountBanks(account);
       if (banks.length && !identities.some(name => banks.includes(name)) && !specificMention(account, words)) throw new WorkflowError('AI_RESPONSE', '账户识别不一致：不能把明确的银行记到另一家银行或泛称银行卡；请重新分析并使用独立账户。');
-      if (/银行|储蓄卡|借记卡/.test(words) && !specificMention(account, words)) throw new WorkflowError('AI_RESPONSE', '银行卡尚未匹配，不能把明确的银行记到泛称或另一账户；请使用对应独立账户。');
+      if (/银行|储蓄卡|借记卡/.test(words) && !specificMention(account, words) && !soleGenericBank(account, accounts, words)) throw new WorkflowError('AI_RESPONSE', '银行卡尚未匹配，不能把明确的银行记到泛称或另一账户；请使用对应独立账户。');
     }
-    if (account.kind === 'stored' && /会员卡|储值卡|储值会员卡/.test(words) && !specificMention(account, words)) {
+    if (account.kind === 'stored' && /会员卡|储值卡|储值会员卡/.test(words) && !specificMention(account, words) && !soleGenericPaymentAccount(account, accounts, words)) {
       throw new WorkflowError('AI_RESPONSE', '会员卡所属店铺尚未匹配，不能把不同店铺记到同一张卡；请说明店铺名称后重新分析。');
     }
     if ((isBank(account) || account.kind === 'stored') && accounts.some(other => other.id !== account.id && sameIdentity(account, other)) && !uniqueMention(account, accounts, words)) {

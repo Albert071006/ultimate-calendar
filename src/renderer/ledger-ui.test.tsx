@@ -113,6 +113,45 @@ describe('local ledger UI', () => {
     expect(f.ledgerMutate.mock.calls[1]![0].changes[0]).toMatchObject({ confirmDuplicate: true });
   });
 
+  it('requires a fresh check of the edited manual draft even when the same original still matches', async () => {
+    const f = fixture(); await screen.findByRole('tab', { name: '收支' }); f.openNew();
+    const duplicate = { ok: false as const, error: { code: 'CONFLICT' as const, message: '已有相同日期、项目和金额的“午饭”，请先确认是否确实是另一笔', retryable: false } };
+    f.ledgerMutate.mockResolvedValueOnce(duplicate).mockResolvedValueOnce(duplicate);
+    fireEvent.change(screen.getByLabelText('项目'), { target: { value: '午饭' } });
+    fireEvent.change(screen.getByLabelText('实际支付（元）'), { target: { value: '20' } });
+    const submit = screen.getByRole('button', { name: '保存账单' });
+    const checkbox = '我已核对，这是另一笔真实交易';
+    fireEvent.click(submit);
+    fireEvent.click(await screen.findByLabelText(checkbox));
+    fireEvent.change(screen.getByLabelText('备注'), { target: { value: '合成备注更新' } });
+    expect(screen.queryByLabelText(checkbox)).toBeNull();
+    fireEvent.click(submit);
+    const checkedAgain = await screen.findByLabelText(checkbox) as HTMLInputElement;
+    expect(checkedAgain.checked).toBe(false);
+    expect(f.ledgerMutate.mock.calls[1]![0].changes[0]).toMatchObject({ confirmDuplicate: false, entry: { note: '合成备注更新' } });
+    fireEvent.click(checkedAgain); fireEvent.click(submit);
+    await waitFor(() => expect(f.ledgerMutate).toHaveBeenCalledTimes(3));
+    expect(f.ledgerMutate.mock.calls[2]![0].changes[0]).toMatchObject({ confirmDuplicate: true, entry: { note: '合成备注更新' } });
+  });
+
+  it('expires a checked manual duplicate when its original changes during a refresh', async () => {
+    const f = fixture(); await screen.findByRole('tab', { name: '收支' }); f.openNew();
+    let finishRefresh!: (value: { ok: true; data: LedgerSnapshot }) => void;
+    f.ledgerSnapshot.mockImplementationOnce(() => new Promise(resolve => { finishRefresh = resolve; }));
+    f.ledgerMutate.mockResolvedValueOnce({ ok: false, error: { code: 'CONFLICT', message: '已有相同日期、项目和金额的“午饭”，请先确认是否确实是另一笔', retryable: false } });
+    fireEvent.change(screen.getByLabelText('项目'), { target: { value: '午饭' } });
+    fireEvent.change(screen.getByLabelText('实际支付（元）'), { target: { value: '20' } });
+    const submit = screen.getByRole('button', { name: '保存账单' }), checkbox = '我已核对，这是另一笔真实交易';
+    fireEvent.click(submit);
+    fireEvent.click(await screen.findByLabelText(checkbox));
+    await act(async () => finishRefresh({ ok: true, data: { ...f.snapshot, revision: 2,
+      entries: f.snapshot.entries.map(item => ({ ...item, version: 2, note: '合成并发修改' })) } }));
+    expect(screen.queryByLabelText(checkbox)).toBeNull();
+    fireEvent.click(submit);
+    await waitFor(() => expect(f.ledgerMutate).toHaveBeenCalledTimes(2));
+    expect(f.ledgerMutate.mock.calls[1]![0]).toMatchObject({ expectedRevision: 2, changes: [{ confirmDuplicate: false }] });
+  });
+
   it('allows a pure personal expense adjustment without inventing a payment', async () => {
     const f = fixture(); await screen.findByRole('tab', { name: '收支' }); f.openNew();
     fireEvent.change(screen.getByLabelText('类型'), { target: { value: 'adjustment' } });

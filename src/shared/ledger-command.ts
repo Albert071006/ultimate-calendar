@@ -30,4 +30,6 @@ export const LedgerIntentSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('clarification'), question: z.string().trim().min(1).max(2000), queryChoices: z.array(LedgerQueryChoiceSchema).min(2).max(5).optional() }),
 ]);
 export type LedgerIntent = z.infer<typeof LedgerIntentSchema>;
-export const LedgerCommandProposalSchema = z.strictObject({ intent: LedgerIntentSchema, revision: z.number().int().nonnegative(), mutationRequest: LedgerMutationRequestSchema.optional() });
+export const LedgerDuplicateMatchesSchema = z.array(z.strictObject({ draftId: z.string(), existingId: z.string() })).min(1).max(200);
+export const LedgerCommandProposalSchema = z.strictObject({ intent: LedgerIntentSchema, revision: z.number().int().nonnegative(),
+  mutationRequest: LedgerMutationRequestSchema.optional(), duplicateMatches: LedgerDuplicateMatchesSchema.optional() });

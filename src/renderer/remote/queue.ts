@@ -6,6 +6,12 @@ import { taskScheduleLimitExceeded, taskScheduleMode } from '../../domain/task-s
 
 export const localId = (item: Pick<PendingWrite, 'id'>, index: number) => 'local:' + item.id + ':' + index;
 export const instant = (at = Date.now()) => new Date(at + 8 * 3600000).toISOString().replace('Z', '+08:00');
+export const ledgerMutationMonth = (request: LedgerMutationRequest) =>
+  request.month ?? request.changes.find(change => change.type === 'putEntry')?.entry.month;
+
+/** A transport 409 may mean the server is still processing the original request. */
+export const unverifiedLedgerConflict = (item: PendingWrite) => item.method === 'ledgerMutate' && item.status === 'conflict'
+  && !(item.result?.ok === false && item.result.error.code === 'CONFLICT' && item.result.error.delivery !== 'unknown');
 
 const plainTask = (task: Task) => task.candidateId === null && task.goalId === null && task.courseId === null;
 const sameAssociation = (values: object, record: object, keys: string[]) => keys.every(key =>
@@ -131,8 +137,8 @@ export function projectSnapshot(partition: OfflinePartition): Snapshot | null {
 export function captureBase(method: RemoteMethod, input: unknown, partition: OfflinePartition): unknown {
   if (method === 'ledgerMutate') {
     const request = LedgerMutationRequestSchema.safeParse(input);
-    const month = request.success ? request.data.month ?? request.data.changes.find(change => change.type === 'putEntry')?.entry.month : undefined;
-    return { revision: (month ? partition.ledgers[month] : Object.values(partition.ledgers)[0])?.revision ?? 0 };
+    const month = request.success ? ledgerMutationMonth(request.data) : undefined;
+    return { revision: (month ? partition.ledgers[month]?.revision : undefined) ?? (request.success ? request.data.expectedRevision : 0) };
   }
   const ids = new Set(references(input));
   const snapshot = projectSnapshot(partition);
@@ -145,7 +151,7 @@ export function captureBase(method: RemoteMethod, input: unknown, partition: Off
 
 /** Called only after the user chooses their version in the conflict panel. */
 export function rebaseWrite(item: PendingWrite, partition: OfflinePartition): unknown {
-  if (item.status === 'sending' || item.status === 'uncertain') throw Error('请先核对原请求结果，不能将结果未知的操作作为新操作重放');
+  if (item.status === 'sending' || item.status === 'uncertain' || unverifiedLedgerConflict(item)) throw Error('请先核对原请求结果，不能将结果未知的操作作为新操作重放');
   const input = resolveAliases(item.input, partition.aliases);
   if (item.method === 'mutate') {
     const request = MutationRequestSchema.parse(input);
@@ -171,10 +177,12 @@ export function rebaseWrite(item: PendingWrite, partition: OfflinePartition): un
   }
   if (item.method === 'ledgerMutate') {
     const request = LedgerMutationRequestSchema.parse(input);
-    const snapshot = partition.ledgers[request.month ?? Object.keys(partition.ledgers)[0] ?? ''];
-    if (!snapshot) throw Error('请先取得服务端最新账本');
     if (!allowsOffline('ledgerMutate', request, partition.snapshot)) throw Error('这项账目需要回到原页面重新确认');
-    return { ...request, operationId: crypto.randomUUID(), expectedRevision: snapshot.revision } satisfies LedgerMutationRequest;
+    const month = ledgerMutationMonth(request), snapshot = month ? partition.ledgers[month] : undefined;
+    if (!snapshot || snapshot.summary.month !== month) throw Error('请先取得目标月份的服务端最新账本');
+    if (request.changes.some(change => change.type === 'putEntry' && snapshot.entries.some(entry => entry.id === change.entry.id)))
+      throw Error('这笔新增账目的编号已在正式账本中，请先核对原记录');
+    return { ...request, month, operationId: crypto.randomUUID(), expectedRevision: snapshot.revision } satisfies LedgerMutationRequest;
   }
   throw Error('这项操作需要回到原页面重新确认');
 }

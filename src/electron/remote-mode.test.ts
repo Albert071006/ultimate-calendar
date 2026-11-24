@@ -21,14 +21,14 @@ vi.mock('node:worker_threads', async () => {
 const localControl=vi.hoisted(()=>({invoke:vi.fn(),close:vi.fn()}));
 vi.mock('./collector-control',async importOriginal=>({...await importOriginal<typeof import('./collector-control')>(),createCollectorControlClient:()=>localControl}));
 
-const mock=vi.hoisted(()=>({handlers:new Map<string,(...args:unknown[])=>unknown>(),menu:[] as {label?:string;submenu?:{label?:string;click?:()=>void}[]}[],canEncrypt:true,cleartext:'',client:{pair:vi.fn(),rpc:vi.fn(),close:vi.fn(),getSession:vi.fn(),getAiConfiguration:vi.fn(),updateAiConfiguration:vi.fn(),clearAiConfiguration:vi.fn()},journal:{rpc:vi.fn(),inspect:vi.fn(),acknowledge:vi.fn()},createClient:vi.fn(),message:vi.fn(),openImage:vi.fn(),encrypt:vi.fn(),decrypt:vi.fn()}));
+const mock=vi.hoisted(()=>({handlers:new Map<string,(...args:unknown[])=>unknown>(),menu:[] as {label?:string;submenu?:{label?:string;click?:()=>void}[]}[],canEncrypt:true,cleartext:'',client:{pair:vi.fn(),rpc:vi.fn(),close:vi.fn(),getSession:vi.fn(),getAiConfiguration:vi.fn(),updateAiConfiguration:vi.fn(),clearAiConfiguration:vi.fn()},journal:{rpc:vi.fn(),inspect:vi.fn(),acknowledge:vi.fn(),unresolved:vi.fn(()=>[])},createClient:vi.fn(),message:vi.fn(),openImage:vi.fn(),encrypt:vi.fn(),decrypt:vi.fn()}));
 vi.mock('electron',async()=>{
   const {EventEmitter}=await import('node:events');
   class Window extends EventEmitter{webContents=Object.assign(new EventEmitter(),{id:1,mainFrame:{routingId:2},send:vi.fn(),setWindowOpenHandler:vi.fn()});isDestroyed(){return false;}isVisible(){return false;}isMinimized(){return false;}loadURL=vi.fn(async()=>{});show=vi.fn();destroy=vi.fn();}
   return{BrowserWindow:Window,Menu:{buildFromTemplate:(value:typeof mock.menu)=>{mock.menu=value;return value;},setApplicationMenu:vi.fn()},app:{isPackaged:true,getAppPath:()=>process.cwd()},dialog:{showMessageBox:mock.message,showOpenDialog:mock.openImage},ipcMain:{handle:(name:string,handler:(...args:unknown[])=>unknown)=>mock.handlers.set(name,handler),removeHandler:(name:string)=>mock.handlers.delete(name)},safeStorage:{isEncryptionAvailable:()=>mock.canEncrypt,encryptString:mock.encrypt,decryptString:mock.decrypt},session:{defaultSession:{setPermissionRequestHandler:vi.fn(),setPermissionCheckHandler:vi.fn(),on:vi.fn(),removeListener:vi.fn()}}};
 });
 vi.mock('../remote/node-client',async importOriginal=>({...await importOriginal<typeof import('../remote/node-client')>(),createNodeRemoteClient:mock.createClient}));
-vi.mock('../remote/write-journal',()=>({createWriteJournal:()=>mock.journal}));
+vi.mock('../remote/write-journal',()=>({createDesktopWriteJournal:()=>mock.journal}));
 vi.mock('./remote-desktop-shell',()=>({createRemoteDesktopShell:(options:{changed:()=>void})=>({handle:async()=>null,snapshot:(value:unknown)=>value,saveDeviceSettings:vi.fn(()=>options.changed()),isInstalling:()=>false,close:vi.fn(),setTrayItems:(items:typeof mock.menu)=>{mock.menu=items;}})}));
 import { startNativeRemote } from './remote-mode';
 import { RemoteClientError } from '../remote/node-client';
@@ -96,6 +96,23 @@ describe('native cloud-mode boundary',()=>{
     for(const [method,input] of [['captureSnapshot',undefined],['setApiKey',{key:'synthetic'}]] as const){const handler=mock.handlers.get('planner:'+method)!;expect(await handler(event,input)).toMatchObject({ok:false,error:{code:'VALIDATION'}});}
     expect(mock.journal.rpc).not.toHaveBeenCalled();expect(await mock.handlers.get('planner:snapshot')!(event,undefined)).toMatchObject({ok:true,data:{keyStatus:{scope:'cloud'}}});expect(mock.journal.rpc).toHaveBeenCalledWith('snapshot',undefined);expect(mock.client.getAiConfiguration).not.toHaveBeenCalled();
     expect(await mock.handlers.get('planner:selectImage')!(event,undefined)).toEqual({ok:true,data:null});expect(mock.openImage).toHaveBeenCalledTimes(1);
+  });
+  it('lists an old plan partition from the tray while offline without sending or revealing its saved mutation', async () => {
+    const f = fixture();
+    const scope = JSON.stringify({ origin: 'https://old.example', identity: { protocolVersion: 1, dataInstanceId: 'former-instance', generation: 3 }, deviceId: 'former-device' });
+    writePrivate(join(f.directory, 'plan-import', 'plan-import-receipts.json'), JSON.stringify({ version: 1, plans: [], pending: {
+      scope, planId: 'old-plan', key: 'task:step', request: { operationId: 'old-request', origin: 'manual', mutations: [{ type: 'create', entity: 'task', values: { title: 'synthetic private contents' } }] },
+    } }));
+    const runtime = await startNativeRemote(f.config, f.directory, f.document); closers.push(runtime.close);
+    mock.client.getSession.mockRejectedValueOnce(Error('synthetic offline')); mock.message.mockResolvedValue({ response: 0 });
+    const calls = mock.client.getSession.mock.calls.length;
+    (mock.menu as { label?: string; click?: () => void }[]).find(item => item.label === '查看各连接待核对的操作')!.click!();
+    await vi.waitFor(() => expect(mock.message).toHaveBeenCalled());
+    const detail = mock.message.mock.lastCall![1].detail;
+    for (const value of ['https://old.example', 'former-instance', '3', 'former-device', 'old-plan', 'old-request']) expect(detail).toContain(value);
+    expect(detail).not.toContain('synthetic private contents'); expect(mock.client.getSession).toHaveBeenCalledTimes(calls);
+    expect(mock.journal.inspect).not.toHaveBeenCalled(); expect(mock.journal.rpc).not.toHaveBeenCalled();
+    mock.client.getSession.mockReset();
   });
   it('keeps the menu recovery guard unless the user explicitly confirms the acknowledgement',async()=>{
     const f=fixture(),runtime=await startNativeRemote(f.config,f.directory,f.document);closers.push(runtime.close);const inspect=(mock.menu as {label?:string;click?:()=>void}[]).find(item=>item.label==='核对云端操作')!.click!;

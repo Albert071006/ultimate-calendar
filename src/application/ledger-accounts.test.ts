@@ -24,6 +24,97 @@ function expense(key: string, title: string, accountId: string, amountCents: num
 }
 
 describe('assistant independent accounts through persistence', () => {
+  it.each([
+    { text: '合成午饭，用微信支付20元', changes: [expense('new:0', '合成午饭', 'alipay', 2000)] },
+    { text: '合成午饭微信支付20元，合成晚饭支付宝支付20元', changes: [
+      expense('new:0', '合成晚饭', 'wechat', 2000), expense('new:1', '合成午饭', 'alipay', 2000),
+    ] },
+    { text: '合成早餐微信支付20元，合成午餐支付宝支付20元', changes: [
+      expense('new:0', '早饭', 'alipay', 2000), expense('new:1', '午饭', 'wechat', 2000),
+    ] },
+  ])('blocks a wrong wallet before writing any row for $text', async ({ text, changes }) => {
+    const { ledger, controller } = setup(changes);
+    const before = ledger.snapshot();
+    expect(await controller.command({ operationId: 'synthetic-wallet-mismatch', text }))
+      .toMatchObject({ ok: true, data: { conversationState: { phase: 'clarification' } } });
+    expect(ledger.snapshot()).toEqual(before);
+  });
+
+  it.each([
+    { text: '用现金支付20元合成午饭', expected: 'synthetic-cash' },
+    { text: '用会员卡付20元合成午饭', expected: 'bakery' },
+    { text: '合成午饭20元，微信下单，实际从支付宝余额扣款', expected: 'alipay' },
+  ])('checks the unique funding account for $text', async ({ text, expected }) => {
+    for (const proposed of [expected, 'wechat']) {
+      const { ledger, controller } = setup([expense('new:0', '合成午饭', proposed, 2000)]);
+      if (expected === 'synthetic-cash') ledger.mutate({ operationId: 'synthetic-create-cash', expectedRevision: 0, changes: [
+        { type: 'putAccount', account: { id: expected, name: '现金', aliases: [], kind: 'cash' } },
+      ] });
+      const before = ledger.snapshot();
+      expect(await controller.command({ operationId: 'synthetic-explicit-funding', text })).toMatchObject({
+        ok: true, data: { conversationState: { phase: expected === proposed ? 'saved' : 'clarification' } },
+      });
+      if (proposed === expected) expect(ledger.snapshot().entries[0]?.cashflows).toEqual([{ accountId: expected, deltaCents: -2000 }]);
+      else expect(ledger.snapshot()).toEqual(before);
+    }
+  });
+
+  it.each(['cmb', 'wechat'])('checks the funding bank behind a wallet channel (proposal %s)', async accountId => {
+    const { ledger, controller } = setup([expense('new:0', '合成午饭', accountId, 2000)]);
+    ledger.mutate({ operationId: 'synthetic-name-bank', expectedRevision: 0, changes: [
+      { type: 'putAccount', account: { ...LEDGER_ACCOUNTS.find(value => value.id === 'cmb')!, name: '招商银行', aliases: ['招行'] } },
+    ] });
+    const before = ledger.snapshot();
+    const result = await controller.command({ operationId: 'synthetic-wallet-channel', text: '合成午饭20元，经微信渠道，实际由招商银行扣款' });
+    if (accountId === 'cmb') {
+      expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: 'saved' } } });
+      expect(ledger.snapshot().entries[0]?.cashflows).toEqual([{ accountId: 'cmb', deltaCents: -2000 }]);
+    } else {
+      expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: 'clarification' } } });
+      expect(ledger.snapshot()).toEqual(before);
+    }
+  });
+
+  it.each([false, true])('matches accounts to amounts without punctuation (swapped %s)', async swapped => {
+    const { ledger, controller } = setup([
+      expense('new:0', '早饭', swapped ? 'alipay' : 'wechat', 1000),
+      expense('new:1', '晚饭', swapped ? 'wechat' : 'alipay', 2000),
+    ]);
+    const result = await controller.command({ operationId: 'synthetic-adjacent-payments', text: '早餐微信10元晚餐支付宝20元' });
+    expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: swapped ? 'clarification' : 'saved' } } });
+    if (swapped) expect(ledger.snapshot().entries).toHaveLength(0);
+    else expect(ledger.snapshot().entries.map(entry => entry.cashflows)).toEqual([
+      [{ accountId: 'wechat', deltaCents: -1000 }], [{ accountId: 'alipay', deltaCents: -2000 }],
+    ]);
+  });
+
+  it.each([
+    { text: '早餐微信10元晚餐20元', named: 0 },
+    { text: '早餐10元晚餐20元微信支付', named: 1 },
+  ])('checks a single explicit wallet in a multi-entry sentence: $text', async ({ text, named }) => {
+    for (const proposed of ['wechat', 'alipay']) {
+      const entries = [expense('new:0', '早餐', 'alipay', 1000), expense('new:1', '晚餐', 'alipay', 2000)];
+      entries[named]!.values.cashflows[0]!.accountId = proposed;
+      const { ledger, controller } = setup(entries);
+      const result = await controller.command({ operationId: 'synthetic-partial-wallet', text });
+      const valid = proposed === 'wechat';
+      expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: valid ? 'saved' : 'clarification' } } });
+      expect(ledger.snapshot().entries.map(entry => entry.cashflows)).toEqual(valid ? entries.map(row => row.values.cashflows) : []);
+    }
+  });
+
+  it.each([false, true])('matches each part of a split payment to its wallet (swapped %s)', async swapped => {
+    const split = expense('new:0', '合成午饭', 'wechat', 2000);
+    split.values.cashflows = [
+      { accountId: 'wechat', deltaCents: swapped ? -1400 : -600 }, { accountId: 'alipay', deltaCents: swapped ? -600 : -1400 },
+    ];
+    const { ledger, controller } = setup([split]);
+    const result = await controller.command({ operationId: 'synthetic-split-wallet', text: '合成午饭实付20元，微信6元，支付宝14元' });
+    expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: swapped ? 'clarification' : 'saved' } } });
+    if (swapped) expect(ledger.snapshot().entries).toHaveLength(0);
+    else expect(ledger.snapshot().entries[0]?.cashflows).toEqual(split.values.cashflows);
+  });
+
   it('creates a named bank with its transfer and purchase, replays once, and undoes the whole batch', async () => {
     const fixture = setup([
       { type: 'createAccount', key: 'new-account:0', name: '中国银行', kind: 'cash', aliases: ['中行'] },

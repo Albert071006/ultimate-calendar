@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createNodeRemoteClient, normalizeRemoteOrigin, type RemoteCredential } from './node-client';
 import { REMOTE_READ_METHODS } from '../shared/remote';
+import { remoteReceiptScope } from './receipt-partitions';
 import { LEDGER_QUERY_HEADER, LEDGER_QUERY_VERSION } from '../shared/ledger-query-compatibility';
 
 const origin='https://synthetic.example',identity={protocolVersion:1 as const,dataInstanceId:'11111111-1111-4111-8111-111111111111',generation:1},deviceId='22222222-2222-4222-8222-222222222222';
@@ -10,6 +11,16 @@ const json=(value:unknown,status=200,headers:Record<string,string>={})=>new Resp
 function setup(respond:(path:string,init:RequestInit)=>Response|Promise<Response>,credential:RemoteCredential|null=saved,timeoutMs?:number){const store={read:()=>credential,write:vi.fn()};const fetcher=vi.fn(async(url:RequestInfo|URL,init?:RequestInit)=>respond(new URL(String(url)).pathname,init??{}));return{client:createNodeRemoteClient({origin,credentials:store,fetch:fetcher,timeoutMs}),fetcher,store};}
 
 describe('native Node remote transport',()=>{
+  it('checks the pinned desktop partition before sending either a saved write or its receipt lookup', async () => {
+    const f = setup(path => { if (!path.endsWith('/session')) throw Error('unexpected receipt or write'); return json(session); });
+    const old = remoteReceiptScope(origin, { identity: { ...identity, generation: 2 }, deviceId });
+    const input = { operationId: 'synthetic-business', origin: 'manual', mutations: [{ type: 'create', entity: 'task', values: { title: '合成计划任务' } }] };
+    try {
+      await expect(f.client.rpc('mutate', input, 'synthetic-request', old)).rejects.toMatchObject({ status: 409 });
+      await expect(f.client.operation('synthetic-request', old)).rejects.toMatchObject({ status: 409 });
+      expect(f.fetcher.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual(['/api/v1/session']);
+    } finally { f.client.close(); }
+  });
   it('advertises query-choice support on command and operation requests and retains the structured reply', async () => {
     const data = { reply: '合成查询选项', mutationResult: null, items: [], conversationState: { domain: 'ledger', phase: 'clarification', ledgerQueryChoices: [
       { label: '仅生日消费', query: { search: '生日', searchFields: ['note'] }, detail: 'entries' },

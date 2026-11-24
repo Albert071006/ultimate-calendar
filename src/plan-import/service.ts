@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { buildCalendar } from '../domain/calendar';
 import { taskScheduleMode } from '../domain/task-scheduling';
 import { readPrivate, writePrivate } from '../remote/private-file';
+import { receiptFiles, scopedReceiptFile, withReceiptLock } from '../remote/receipt-partitions';
 import { BlockInputSchema, GoalInputSchema, MutationRequestSchema, SnapshotSchema, TaskInputSchema, type Entity, type MutationRequestInput, type MutationResult, type Snapshot } from '../shared/contracts';
 import { PlanFileSchema, PlanImportConfirmSchema, type PlanFile, type PlanImportPreview, type PlanImportResult, type PlanImportRow } from '../shared/plan-import';
 import { PlanSourceSchema, type PlanSource } from '../shared/plan-context';
@@ -20,7 +21,7 @@ const StoreSchema = z.strictObject({ version: z.literal(1), plans: z.array(Recei
 type Entry = z.infer<typeof EntrySchema>;
 type Store = z.infer<typeof StoreSchema>;
 type Receipt = z.infer<typeof ReceiptSchema>;
-type Options = { directory: string; snapshot(): Promise<Snapshot>; mutate(request: MutationRequestInput): Promise<MutationResult>; scope(): Promise<string>; source?(): Promise<PlanSource> };
+type Options = { directory: string; partitionReceipts?: boolean; snapshot(): Promise<Snapshot>; mutate(request: MutationRequestInput, scope: string): Promise<MutationResult>; scope(): Promise<string>; source?(): Promise<PlanSource> };
 type Fact = { key: string; message: string; participants: string[] };
 type Preview = { plan: PlanFile; scope: string; signature: string; expires: number; facts: Fact[]; view: PlanImportPreview; recovered: Entry[] };
 const keyOf = (item: Item) => `${item.kind}:${item.id}`;
@@ -157,10 +158,31 @@ function basisIssues(plan: PlanFile, snapshot: Snapshot, entries: Entry[], sourc
 export function createPlanImportService(options: Options) {
   const file = join(options.directory, 'plan-import-receipts.json');
   const previews = new Map<string, Preview>();
-  let serial: Promise<unknown> = Promise.resolve();
-  const locked = <T>(work: () => Promise<T>) => { const next = serial.then(work, work); serial = next.catch(() => {}); return next; };
-  function load(): Store { const bytes = readPrivate(file, 16 * 1024 * 1024); return bytes ? StoreSchema.parse(JSON.parse(bytes.toString('utf8'))) : { version: 1, plans: [], pending: null }; }
-  function save(store: Store) { const content = JSON.stringify(StoreSchema.parse(store)); if (Buffer.byteLength(content) > 16 * 1024 * 1024) throw Error('导入回执已达到容量限制，未继续写入'); writePrivate(file, content); }
+  const path = (scope: string) => options.partitionReceipts ? scopedReceiptFile(file, scope) : file;
+  function readStore(source: string): Store { const bytes = readPrivate(source, 16 * 1024 * 1024); return bytes ? StoreSchema.parse(JSON.parse(bytes.toString('utf8'))) : { version: 1, plans: [], pending: null }; }
+  function writeStore(target: string, store: Store) { const content = JSON.stringify(StoreSchema.parse(store)); if (Buffer.byteLength(content) > 16 * 1024 * 1024) throw Error('导入回执已达到容量限制，未继续写入'); writePrivate(target, content); }
+  function load(scope: string) {
+    const store = readStore(path(scope));
+    if (options.partitionReceipts && (store.plans.some(receipt => receipt.scope !== scope) || store.pending && store.pending.scope !== scope))
+      throw Error('导入回执与当前连接分区不一致，已保留文件供核对');
+    return store;
+  }
+  if (options.partitionReceipts) {
+    const legacy = readStore(file), scopes = new Set(legacy.plans.map(receipt => receipt.scope));
+    if (legacy.pending) scopes.add(legacy.pending.scope);
+    // Copy all scopes before retiring the original. A restarted partial migration verifies every copy.
+    for (const scope of scopes) {
+      const group: Store = { version: 1, plans: legacy.plans.filter(receipt => receipt.scope === scope), pending: legacy.pending?.scope === scope ? legacy.pending : null };
+      const existing = readPrivate(path(scope), 16 * 1024 * 1024);
+      if (!existing) writeStore(path(scope), group);
+      else if (hash(readStore(path(scope))) !== hash(group)) throw Error('旧导入回执与已保存的分区副本不一致，已保留两份供核对');
+    }
+    if (scopes.size) writeStore(file, { version: 1, plans: [], pending: null });
+  }
+  async function mutate(request: MutationRequestInput, scope: string) {
+    if (await options.scope() !== scope) throw Error('写入前资料连接或身份已改变，原请求仍保留在原分区');
+    return options.mutate(request, scope);
+  }
   function receipt(store: Store, plan: PlanFile, scope: string): Receipt {
     const prior = store.plans.find(value => value.planId === plan.planId);
     if (prior && prior.scope !== scope) throw Error('该计划属于另一设备、连接或资料代际，已停止自动重放。请先核对恢复后的资料，再明确使用新的 planId 发起新导入');
@@ -264,14 +286,28 @@ export function createPlanImportService(options: Options) {
     if (previews.size >= 20) previews.delete(previews.keys().next().value!);
     previews.set(token, preview); return preview;
   }
-  async function fresh(plan: PlanFile, scope: string) { return build(plan, scope, await readSnapshot(scope), load(), await currentSource(plan)); }
+  async function fresh(plan: PlanFile, scope: string) { return build(plan, scope, await readSnapshot(scope), load(scope), await currentSource(plan)); }
   return {
-    preview(input: unknown): Promise<PlanImportPreview> { return locked(async () => { const plan = canonical(input), scope = await options.scope(); return (await fresh(plan, scope)).view; }); },
-    confirm(input: z.input<typeof PlanImportConfirmSchema>): Promise<PlanImportResult> { return locked(async () => {
-      const { token, allowConflicts, allowDeletions } = PlanImportConfirmSchema.parse(input), approved = previews.get(token);
+    unresolved() {
+      return (options.partitionReceipts ? receiptFiles(file) : [file]).flatMap(source => {
+        const pending = readStore(source).pending;
+        return pending ? [{ scope: pending.scope, planId: pending.planId, key: pending.key, operationId: pending.request.operationId }] : [];
+      });
+    },
+    async preview(input: unknown): Promise<PlanImportPreview> {
+      const plan = canonical(input), scope = await options.scope();
+      return withReceiptLock(path(scope), async () => (await fresh(plan, scope)).view);
+    },
+    async confirm(input: z.input<typeof PlanImportConfirmSchema>): Promise<PlanImportResult> {
+      const { token, allowConflicts, allowDeletions } = PlanImportConfirmSchema.parse(input);
+      const original = previews.get(token);
+      if (!original) throw Error('导入预览已失效，请重新打开文件预览');
+      return withReceiptLock(path(original.scope), async () => {
+      const approved = previews.get(token);
       if (!approved || approved.expires <= Date.now()) throw Error('导入预览已失效，请重新打开文件预览');
       previews.delete(token);
       const { plan, scope } = approved; let applied = 0;
+      const save = (store: Store) => writeStore(path(scope), store);
       const partial = async (message: string): Promise<PlanImportResult> => {
         try {
           const next = await fresh(plan, scope);
@@ -283,10 +319,10 @@ export function createPlanImportService(options: Options) {
       let snapshot = await readSnapshot(scope);
       if (signature(snapshot) !== approved.signature) return partial('预览后资料已改变，请核对最新预览后再次确认');
       if (approved.view.canVerifyPending) {
-        const revisionStore = load(), revisionSaved = receipt(revisionStore, plan, scope), revisionSuccess = revisionProof(plan, scope, snapshot, revisionStore, await currentSource(plan));
+        const revisionStore = load(scope), revisionSaved = receipt(revisionStore, plan, scope), revisionSuccess = revisionProof(plan, scope, snapshot, revisionStore, await currentSource(plan));
         if (revisionSuccess) {
           try {
-            const result = await options.mutate(revisionSuccess.pending.request);
+            const result = await mutate(revisionSuccess.pending.request, scope);
             if (result.status !== 'applied' || result.transactionId !== revisionSuccess.journal.id || !revisionChangesMatch(plan, result.changes)) return partial('原修订回执与成功记录不一致，保留原请求，未继续导入');
             const after = await readSnapshot(scope);
             if (hash(await currentSource(plan)) !== hash(plan.basis!.source)) return partial('核对期间资料来源已改变，保留原请求，未继续导入');
@@ -295,10 +331,10 @@ export function createPlanImportService(options: Options) {
             return partial('已核对原修订并解除待确认保护，未再次修改或继续新增。请重新导出当前目标上下文后规划');
           } catch (error) { return partial(`${error instanceof Error ? error.message : '原修订核对中断'}；保留原请求，未继续修改`); }
         }
-        const store = load(), saved = receipt(store, plan, scope), proof = pendingProof(plan, scope, snapshot, store, await currentSource(plan));
+        const store = load(scope), saved = receipt(store, plan, scope), proof = pendingProof(plan, scope, snapshot, store, await currentSource(plan));
         if (!proof) return partial('原操作的成功证据或资料来源已改变，保留待核对请求，未重放');
         try {
-          const result = await options.mutate(proof.pending.request);
+          const result = await mutate(proof.pending.request, scope);
           if (result.status !== 'applied' || result.transactionId !== proof.journal.id || result.changes.length !== 1 || result.changes[0]?.entity !== proof.item.kind || result.changes[0]?.action !== 'create' || result.changes[0]?.id !== proof.entityId) return partial('原操作回执与成功记录不一致，保留待核对请求，未继续导入');
           const after = await readSnapshot(scope);
           if (plan.version !== 1 && hash(await currentSource(plan)) !== hash(plan.basis!.source)) return partial('核对期间资料来源已改变，保留原请求，未继续导入');
@@ -312,7 +348,7 @@ export function createPlanImportService(options: Options) {
       if (approved.view.rows.some(row => row.state === 'blocked')) return partial('存在被阻止的记录，未继续写入，请先核对');
       if (approved.facts.length && !allowConflicts) return partial('存在时间冲突，请明确勾选允许这些冲突后再确认');
       if (approved.view.requiresDeletionApproval && !allowDeletions) return partial('请明确勾选已核对删除清单后再确认；尚未修改任何事项');
-      let store = load(), saved = receipt(store, plan, scope);
+      let store = load(scope), saved = receipt(store, plan, scope);
       const latest = build(plan, scope, snapshot, store, await currentSource(plan));
       if (latest.view.rows.some(row => row.state === 'blocked')) return partial('当前资料来源或上下文已改变，未继续写入，请先核对');
       if (!store.plans.some(value => value.planId === plan.planId)) store.plans.push(saved);
@@ -326,7 +362,7 @@ export function createPlanImportService(options: Options) {
           if (!saved.revision) saved.revision = { before: prepareRevision(plan, snapshot).before, after: [] };
           const request = store.pending?.key === REVISION_KEY ? store.pending.request : revisionRequest(plan);
           store.pending = { planId: plan.planId, scope, key: REVISION_KEY, request }; save(store);
-          let result = await options.mutate(request);
+          let result = await mutate(request, scope);
           if (result.status === 'preview') {
             const immediate = current.facts.filter(fact => fact.participants.some(participant => revisionItems(plan).some(item => item.kind === 'block' && participant === `block:${item.targetId}`)));
             const knownConflicts = result.conflicts.every(conflict => conflict.kind === 'time' && conflict.conflictingIds.every(id => immediate.some(fact => [conflict.id, id].every(value => fact.participants.some(participant => participant.slice(participant.indexOf(':') + 1) === value)))));
@@ -334,7 +370,7 @@ export function createPlanImportService(options: Options) {
             if (!safeRevisionPreview(plan, saved.revision, result, request) || !allowed || !knownConflicts) { store.pending = null; save(store); return partial('后端修订或冲突超出本次批准范围，未确认修改，请重新预览'); }
             if (signature(await readSnapshot(scope)) !== expected || hash(await currentSource(plan)) !== hash(plan.basis!.source)) { store.pending = null; save(store); return partial('后端预览后资料已改变，未确认修订'); }
             store.pending.request = MutationRequestSchema.parse({ ...request, confirmed: true, confirmationToken: result.confirmationToken }); save(store);
-            result = await options.mutate(store.pending.request);
+            result = await mutate(store.pending.request, scope);
           }
           if (result.status !== 'applied') { store.pending = null; save(store); return partial(result.message || '修订尚未保存，请重新预览'); }
           if (!revisionChangesMatch(plan, result.changes)) throw Error('修订回执超出文件中的修改与删除清单，已停止后续导入');
@@ -362,7 +398,7 @@ export function createPlanImportService(options: Options) {
           const request = store.pending?.key === keyOf(item) ? store.pending.request : MutationRequestSchema.parse({ operationId: operationId(plan, item), origin: 'manual', mutations: [{ type: 'create', entity: item.kind, values: desired }] });
           const before = snapshot;
           store.pending = { planId: plan.planId, scope, key: keyOf(item), request }; save(store);
-          let result = await options.mutate(request);
+          let result = await mutate(request, scope);
           if (result.status === 'preview') {
             const proposed = result.details[0];
             const safeChange = result.details.length === 1 && proposed?.entity === item.kind && !proposed.before && proposed.after && matches(proposed.after, desired)
@@ -377,7 +413,7 @@ export function createPlanImportService(options: Options) {
             if (!safeChange || !allowed || !knownConflicts) { store.pending = null; save(store); return partial('后端要求的确认超出本次批准范围，请核对最新预览后继续'); }
             if (signature(await readSnapshot(scope)) !== expected) { store.pending = null; save(store); return partial('后端预览后资料已改变，请重新确认'); }
             store.pending.request = MutationRequestSchema.parse({ ...request, confirmed: true, confirmationToken: result.confirmationToken }); save(store);
-            result = await options.mutate(store.pending.request);
+            result = await mutate(store.pending.request, scope);
           }
           if (result.status !== 'applied') { store.pending = null; save(store); return partial(result.message || '该项尚未保存，请重新预览'); }
           const changes = result.changes.filter(change => change.action === 'create' && change.entity === item.kind);

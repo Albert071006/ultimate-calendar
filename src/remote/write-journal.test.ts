@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createWriteJournal } from './write-journal';
+import { createDesktopWriteJournal, createWriteJournal } from './write-journal';
+import { remoteReceiptScope } from './receipt-partitions';
 import type { NodeRemoteClient } from './node-client';
 import { writePrivate } from './private-file';
 
@@ -13,6 +14,25 @@ const result={ok:true as const,data:{status:'applied' as const,message:'已保�
 function fixture(){const root=mkdtempSync(join(tmpdir(),'calendar-native-journal-'));roots.push(root);const client={origin:'https://synthetic.example',getSession:vi.fn(async()=>({identity,deviceId,aiConfigured:false})),rpc:vi.fn(async()=>result),operation:vi.fn(async()=>({status:'unknown'}))} as unknown as NodeRemoteClient;return{file:join(root,'remote-write.json'),client};}
 
 describe('native durable write guard',()=>{
+  it('retains a legacy ordinary unknown for offline inspection after a new desktop generation writes', async () => {
+    const f = fixture();
+    vi.mocked(f.client.rpc).mockRejectedValueOnce(Error('synthetic unknown result'));
+    await expect(createWriteJournal(f.client, f.file).rpc('mutate', input('original-manual-id'))).rejects.toThrow();
+    const old = JSON.parse(readFileSync(f.file, 'utf8'));
+    const journal = createDesktopWriteJournal(f.client, f.file);
+    vi.mocked(f.client.getSession).mockResolvedValue({ identity: { ...identity, generation: 2 }, deviceId, aiConfigured: false });
+    await journal.rpc('mutate', input('new-manual-id', '另一个合成任务'));
+    expect(await journal.inspect()).toEqual({ status: 'none' });
+    expect(f.client.operation).not.toHaveBeenCalled();
+    const count = vi.mocked(f.client.getSession).mock.calls.length;
+    expect(journal.unresolved()).toEqual([{ scope: remoteReceiptScope(f.client.origin, { identity, deviceId }),
+      requestId: old.requestId, operationId: 'original-manual-id', method: 'mutate' }]);
+    expect(f.client.getSession).toHaveBeenCalledTimes(count);
+    vi.mocked(f.client.getSession).mockResolvedValue({ identity, deviceId, aiConfigured: false });
+    expect(await journal.inspect()).toMatchObject({ status: 'unknown', requestId: old.requestId });
+    await expect(journal.acknowledge(old.requestId)).rejects.toMatchObject({ status: 409 });
+    expect(journal.unresolved()).toHaveLength(1);
+  });
   it('rejects invalid input before creating a durable guard and remains usable for the next valid write',async()=>{const f=fixture(),journal=createWriteJournal(f.client,f.file);await expect(journal.rpc('mutate',{operationId:'synthetic-invalid',origin:'manual',mutations:[{type:'create',entity:'task',values:{title:''}}]})).rejects.toThrow();expect(existsSync(f.file)).toBe(false);expect(f.client.getSession).not.toHaveBeenCalled();expect(f.client.rpc).not.toHaveBeenCalled();expect(await journal.rpc('mutate',input('valid-business'))).toEqual(result);expect(f.client.rpc).toHaveBeenCalledTimes(1);});
   it('recovers a committed response after restart without a second mutation, despite a fresh business operationId',async()=>{
     const f=fixture();vi.mocked(f.client.rpc).mockRejectedValueOnce(Error('Synthetic dropped response after commit'));

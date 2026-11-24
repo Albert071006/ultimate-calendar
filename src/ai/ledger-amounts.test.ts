@@ -41,4 +41,9 @@ describe('user-stated ledger amounts', () => {
     expect(ledgerAmountQuestion(request, [payment(2300), payment(1900, 'wechat')], snapshot)).toBeUndefined();
     expect(ledgerAmountQuestion(request, [payment(1900), payment(2300, 'wechat')], snapshot)).toBeTruthy();
   });
+  it.each(['早餐微信10元晚餐20元', '10元早餐20元晚餐'])('checks the amount of each named purchase in one clause: %s', text => {
+    const request = { operationId: 'synthetic-title-per-amount', text };
+    expect(ledgerAmountQuestion(request, [payment(2000, 'alipay', '晚餐'), payment(1000, 'wechat', '早餐')], snapshot)).toBeUndefined();
+    expect(ledgerAmountQuestion(request, [payment(1000, 'alipay', '晚餐'), payment(2000, 'wechat', '早餐')], snapshot)).toBeTruthy();
+  });
 });

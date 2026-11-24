@@ -30,6 +30,15 @@ if (outageProxy) { outageProxy.listen(Number(new URL(origin).port), '127.0.0.1')
 // These are deliberately invalid provider credentials; this smoke only exercises configuration, never AI calls.
 const nativeAiKey = `synthetic-smoke-native-key-${crypto.randomUUID()}`, browserAiKey = `synthetic-smoke-browser-key-${crypto.randomUUID()}`;
 const syntheticAiKeys = [nativeAiKey, browserAiKey];
+async function desktopJournal(allowMissing = false) {
+  // This fresh smoke profile pairs one desktop to a single origin, instance and generation.
+  const directory = join(profile, 'remote-write.json.scopes');
+  const files = await readdir(directory).catch(error => { if (allowMissing && error.code === 'ENOENT') return []; throw error; });
+  const partitions = files.filter(name => /^[0-9a-f]{64}\.json$/.test(name));
+  if (allowMissing && !partitions.length) return Buffer.from('null');
+  assert(partitions.length === 1, 'Expected exactly one desktop write partition');
+  return readFile(join(directory, partitions[0]));
+}
 function withoutAiKeys(value, message) { const text = JSON.stringify(value); assert(syntheticAiKeys.every(key => !text.includes(key)), message); }
 async function assertPrivateProfileHasNoAiKey(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -108,8 +117,7 @@ try {
     }
     assert(recovered, 'Automatic refresh did not clear the disconnected-read error');
     assert(credentialBefore.equals(await readFile(join(profile, 'credentials', 'remote-device.bin'))), 'Read recovery changed pairing');
-    const readJournal = await readFile(join(profile, 'remote-write.json'), 'utf8').catch(error => { if (error.code === 'ENOENT') return 'null'; throw error; });
-    assert(JSON.parse(readJournal) === null, 'Read recovery created a pending write');
+    assert(JSON.parse((await desktopJournal(true)).toString('utf8')) === null, 'Read recovery created a pending write');
     console.log('PASS: real native disconnect/reconnect automatically cleared the read error, without re-pairing or creating a pending write.');
   }
   const personalContext = '姓名：云端合成同学；学号：SYN-CLOUD-001；职务：示例协会资料组成员';
@@ -141,7 +149,7 @@ try {
   assert(!(await readdir(profile)).includes('planner.sqlite'), 'Cloud mode created a second formal database');
   const credential = await readFile(join(profile, 'credentials', 'remote-device.bin')); assert(!credential.includes(Buffer.from('planner_dev_session')), 'Native credential was stored unencrypted');
   const ledger = await cdp('window.planner.ledgerSnapshot({month:"2030-01"})'); assert(ledger.ok && Number.isInteger(ledger.data.revision), 'Native ledger roundtrip failed');
-  const journalBeforeAiConfiguration = await readFile(join(profile, 'remote-write.json'));
+  const journalBeforeAiConfiguration = await desktopJournal();
   const firstConfiguration = await cdp('window.planner.retryApiKey()');
   assert(firstConfiguration.ok && firstConfiguration.data.scope === 'cloud' && firstConfiguration.data.cloudConfiguration?.revision === null, 'Native Key status did not read fresh cloud configuration');
   withoutAiKeys(firstConfiguration, 'Native Key status returned a Key');
@@ -165,7 +173,7 @@ try {
   withoutAiKeys(nativeCleared, 'Native Key clear response returned a Key');
   const browserAfterClear = await browserAiConfiguration();
   assert(!browserAfterClear.configured && browserAfterClear.revision === nativeCleared.data.cloudConfiguration.revision && browserAfterClear.revision !== browserSaved.revision, 'Browser missed native cloud Key clear');
-  assert(journalBeforeAiConfiguration.equals(await readFile(join(profile, 'remote-write.json'))), 'Cloud Key configuration changed ordinary write journal');
+  assert(journalBeforeAiConfiguration.equals(await desktopJournal()), 'Cloud Key configuration changed ordinary write journal');
   assert(!(await readdir(join(profile, 'credentials'))).includes('deepseek.bin'), 'Cloud Key configuration created a local provider credential');
   await cdp('setTimeout(() => window.close(), 10); true'); await Promise.race([once(desktop, 'exit'), wait(5000)]); assert(desktop.exitCode === 0, 'Remote desktop did not exit normally');
   await assertPrivateProfileHasNoAiKey(profile);

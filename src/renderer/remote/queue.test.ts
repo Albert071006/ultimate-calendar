@@ -193,7 +193,19 @@ describe('explicit conflict resolution', () => {
     const value = partition(); value.ledgers['2030-01'] = ledger(1, '2030-01'); value.ledgers['2030-02'] = ledger(8, '2030-02');
     const input = expense(); expect(captureBase('ledgerMutate', input, value)).toEqual({ revision: 8 });
     const item = pending(input); item.method = 'ledgerMutate'; item.status = 'conflict';
+    expect(() => rebaseWrite(item, value)).toThrow('结果未知');
+    item.result = { ok: false, error: { code: 'CONFLICT', message: '账本已更新', retryable: false } };
     expect(LedgerMutationRequestSchema.parse(rebaseWrite(item, value)).expectedRevision).toBe(8);
+    item.input = { ...input, month: undefined };
+    expect(rebaseWrite(item, value)).toMatchObject({ month: '2030-02', expectedRevision: 8 });
+    item.input = expense({}, { confirmDuplicate: true });
+    expect(() => rebaseWrite(item, value)).toThrow('需要回到原页面重新确认');
+    item.input = input;
+    const current = value.ledgers['2030-02']!;
+    const [change] = LedgerMutationRequestSchema.parse(input).changes;
+    if (change?.type !== 'putEntry') throw Error('Expected an expense');
+    current.entries.push({ ...change.entry, version: 1, createdAt: at, updatedAt: at, voided: false, sameDayBalanceOrder: 'after' });
+    expect(() => rebaseWrite(item, value)).toThrow('编号已在正式账本');
   });
 
   it('does not take a task version when a block has the same allowed identifier', () => {

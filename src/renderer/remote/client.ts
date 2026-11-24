@@ -8,7 +8,7 @@ import { LEDGER_QUERY_HEADER, LEDGER_QUERY_VERSION } from '../../shared/ledger-q
 import { applyPlannerPatch, PLANNER_SYNC_HEADER, PLANNER_SYNC_VERSION } from '../../shared/planner-sync';
 import { RemoteOperationSchema, RemoteSessionSchema, SESSION_RENEW_INTERVAL_MS, SESSION_RENEW_RETRY_MS, type RemoteMethod } from '../../shared/remote';
 import { remoteInputs, remoteOutputs } from '../../server/protocol';
-import { allowsOffline, captureBase, instant, localId, projectSnapshot, rebaseWrite, references, resolveAliases, writeLabel } from './queue';
+import { allowsOffline, captureBase, instant, ledgerMutationMonth, localId, projectSnapshot, rebaseWrite, references, resolveAliases, unverifiedLedgerConflict, writeLabel } from './queue';
 import { createOfflineStorage, emptyPartition, partitionKey, type OfflineStorage } from './storage';
 import type { DeviceSummary, OfflinePartition, PairedSession, PendingWrite, RecoveryArchive, RemoteClientState, RemoteController } from './types';
 
@@ -32,6 +32,13 @@ function draftEntryId(input: unknown) {
   const parsed = remoteInputs.ledgerMutate.safeParse(input);
   const change = parsed.success && parsed.data.changes.length === 1 ? parsed.data.changes[0] : undefined;
   return change?.type === 'putEntry' && change.expectedVersion === null ? change.entry.id : undefined;
+}
+function restoreQueueStatuses(saved: OfflinePartition) {
+  // Older clients classified a bare transport 409 as a business rejection.
+  for (const item of saved.queue) if (unverifiedLedgerConflict(item)) {
+    item.status = 'uncertain'; item.message = '尚未取得明确的账本回执，请查询原操作结果。';
+  }
+  return saved;
 }
 
 /** One durable outbox per service generation and paired device. No token is kept in browser storage. */
@@ -85,7 +92,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     const exclusive = async () => {
       const run = async () => {
         // A second tab must start from the latest durable outbox, never overwrite its sibling's drafts.
-        if (partition) { const latest = await storage.read<OfflinePartition>(partitionKey(origin, partition.session)); if (latest) partition = latest; }
+        if (partition) { const latest = await storage.read<OfflinePartition>(partitionKey(origin, partition.session)); if (latest) partition = restoreQueueStatuses(latest); }
         return action();
       };
       return typeof navigator !== 'undefined' && navigator.locks ? navigator.locks.request('planner-outbox:' + origin, run) : run();
@@ -108,7 +115,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
         const saved = key ? await storage.read<OfflinePartition>(key) : undefined;
         // The pointer must belong to this origin and the saved pairing, never another partition.
         if (saved && key === partitionKey(origin, saved.session)) {
-          partition = saved;
+          partition = restoreQueueStatuses(saved);
           cachedSessionAllowed = await storage.read<string>(authBlockKey) !== key;
           if (!cachedSessionAllowed) emit({ status: 'expired', session: null, message: '设备授权待重新核对，原修改仍保留。' });
         }
@@ -248,6 +255,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     }
     const key = partitionKey(origin, parsed);
     const next = sameIdentity(partition?.session ?? parsed, parsed) && partition ? clone() : await storage.read<OfflinePartition>(key) ?? emptyPartition(parsed);
+    restoreQueueStatuses(next);
     next.session = { ...parsed, csrfToken: '' };
     await persist(next); await storage.write(pointer, key); await storage.remove(authBlockKey);
     cachedSessionAllowed = true;
@@ -296,7 +304,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     }
     saved.result = result;
     if (!result.ok) {
-      saved.status = result.error.code === 'CONFLICT' ? 'conflict' : 'failed'; saved.message = result.error.message;
+      saved.status = item.method === 'ledgerMutate' && result.error.delivery === 'unknown' ? 'uncertain' : result.error.code === 'CONFLICT' ? 'conflict' : 'failed'; saved.message = result.error.message;
       await persist(next, true); return;
     }
     const data = result.data as Record<string, unknown>;
@@ -378,7 +386,8 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
       } catch (error) {
         if (error instanceof HttpFault && error.status === 507) throw error;
         const next = clone(); const saved = next.queue.find(value => value.id === id)!;
-        const definitive = error instanceof HttpFault && [400, 403, 409, 413, 415].includes(error.status);
+        const definitive = error instanceof HttpFault && [400, 403, 409, 413, 415].includes(error.status)
+          && !(item.method === 'ledgerMutate' && error.status === 409);
         saved.status = definitive && !confirmedReceipt(saved.result) ? (error.status === 409 ? 'conflict' : 'failed') : 'uncertain';
         saved.message = confirmedReceipt(saved.result) ? '服务已确认保存，最新资料尚未核对；不会重复提交。' : error instanceof Error ? error.message : '结果未知，请联网查询原操作'; await persist(next, true);
         networkFailure(error); if (state.status !== 'online') break;
@@ -559,7 +568,18 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
       if (state.status !== 'online') throw Error('请先重新连接资料服务');
       if (action === 'use-local') {
         if (item.status !== 'conflict') throw Error('只有明确的版本冲突可重新提出本机修改');
-        await refreshCanonical(); const next = clone(); const saved = next.queue.find(value => value.id === id)!;
+        if (item.method === 'ledgerMutate') {
+          const month = ledgerMutationMonth(remoteInputs.ledgerMutate.parse(item.input));
+          if (!month) throw Error('这项账目需要回到原页面重新确认');
+          // The ordinary ledger read can return an offline cache. A new request ID
+          // must be based on the authority's response for this specific month.
+          const result = await rpc('ledgerSnapshot', { month });
+          if (!result.ok) throw Error(result.error.message);
+          const ledger = result.data as LedgerSnapshot;
+          if (ledger.summary.month !== month) throw Error('服务返回的账本月份不匹配，请重新核对');
+          const updated = clone(); updated.ledgers[month] = ledger; updated.cachedAt = instant(); await persist(updated);
+        } else await refreshCanonical();
+        const next = clone(); const saved = next.queue.find(value => value.id === id)!;
         saved.input = rebaseWrite(item, next); saved.requestId = crypto.randomUUID(); delete saved.wireInput; delete saved.result; delete saved.preview;
         saved.base = captureBase(item.method, saved.input, next); saved.status = 'queued'; saved.message = '已基于最新资料重新提出修改'; await persist(next);
       } else if (action === 'confirm') {

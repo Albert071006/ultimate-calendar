@@ -70,15 +70,67 @@ describe('assistant image execution', () => {
     expect(payloads).toHaveLength(2);
   });
 
-  it('sends a historical user image to the ledger parser when the user explicitly follows up', async () => {
-    const { controller, payloads } = setup([route, expense]);
+  it('books exactly the inspected receipt when the next user turn explicitly refers to it', async () => {
+    const { controller, ledger, payloads } = setup([{ kind: 'query', reply: '图中是合成午饭收据' }, route, expense]);
+    const viewed = { operationId: 'view-receipt', text: '看看这张图片', image };
+    const reply = await controller.command(viewed);
+    if (!reply.ok) throw Error(reply.error.message);
+    expect(ledger.snapshot().entries.filter(entry => !entry.ruleKey)).toHaveLength(0);
     const request: CommandRequest = { operationId: 'history-image', text: '按这张图记账', history: [
-      { role: 'user', text: '', image }, { role: 'assistant', text: '图中是合成午饭收据', outcome: { domain: 'calendar', phase: 'query' } },
+      { role: 'user', text: viewed.text, image }, { role: 'assistant', text: reply.data.reply, outcome: reply.data.conversationState },
     ] };
-    expect((await controller.command(request)).ok).toBe(true);
-    expect(pictureUrls(payloads[0]!.messages)).toEqual([]);
-    expect(pictureUrls(payloads[1]!.messages)).toEqual([image.imageDataUrl]);
+    expect(await controller.command(request)).toMatchObject({ ok: true, data: { conversationState: { phase: 'saved' } } });
+    expect(pictureUrls(payloads[1]!.messages)).toEqual([]);
+    expect(pictureUrls(payloads[2]!.messages)).toEqual([image.imageDataUrl]);
+    expect(ledger.snapshot().entries.filter(entry => !entry.ruleKey)).toEqual([expect.objectContaining({
+      title: '合成午饭', amountCents: 2000, cashflows: [{ accountId: 'alipay', deltaCents: -2000 }],
+    })]);
     expect(await controller.command({ ...request, history: [{ role: 'user', text: '', image: { ...image, label: 'changed.png' } }] })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+  });
+
+  it('keeps an attachment-only answer to a read-only clarification from writing to the ledger', async () => {
+    const { controller, ledger, fetch } = setup([{ kind: 'clarification', reply: '需要放大查看。', questions: ['能再发一张清晰的图吗？'] }, route, expense]);
+    const first = { text: '帮我解释一下这张图', image };
+    const answer = await controller.command({ operationId: 'read-only', ...first });
+    if (!answer.ok) throw Error(answer.error.message);
+    expect(answer.data.conversationState?.phase).toBe('clarification');
+    const result = await controller.command({ operationId: 'clearer-picture', text: '', image, history: [
+      { role: 'user', ...first }, { role: 'assistant', text: answer.data.reply, outcome: answer.data.conversationState },
+    ] });
+    expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: 'clarification' } } });
+    expect(ledger.snapshot().entries.filter(entry => !entry.ruleKey)).toEqual([]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['query', 'clarification', 'saved'] as const)('does not use an unrelated receipt from a %s turn as the new expense amount', async phase => {
+    const { controller, ledger, payloads } = setup([route, expense]);
+    const result = await controller.command({ operationId: 'different-expense', text: '帮我记一笔新的午饭消费', history: [
+      { role: 'user', text: '看一下上周书店的20元收据', image },
+      { role: 'assistant', text: '这是书店收据。', outcome: { domain: 'ledger', phase } },
+    ] });
+    expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: 'clarification' } } });
+    expect(pictureUrls(payloads.at(-1)!.messages)).toEqual([]);
+    expect(ledger.snapshot().entries.filter(entry => !entry.ruleKey)).toEqual([]);
+  });
+
+  it('keeps the selected receipt through an account clarification without including an older receipt', async () => {
+    const { controller, ledger, payloads } = setup([route, { kind: 'clarification', question: '使用哪个账户？' }, expense]);
+    const oldImage = { ...image, imageDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAAA' };
+    const history: NonNullable<CommandRequest['history']> = [
+      { role: 'user', text: '看看这份旧收据', image: oldImage }, { role: 'assistant', text: '旧收据。', outcome: { domain: 'calendar', phase: 'query' } },
+      { role: 'user', text: '这张新收据是什么', image }, { role: 'assistant', text: '是午餐收据。', outcome: { domain: 'calendar', phase: 'query' } },
+      { role: 'user', text: '图里的商户是哪家？' }, { role: 'assistant', text: '合成餐厅。', outcome: { domain: 'calendar', phase: 'query' } },
+    ];
+    const text = '按这张图记账';
+    const question = await controller.command({ operationId: 'choose-receipt', text, history });
+    if (!question.ok) throw Error(question.error.message);
+    expect(question.data.conversationState?.phase).toBe('clarification');
+    const saved = await controller.command({ operationId: 'choose-account', text: '支付宝', history: [...history,
+      { role: 'user', text }, { role: 'assistant', text: question.data.reply, outcome: question.data.conversationState },
+    ] });
+    expect(saved).toMatchObject({ ok: true, data: { conversationState: { phase: 'saved' } } });
+    for (const payload of payloads.slice(1)) expect(pictureUrls(payload.messages)).toEqual([image.imageDataUrl]);
+    expect(ledger.snapshot().entries.filter(entry => !entry.ruleKey)).toEqual([expect.objectContaining({ amountCents: 2000 })]);
   });
 
   it('recovers a committed image request after a receipt interruption without another model call or duplicate', async () => {

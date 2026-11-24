@@ -3,7 +3,8 @@ import { BrowserWindow, Menu, app, dialog, ipcMain, safeStorage, session } from 
 import { join } from 'node:path';
 import { createNodeRemoteClient, RemoteClientError, type RemoteCredential } from '../remote/node-client';
 import { readPrivate, writePrivate } from '../remote/private-file';
-import { createWriteJournal } from '../remote/write-journal';
+import { createDesktopWriteJournal } from '../remote/write-journal';
+import { remoteReceiptScope } from '../remote/receipt-partitions';
 import { REMOTE_METHODS, REMOTE_READ_METHODS, type RemoteMethod } from '../shared/remote';
 import { MAX_IMAGE_BYTES, SetApiKeyRequestSchema, SaveSettingsRequestSchema, SnapshotSchema, ImportSourceRequestSchema, LocalSourceEvidenceRequestSchema, CourseImportRequestSchema, MutationRequestSchema, type ApiError, type ChangedEvent } from '../shared/contracts';
 import { boundedFile, imageFromBytes } from './files';
@@ -38,7 +39,7 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
       const code = readPrivate(config.pairingCodeFile, 256); if (!code) throw Error('配对码文件不存在');
       await client.pair(code.toString('utf8').trim(), config.deviceName);
     }
-    const journal = createWriteJournal(client, join(directory, 'remote-write.json'));
+    const journal = createDesktopWriteJournal(client, join(directory, 'remote-write.json'));
     const sourceCache = createRemoteSourceCache(directory);
     // Same frame as the local window: the paper page runs to the top, with only the system caption buttons overlaid.
     const window = new BrowserWindow({ width: 1440, height: 940, minWidth: 980, minHeight: 680, show: false, title: '终极日历 · 云端资料', backgroundColor: '#f5f0e6', icon: join(__dirname, '../assets/app-icon.png'),
@@ -55,15 +56,12 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
     const planSnapshot = async () => { const result = remoteOutputs.snapshot.parse(await journal.rpc('snapshot')); if (!result.ok) throw new Error(result.error.message); return result.data; };
     const planExport = createNativePlanExport({ window: () => window, snapshot: planSnapshot, source: planSource });
     const busyExport = createNativeBusyExport({ window: () => window, snapshot: planSnapshot, source: planSource });
-    const planImport = createNativePlanImport({ directory: join(directory, 'plan-import'), resourceDirectory, window: () => window, changed,
+    const planImport = createNativePlanImport({ directory: join(directory, 'plan-import'), partitionReceipts: true, resourceDirectory, window: () => window, changed,
       source: planSource,
-      scope: async () => { const current = await client.getSession(); return JSON.stringify({ origin: client.origin, identity: current.identity, deviceId: current.deviceId }); },
+      scope: async () => remoteReceiptScope(client.origin, await client.getSession()),
       snapshot: planSnapshot,
-      mutate: async input => {
-        const pending = await journal.inspect();
-        if (pending.status !== 'none' && (pending.method !== 'mutate' || pending.operationId !== input.operationId))
-          throw new Error('另一项云端操作结果尚未核对。请先重试原操作，或从托盘菜单选择“核对云端操作”，然后重选原计划文件继续');
-        const result = remoteOutputs.mutate.parse(await journal.rpc('mutate', input)); if (!result.ok) throw new Error(result.error.message); return result.data;
+      mutate: async (input, scope) => {
+        const result = remoteOutputs.mutate.parse(await journal.rpc('mutate', input, { scope, operationId: input.operationId })); if (!result.ok) throw new Error(result.error.message); return result.data;
       },
     });
     const files = createRemoteFiles({ window, resourceDirectory, rpc: journal.rpc, client, canRestore: async () => (await journal.inspect()).status === 'none' });
@@ -193,7 +191,33 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
       finally { inspecting = false; }
     };
     Menu.setApplicationMenu(null);
-    shell.setTrayItems([{ label: '刷新共用资料', click: () => changed() }, { label: '核对云端操作', click: () => { void inspect(); } }]);
+    async function inspectStoredReceipts() {
+      try {
+        const plans = planImport.unresolved(), writes = journal.unresolved();
+        const entries = plans.map(plan => {
+          const write = writes.find(row => row.scope === plan.scope && row.operationId === plan.operationId);
+          return { scope: plan.scope, detail: `计划：${plan.planId}\n步骤：${plan.key}\n操作编号：${plan.operationId}${write ? '\n请求编号：' + write.requestId : ''}\n\n请切回对应连接和设备，重新打开原计划文件核对。` };
+        });
+        for (const write of writes) {
+          if (plans.some(plan => plan.scope === write.scope && plan.operationId === write.operationId)) continue;
+          entries.push({ scope: write.scope, detail: `操作类型：${write.method}\n请求编号：${write.requestId}${write.operationId ? '\n操作编号：' + write.operationId : ''}\n\n请在对应设备及连接中使用托盘“核对云端操作”，或请服务管理员核对。` });
+        }
+        if (!entries.length) { await dialog.showMessageBox(window, { message: '各连接均无待核对的操作' }); return; }
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i]!;
+          let connection = '旧连接标识无法解析';
+          try {
+            const { origin, identity, deviceId } = JSON.parse(entry.scope);
+            connection = `${new URL(origin).origin}\n资料实例：${identity.dataInstanceId} · 第 ${identity.generation} 代\n设备：${deviceId}`;
+          } catch { /* Preserve even an unrecognised legacy partition for local review. */ }
+          const answer = await dialog.showMessageBox(window, { message: `本机待核对操作（${i + 1}/${entries.length}）`, detail: `${connection}\n${entry.detail}`,
+            buttons: i + 1 < entries.length ? ['关闭', '查看下一项'] : ['关闭'], defaultId: 0, cancelId: 0 });
+          if (answer.response !== 1) break;
+        }
+      } catch { await dialog.showMessageBox(window, { type: 'error', message: '无法读取本机操作回执，请检查配置目录；原记录仍保留。' }); }
+    }
+    shell.setTrayItems([{ label: '刷新共用资料', click: () => changed() }, { label: '核对云端操作', click: () => { void inspect(); } },
+      { label: '查看各连接待核对的操作', click: () => { void inspectStoredReceipts(); } }]);
     // Canonical snapshots are fetched by the existing client on this event. No local DB or QQ socket is opened.
     const poll = setInterval(() => { if (window.isVisible() && !window.isMinimized()) { changed(); void collector?.invoke('captureSnapshot').then(result => { if (result.ok && !window.isDestroyed()) window.webContents.send('planner:capture-changed', result.data); }).catch(() => {}); } }, 30_000);
     window.on('focus', () => changed());

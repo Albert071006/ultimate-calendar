@@ -283,8 +283,8 @@ describe('main assistant local ledger commands',()=>{
   it.each([false, true])('keeps a fully rolled-back duplicate batch as the latest clarification (existing=%s)', async existing => {
     const values = { ...expense('alipay').changes[0]!.values, date: null, dateNote: '具体日期待确认', title: '合成饮用水', amountCents: 500, personalCents: 500,
       cashflows: [{ accountId: 'alipay', deltaCents: -500 }] };
-    const batch = { kind: 'mutate', changes: [0, 1].map(index => ({ type: 'createEntry', key: `new:${index}`, values })) };
-    const { controller, ledger, payloads, intents } = setup([route, batch]);
+    const batch = { kind: 'mutate', changes: [0, 1].map(index => ({ type: 'createEntry', key: `new:${index}`, values, confirmDuplicate: true })) };
+    const { controller, ledger, payloads } = setup([route, batch]);
     if (existing) importSynthetic(ledger, [syntheticEntry('existing-synthetic-water', { ...values, kind: 'expense', category: '餐饮' })]);
     const before = ledger.snapshot();
     const undo = vi.spyOn(ledger, 'undo');
@@ -299,15 +299,20 @@ describe('main assistant local ledger commands',()=>{
     expect(first.data.reply).toContain('本次整批账目均未保存');
     expect(first.data.reply).toContain('相同月份（日期待确认）');
     expect(first.data.reply).toContain('各自真实发生的不同笔交易');
+    expect(first.data.reply).toMatch(/^重复核对单号 [a-f0-9]{16}/u);
+    expect(first.data.reply).toContain(existing ? '原账（编号末段' : '本批第1笔');
     expect(ledger.snapshot()).toEqual(before);
     expect(await controller.command(request)).toEqual(first);
     expect(payloads).toHaveLength(2);
 
-    // A clear answer to a pending ledger question goes straight to its parser.
-    intents.push({ ...batch, changes: batch.changes.map(change => ({ ...change, confirmDuplicate: true })) });
+    // Only an explicit reply to the actual stored review can release this batch.
     const confirmation: CommandRequest = { operationId: `synthetic-confirm-duplicate-${existing}`, text: '是', history: [
       ...oldHistory, { role: 'user', text: request.text }, { role: 'assistant', text: first.data.reply, outcome: first.data.conversationState },
     ] };
+    const altered = { ...confirmation, operationId: 'synthetic-altered-review', history: confirmation.history!.map(turn =>
+      turn.role === 'assistant' && turn.text === first.data.reply ? { ...turn, text: turn.text.replace('5.00', '9.00') } : turn) };
+    expect(await controller.command(altered)).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    expect(ledger.snapshot()).toEqual(before);
     const saved = await controller.command(confirmation);
     expect(saved).toMatchObject({ ok: true, data: { conversationState: { domain: 'ledger', phase: 'saved' } } });
     const after = ledger.snapshot();
@@ -319,14 +324,29 @@ describe('main assistant local ledger commands',()=>{
       expect.objectContaining({ title: '合成饮用水', date: null, month: '2026-10', amountCents: 500, personalCents: 500, cashflows: [{ accountId: 'alipay', deltaCents: -500 }] }),
     ]);
     expect(undo).not.toHaveBeenCalled();
-    for (const payload of payloads.slice(2)) {
-      expect(payload.messages.at(-2)?.role).toBe('assistant');
-      expect(payload.messages.at(-2)?.content).toContain(first.data.reply);
-      expect(JSON.parse(payload.messages.at(-1)!.content)).toMatchObject({ userCommand: '是' });
-    }
     expect(await controller.command(confirmation)).toEqual(saved);
+    expect(await controller.command({ ...confirmation, operationId: 'synthetic-repeat-confirmation' })).toMatchObject({ ok: true, data: { conversationState: { phase: 'saved' } } });
     expect(ledger.snapshot()).toEqual(after);
-    expect(payloads).toHaveLength(3);
+    expect(payloads).toHaveLength(2);
+  });
+
+  it('requires a fresh duplicate review after an intervening ledger change', async () => {
+    const proposal = expense('alipay');
+    const { controller, ledger, payloads } = setup([route, proposal]);
+    const original = syntheticEntry('synthetic-original-lunch', { ...proposal.changes[0]!.values, kind: 'expense' });
+    importSynthetic(ledger, [original]);
+    const request = { operationId: 'synthetic-stale-review', text: '合成午饭20元支付宝' };
+    const review = await controller.command(request);
+    if (!review.ok || review.data.conversationState?.phase !== 'clarification') throw Error('Expected a duplicate review');
+    ledger.mutate({ operationId: 'synthetic-new-ledger-state', expectedRevision: ledger.snapshot().revision, changes: [
+      { type: 'voidEntry', id: original.id, expectedVersion: 1, note: '合成核销' },
+    ] });
+    const before = ledger.snapshot();
+    expect(await controller.command({ operationId: 'synthetic-confirm-obsolete-review', text: '是', history: [
+      { role: 'user', text: request.text }, { role: 'assistant', text: review.data.reply, outcome: review.data.conversationState },
+    ] })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    expect(ledger.snapshot()).toEqual(before);
+    expect(payloads).toHaveLength(2);
   });
 
   it.each([false, true])('does not present an unproven or mismatched duplicate as a safe clarification (mismatch=%s)', async mismatch => {

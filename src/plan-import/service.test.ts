@@ -7,7 +7,8 @@ import { createPlanner } from '../domain/planner';
 import { apiResultSchema, MutationRequestSchema, MutationResultSchema, type MutationRequestInput, type MutationResult } from '../shared/contracts';
 import { PLAN_FILE_EXAMPLE, type PlanFileInput } from '../shared/plan-import';
 import { createPlanImportService } from './service';
-import { createWriteJournal } from '../remote/write-journal';
+import { createDesktopWriteJournal, createWriteJournal } from '../remote/write-journal';
+import { remoteReceiptScope } from '../remote/receipt-partitions';
 import type { NodeRemoteClient } from '../remote/node-client';
 import { buildPlanContext } from './context';
 import { PlanExportRequestSchema, type PlanSource } from '../shared/plan-context';
@@ -33,6 +34,80 @@ function insert(f: ReturnType<typeof fixture>, mutations: MutationRequestInput['
 }
 
 describe('JSON plan creation coordinator', () => {
+  it('serializes two coordinators for one cloud partition while another partition continues', async () => {
+    const a = fixture(), b = fixture();
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; }), resume = new Promise<void>(resolve => { release = resolve; });
+    const first = createPlanImportService({ ...a.options, partitionReceipts: true,
+      mutate: async input => { entered(); await resume; return a.mutate(input); } });
+    const same = createPlanImportService({ ...a.options, partitionReceipts: true });
+    const other = createPlanImportService({ ...b.options, directory: a.directory, partitionReceipts: true, scope: async () => 'another-synthetic-partition' });
+    const plan = { ...a.plan, tasks: [], blocks: [], goals: [a.plan.goals![0]!] };
+    const [p, q] = await Promise.all([first.preview(plan), same.preview(plan)]);
+    const saving = first.confirm({ token: p.token }); await started;
+    const queued = same.confirm({ token: q.token });
+    try {
+      const r = await other.preview(plan);
+      expect(await other.confirm({ token: r.token })).toMatchObject({ status: 'complete', applied: 1 });
+      expect(a.mutate).not.toHaveBeenCalled();
+    } finally { release(); }
+    expect(await saving).toMatchObject({ status: 'complete', applied: 1 });
+    expect(await queued).toMatchObject({ status: 'partial', applied: 0 });
+    expect(a.mutate).toHaveBeenCalledTimes(1); expect(b.mutate).toHaveBeenCalledTimes(1);
+  });
+  it.each(['origin', 'instance', 'generation', 'device'])('isolates a legacy unknown cloud import after a change of %s and resumes only on the original connection', async dimension => {
+    const a = fixture(), b = fixture(), root = a.directory;
+    const original = { origin: 'https://synthetic.example', identity: { protocolVersion: 1 as const, dataInstanceId: '11111111-1111-4111-8111-111111111111', generation: 1 }, deviceId: '22222222-2222-4222-8222-222222222222' };
+    const other = { ...original, identity: { ...original.identity } };
+    if (dimension === 'origin') other.origin = 'https://other.example';
+    if (dimension === 'instance') other.identity.dataInstanceId = '33333333-3333-4333-8333-333333333333';
+    if (dimension === 'generation') other.identity.generation++;
+    if (dimension === 'device') other.deviceId = '44444444-4444-4444-8444-444444444444';
+    let current = original, drop = true;
+    const ids: { scope: string; requestId: string }[] = [];
+    const scope = async () => remoteReceiptScope(current.origin, current);
+    const lookup = vi.fn(async () => ({ status: 'unknown' }));
+    const client = { get origin() { return current.origin; }, getSession: async () => current, operation: lookup,
+      rpc: async (_method: string, input: MutationRequestInput, requestId: string, expected?: string) => {
+        if (expected) expect(expected).toBe(await scope());
+        ids.push({ scope: await scope(), requestId });
+        if (drop) { drop = false; throw Error('synthetic disconnected before commit'); }
+        return { ok: true, data: await (current === original ? a : b).mutate(input) };
+      },
+    } as unknown as NodeRemoteClient;
+    const file = join(root, 'remote-write.json'), legacy = createWriteJournal(client, file);
+    const snapshot = async () => (current === original ? a : b).planner.snapshot();
+    const applied = (value: unknown) => {
+      const result = apiResultSchema(MutationResultSchema).parse(value);
+      if (!result.ok) throw Error(result.error.message);
+      return result.data;
+    };
+    a.service = createPlanImportService({ directory: root, scope, snapshot, mutate: async input => applied(await legacy.rpc('mutate', input)) });
+    const plan = { ...a.plan, tasks: [], blocks: [], goals: [a.plan.goals![0]!] };
+    expect(await run(a, plan)).toMatchObject({ status: 'partial' });
+    const oldRequest = ids[0]!;
+    const reopen = () => {
+      const journal = createDesktopWriteJournal(client, file);
+      return createPlanImportService({ directory: root, partitionReceipts: true, scope, snapshot,
+        mutate: async (input, expected) => applied(await journal.rpc('mutate', input, { scope: expected, operationId: input.operationId })) });
+    };
+    a.service = reopen();
+    const pending = a.service.unresolved();
+    expect(pending).toMatchObject([{ scope: oldRequest.scope, planId: plan.planId }]);
+    expect(JSON.stringify(pending)).not.toContain(plan.goals[0]!.title);
+    await expect(a.service.preview({ ...plan, planId: 'different-plan' })).rejects.toThrow(/另一份计划/);
+    const stale = await a.service.preview(plan);
+    current = other;
+    await expect(a.service.confirm({ token: stale.token })).rejects.toThrow(/身份已改变/);
+    expect(await run(a, plan)).toMatchObject({ status: 'complete', applied: 1 });
+    expect(ids).toHaveLength(2); expect(ids[1]!.requestId).not.toBe(oldRequest.requestId);
+    expect(a.planner.snapshot().goals).toHaveLength(0); expect(b.planner.snapshot().goals).toHaveLength(1);
+    expect(lookup).not.toHaveBeenCalled(); expect(a.service.unresolved()).toEqual(pending);
+    current = original; a.service = reopen();
+    expect(await run(a, plan)).toMatchObject({ status: 'complete', applied: 1 });
+    expect(ids[2]).toEqual(oldRequest); expect(lookup).toHaveBeenCalledWith(oldRequest.requestId, oldRequest.scope);
+    expect(a.service.unresolved()).toEqual([]); expect(a.planner.snapshot().goals).toHaveLength(1);
+  });
   it('blocks an implicit multi-slot plan before any writes and accepts an explicit choice', async () => {
     const f = fixture(), first = f.plan.blocks![0]!;
     f.plan.blocks!.push({ ...first, id: 'second-session', start: '2026-11-03T19:00:00+08:00', end: '2026-11-03T20:00:00+08:00' });

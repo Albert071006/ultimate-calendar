@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ledgerAccounts, LedgerEntryDraftSchema, type LedgerAccount, type LedgerAccountId, type LedgerEntry, type LedgerEntryKind, type LedgerMutationRequest, type LedgerSnapshot } from '../../../shared/ledger';
 import { isLedgerLoanKind as isLoanKind, ledgerLoanAllowsAccount, ledgerLoans } from '../../../shared/ledger-loans';
 import { ledgerCategorySuggestions } from '../../../shared/ledger-categories';
+import { duplicateLedgerEntry } from '../../../shared/ledger-duplicates';
 import { operationId, todayDate } from '../../calendar-layout';
 import { localDateTime } from '../../calendar-timeline';
 import { ledgerMoney } from './money';
@@ -72,7 +73,8 @@ export function EntryEditor({ entry, snapshot, busy, error, save, close }: { ent
   const [adjustmentRows, setAdjustmentRows] = useState<AdjustmentRow[]>(() => entry?.adjustments.length
     ? entry.adjustments.map(item => ({ key: operationId(), targets: item.targetEntryIds, amount: centsInput(item.amountCents), note: item.note }))
     : [emptyAdjustment()]);
-  const [confirmDuplicate, setConfirmDuplicate] = useState(false);
+  const [review, setReview] = useState<{ draft: string; revision: number; id: string; version: number; approved: boolean } | null>(null);
+  const reviewedEntry = review?.revision === snapshot.revision ? snapshot.entries.find(item => item.id === review.id && item.version === review.version && !item.voided) : undefined;
   const [counterparty, setCounterparty] = useState(entry?.counterparty ?? '');
   const loanKind = isLoanKind(kind), settlingLoan = kind === 'loan_repay' || kind === 'loan_collect';
   const entryAccounts = accounts.filter(value => !isLoanKind(kind) || ledgerLoanAllowsAccount(kind, value.kind));
@@ -127,10 +129,18 @@ export function EntryEditor({ entry, snapshot, busy, error, save, close }: { ent
         incomeCents: kind === 'income' ? amountCents : kind === 'reimbursement' ? parseMoney(extraIncome || '0', '已确认额外收入') : entry?.kind === kind ? entry.incomeCents : 0,
         assetSaleCents: kind === 'asset_sale' ? amountCents : entry?.kind === kind ? entry.assetSaleCents : 0,
       });
+      const signature = JSON.stringify(draft);
+      const confirmDuplicate = !!reviewedEntry && review?.approved === true && review.draft === signature;
+      if (!confirmDuplicate) {
+        const match = !entry && snapshot.entries.find(item => duplicateLedgerEntry(item, draft));
+        setReview(match ? { draft: signature, revision: snapshot.revision, id: match.id, version: match.version, approved: false } : null);
+      }
       if (await save([{ type: 'putEntry', entry: draft, expectedVersion: entry?.version ?? null, confirmDuplicate, note: entry ? reason : '手工记账' }])) close();
     } catch (value) { setFormError(value instanceof Error ? value.message : '请检查填写内容。'); }
   };
-  return <form className="editor-form ledger-form" onSubmit={event => void submit(event)}><div className="form-grid"><label>类型<select value={kind} onChange={event => changeKind(event.target.value as LedgerEntryKind)}>{Object.entries(kinds).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label><label>项目<input required maxLength={500} value={title} onChange={event => setTitle(event.target.value)} /></label><CategoryCombobox value={category} options={ledgerCategorySuggestions(snapshot.entries)} onChange={setCategory} /><label>{unknownDate ? '发生月份' : '发生日期'}<input required type={unknownDate ? 'month' : 'date'} value={unknownDate ? month : date} onChange={event => unknownDate ? setMonth(event.target.value) : setDate(event.target.value)} /></label></div>
+  return <form className="editor-form ledger-form" onSubmit={event => void submit(event)} onChangeCapture={event => {
+    if (review && (event.target as HTMLElement).getAttribute('name') !== 'confirmDuplicate') setReview(null);
+  }}><div className="form-grid"><label>类型<select value={kind} onChange={event => changeKind(event.target.value as LedgerEntryKind)}>{Object.entries(kinds).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label><label>项目<input required maxLength={500} value={title} onChange={event => setTitle(event.target.value)} /></label><CategoryCombobox value={category} options={ledgerCategorySuggestions(snapshot.entries)} onChange={setCategory} /><label>{unknownDate ? '发生月份' : '发生日期'}<input required type={unknownDate ? 'month' : 'date'} value={unknownDate ? month : date} onChange={event => unknownDate ? setMonth(event.target.value) : setDate(event.target.value)} /></label></div>
     <p className="ledger-form-note">分类可直接填写新名称，保存后会出现在分类统计和筛选中。</p>
     <label className="ledger-checkbox"><input type="checkbox" checked={unknownDate} onChange={event => setUnknownDate(event.target.checked)} />仅确定月份，日期待确认</label>{unknownDate && <label>日期说明<input value={dateNote} onChange={event => setDateNote(event.target.value)} placeholder="例如：10 月 4 日或 5 日" /></label>}
     {kind !== 'adjustment' && <div className="form-grid">
@@ -171,7 +181,12 @@ export function EntryEditor({ entry, snapshot, busy, error, save, close }: { ent
         ? '选择原消费，填写要冲减的个人开销。' : '只收回代垫时，选择返款关联的原账，冲减金额填 0。已计入本人开销的退款或报销另选冲减对象和金额。'}</p>
     </fieldset>}
     <label>备注<textarea rows={2} value={note} onChange={event => setNote(event.target.value)} /></label>{entry && <label>更正说明<input required value={reason} onChange={event => setReason(event.target.value)} placeholder="例如：补充支付账户为支付宝" /></label>}
-    {(/重复|已有相同|另一笔/.test(error) || confirmDuplicate) && <label className="ledger-checkbox"><input type="checkbox" checked={confirmDuplicate} onChange={event => setConfirmDuplicate(event.target.checked)} />我已核对，这是另一笔真实交易</label>}
+    {review && reviewedEntry && (/已有相同(?:日期|月份)/.test(error) || review.approved) && <fieldset>
+      <legend>核对重复账目</legend>
+      <p>{reviewedEntry.date ?? reviewedEntry.month} · {reviewedEntry.title} · {ledgerMoney(reviewedEntry.amountCents)}（原账编号末段 {reviewedEntry.id.slice(-16)}）</p>
+      <label className="ledger-checkbox"><input name="confirmDuplicate" type="checkbox" disabled={busy} checked={review.approved}
+        onChange={event => setReview({ ...review, approved: event.target.checked })} />我已核对，这是另一笔真实交易</label>
+    </fieldset>}
     {(formError || error) && <p role="alert" className="error">{formError || error}</p>}<footer className="form-footer"><button type="button" disabled={busy} onClick={close}>取消</button><button className="primary" type="submit" disabled={busy}>{busy ? '保存中…' : entry ? '保存更正' : '保存账单'}</button></footer>
   </form>;
 }

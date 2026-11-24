@@ -85,7 +85,7 @@ setBalance只在用户实际给余额快照时使用，不是收入，禁止根�
 query只返回时间/账户/分类/关键词过滤及detail=summary|entries|balances|receivables|loans，由本地程序读取完整数据计算。查“我借的钱还欠多少、借款还剩多少、谁欠我借款、借入／借出明细、还款进度”用detail=loans，默认query={}，跨月计算当前全部本金的待还／待收，不默认限制正在看的月份；指定对方可用search，指定原始借款日期才加日期过滤，结算仍包含后续归还。查“待收回、未收回的代垫、待收回金额来源”用detail=receivables，程序会逐笔列付款、个人承担、关联返款与未收回余额，也能解释已结清的原差额；明确说借款则loans。不要把“这待收回的300块”中的近似总数写入search，也不要只因最近记录未包含所有明细就问用户提供账单；查询可读取全账本，不依赖这里截取的entries。
 活动/用途查询必须保留主题条件，例如合成问题“这个月旅行花了多少”使用month加search="旅行"，不能只按某一天统计全部流水。searchFields指定搜索项目title、备注note、对方counterparty或记账原文originalText；通常只搜前三者，明确“备注标记旅行”时用searchFields=["note"]。同批每笔可能共享整段originalText，不能因原文某处提到旅行就把全批当旅行消费；仅当用户明确要求查原文时才搜索originalText。entryIds可限定已经确定的真实记录集合，空数组表示没有记录，不能擅自扩成全账。entryIndex中的note是最多300字预览，noteTruncated=true时不能据此断言备注无内容，需read_entries读取详情或query查询完整账本。
 查询范围确有歧义时，clarification应附queryChoices（2至5个{label,query,detail}），question解释差别，label写清每个范围。只给有实际不同含义的只读查询选项，不用它表示记账授权；程序会逐项显示编号并保留选中范围。“第一个/第二个”承接紧邻选项，不能只留下日期而丢掉主题、账户、分类或选定记录。用户已明确活动或备注范围就直接query，不额外询问“统计全天还是活动”。不要在clarification自行编造或口算总额，交给程序查询计算。
-查询日期：用户明确指定年月或日期范围优先；“上周”等按真实今天计算from/to。“这里、这笔待收回、图表里的金额”等没指定日期时用context.defaultQueryMonth（正在查看的账单月份；未打开账单页则当前年月）。currentView只影响查询；新交易未说日期仍按context.now的北京时间今天，不按浏览月份或日历选中日期记账。需要更正/关联某笔记录而无法唯一定位时才询问，不凭金额盲配。createEntry.confirmDuplicate只有用户明确表示“确实另一笔/确认重复仍记”才true。紧邻上一轮为账本重复检查的clarification，且明确说明整批未保存、询问同额记录是否各自真实发生时，用户回复“是/确认/都是不同笔”就是对此问题的确认：继续该批原始记账需求，将已确认的重复createEntry设confirmDuplicate=true，保留每笔项目、金额、账户和日期，不合并同额多笔，也不要只保存重复的那一笔。只回答当前最近的澄清，不能跳回更早已完成的撤销或其他操作；无对应重复澄清时不能仅凭孤立的“是”绕过重复检查。undo仅用于明确撤销记账。未提供金额、收支方向有歧义、退款目标不明确或部分冲减分配不明时clarification。不要自行返回“已记账”。` }, ...assistantRequestMessages(ledgerPromptContext(context, detailIds), request.text, request.history, request)];
+查询日期：用户明确指定年月或日期范围优先；“上周”等按真实今天计算from/to。“这里、这笔待收回、图表里的金额”等没指定日期时用context.defaultQueryMonth（正在查看的账单月份；未打开账单页则当前年月）。currentView只影响查询；新交易未说日期仍按context.now的北京时间今天，不按浏览月份或日历选中日期记账。需要更正/关联某笔记录而无法唯一定位时才询问，不凭金额盲配。重复检查由应用执行。模型不得确认重复。用户确认重复提醒时，应用只提交上次展示过的原草稿。undo仅用于明确撤销记账。未提供金额、收支方向有歧义、退款目标不明确或部分冲减分配不明时clarification。不要自行返回“已记账”。` }, ...assistantRequestMessages(ledgerPromptContext(context, detailIds), request.text, request.history, request)];
 }
 
 export function ledgerChanges(intent: Extract<LedgerIntent,{kind:'mutate'}>, snapshot: LedgerSnapshot, request: CommandRequest, knownIds: Set<string>, now = new Date().toISOString()): LedgerMutationRequest['changes'] {
@@ -124,7 +124,7 @@ export function ledgerChanges(intent: Extract<LedgerIntent,{kind:'mutate'}>, sna
         relatedEntryIds: change.type === 'updateEntry' && change.patch.relatedEntryIds === undefined ? values.relatedEntryIds : values.relatedEntryIds.map(ref),
         adjustments: change.type === 'updateEntry' && change.patch.adjustments === undefined ? values.adjustments : values.adjustments.map(a => ({ ...a,targetEntryIds:a.targetEntryIds.map(ref) })) });
       // Metadata is not part of an editable draft, including when merging an existing entry.
-      return [{ type:'putEntry',entry,expectedVersion:change.type === 'updateEntry' ? change.expectedVersion : null,confirmDuplicate:change.type === 'createEntry' && change.confirmDuplicate,note:change.type === 'updateEntry' ? change.note : '通过生活助手记账' }];
+      return [{ type:'putEntry',entry,expectedVersion:change.type === 'updateEntry' ? change.expectedVersion : null,confirmDuplicate:false,note:change.type === 'updateEntry' ? change.note : '通过生活助手记账' }];
     }
     if (change.type === 'voidEntry') return [{ ...change,id:ref(change.id) }];
     if (change.type === 'updateRules') {
