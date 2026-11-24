@@ -1,11 +1,11 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react';
 import type { CalendarItem, Snapshot } from '../../../shared/contracts';
 import type { Selection, ScheduleDraft } from '../../components/Calendar';
 import { buildCalendar } from '../../../domain/calendar';
-import { dayDistance } from '../../../domain/time';
+import { addCalendarDays, dayDistance, mondayWeekday } from '../../../domain/time';
 import { DEFAULT_ACTIVITY_MINUTES } from '../../../domain/activity-duration';
-import { calendarDays, clipInterval, moveDate, todayDate, type CalendarView } from '../../calendar-layout';
+import { calendarDays, moveDate, todayDate, type CalendarView } from '../../calendar-layout';
 import { DAY_HEIGHT, HOUR_HEIGHT, dayStart, localDateTime, minuteAt, minutePosition, positionIntervals, draftRange } from '../../calendar-timeline';
 import { calendarAttention } from '../../calendar-attention';
 import { CurrentTimeIndicator, currentTimePosition } from '../../components/CurrentTimeIndicator';
@@ -17,6 +17,25 @@ import '../../components/calendar/Calendar.css';
 
 export type PhoneView = Extract<CalendarView, 'day' | 'three-day' | 'month'>;
 const viewNames: [PhoneView, string][] = [['day', '日'], ['three-day', '3天'], ['month', '月']];
+
+function indexDays(snapshot: Snapshot, days: string[], pending: boolean) {
+  const itemsByDay = new Map(days.map(day => [day, [] as CalendarItem[]]));
+  const counts = new Map<string, number>();
+  const start = dayStart(days[0]!);
+  for (const item of buildCalendar(snapshot, days[0]!, days.at(-1)!, pending)) {
+    // Keep [start,end) semantics, including an event that starts before this week.
+    const first = item.start ? Date.parse(item.start) : dayStart(item.date);
+    const last = item.end ? Date.parse(item.end) - 1 : first;
+    const from = Math.max(0, Math.floor((first - start) / 86_400_000));
+    const to = Math.min(days.length - 1, Math.floor((last - start) / 86_400_000));
+    for (let i = from; i <= to; i++) {
+      const day = days[i]!;
+      itemsByDay.get(day)!.push(item);
+      if (!item.pending && item.category !== 'deadline') counts.set(day, (counts.get(day) ?? 0) + 1);
+    }
+  }
+  return { itemsByDay, counts };
+}
 
 /** Scrolls to the clock when the visible days include today, else to the morning; never on refresh. */
 function focusTime(viewport: HTMLDivElement | null, days: string[], now: number) {
@@ -33,15 +52,17 @@ export function CalendarPage({ snapshot, now, date, setDate, view, setView, sele
   const [pending, setPending] = useState(snapshot.settings.showPending);
   const scroll = useRef<HTMLDivElement>(null);
   const today = todayDate();
-  const days = calendarDays(date, view);
-  const items = buildCalendar(snapshot, days[0]!, days.at(-1)!, pending);
+  const anchor = view === 'day' ? addCalendarDays(date, 1 - mondayWeekday(date)) : date;
+  const range = useMemo(() => calendarDays(anchor, view === 'day' ? 'week' : view), [anchor, view]);
+  const days = view === 'day' ? [date] : range;
+  // Candidate expiry and snooze depend on the clock when pending markers are visible.
+  const { itemsByDay, counts } = useMemo(() => indexDays(snapshot, range, pending), [snapshot, range, pending, pending ? now : null]);
   useLayoutEffect(() => focusTime(scroll.current, days, Date.now()), [date, view]);
 
   const open = (item: CalendarItem, day = item.date) => item.category === 'candidate' ? openCandidate(item.refId)
     : select({ entity: item.refKind, id: item.refId, occurrenceDate: item.occurrenceDate ?? day });
   const attention = (item: CalendarItem) => calendarAttention(item, snapshot, now);
-  const inDay = (item: CalendarItem, day: string) => item.start && item.end ? !!clipInterval(item.start, item.end, day) : item.date === day;
-  const markers = (day: string) => items.filter(item => (item.category === 'deadline' || item.category === 'candidate' || !item.start) && !item.end && item.date === day);
+  const markers = (day: string) => itemsByDay.get(day)!.filter(item => (item.category === 'deadline' || item.category === 'candidate' || !item.start) && !item.end);
   const week = snapshot.settings.termStart ? Math.floor(dayDistance(snapshot.settings.termStart, date) / 7) + 1 : null;
   const title = view === 'month' ? `${Number(date.slice(5, 7))}月` : view === 'day' ? `${shortDate(date)} 周${weekdayName(date)}`
     : `${shortDate(days[0]!)} – ${days[0]!.slice(5, 7) === days[2]!.slice(5, 7) ? `${Number(days[2]!.slice(8))}日` : shortDate(days[2]!)}`;
@@ -50,7 +71,6 @@ export function CalendarPage({ snapshot, now, date, setDate, view, setView, sele
     const minute = Math.floor(minuteAt(event.clientY, event.currentTarget.getBoundingClientRect(), 1439) / 15) * 15;
     schedule(draftRange(dayStart(day) + minute * 60_000, dayStart(day) + Math.min(1440, minute + DEFAULT_ACTIVITY_MINUTES) * 60_000));
   };
-  const weekStrip = calendarDays(date, 'week');
 
   return (
     <div className={`m-page m-calendar view-${view}`}>
@@ -75,8 +95,8 @@ export function CalendarPage({ snapshot, now, date, setDate, view, setView, sele
           {unscheduledCount > 0 && <button className="m-link attn" onClick={openUnscheduled}>未安排 {unscheduledCount}</button>}
         </div>
         {view === 'day' && <div className="m-week-strip" role="group" aria-label="本周日期">
-          {weekStrip.map(day => {
-            const count = buildCalendar(snapshot, day, day, false).filter(item => item.category !== 'deadline').length;
+          {range.map(day => {
+            const count = counts.get(day) ?? 0;
             return <button key={day} aria-pressed={day === date} className={day === today ? 'today' : ''} onClick={() => setDate(day)}
               aria-label={`${shortDate(day)} 周${weekdayName(day)}${count ? `，${count} 项安排` : ''}`}>
               <small>{weekdayName(day)}</small><b>{Number(day.slice(8))}</b>{count > 0 && <i aria-hidden="true" />}
@@ -85,7 +105,7 @@ export function CalendarPage({ snapshot, now, date, setDate, view, setView, sele
         </div>}
       </header>
 
-      {view === 'month' ? <MonthGrid days={days} month={date.slice(0, 7)} date={date} today={today} items={items} inDay={inDay} snapshot={snapshot}
+      {view === 'month' ? <MonthGrid days={days} month={date.slice(0, 7)} date={date} today={today} itemsByDay={itemsByDay} snapshot={snapshot}
         openDay={day => { setDate(day); setView('day'); }} /> : <>
         {view === 'three-day' && <div className="m-day-heads">
           {days.map(day => <button key={day} className={day === today ? 'today' : ''} onClick={() => { setDate(day); setView('day'); }}>
@@ -107,7 +127,7 @@ export function CalendarPage({ snapshot, now, date, setDate, view, setView, sele
               {days.map(day => (
                 <div key={day} className={`day-column continuous-day${day === today ? ' today-column' : ''}`} data-day={day} onClick={event => tapSlot(event, day)}>
                   <div className="a2-ev-layer">
-                    {positionIntervals(items, day).map(({ item, startMinute, endMinute, column, columns }) => {
+                    {positionIntervals(itemsByDay.get(day)!, day).map(({ item, startMinute, endMinute, column, columns }) => {
                       const state = attention(item), short = endMinute - startMinute < 34;
                       return <div key={item.id} data-timeline-item={item.id}
                         className={`timeline-event ${item.category === 'candidate' ? 'pending' : item.category} calendar-${state.tone}${item.pending ? ' pending' : ''}${short ? ' compact' : ''}`}
@@ -122,7 +142,7 @@ export function CalendarPage({ snapshot, now, date, setDate, view, setView, sele
                       </div>;
                     })}
                   </div>
-                  {items.filter(item => item.start && !item.end && item.date === day && item.category !== 'deadline' && item.category !== 'candidate').map(item =>
+                  {itemsByDay.get(day)!.filter(item => item.start && !item.end && item.category !== 'deadline' && item.category !== 'candidate').map(item =>
                     <button key={item.id} className={`timeline-point ${item.category} calendar-${attention(item).tone}`} style={{ ...itemColor(item, snapshot), top: minutePosition(Math.max(0, Math.min(1439, (Date.parse(item.start!) - dayStart(day)) / 60_000))) }}
                       onClick={() => open(item, day)}>◆ {clock(item.start)} {item.title}</button>)}
                   <CurrentTimeIndicator day={day} now={now} />
@@ -144,8 +164,8 @@ export function nextSlot(now: number, isToday: boolean) {
   return `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
 }
 
-function MonthGrid({ days, month, date, today, items, inDay, snapshot, openDay }: {
-  days: string[]; month: string; date: string; today: string; items: CalendarItem[]; inDay: (item: CalendarItem, day: string) => boolean;
+function MonthGrid({ days, month, date, today, itemsByDay, snapshot, openDay }: {
+  days: string[]; month: string; date: string; today: string; itemsByDay: Map<string, CalendarItem[]>;
   snapshot: Snapshot; openDay: (day: string) => void;
 }) {
   return (
@@ -154,7 +174,7 @@ function MonthGrid({ days, month, date, today, items, inDay, snapshot, openDay }
       {Array.from({ length: days.length / 7 }, (_, row) => (
         <div className="m-month-row" role="row" key={row}>
           {days.slice(row * 7, row * 7 + 7).map(day => {
-            const list = items.filter(item => inDay(item, day));
+            const list = itemsByDay.get(day)!;
             return <button key={day} role="gridcell" className={`${day.slice(0, 7) !== month ? 'outside' : ''}${day === today ? ' today' : ''}${day === date ? ' chosen' : ''}`}
               aria-label={`${shortDate(day)}${list.length ? `，${list.length} 项` : ''}`} onClick={() => openDay(day)}>
               <b>{Number(day.slice(8))}</b>

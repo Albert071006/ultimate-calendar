@@ -8,6 +8,7 @@ import { PALETTE, colorName } from '../shared/palette';
 import { App } from './App';
 
 vi.mock('./calendar-layout', async importOriginal => ({ ...await importOriginal<typeof import('./calendar-layout')>(), todayDate: () => '2026-10-22' }));
+vi.mock('../domain/time', async importOriginal => ({ ...await importOriginal<typeof import('../domain/time')>(), nowInstant: () => '2026-10-22T09:00:00+08:00' }));
 
 const repositories: Repository[] = [];
 afterEach(() => { cleanup(); for (const repository of repositories.splice(0)) repository.close(); });

@@ -2,10 +2,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { MobileApp } from './MobileApp';
-import { BlockSchema, CandidateSchema, SnapshotSchema, SourceSchema, TaskSchema } from '../../shared/contracts';
+import { BlockSchema, CandidateSchema, CourseSchema, SnapshotSchema, SourceSchema, TaskSchema } from '../../shared/contracts';
 import type { PendingWrite, RemoteClientState } from '../remote/types';
 import type { PlannerClient } from '../../shared/client';
-import { todayDate } from '../calendar-layout';
+import { calendarDays, todayDate } from '../calendar-layout';
+import * as calendar from '../../domain/calendar';
+import { CalendarPage } from './pages/CalendarPage';
 import { readBrowserImage } from './browser-image';
 import { weekRanges } from './pages/CourseList';
 import { SourceViewer } from '../components/ImportDialog';
@@ -26,6 +28,46 @@ describe('course weeks on the phone', () => {
 });
 
 describe('phone layout', () => {
+  it('reuses one weekly calendar across the date strip and timeline, preserving per-day counts at midnight', () => {
+    const { snapshot } = fixture(), date = '2026-12-07';
+    const at = (day: string, time: string) => `${day}T${time}:00+08:00`;
+    const metadata = { version: 1, createdAt: at(date, '00:00'), updatedAt: at(date, '00:00') };
+    snapshot.settings.showPending = true;
+    snapshot.blocks.push(...[
+      ['previous-week', '2026-12-06', '23:30', date, '01:00'],
+      ['overnight', date, '23:30', '2026-12-08', '00:30'],
+      ['until-midnight', '2026-12-08', '22:00', '2026-12-09', '00:00'],
+    ].map(([id, first, start, last, end]) => BlockSchema.parse({
+      ...metadata, id, title: id, kind: 'work', start: at(first!, start!), end: at(last!, end!),
+    })));
+    snapshot.tasks.push(TaskSchema.parse({ ...metadata, id: 'task', title: '仅有截止', deadline: { date, time: null } }));
+    snapshot.candidates.push(CandidateSchema.parse({ ...metadata, id: 'notice', title: '待定活动', sourceIds: ['fixture'],
+      eventStart: at(date, '20:00'), eventEnd: at(date, '21:00') }));
+    snapshot.courses.push(CourseSchema.parse({ ...metadata, id: 'course', title: '合成课', termStart: date,
+      firstWeek: 1, lastWeek: 2, weekday: 3, startTime: '09:00', endTime: '10:00' }));
+    const days = calendarDays(date, 'week');
+    const counts = days.map(day => calendar.buildCalendar(snapshot, day, day, false).filter(item => item.category !== 'deadline').length);
+    expect(counts).toEqual([2, 2, 1, 0, 0, 0, 0]);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(at(date, '00:00')));
+    const build = vi.spyOn(calendar, 'buildCalendar');
+    const props = { snapshot, now: Date.now(), date, view: 'day' as const, setDate: vi.fn(), setView: vi.fn(), select: vi.fn(),
+      schedule: vi.fn(), openCandidate: vi.fn(), unscheduledCount: 0, openUnscheduled: vi.fn(), openCourses: vi.fn() };
+    try {
+      const page = render(<CalendarPage {...props} />);
+      const strip = within(screen.getByRole('group', { name: '本周日期' })).getAllByRole('button');
+      expect(strip.map(button => Number(/(\d+) 项安排/.exec(button.getAttribute('aria-label')!)?.[1] ?? 0))).toEqual(counts);
+      expect(page.container.querySelector('[data-timeline-item="previous-week"]')).toBeTruthy();
+      expect(page.container.querySelector('[data-timeline-item="candidate-event:notice"]')).toBeTruthy();
+      expect(build).toHaveBeenCalledExactlyOnceWith(snapshot, days[0], days[6], true);
+      page.rerender(<CalendarPage {...props} date={days[1]!} />);
+      expect(build).toHaveBeenCalledTimes(1);
+      expect(page.container.querySelector('[data-timeline-item="overnight"]')).toBeTruthy();
+      page.rerender(<CalendarPage {...props} date={days[2]!} />);
+      expect(page.container.querySelector('[data-timeline-item="until-midnight"]')).toBeNull();
+      expect(build).toHaveBeenCalledTimes(1);
+    } finally { build.mockRestore(); vi.useRealTimers(); }
+  });
   it('opens today with five tabs, stays quiet while connected and keeps desktop-only settings out', async () => {
     const { client } = fixture();
     render(<MobileApp client={client} connection={online} settingsPages={[{ id:'device', label:'设备与连接', content:<button>配对与通知</button> }]} />);

@@ -252,7 +252,7 @@ export function createRemoteHttpServer(options: RemoteHttpOptions) {
         const operationMatch = /^\/api\/v1\/operations\/([^/]+)$/.exec(url.pathname);
         if (operationMatch && method === 'GET') {
           const id = z.string().min(1).max(200).parse(decodeURIComponent(operationMatch[1]!));
-          const receipt = options.service.state.operation(id, session.device.id);
+          const receipt = options.service.operation(id, session.device.id);
           sendJson(response, 200, receipt.status === 'completed'
             ? { ...receipt, result: settingsResult(receipt.method, receipt.result) } : receipt); return;
         }

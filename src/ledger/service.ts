@@ -11,6 +11,7 @@ import { ledgerEntryMatches, summarizeLedger } from './summary';
 import { ledgerReceivable } from './receivable';
 import { isLedgerLoanKind, ledgerLoanAllowsAccount } from '../shared/ledger-loans';
 import { duplicateLedgerEntry } from '../shared/ledger-duplicates';
+import { captureLedgerBefore, encodeLedgerBefore, readLedgerBefore } from './operation-history';
 
 export class LedgerError extends Error {
   constructor(readonly code: 'VALIDATION' | 'CONFLICT' | 'DUPLICATE' | 'STORAGE', message: string, readonly details?: unknown) { super(message); this.name = 'LedgerError'; }
@@ -27,10 +28,13 @@ function emptyLedger(): LedgerData { return { revision: 0, entries: [], balanceS
 export function initializeLedgerDatabase(db: DatabaseSync): void {
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('ledger_state','ledger_operations')").all();
   if (tables.length === 1) throw new LedgerError('STORAGE', '账本数据表不完整，请恢复完整备份，未新建空账本');
-  if (tables.length === 2) { readLedgerDatabase(db); return; }
-  db.exec(`CREATE TABLE IF NOT EXISTS ledger_state (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS ledger_operations (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, kind TEXT NOT NULL, before_payload TEXT NOT NULL, entry_ids TEXT NOT NULL, revision INTEGER NOT NULL, undone INTEGER NOT NULL DEFAULT 0)`);
-  db.prepare('INSERT OR IGNORE INTO ledger_state(id,payload) VALUES(1,?)').run(JSON.stringify(emptyLedger()));
+  if (tables.length === 2) { readLedgerDatabase(db); }
+  else {
+    db.exec(`CREATE TABLE IF NOT EXISTS ledger_state (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS ledger_operations (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, kind TEXT NOT NULL, before_payload TEXT NOT NULL, entry_ids TEXT NOT NULL, revision INTEGER NOT NULL, undone INTEGER NOT NULL DEFAULT 0)`);
+    db.prepare('INSERT OR IGNORE INTO ledger_state(id,payload) VALUES(1,?)').run(JSON.stringify(emptyLedger()));
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS ledger_operations_revision ON ledger_operations(revision)');
 }
 /** Read-only backup inspection; old app backups legitimately have no ledger tables. */
 export function readLedgerDatabase(db: DatabaseSync): LedgerData {
@@ -170,6 +174,35 @@ export function validateLedgerData(data: LedgerData): void {
 type OperationRow = { id: string; fingerprint: string; kind: string; before_payload: string; entry_ids: string; revision: number; undone: number };
 const fingerprint = (input: unknown) => createHash('sha256').update(JSON.stringify(input)).digest('hex');
 
+function toSnapshot(data: LedgerData, month: string | undefined, now: Date): LedgerSnapshot {
+  return { ...data, sources: data.sources.map(({ content: _content, ...source }) => source), summary: summarizeLedger(data, { month: month ? LedgerMonthSchema.parse(month) : undefined }, now) };
+}
+
+/** Materialize the exact snapshot referenced by a compact cloud receipt. */
+export function readLedgerSnapshotAtRevision(db: DatabaseSync, revision: number, month: string): LedgerSnapshot {
+  const ownTransaction = !db.isTransaction;
+  if (ownTransaction) db.exec('BEGIN');
+  try {
+    let data = readLedgerDatabase(db);
+    if (revision < data.revision) {
+      const query = db.prepare('SELECT revision,before_payload FROM ledger_operations WHERE revision>? ORDER BY revision DESC');
+      for (const row of query.iterate(revision)) {
+        if (row.revision !== data.revision) throw new LedgerError('STORAGE', '账本操作历史不连续，无法核对原回执');
+        data = readLedgerBefore(data, String(row.before_payload), data.revision, 'history');
+      }
+      validateLedgerData(data);
+      LedgerDataSchema.parse(data);
+    }
+    if (revision !== data.revision) throw new LedgerError('STORAGE', '缺少原回执对应的账本版本');
+    const snapshot = toSnapshot(data, month, new Date());
+    if (ownTransaction) db.exec('COMMIT');
+    return snapshot;
+  } catch (error) {
+    if (ownTransaction) db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 export class LedgerService {
   private readonly db: DatabaseSync;
   private readonly now: () => Date;
@@ -179,41 +212,38 @@ export class LedgerService {
   }
   close(): void { this.db.close(); }
   hasRecordedOperation(id: string): boolean { return !!this.db.prepare('SELECT 1 FROM ledger_operations WHERE id=?').get(id); }
-  snapshot(month?: string): LedgerSnapshot { return this.toSnapshot(readLedgerDatabase(this.db), month); }
+  snapshot(month?: string): LedgerSnapshot { return toSnapshot(readLedgerDatabase(this.db), month, this.now()); }
   query(input: LedgerQuery = {}) {
     const query = LedgerQuerySchema.parse(input); const data = readLedgerDatabase(this.db);
     if (query.accountId && !ledgerAccounts(data).some(account => account.id === query.accountId)) fail('查询的账户不存在');
     const now = this.now(); const effectiveQuery = ledgerQueryWithDefaultMonth(query, now);
     return { entries: data.entries.filter(entry => ledgerEntryMatches(entry, effectiveQuery)), summary: summarizeLedger(data, effectiveQuery, now), receivables: ledgerReceivable(data.entries, effectiveQuery) };
   }
-  private toSnapshot(data: LedgerData, month?: string): LedgerSnapshot {
-    return { ...data, sources: data.sources.map(({ content: _content, ...source }) => source), summary: summarizeLedger(data, { month: month ? LedgerMonthSchema.parse(month) : undefined }, this.now()) };
-  }
   private transact(operationId: string, kind: string, digest: string, expectedRevision: number | undefined, month: string | undefined, apply: (data: LedgerData, at: string) => string[]): LedgerMutationResult {
     this.db.exec('BEGIN IMMEDIATE');
     let phase: 'read' | 'apply' | 'write' | 'committed' = 'read';
     try {
-      const previous = this.db.prepare('SELECT * FROM ledger_operations WHERE id=?').get(operationId) as OperationRow | undefined;
+      const previous = this.db.prepare('SELECT fingerprint,entry_ids,undone FROM ledger_operations WHERE id=?').get(operationId) as Pick<OperationRow, 'fingerprint' | 'entry_ids' | 'undone'> | undefined;
       const data = readLedgerDatabase(this.db);
       if (previous) {
         if (previous.fingerprint !== digest) throw new LedgerError('CONFLICT', '同一操作编号的内容已改变，请重新发起该操作');
         this.db.exec('COMMIT');
         phase = 'committed';
-        return { status: 'already_saved', operationId, snapshot: this.toSnapshot(data, month), entryIds: JSON.parse(previous.entry_ids) as string[], message: previous.undone ? '该操作已保存后撤销，本次重试未重复记账' : '此前已保存，本次重试未重复记账', undoAvailable: this.hasUndo() };
+        return { status: 'already_saved', operationId, snapshot: toSnapshot(data, month, this.now()), entryIds: JSON.parse(previous.entry_ids) as string[], message: previous.undone ? '该操作已保存后撤销，本次重试未重复记账' : '此前已保存，本次重试未重复记账', undoAvailable: this.hasUndo() };
       }
       if (expectedRevision !== undefined && data.revision !== expectedRevision) throw new LedgerError('CONFLICT', '账本已更新，请刷新最新记录后再操作');
-      const before = JSON.stringify(data); const at = this.now().toISOString();
+      const before = captureLedgerBefore(data); const at = this.now().toISOString();
       phase = 'apply';
       const entryIds = apply(data, at);
       data.revision += 1; validateLedgerData(data); LedgerDataSchema.parse(data);
       const payload = JSON.stringify(data);
       phase = 'write';
       this.db.prepare('UPDATE ledger_state SET payload=? WHERE id=1').run(payload);
-      this.db.prepare('INSERT INTO ledger_operations(id,fingerprint,kind,before_payload,entry_ids,revision) VALUES(?,?,?,?,?,?)').run(operationId, digest, kind, before, JSON.stringify(entryIds), data.revision);
+      this.db.prepare('INSERT INTO ledger_operations(id,fingerprint,kind,before_payload,entry_ids,revision) VALUES(?,?,?,?,?,?)').run(operationId, digest, kind, encodeLedgerBefore(before, data), JSON.stringify(entryIds), data.revision);
       if (String(this.db.prepare('SELECT payload FROM ledger_state WHERE id=1').get()!['payload']) !== payload) throw new LedgerError('STORAGE', '保存后核对失败，账本尚未完成保存');
       this.db.exec('COMMIT');
       phase = 'committed';
-      return { status: 'saved', operationId, snapshot: this.toSnapshot(data, month), entryIds, message: kind === 'undo' ? '已撤销上一次账本操作' : '已保存并核对本地账本', undoAvailable: this.hasUndo() };
+      return { status: 'saved', operationId, snapshot: toSnapshot(data, month, this.now()), entryIds, message: kind === 'undo' ? '已撤销上一次账本操作' : '已保存并核对本地账本', undoAvailable: this.hasUndo() };
     } catch (error) {
       if (phase === 'committed') throw new LedgerError('STORAGE', '账本已提交，但结果读取未完成；请核对原操作，不要重新记账');
       try { this.db.exec('ROLLBACK'); } catch {
@@ -297,10 +327,9 @@ export class LedgerService {
     return this.transact(request.operationId, 'undo', fingerprint({ kind: 'undo' }), request.expectedRevision, request.month, (data, at) => {
       const operation = this.db.prepare("SELECT * FROM ledger_operations WHERE kind!='undo' AND undone=0 ORDER BY revision DESC LIMIT 1").get() as OperationRow | undefined;
       if (!operation) throw new LedgerError('VALIDATION', '没有可撤销的账本操作');
-      const before = LedgerDataSchema.parse(JSON.parse(operation.before_payload));
-      const audit = data.audit; const revision = data.revision;
+      const before = readLedgerBefore(data, operation.before_payload, operation.revision, 'undo');
       if (before.accounts === undefined) delete data.accounts;
-      Object.assign(data, before, { revision, audit });
+      Object.assign(data, before);
       const entryIds = JSON.parse(operation.entry_ids) as string[];
       data.audit.push({ id: randomUUID(), operationId: request.operationId, at, action: '撤销账本操作', entryIds, note: `撤销操作 ${operation.id}`, beforeEntries: [] });
       this.db.prepare('UPDATE ledger_operations SET undone=1 WHERE id=?').run(operation.id);
@@ -337,7 +366,9 @@ export class LedgerService {
         if (byRule) {
           if (byRule.sourceId || byRule.version !== 1 || byRule.voided) throw new LedgerError('CONFLICT', '固定生活费已存在并有本地更正，请先核对，未重复导入');
           data.entries = data.entries.filter(existing => existing.id !== byRule.id);
-          for (const snapshot of data.balanceSnapshots) snapshot.coveredEntryIds = snapshot.coveredEntryIds.map(existingId => existingId === byRule.id ? entry.id : existingId);
+          data.balanceSnapshots = data.balanceSnapshots.map(snapshot => snapshot.coveredEntryIds.includes(byRule.id)
+            ? { ...snapshot, coveredEntryIds: snapshot.coveredEntryIds.map(existingId => existingId === byRule.id ? entry.id : existingId) }
+            : snapshot);
         }
         data.entries.push(entry); importedIds.push(entry.id);
       }

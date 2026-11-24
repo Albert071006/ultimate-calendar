@@ -1,9 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { RemoteIdentitySchema, type RemoteDevice, type RemoteIdentity, type RemoteMethod, type RemoteOperation } from '../shared/remote';
-import { remoteOutputs } from './protocol';
+import { readReceipt } from './ledger-receipt';
 import { z } from 'zod';
 
 export const BackupStatusSchema = z.strictObject({
@@ -26,7 +26,7 @@ export class RemoteFault extends Error { constructor(readonly status: number, me
 /** Separate private database: authentication material never enters planner snapshots/backups. */
 export class RemoteState {
   private readonly db: DatabaseSync;
-  constructor(path: string, private readonly now: () => number = Date.now, recoverPending = true) {
+  constructor(private readonly path: string, private readonly now: () => number = Date.now, recoverPending = true) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     if (!existsSync(path)) writeFileSync(path, '', { flag: 'wx', mode: 0o600 });
     if (process.platform !== 'win32') { chmodSync(dirname(path), 0o700); chmodSync(path, 0o600); }
@@ -116,17 +116,17 @@ export class RemoteState {
     return row ? Number(row.expires) : null;
   }
   revoke(id: string): void { this.db.prepare('DELETE FROM sessions WHERE id=?').run(id); }
-  operation(id: string, device: string): RemoteOperation {
+  operation(id: string, device: string, ledgerPath = join(dirname(this.path), 'planner.sqlite')): RemoteOperation {
     const row = this.db.prepare('SELECT * FROM operations WHERE id=? AND device=? AND generation=?').get(id, device, this.identity().generation) as OpRow | undefined;
     if (!row) return { status: 'unknown' };
-    if (row.status === 'completed') return { status: 'completed', requestId: id, method: row.method, result: remoteOutputs[row.method].parse(JSON.parse(row.result!)) };
+    if (row.status === 'completed') return { status: 'completed', requestId: id, method: row.method, result: readReceipt(row.method, JSON.parse(row.result!), ledgerPath) };
     return { status: row.status as 'processing' | 'interrupted', requestId: id, method: row.method };
   }
-  begin(id: string, device: string, method: RemoteMethod, fingerprint: string): RemoteOperation | null {
-    const prior = this.db.prepare('SELECT * FROM operations WHERE id=?').get(id) as OpRow | undefined;
+  begin(id: string, device: string, method: RemoteMethod, fingerprint: string, ledgerPath?: string): RemoteOperation | null {
+    const prior = this.db.prepare('SELECT device,method,fingerprint,generation FROM operations WHERE id=?').get(id);
     if (prior) {
       if (prior.device !== device || prior.method !== method || prior.fingerprint !== fingerprint || prior.generation !== this.identity().generation) throw new RemoteFault(409, '请求编号已用于不同操作，请核对原操作');
-      return this.operation(id, device);
+      return this.operation(id, device, ledgerPath);
     }
     this.db.prepare("INSERT INTO operations(id,device,method,fingerprint,status,generation) VALUES(?,?,?,?,'processing',?)").run(id, device, method, fingerprint, this.identity().generation);
     return null;

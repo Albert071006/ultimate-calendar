@@ -78,6 +78,33 @@ describe('concurrent QQ and WeChat collection', () => {
     expect(restarted.claimBatch(at)).toBeNull();
   });
 
+  it('reads no attachments for duplicate text and uses indexed lookups when a file arrives later', () => {
+    const db = openDatabase(':memory:');
+    cleanup.push(() => db.close());
+    const store = createCaptureStore(':memory:', { database: db, platform: 'wechat' });
+    store.saveConfig({ ...store.config(), accountId: wx, groupIds: [group], enabled: true });
+    const page = Array.from({ length: 64 }, (_, index) => ({
+      ...incoming(wx, group, 'duplicate-' + index), origin: 'history' as const, attachments: [],
+    }));
+    const firstId = store.ingest(page).ids[0]!;
+    const statements = Object.getPrototypeOf(db.prepare('SELECT 1')) as ReturnType<typeof db.prepare>;
+    const get = vi.spyOn(statements, 'get'), all = vi.spyOn(statements, 'all');
+    const attachmentReads = () => [...get.mock.contexts, ...all.mock.contexts]
+      .map(statement => (statement as typeof statements).sourceSQL).filter(sql => /capture_attachments|sourceMessageId/.test(sql));
+    try {
+      expect(store.ingest(page)).toEqual({ inserted: 0, duplicates: page.length, ignored: 0, ids: [] });
+      expect(attachmentReads()).toEqual([]);
+      const withFile = { ...page[0]!, attachments: [{ kind: 'file' as const, name: '合成作业.txt', locator: { file: 'mock-file' } }] };
+      expect(store.ingest([withFile])).toMatchObject({ inserted: 0, duplicates: 1 });
+      const reads = attachmentReads();
+      expect(reads).toHaveLength(1);
+      const plan = db.prepare('EXPLAIN QUERY PLAN ' + reads[0]).all(firstId, wx, group, withFile.messageId);
+      expect(plan.map(row => row.detail).join('\n')).toContain('USING INDEX capture_messages_source');
+      expect(store.ingest([withFile])).toMatchObject({ inserted: 0, duplicates: 1 });
+      expect(store.attachments(firstId).map(file => file.name)).toEqual(['合成作业.txt']);
+    } finally { get.mockRestore(); all.mockRestore(); }
+  });
+
   it('enriches uncharged placeholders but keeps paid text checkpoints immutable when media arrives later', () => {
     const f = fixture(), raw = { ...incoming(), text: '明天中午提交合成材料：请按附件要求提交', attachments: [] };
     const id = f.wechat.ingest([raw]).ids[0]!;

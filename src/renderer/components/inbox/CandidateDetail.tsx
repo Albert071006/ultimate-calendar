@@ -1,11 +1,10 @@
 import { useId, useState, type ReactNode } from "react";
 import { FileText } from "lucide-react";
-import type { Candidate, Snapshot } from "../../../shared/contracts";
+import type { Settings } from "../../../shared/contracts";
 import { candidateDisplay, compactCandidateText } from "../../candidate-display";
 import { candidateExpiry } from "../../../domain/candidate-eligibility";
 import { displayInstant } from "../../calendar-layout";
-import { dayWord, fullDay, unresolvedActivityDay } from "./format";
-import { sourceLine } from "./InboxList";
+import { dayWord, fullDay, sourceLine, type InboxNotice, type indexInbox } from "./format";
 import { useMobile } from '../../mobile/layout';
 import type { HostCapabilities } from '../../../shared/client';
 import { SourceAttachments } from '../resources/SourceAttachments';
@@ -47,9 +46,10 @@ function FactContent({ summary, full, label }: { summary: ReactNode; full?: Reac
   </>;
 }
 
-export function CandidateDetail({ snapshot, candidate, today, now, busy, reason, setReason, decide, snoozing, setSnoozing, snooze, restore, edit, openSource, viewTask, viewCandidate, host, hideQQOriginal = false, clearedPhoneInput = false, localSourceAccess = false }: {
-  snapshot: Snapshot;
-  candidate: Candidate;
+export function CandidateDetail({ index, notice, settings, today, now, busy, reason, setReason, decide, snoozing, setSnoozing, snooze, restore, edit, openSource, viewTask, viewCandidate, host, hideQQOriginal = false, clearedPhoneInput = false, localSourceAccess = false }: {
+  index: ReturnType<typeof indexInbox>;
+  notice: InboxNotice;
+  settings: Settings;
   today: string;
   now: number;
   busy: boolean;
@@ -70,14 +70,15 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
   clearedPhoneInput?: boolean;
 }) {
   const mobile = useMobile();
+  const { candidate, activityDay } = notice;
   const hideRawInput = hideQQOriginal || clearedPhoneInput;
   const defaultUntil = now < Date.parse(`${today}T18:00:00+08:00`) ? `${today}T18:00` : `${new Date(Date.parse(`${today}T12:00:00Z`) + 86400_000).toISOString().slice(0, 10)}T09:00`;
   const [until, setUntil] = useState(defaultUntil);
-  const display = candidateDisplay(candidate, snapshot.settings), expiry = candidateExpiry(candidate, now);
-  const source = sourceLine(snapshot, candidate, today, mobile ? '来源原件未提供' : undefined);
-  const old = snapshot.candidates.find(value => value.id === candidate.revisionOfId);
-  const duplicate = snapshot.candidates.find(value => value.id === candidate.duplicateOfId);
-  const merged = snapshot.candidates.filter(value => value.duplicateOfId === candidate.id).length;
+  const display = candidateDisplay(candidate, settings), expiry = candidateExpiry(candidate, now);
+  const source = sourceLine(notice, today, mobile ? '来源原件未提供' : undefined);
+  const old = candidate.revisionOfId && index.notices.get(candidate.revisionOfId)?.candidate;
+  const duplicate = candidate.duplicateOfId && index.notices.get(candidate.duplicateOfId)?.candidate;
+  const merged = index.merged.get(candidate.id);
   const evidence = (field: "deadline" | "eventStart" | "eventEnd") => candidate.temporalEvidence.find(item => item.field === field && item.quote);
   const open = candidate.status === "pending" && !expiry.expired;
   const snoozed = open && candidate.snoozedUntil && Date.parse(candidate.snoozedUntil) > now;
@@ -117,7 +118,7 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
           <div className="k">活动时间</div>
           <div className={`v${candidate.eventStart ? "" : " none"}`}>{candidate.eventStart
             ? `${fullDay(candidate.eventStart.slice(0, 10))} ${candidate.eventStart.slice(11, 16)}${candidate.eventEnd ? `–${candidate.eventEnd.slice(0, 10) === candidate.eventStart.slice(0, 10) ? "" : `${fullDay(candidate.eventEnd.slice(0, 10))} `}${candidate.eventEnd.slice(11, 16)}` : " 起"}`
-            : unresolvedActivityDay(candidate, snapshot) ? `${fullDay(unresolvedActivityDay(candidate, snapshot)!)} · 钟点待核对` : "未明确"}</div>
+            : activityDay ? `${fullDay(activityDay)} · 钟点待核对` : "未明确"}</div>
           {!hideRawInput && (evidence("eventStart") ?? evidence("eventEnd")) && <div className="q">原文“{(evidence("eventStart") ?? evidence("eventEnd"))!.quote}”</div>}
           {candidate.eventStart && !candidate.eventEnd && <div className="q">结束时间未提供</div>}
         </div>
@@ -143,7 +144,7 @@ export function CandidateDetail({ snapshot, candidate, today, now, busy, reason,
       </div>}
       <div className="a2-ib-sources">
         {candidate.sourceIds.map(id => {
-          const value = snapshot.sources.find(item => item.id === id);
+          const value = index.sources.get(id);
           return value ? <button className="ui-btn sm" key={id} aria-label={`查看来源 · ${value.label || "原文"}`} onClick={() => openSource(id)}><FileText aria-hidden="true" />查看来源<span className="from">{value.label || "原文"}</span></button> : <span key={id}>{mobile ? '来源原件未提供；QQ 原文和附件留在采集电脑' : '原文已删除'}</span>;
         })}
         {localSourceAccess && hideRawInput && <span className="hint">{hideQQOriginal ? '原文和附件只存在这台电脑，不上传云端' : '可在来源里查找这台电脑保留的原始输入'}</span>}

@@ -1,12 +1,7 @@
-import { mondayWeekday, type Candidate, type Snapshot } from "../../../shared/contracts";
+import { mondayWeekday, type Candidate, type Source, type Snapshot } from "../../../shared/contracts";
 import { dayDistance } from "../../../domain/time";
 import { candidateDates } from '../../../domain/candidate-dates';
-
-export function unresolvedActivityDay(candidate: Candidate, snapshot: Pick<Snapshot, 'sources'>): string | null {
-  if (candidate.eventStart) return null;
-  const dates = candidateDates(candidate, snapshot.sources).eventStart;
-  return dates?.length === 1 ? dates[0]! : null;
-}
+import { candidateWithRecoveredTiming } from '../../../domain/temporal-evidence';
 
 const weekdays = ["一", "二", "三", "四", "五", "六", "日"];
 
@@ -15,14 +10,36 @@ export function displaySourceLabel(label: string): string {
   return label.replace(/\s*·\s*消息正文\s+\d+\s*$/, '').trim();
 }
 
-/** Use the same available source for the visible date and chronological ordering. */
-export function noticeSource(snapshot: Snapshot, candidate: Candidate) {
-  return candidate.sourceIds.map(id => snapshot.sources.find(source => source.id === id)).find(Boolean);
+export interface InboxNotice {
+  candidate: Candidate;
+  source: Source | undefined;
+  arrivedAt: string;
+  arrivalTime: number;
+  creationTime: number;
+  activityDay: string | null;
 }
 
-export function noticeArrival(snapshot: Snapshot, candidate: Candidate): string {
-  const source = noticeSource(snapshot, candidate);
-  return source?.sentAt ?? source?.importedAt ?? candidate.createdAt;
+/** Project only the sources linked to each notice; sorting and row rendering share these keys. */
+export function indexInbox(snapshot: Pick<Snapshot, 'sources' | 'candidates'>) {
+  const sources = new Map(snapshot.sources.map(source => [source.id, source]));
+  const notices = new Map<string, InboxNotice>();
+  const merged = new Map<string, number>();
+  for (const saved of snapshot.candidates) {
+    const linked = saved.sourceIds.map(id => sources.get(id)).filter((source): source is Source => !!source);
+    const candidate = candidateWithRecoveredTiming(saved, linked);
+    const dates = !candidate.eventStart && candidate.temporalEvidence.some(e => e.field === 'eventStart')
+      ? candidateDates(candidate, linked).eventStart : undefined;
+    const source = linked[0], arrivedAt = source?.sentAt ?? source?.importedAt ?? candidate.createdAt;
+    notices.set(candidate.id, { candidate, source, arrivedAt, creationTime: Date.parse(candidate.createdAt),
+      arrivalTime: Date.parse(arrivedAt), activityDay: dates && dates.length === 1 ? dates[0]! : null });
+    if (candidate.duplicateOfId) merged.set(candidate.duplicateOfId, (merged.get(candidate.duplicateOfId) ?? 0) + 1);
+  }
+  return { sources, notices, merged };
+}
+
+export function sourceLine({ source, arrivedAt }: InboxNotice, today: string, missingLabel = '原文已删除') {
+  if (!source) return { label: missingLabel, at: "" };
+  return { label: displaySourceLabel(source.label) || (source.kind === "image" ? "截图" : "粘贴的消息"), at: arrival(arrivedAt, today) };
 }
 
 /** 今天 / 明天 / 昨天 / 周五 (later this week) / 10月27日. */

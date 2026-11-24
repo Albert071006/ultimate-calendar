@@ -26,6 +26,7 @@ import { AiKeySyncRequestSchema } from '../shared/ai-key-sync';
 import { createAiKeyReceiver } from './ai-key-receiver';
 import { ledgerExportData, backupExportData, createBackupDownloads } from './cloud-export';
 import { createCloudRestore } from './cloud-restore';
+import { compactLedgerReceipt } from './ledger-receipt';
 
 export interface RemoteServiceOptions {
   dataDirectory: string;
@@ -222,6 +223,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
   return {
     dataDirectory: resolve(options.dataDirectory),
     state,
+    operation: (id: string, deviceId: string) => state.operation(id, deviceId, repository.path),
     status() {
       const bytes = (name: string) => ['', '-wal', '-shm'].reduce((total, suffix) => { try { const file = lstatSync(join(options.dataDirectory, `${name}${suffix}`)); return total + (file.isFile() ? file.size : 0); } catch { return total; } }, 0);
       return { lifecycle, activeWrites: running.size, backup: { ...backupStatus, ...backups.status() }, restore: lifecycle === 'closed' ? restoreStatus : (restoreStatus = state.restoreStatus()), storageBytes: { planner: bytes('planner.sqlite'), receipts: bytes('remote-state.sqlite'), notifications: bytes('notifications.sqlite') } };
@@ -322,8 +324,8 @@ export function createRemoteService(options: RemoteServiceOptions) {
         return current.promise;
       }
       if (running.size >= maxWrites || [...running.values()].filter(value => value.deviceId === deviceId).length >= maxDeviceWrites) throw new RemoteFault(429, '正在处理的写请求过多，请稍后重试原请求');
-      const prior = state.begin(request.requestId, deviceId, method, fingerprint);
-      if (prior?.status === 'completed') return remoteOutputs[method].parse(prior.result);
+      const prior = state.begin(request.requestId, deviceId, method, fingerprint, repository.path);
+      if (prior?.status === 'completed') return prior.result;
       if (prior) throw new RemoteFault(409, prior.status === 'interrupted' ? '上次请求中断，结果待核对；未自动重新执行' : '请求正在处理，请查询原操作');
       const promise = (async () => {
         try {
@@ -333,7 +335,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
           const parsed = remoteOutputs[method].parse(redactEvidence(raw));
           const changes = repository.changes(beforeCursor);
           const result = parsed.ok && changes.status === 'patch' ? { ...parsed, sync: changes.patch } : parsed;
-          state.complete(request.requestId, result);
+          state.complete(request.requestId, compactLedgerReceipt(method, result));
           backups.markDirty();
           return result;
         } catch (error) { state.interrupt(request.requestId); throw error; }

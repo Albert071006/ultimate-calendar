@@ -16,6 +16,8 @@ import { AI_SETTINGS_HEADER, AI_SETTINGS_VERSION } from '../shared/ai-reasoning'
 import { PROFILE_SETTINGS_HEADER, PROFILE_SETTINGS_VERSION } from '../shared/profile-settings';
 import { LEDGER_QUERY_HEADER, LEDGER_QUERY_VERSION } from '../shared/ledger-query-compatibility';
 import { CommandRequestSchema, CommandResultSchema, ConversationStateSchema, SettingsSchema } from '../shared/contracts';
+import { PLANNER_SYNC_HEADER, PLANNER_SYNC_VERSION } from '../shared/planner-sync';
+import { openDatabase } from '../storage/database';
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -50,6 +52,60 @@ async function setup(directory?: string) {
 const goalInput = (title = '虚构目标') => ({ operationId: 'goal-business-1', origin: 'manual', mutations: [{ type: 'create', entity: 'goal', values: { title } }] });
 
 describe('remote HTTP boundary', () => {
+  it('keeps ledger receipts compact and replays the exact original month, revision and acknowledgement across restart', async () => {
+    let f = await setup();
+    const device = await f.pair(), other = await f.pair();
+    const headers = { ...device.headers, [PLANNER_SYNC_HEADER]: PLANNER_SYNC_VERSION };
+    const rpc = (method: 'ledgerMutate' | 'ledgerUndo', requestId: string, input: unknown) =>
+      f.call('/api/v1/rpc/' + method, { method: 'POST', headers, body: JSON.stringify({ identity: device.session.identity, requestId, input }) });
+    const mutation = (i: number) => ({
+      operationId: 'entry-op-' + i, expectedRevision: i, month: '2022-07',
+      changes: [{ type: 'putEntry', expectedVersion: null, entry: { id: 'entry-' + i, title: '合成午餐' + i,
+        date: '2022-07-10', month: '2022-07', kind: 'expense', category: '餐饮', amountCents: 100, personalCents: 100,
+        cashflows: [{ accountId: 'alipay', deltaCents: -100 }] } }],
+    });
+    const receipts = [];
+    let fullBytes = 0;
+    const count = 32;
+    for (let i = 0; i < count; i++) {
+      const receipt = await (await rpc('ledgerMutate', 'receipt-' + i, mutation(i))).json();
+      expect(receipt).toMatchObject({ ok: true, data: { status: 'saved', snapshot: { revision: i + 1 } } });
+      receipts.push(receipt);
+      fullBytes += Buffer.byteLength(JSON.stringify(receipt));
+    }
+    const undoInput = { operationId: 'undo-last', expectedRevision: count, month: '2022-06' };
+    const undone = await (await rpc('ledgerUndo', 'undo-receipt', undoInput)).json();
+    expect(undone).toMatchObject({ ok: true, data: { snapshot: { revision: count + 1, summary: { month: '2022-06' } } } });
+    await f.close();
+    const db = openDatabase(join(f.folder, 'remote-state.sqlite'));
+    try {
+      const rows = db.prepare("SELECT result FROM operations WHERE method='ledgerMutate'").all();
+      expect(rows).toHaveLength(count);
+      const sizes = rows.map(({ result }) => {
+        const raw = String(result);
+        expect(raw).not.toContain('"entries"');
+        expect(raw).not.toContain('合成午餐');
+        return Buffer.byteLength(raw);
+      });
+      expect(sizes.reduce((sum, size) => sum + size, 0)).toBeLessThan(fullBytes / 10);
+      expect(Math.max(...sizes)).toBeLessThan(2 * Math.min(...sizes));
+      // An existing full pre-upgrade receipt uses exactly the same transport fingerprint.
+      db.prepare(`INSERT INTO operations(id,device,method,fingerprint,status,result,generation)
+        SELECT 'legacy-receipt',device,method,fingerprint,status,?,generation FROM operations WHERE id='receipt-0'`)
+        .run(JSON.stringify(receipts[0]));
+    } finally { db.close(); }
+    f = await setup(f.folder);
+    for (const [id, index] of [['receipt-0', 0], ['legacy-receipt', 0], ['receipt-31', count - 1]] as const) {
+      expect(await (await rpc('ledgerMutate', id, mutation(index))).json()).toEqual(receipts[index]);
+      const read = await f.call('/api/v1/operations/' + id, { headers });
+      expect((await read.json()).result).toEqual(receipts[index]);
+    }
+    expect(await (await rpc('ledgerUndo', 'undo-receipt', undoInput)).json()).toEqual(undone);
+    expect(await (await rpc('ledgerMutate', 'second-request-id', mutation(0))).json())
+      .toMatchObject({ ok: true, data: { status: 'already_saved', entryIds: ['entry-0'], snapshot: { revision: count + 1 } } });
+    expect((await rpc('ledgerMutate', 'receipt-0', mutation(1))).status).toBe(409);
+    expect(await (await f.call('/api/v1/operations/receipt-0', { headers: other.headers })).json()).toEqual({ status: 'unknown' });
+  });
   it('adapts query choices for old command clients and receipt reads without changing saved history', async () => {
     const f = await setup(), device = await f.pair();
     const requestId = 'synthetic-query-choices', input = CommandRequestSchema.parse({ operationId: 'synthetic-birthday-query', text: '生日花了多少' });

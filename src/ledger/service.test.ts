@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
+import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_LEDGER_RULES, LEDGER_ACCOUNTS, LedgerEntryDraftSchema, LedgerImportPayloadSchema, LedgerMonthSchema, ledgerAllowanceKey, type LedgerEntry, type LedgerEntryDraft, type LedgerMutationRequest } from '../shared/ledger';
-import { LedgerError, LedgerService, LedgerValidationRejection, readLedgerDatabase, replaceLedgerDatabase } from './service';
+import { DEFAULT_LEDGER_RULES, LEDGER_ACCOUNTS, LedgerEntryDraftSchema, LedgerImportPayloadSchema, LedgerMonthSchema, LedgerMutationRequestSchema, ledgerAllowanceKey, type LedgerEntry, type LedgerEntryDraft, type LedgerMutationRequest } from '../shared/ledger';
+import { LedgerError, LedgerService, LedgerValidationRejection, readLedgerDatabase, readLedgerSnapshotAtRevision, replaceLedgerDatabase } from './service';
 import { summarizeLedger } from './summary';
 import { openDatabase } from '../storage/database';
 
@@ -93,6 +95,80 @@ describe('local ledger transactions', () => {
   it('does not guess personal responsibility for an AA payment', () => {
     const ledger = service(); save(ledger, draft({ personalCents: null }));
     expect(ledger.snapshot().summary.personalCents).toBe(0); expect(ledger.snapshot().summary.pendingPersonalCount).toBe(1);
+  });
+});
+
+describe('versioned ledger operation history', () => {
+  function database(ledger: LedgerService) { return (ledger as unknown as { db: DatabaseSync }).db; }
+  const month = '2026-10';
+
+  it('reverses an import replacing a middle row, covered IDs, sources and accounts, and reconstructs its receipt after undo', () => {
+    const ledger = service();
+    const key = ledgerAllowanceKey(month);
+    save(ledger, draft({ id: 'first', title: '合成甲' }));
+    save(ledger, draft({ id: 'generated', title: '合成规则账目', ruleKey: key }));
+    save(ledger, draft({ id: 'last', title: '合成乙' }));
+    const before = ledger.mutate({ operationId: 'balance', expectedRevision: 3, month, changes: [{ type: 'setBalance',
+      snapshot: { id: 'balance', accountId: 'alipay', balanceCents: 100, date: '2026-10-23', asOf: null, coveredEntryIds: ['generated'], note: '', sourceId: null } }] }).snapshot;
+    const imported = importEntries(ledger, [persisted(draft({ id: 'imported', title: '合成已归档账目', ruleKey: key }))], {
+      accounts: [...LEDGER_ACCOUNTS, { id: 'extra', name: '合成账户', kind: 'cash', aliases: [] }],
+      sources: [{ id: 'source', importedAt: NOW.toISOString(), checksum: 'example', content: 'synthetic private source', label: 'example' }],
+    }).snapshot;
+    expect(imported.entries.map(entry => entry.id)).toEqual(['first', 'last', 'imported']);
+    expect(imported.balanceSnapshots[0]!.coveredEntryIds).toEqual(['imported']);
+    const db = database(ledger);
+    const encoded = String(db.prepare('SELECT before_payload FROM ledger_operations WHERE id=?').get('import')!.before_payload);
+    expect(encoded).toContain('ledger-inverse-v1');
+    expect(encoded).not.toContain('合成甲');
+    const undone = ledger.undo({ operationId: 'undo-import', expectedRevision: 5, month }).snapshot;
+    expect(undone).toEqual({ ...before, audit: [...imported.audit, undone.audit.at(-1)], revision: 6 });
+    expect(ledger.exportJson().sources).toEqual([]);
+    const later = save(ledger, draft({ id: 'later', title: '合成后续账目' }));
+    for (const view of [before, imported, undone, later.snapshot])
+      expect(readLedgerSnapshotAtRevision(db, view.revision, month)).toEqual(view);
+    expect(readLedgerSnapshotAtRevision(db, imported.revision, month).sources[0]).not.toHaveProperty('content');
+  });
+
+  it('replays and undoes an existing whole-ledger row under the original operation fingerprint across mixed history', () => {
+    const ledger = service(), db = database(ledger);
+    const before = readLedgerDatabase(db);
+    const request = LedgerMutationRequestSchema.parse({ operationId: 'old-put', expectedRevision: 0, month,
+      changes: [{ type: 'putEntry', entry: draft(), expectedVersion: null, confirmDuplicate: false, note: '' }] });
+    const first = ledger.mutate(request).snapshot;
+    const legacyFingerprint = createHash('sha256').update(JSON.stringify({ kind: 'mutation', changes: request.changes })).digest('hex');
+    db.prepare('UPDATE ledger_operations SET before_payload=?, fingerprint=? WHERE id=?').run(JSON.stringify(before), legacyFingerprint, request.operationId);
+    const second = save(ledger, draft({ id: 'other', title: '合成第二笔' })).snapshot;
+    expect(ledger.mutate(request)).toMatchObject({ operationId: 'old-put', status: 'already_saved', entryIds: ['lunch'], snapshot: second });
+    expect(() => ledger.mutate({ ...request, changes: request.changes.map(change => ({ ...change, note: '不同' })) })).toThrow(/内容已改变/);
+    const undoNew = ledger.undo({ operationId: 'undo-new', expectedRevision: 2, month }).snapshot;
+    const undoOld = ledger.undo({ operationId: 'undo-old', expectedRevision: 3, month }).snapshot;
+    expect(undoOld.entries).toEqual([]);
+    expect(undoOld.audit).toHaveLength(4);
+    expect(ledger.mutate(request)).toMatchObject({ status: 'already_saved', entryIds: ['lunch'], snapshot: undoOld, undoAvailable: false, message: expect.stringContaining('撤销') });
+    for (const view of [first, second, undoNew, undoOld])
+      expect(readLedgerSnapshotAtRevision(db, view.revision, month)).toEqual(view);
+    expect(readLedgerSnapshotAtRevision(db, 0, month).audit).toEqual([]);
+  });
+
+  it('keeps cumulative log bytes linear across 100 synthetic append operations', () => {
+    const ledger = service(), db = database(ledger);
+    let legacyBeforeBytes = 0;
+    for (let i = 0; i < 100; i++) {
+      legacyBeforeBytes += Number(db.prepare('SELECT length(CAST(payload AS BLOB)) AS bytes FROM ledger_state WHERE id=1').get()!.bytes);
+      const id = 'expense-' + String(i).padStart(3, '0');
+      ledger.mutate({ operationId: id, expectedRevision: i, changes: [{ type: 'putEntry',
+        entry: draft({ id, title: '合成账目 ' + id }), expectedVersion: null, confirmDuplicate: false, note: '' }] });
+    }
+    const rows = db.prepare(`SELECT length(CAST(before_payload AS BLOB)) AS inverseBytes,
+      length(CAST(id || fingerprint || kind || entry_ids || revision || undone AS BLOB)) AS fixedBytes
+      FROM ledger_operations ORDER BY revision`).all();
+    expect(rows).toHaveLength(100);
+    const sizes = rows.map(row => Number(row.inverseBytes) + Number(row.fixedBytes));
+    const firstHalf = sizes.slice(0, 50).reduce((sum, size) => sum + size, 0);
+    const secondHalf = sizes.slice(50).reduce((sum, size) => sum + size, 0);
+    const oldSize = legacyBeforeBytes + rows.reduce((sum, row) => sum + Number(row.fixedBytes), 0);
+    expect(secondHalf).toBeLessThan(firstHalf * 1.1);
+    expect(firstHalf + secondHalf).toBeLessThan(oldSize / 20);
   });
 });
 

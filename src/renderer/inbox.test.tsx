@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { CandidateSchema, SnapshotSchema, SourceSchema, type CandidateInput, type Candidate, type Settings, type Source } from '../shared/contracts';
+import { CandidateSchema, SnapshotSchema, SourceSchema, type CandidateInput, type Candidate, type Settings, type Snapshot, type Source } from '../shared/contracts';
 import type { HostCapabilities } from '../shared/client';
 import { Inbox } from './components/Inbox';
 import type { PlannerUI } from './hooks/usePlanner';
@@ -10,13 +10,14 @@ import { MobileProvider } from './mobile/layout';
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 const now = '2026-10-23T12:00:00+08:00';
 const make = (id: string, extra: Partial<CandidateInput & Pick<Candidate, 'createdAt' | 'updatedAt'>> = {}) => CandidateSchema.parse({ id, title: id, version: 1, createdAt: now, updatedAt: now, sourceIds: ['source'], ...extra });
-function view(candidates: ReturnType<typeof make>[], settings: Partial<Settings> = {}, host?: HostCapabilities, options: { mobile?: boolean; sources?: Source[]; pending?: string[] } = {}) {
+function view(candidates: ReturnType<typeof make>[], settings: Partial<Settings> = {}, host?: HostCapabilities, options: { mobile?: boolean; sources?: Source[]; pending?: string[]; focus?: string; beforeRender?: (snapshot: Snapshot) => void } = {}) {
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date(now));
   const snapshot = SnapshotSchema.parse({ schemaVersion: 1, sources: options.sources ?? [SourceSchema.parse({ id: 'source', version: 1, createdAt: now, updatedAt: now, kind: 'text', text: '保留原通知', label: '合成通知群', sentAt: '2026-10-23T10:42:00+08:00', importedAt: now })], candidates, tasks: [], blocks: [], goals: [], courses: [], courseExceptions: [], preferences: [], feedback: [], settings, journal: [], tokenUsage: [], keyStatus: { configured: false, sessionOnly: false } });
   const mutate = vi.fn(async (_mutations: unknown[]) => ({ status: 'applied', transactionId: 'tx-1', message: '已保存' }));
   const undo = vi.fn(async (_id?: string) => {}), edit = vi.fn(), openSource = vi.fn();
   const ui = { busy: !!options.pending?.length, isPending: (target: string) => options.pending?.some(id => target === `candidate:${id}`) ?? false, mutate, undo, notice: '', error: '' } as unknown as PlannerUI;
-  const result = render(<MobileProvider mobile={options.mobile ?? false}><Inbox snapshot={snapshot} ui={ui} select={() => {}} edit={edit} importMessage={() => {}} openSource={openSource} host={host} /></MobileProvider>);
+  options.beforeRender?.(snapshot);
+  const result = render(<MobileProvider mobile={options.mobile ?? false}><Inbox snapshot={snapshot} ui={ui} select={() => {}} edit={edit} importMessage={() => {}} openSource={openSource} host={host} focus={options.focus} /></MobileProvider>);
   return { snapshot, mutate, undo, edit, openSource, ...result };
 }
 const list = () => screen.getByRole('region', { name: '通知列表' });
@@ -133,6 +134,37 @@ describe('notice detail', () => {
 });
 
 describe('tabs and archive', () => {
+  it('reads each source once and keeps a deeply selected notice and keyboard focus on the active page', () => {
+    const arrivedAt = '2026-10-05T08:52:27+08:00';
+    const sources = Array.from({ length: 120 }, (_, i) => SourceSchema.parse({
+      id: `source-${i}`, createdAt: now, updatedAt: now, importedAt: arrivedAt, kind: 'text', version: 1, text: '合成来源',
+    }));
+    const notices = sources.map((source, i) => make(`notice-${i}`, { sourceIds: ['missing', source.id], status: 'accepted' }));
+    let sourceReads = 0, arrivalParses = 0;
+    view(notices, {}, undefined, { sources, focus: 'notice-99', beforeRender(snapshot) {
+      const parse = Date.parse;
+      // The fixture uses a fake Date. Restoring real timers after this test restores Date.parse.
+      Date.parse = value => { if (value === arrivedAt) arrivalParses++; return parse(value); };
+      snapshot.sources = new Proxy(snapshot.sources, { get(target, key, receiver) {
+        if (typeof key === 'string' && /^\d+$/.test(key)) sourceReads++;
+        return Reflect.get(target, key, receiver);
+      } });
+    } });
+    expect(list().querySelectorAll('[data-candidate-id]')).toHaveLength(50);
+    const last = within(list()).getByRole('button', { name: 'notice-99' });
+    expect(within(detail()).getByRole('heading').textContent).toBe('notice-99');
+    last.focus();
+    fireEvent.keyDown(last, { key: 'ArrowDown' });
+    expect(list().querySelectorAll('[data-candidate-id]')).toHaveLength(20);
+    expect(document.activeElement).toBe(within(list()).getByRole('button', { name: 'notice-100' }));
+    expect(within(detail()).getByRole('heading').textContent).toBe('notice-100');
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(within(list()).getByRole('button', { name: 'notice-99' }));
+    fireEvent.click(within(list()).getByRole('button', { name: '上一页' }));
+    expect(document.activeElement).toBe(within(list()).getByRole('button', { name: 'notice-0' }));
+    expect(sourceReads).toBe(sources.length);
+    expect(arrivalParses).toBe(notices.length);
+  });
   it.each([false, true])('orders processed notices and each filter newest first without reordering pending or saved data (mobile=%s)', mobile => {
     const source = (id: string, sentAt: string | null, importedAt = now) => SourceSchema.parse({
       id, version: 1, createdAt: now, updatedAt: now, kind: 'text', text: '合成通知', label: id, sentAt, importedAt,

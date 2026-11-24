@@ -1,6 +1,5 @@
 import { operationPending } from '../operation-feedback';
-import { useEffect, useMemo, useRef, useState } from "react";
-import { candidateWithRecoveredTiming } from '../../domain/temporal-evidence';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { friendlyReplyText } from './shell/AssistantText';
 import { ChevronLeft, History, Import, Plus } from "lucide-react";
 import type { Candidate, Snapshot } from "../../shared/contracts";
@@ -14,7 +13,7 @@ import { useCurrentTime } from '../hooks/useCurrentTime';
 import { PageToolbar } from "./shell/PageToolbar";
 import { InboxList, type Toast } from "./inbox/InboxList";
 import { CandidateDetail, type Decision } from "./inbox/CandidateDetail";
-import { arrival, dayWord, noticeArrival } from "./inbox/format";
+import { arrival, dayWord, indexInbox, type InboxNotice } from "./inbox/format";
 import "./inbox/Inbox.css";
 import { useMobile } from '../mobile/layout';
 import { MobileSheet } from '../mobile/MobileSheet';
@@ -27,6 +26,7 @@ function DetailFrame({ mobile, close, children }: { mobile: boolean; close: () =
 
 type Tab = "pending" | "snoozed" | "done";
 type DoneFilter = "all" | "accepted" | "ignored" | "expired";
+const PAGE_SIZE = 50;
 const sourceStatus = { saved: "已保存，待分析", processing: "处理中", failed: "分析失败", succeeded: "分析完成", "needs-review": "需要校对" } as const;
 
 /** QQ capture's last arrival, when capture is set up on this computer. */
@@ -46,7 +46,7 @@ function useCaptureStatus(host: HostCapabilities | undefined) {
  * 待判断: a list with quick ✓ / ✕ on every open notice and the selected notice's detail beside it.
  * Arrow keys move through the list; A, I and L accept, ignore or postpone the selected notice.
  */
-export function Inbox({ snapshot: storedSnapshot, ui, select, edit, importMessage, openSource, focus, host }: {
+export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, focus, host }: {
   snapshot: Snapshot;
   ui: PlannerUI;
   select: (s: Selection) => void;
@@ -57,7 +57,7 @@ export function Inbox({ snapshot: storedSnapshot, ui, select, edit, importMessag
   focus?: string | null;
   host?: HostCapabilities;
 }) {
-  const snapshot = useMemo(() => ({ ...storedSnapshot, candidates: storedSnapshot.candidates.map(candidate => candidateWithRecoveredTiming(candidate, storedSnapshot.sources)) }), [storedSnapshot]);
+  const index = useMemo(() => indexInbox(snapshot), [snapshot.sources, snapshot.candidates]);
   const mobile = useMobile();
   const [detailOpen, setDetailOpen] = useState(Boolean(focus));
   const now = useCurrentTime();
@@ -72,25 +72,45 @@ export function Inbox({ snapshot: storedSnapshot, ui, select, edit, importMessag
   const [toast, setToast] = useState<Toast | null>(null);
   const capture = useCaptureStatus(host);
 
-  const disposition = (candidate: Candidate) => candidateDisposition(candidate, now);
-  const counts = { pending: 0, snoozed: 0, done: 0 };
-  for (const candidate of snapshot.candidates) {
-    const value = disposition(candidate);
-    counts[value === "pending" ? "pending" : value === "snoozed" ? "snoozed" : "done"]++;
-  }
-  const items = snapshot.candidates.filter(candidate => {
-    const value = disposition(candidate);
-    return tab === "done" ? value !== "pending" && value !== "snoozed" && (doneFilter === "all" || value === doneFilter) : value === tab;
-  });
-  if (tab === "done") items.sort((a, b) => Date.parse(noticeArrival(snapshot, b)) - Date.parse(noticeArrival(snapshot, a))
-    || Date.parse(b.createdAt) - Date.parse(a.createdAt));
-  const current = items.find(candidate => candidate.id === selectedId) ?? items[Math.min(fallback, items.length - 1)];
+  const { items, positions, counts, earliestSnooze } = useMemo(() => {
+    const items: InboxNotice[] = [];
+    const counts = { pending: 0, snoozed: 0, done: 0 };
+    let earliestSnooze: string | null = null;
+    for (const notice of index.notices.values()) {
+      const value = candidateDisposition(notice.candidate, now);
+      const group = value === "pending" || value === "snoozed" ? value : "done";
+      counts[group]++;
+      const until = notice.candidate.snoozedUntil;
+      if (value === "snoozed" && until && (!earliestSnooze || until.localeCompare(earliestSnooze) < 0)) earliestSnooze = until;
+      if (group === tab && (group !== "done" || doneFilter === "all" || value === doneFilter)) items.push(notice);
+    }
+    if (tab === "done") items.sort((a, b) => b.arrivalTime - a.arrivalTime || b.creationTime - a.creationTime);
+    const positions = new Map(items.map((notice, i) => [notice.candidate.id, i]));
+    return { items, positions, counts, earliestSnooze };
+  }, [index, now, tab, doneFilter]);
+  const position = (selectedId ? positions.get(selectedId) : undefined) ?? Math.min(fallback, items.length - 1);
+  const currentNotice = items[position], current = currentNotice?.candidate;
+  const page = Math.max(0, Math.floor(position / PAGE_SIZE)), pageCount = Math.ceil(items.length / PAGE_SIZE);
+  const visible = mobile ? items : items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const quick = tab !== "done";
+  const scrollList = useRef(false);
+  const focusRowControl = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (!scrollList.current) return;
+    scrollList.current = false;
+    const row = document.querySelector<HTMLElement>('.a2-ib-item[aria-current="true"]');
+    if (focusRowControl.current && row) {
+      const control = row.querySelector<HTMLButtonElement>(focusRowControl.current);
+      (control && !control.disabled ? control : row.querySelector<HTMLButtonElement>('.pick'))?.focus({ preventScroll: true });
+    }
+    focusRowControl.current = null;
+    row?.scrollIntoView?.({ block: "nearest" });
+  }, [current?.id, page]);
 
   useEffect(() => {
     if (!focus) return;
     setDetailOpen(true);
-    const candidate = snapshot.candidates.find(value => value.id === focus);
+    const candidate = index.notices.get(focus)?.candidate;
     if (!candidate) return;
     const value = candidateDisposition(candidate, Date.now());
     setTab(value === "pending" || value === "snoozed" ? value : "done");
@@ -107,9 +127,13 @@ export function Inbox({ snapshot: storedSnapshot, ui, select, edit, importMessag
     return () => clearTimeout(timer);
   }, [toast]);
 
-  const pick = (id: string) => { setSelectedId(id); setDetailOpen(true); setFallback(Math.max(0, items.findIndex(candidate => candidate.id === id))); };
+  const pick = (id: string) => { setSelectedId(id); setDetailOpen(true); setFallback(positions.get(id) ?? 0); };
+  const changePage = (next: number) => {
+    const first = items[next * PAGE_SIZE];
+    if (first) { scrollList.current = true; focusRowControl.current = '.pick'; pick(first.candidate.id); }
+  };
   async function decide(candidate: Candidate, type: Decision) {
-    const index = items.findIndex(value => value.id === candidate.id);
+    const index = positions.get(candidate.id) ?? 0;
     const result = await ui.mutate([{ type, id: candidate.id, expectedVersion: candidate.version, reason }]);
     if (result?.status !== "applied") return;
     setDetailOpen(false);
@@ -119,7 +143,7 @@ export function Inbox({ snapshot: storedSnapshot, ui, select, edit, importMessag
     setToast({ text: `${type === "acceptCandidate" ? "已接受" : "已忽略"}「${candidate.title}」`, transactionId: result.transactionId, id: candidate.id });
   }
   async function snooze(candidate: Candidate, until: string) {
-    const index = items.findIndex(value => value.id === candidate.id);
+    const index = positions.get(candidate.id) ?? 0;
     const result = await ui.mutate([{ type: "snoozeCandidate", id: candidate.id, expectedVersion: candidate.version, until, reason }]);
     if (result?.status !== "applied") return;
     setReason("");
@@ -135,21 +159,26 @@ export function Inbox({ snapshot: storedSnapshot, ui, select, edit, importMessag
     setSelectedId(id);
   }
 
-  const keys = useRef({ items, current, quick, busy: current ? operationPending(ui, `candidate:${current.id}`) : false, decide, setSnoozing, pick });
-  keys.current = { items, current, quick, busy: current ? operationPending(ui, `candidate:${current.id}`) : false, decide, setSnoozing, pick };
+  const keys = useRef({ items, position, current, quick, busy: current ? operationPending(ui, `candidate:${current.id}`) : false, decide, setSnoozing, pick });
+  keys.current = { items, position, current, quick, busy: current ? operationPending(ui, `candidate:${current.id}`) : false, decide, setSnoozing, pick };
   useEffect(() => {
     const press = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return;
       if (target?.closest("input, textarea, select, [contenteditable=true]") || document.querySelector('[role="dialog"]')) return;
-      const { items, current, quick, busy, decide, setSnoozing, pick } = keys.current;
+      const { items, position, current, quick, busy, decide, setSnoozing, pick } = keys.current;
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         if (!items.length) return;
         event.preventDefault();
-        const index = current ? items.indexOf(current) : -1;
-        const next = items[Math.max(0, Math.min(items.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))]!;
-        pick(next.id);
-        document.querySelector<HTMLElement>(`.a2-ib-item[data-candidate-id="${next.id}"]`)?.scrollIntoView?.({ block: "nearest" });
+        const next = Math.max(0, Math.min(items.length - 1, position + (event.key === "ArrowDown" ? 1 : -1)));
+        if (next !== position) {
+          scrollList.current = true;
+          // Keep the existing DOM focus unless pagination is about to unmount its row.
+          if (Math.floor(position / PAGE_SIZE) !== Math.floor(next / PAGE_SIZE) && target?.closest('.a2-ib-item button')) {
+            focusRowControl.current = target.closest('.ok') ? '.ok' : target.closest('.no') ? '.no' : '.pick';
+          }
+        }
+        pick(items[next]!.candidate.id);
         return;
       }
       if (!current || !quick || busy) return;
@@ -162,29 +191,27 @@ export function Inbox({ snapshot: storedSnapshot, ui, select, edit, importMessag
     return () => document.removeEventListener("keydown", press);
   }, []);
 
-  const snoozedList = snapshot.candidates.filter(candidate => disposition(candidate) === "snoozed")
-    .sort((a, b) => a.snoozedUntil!.localeCompare(b.snoozedUntil!));
   const tabs: [Tab, string, number | null][] = [["pending", "待判断", counts.pending], ["snoozed", "稍后", counts.snoozed], ["done", "已处理", null]];
   const switchTab = (id: Tab) => { setTab(id); setSelectedId(null); setFallback(0); };
   const doneFilters = [["all", "全部"], ["accepted", "已接受"], ["ignored", "已忽略"], ["expired", "已过期"]] as const;
-  const detail = current && (!mobile || detailOpen) && <DetailFrame mobile={mobile} close={() => setDetailOpen(false)}><CandidateDetail key={current.id} snapshot={snapshot} candidate={current} today={today} now={now} busy={operationPending(ui, `candidate:${current.id}`)}
+  const detail = currentNotice && current && (!mobile || detailOpen) && <DetailFrame mobile={mobile} close={() => setDetailOpen(false)}><CandidateDetail key={current.id} settings={snapshot.settings} index={index} notice={currentNotice} today={today} now={now} busy={operationPending(ui, `candidate:${current.id}`)}
     localSourceAccess={Boolean(host) && !mobile} host={mobile ? undefined : host}
-    hideQQOriginal={current.sourceIds.some(id => { const source = snapshot.sources.find(value => value.id === id); return source ? isExtractedQQSource(source) || ((mobile || !host) && Boolean(source.captureRef)) : mobile || !host; })}
-    clearedPhoneInput={current.sourceIds.some(id => { const source = snapshot.sources.find(value => value.id === id); return source ? isClearedPhoneSource(source) : false; })}
+    hideQQOriginal={current.sourceIds.some(id => { const source = index.sources.get(id); return source ? isExtractedQQSource(source) || ((mobile || !host) && Boolean(source.captureRef)) : mobile || !host; })}
+    clearedPhoneInput={current.sourceIds.some(id => { const source = index.sources.get(id); return source ? isClearedPhoneSource(source) : false; })}
     reason={reason} setReason={setReason} decide={type => void decide(current, type)}
     snoozing={snoozing} setSnoozing={setSnoozing} snooze={until => void snooze(current, until)}
     restore={() => void ui.mutate([{ type: "restoreCandidate", id: current.id, expectedVersion: current.version, reason }])}
     edit={() => edit(current.id)} openSource={openSource} viewTask={id => select({ entity: "task", id })} viewCandidate={id => {
-      const target = snapshot.candidates.find(value => value.id === id);
+      const target = index.notices.get(id)?.candidate;
       if (!target) return;
-      const value = disposition(target);
+      const value = candidateDisposition(target, now);
       setTab(value === "pending" || value === "snoozed" ? value : "done");
       setDoneFilter("all");
       setSelectedId(id);
     }} /></DetailFrame>;
   const waiting = <>
     {capture && <>QQ 采集{capture.lastReceivedAt ? `上次收到消息 ${arrival(capture.lastReceivedAt, today)}` : "已开启"} · 合批等待 {CAPTURE_BATCH_WAIT_SECONDS} 秒，随后排队分析<br /></>}
-    {snoozedList.length > 0 && `稍后决定的 ${snoozedList.length} 条，最早${dayWord(snoozedList[0]!.snoozedUntil!.slice(0, 10), today)} ${snoozedList[0]!.snoozedUntil!.slice(11, 16)} 回到这里。`}
+    {earliestSnooze && `稍后决定的 ${counts.snoozed} 条，最早${dayWord(earliestSnooze.slice(0, 10), today)} ${earliestSnooze.slice(11, 16)} 回到这里。`}
   </>;
 
   // The phone page: a plain title with two icons, a segmented switch, quiet rows. Decisions show in the shared toast.
@@ -216,12 +243,12 @@ export function Inbox({ snapshot: storedSnapshot, ui, select, edit, importMessag
           {doneFilters.map(([id, label]) => <button key={id} className="m-link" aria-pressed={doneFilter === id} onClick={() => { setDoneFilter(id); setSelectedId(null); setFallback(0); }}>{label}</button>)}
         </div>}
         {items.length ? <>
-          <InboxList snapshot={snapshot} items={items} selectedId={current?.id} today={today} quick={quick} busy={ui.busy} pending={id => operationPending(ui, `candidate:${id}`)}
+          <InboxList items={visible} page={page} pageCount={pageCount} changePage={changePage} selectedId={current?.id} today={today} quick={quick} busy={ui.busy} pending={id => operationPending(ui, `candidate:${id}`)}
             select={pick} decide={(candidate, type) => void decide(candidate, type)} toast={null} undo={() => {}} />
           {detail}
         </> : <div className="m-ib-empty">
           <p className="title">{tab === "pending" ? "都处理完了" : tab === "snoozed" ? "没有稍后决定的通知" : "这里还没有事项"}</p>
-          {tab === "pending" && (capture || snoozedList.length > 0) && <p>{waiting}</p>}
+          {tab === "pending" && (capture || earliestSnooze) && <p>{waiting}</p>}
           {tab === "pending" && <button className="m-link" onClick={importMessage}>导入消息</button>}
         </div>}
       </>}
@@ -262,7 +289,7 @@ export function Inbox({ snapshot: storedSnapshot, ui, select, edit, importMessag
         </div>
         {items.length ? (
           <div className="a2-ib-body">
-            <InboxList snapshot={snapshot} items={items} selectedId={current?.id} today={today} quick={quick} busy={ui.busy} pending={id => operationPending(ui, `candidate:${id}`)}
+            <InboxList items={visible} page={page} pageCount={pageCount} changePage={changePage} selectedId={current?.id} today={today} quick={quick} busy={ui.busy} pending={id => operationPending(ui, `candidate:${id}`)}
               select={pick} decide={(candidate, type) => void decide(candidate, type)} toast={toast} undo={() => void undo()} />
             {detail}
           </div>
@@ -271,7 +298,7 @@ export function Inbox({ snapshot: storedSnapshot, ui, select, edit, importMessag
             {toast && <div className="ui-toast a2-ib-toast" role="status">{friendlyReplyText(toast.text)}<button onClick={() => void undo()}>撤销</button></div>}
             {tab === "pending" ? <div className="ui-empty center">
               <h4>都处理完了</h4>
-              {(capture || snoozedList.length > 0) && <p>{waiting}</p>}
+              {(capture || earliestSnooze) && <p>{waiting}</p>}
               <div className="actions"><button className="ui-btn" onClick={importMessage}><Import aria-hidden="true" />导入消息</button></div>
             </div> : <div className="ui-empty center">
               <h4>{tab === "snoozed" ? "没有稍后决定的通知" : "这里还没有事项"}</h4>

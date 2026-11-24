@@ -174,6 +174,8 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
       sent_at TEXT NOT NULL, imported_at TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0, payload TEXT NOT NULL,
       UNIQUE(account_id, group_id, message_id));
     CREATE INDEX IF NOT EXISTS capture_messages_group_time ON capture_messages(account_id,group_id,sent_at);
+    CREATE INDEX IF NOT EXISTS capture_messages_source ON capture_messages(account_id,group_id,json_extract(payload,'$.sourceMessageId'))
+      WHERE json_extract(payload,'$.sourceMessageId') IS NOT NULL;
     CREATE TABLE IF NOT EXISTS capture_blobs (hash TEXT PRIMARY KEY, bytes BLOB NOT NULL);
     CREATE TABLE IF NOT EXISTS capture_attachments (
       id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES capture_messages(id) ON DELETE CASCADE,
@@ -421,13 +423,16 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
             result.duplicates++;
             // Upgrade the first text-only WeChat reader without replaying paid text analysis.
             if (platform !== 'wechat' || previous.deleted || Date.parse(previous.sentAt) !== Date.parse(input.sentAt)) continue;
-            const existing = attachments(id);
-            for (const row of db.prepare("SELECT id FROM capture_messages WHERE account_id=? AND group_id=? AND json_extract(payload,'$.sourceMessageId')=?").all(input.accountId, input.groupId, previous.sourceMessageId ?? previous.messageId)) {
-              existing.push(...attachments(row['id'] as string));
-            }
-            const key = (item: { kind: string; locator: unknown }) => json({ kind: item.kind, locator: item.locator });
-            const extra = input.attachments.filter(item => ['image', 'file'].includes(item.kind) && !existing.some(value => key(value) === key(item)));
+            const media = input.attachments.filter(item => item.kind === 'image' || item.kind === 'file');
             const upgradeMentions = recoversWeChatMentions(previous.segments, input.segments);
+            if (!media.length && !upgradeMentions) continue;
+            const sourceMessageId = previous.sourceMessageId ?? previous.messageId;
+            const existing = db.prepare(`SELECT payload FROM capture_attachments WHERE message_id IN (
+              SELECT ? UNION ALL SELECT id FROM capture_messages WHERE account_id=? AND group_id=? AND json_extract(payload,'$.sourceMessageId')=?
+            )`).all(id, input.accountId, input.groupId, sourceMessageId).map(row => parsePayload(row, StoredAttachmentSchema)!);
+            const key = (item: { kind: string; locator: unknown }) => json({ kind: item.kind, locator: item.locator });
+            const existingKeys = new Set(existing.map(key));
+            const extra = media.filter(item => !existingKeys.has(key(item)));
             if (!extra.length && !upgradeMentions) continue;
             const owner = parsePayload(db.prepare('SELECT b.payload FROM capture_batches b JOIN capture_batch_messages bm ON bm.batch_id=b.id WHERE bm.message_id=?').get(id), BatchSchema);
             if (!owner || !owner.attempts.length && owner.result === null && ['pending', 'failed'].includes(owner.status)) {
@@ -437,7 +442,6 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
               if (extra.length && owner?.status === 'failed') { owner.status = 'pending'; owner.error = null; owner.waitingForAttachments = false; owner.updatedAt = at; saveBatch(owner); }
               continue;
             }
-            const sourceMessageId = previous.sourceMessageId ?? previous.messageId;
             const mentionId = 'mentions:' + digest(sourceMessageId);
             id = captureMessageId(input.accountId, input.groupId, mentionId);
             if (upgradeMentions && owner.status === 'applied' && !previous.changed && !message(id) &&
