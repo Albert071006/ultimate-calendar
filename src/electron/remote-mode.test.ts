@@ -144,7 +144,7 @@ describe('native cloud key IPC',()=>{
     for(const input of [{key},{key:null},{key,expectedRevision:'bad'},{key,expectedRevision:null,origin:'https://untrusted.example'}])expect(await mock.handlers.get('planner:setApiKey')!(valid,input)).toMatchObject({ok:false,error:{code:'VALIDATION',retryable:false}});
     expect(mock.client.getAiConfiguration).not.toHaveBeenCalled();expect(mock.client.updateAiConfiguration).not.toHaveBeenCalled();expect(mock.client.clearAiConfiguration).not.toHaveBeenCalled();expect(mock.journal.rpc).not.toHaveBeenCalled();
   });
-  it.each([[401,'AUTH'],[403,'VALIDATION'],[409,'CONFLICT'],[0,'NETWORK'],[502,'NETWORK']] as const)('returns a safe distinct error for %i and never makes a key write retryable',async(status,code)=>{
+  it.each([[401,'DEVICE_AUTH'],[403,'VALIDATION'],[409,'CONFLICT'],[0,'NETWORK'],[502,'NETWORK']] as const)('returns a safe distinct error for %i and never makes a key write retryable',async(status,code)=>{
     const f=fixture(),runtime=await startNativeRemote(f.config,f.directory,f.document);closers.push(runtime.close);const event={sender:{id:1},senderFrame:{routingId:2,url:f.document}};
     mock.client.updateAiConfiguration.mockRejectedValue(new RemoteClientError(status,'固定的安全配置错误'));
     expect(await mock.handlers.get('planner:setApiKey')!(event,{key,expectedRevision:null})).toEqual({ok:false,error:{code,message:'固定的安全配置错误',retryable:false}});

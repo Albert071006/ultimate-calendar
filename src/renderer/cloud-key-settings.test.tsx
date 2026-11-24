@@ -19,6 +19,20 @@ function setup(status = initial) {
   return host;
 }
 async function ready() { await screen.findByText('已读取云端当前配置。'); }
+it('labels an unreadable device session, stops the loading messages, and recovers on a successful read', async () => {
+  const host = setup(changed); await ready();
+  host.retryApiKey.mockResolvedValue({ ok: false, error: { code: 'DEVICE_AUTH', message: 'synthetic device expired' } });
+  fireEvent.click(screen.getByRole('button', { name: '重新读取云端配置' }));
+  expect(await screen.findByText('云端密钥状态未知')).toBeTruthy();
+  expect(screen.getByText(/请用新的设备配对码/)).toBeTruthy();
+  expect(screen.queryByText('正在读取云端配置…')).toBeNull();
+  expect((screen.getByLabelText('API Key') as HTMLInputElement).disabled).toBe(true);
+  host.retryApiKey.mockResolvedValue(ok(changed));
+  await act(async () => { window.dispatchEvent(new Event('focus')); });
+  expect(screen.getByText('云端已配置 · 不显示完整密钥')).toBeTruthy();
+  expect(screen.queryByText(/请用新的设备配对码/)).toBeNull();
+  expect(host.setApiKey).not.toHaveBeenCalled();
+});
 it('automatically observes another device change but preserves the revision of a typed draft', async () => {
   vi.useFakeTimers(); const host = setup(); await act(async () => {});
   host.retryApiKey.mockResolvedValue(ok(changed));

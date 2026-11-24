@@ -209,7 +209,7 @@ function LocalSettings({
             <label>
               可用模型
               <select value={model} onChange={e => { setManualModel(false); changeModel(e.target.value); }}>
-                {!modelInfo && <option value={model}>{model || '尚未填写'} · 当前填写，未在列表中发现</option>}
+                {!modelInfo && <option value={model}>{model || '尚未填写'} · 当前填写{account.state?.models.data ? '，未在列表中发现' : ''}</option>}
                 {models.map(item => <option key={item.id} value={item.id}>{item.name ? `${item.name} · ${item.id}` : item.id}</option>)}
               </select>
             </label>
@@ -222,7 +222,7 @@ function LocalSettings({
           <p className="fine-print">{supportsReasoningEffort(model) ? '思考强度越高，通常耗时和用量越多。保存后用于生活助手、资料提炼和课表识别；云端模式也同步到本机群采集。' : '当前手填模型未确认支持强度调节，保持原来的非思考请求方式。'}</p>
           {modelInfo && <p className="hint">上下文：{modelInfo.contextWindow?.toLocaleString() ?? '接口未提供'} · 最大输出：{modelInfo.maxOutputTokens?.toLocaleString() ?? '接口未提供'}
             {modelInfo.inputModalities?.length ? ` · 输入：${modelInfo.inputModalities.map(value => ({ text: '文本', image: '图片' }[value] ?? value)).join('、')}` : ''}</p>}
-          <AccountResourceStatus resource={account.state?.models} label="模型列表" staleAfter={6 * 3_600_000} />
+          <AccountResourceStatus resource={account.state?.models} label="模型列表" staleAfter={6 * 3_600_000} readFailed={!!account.error} />
           <p className="fine-print">模型列表每 6 小时更新。新模型不会自动替换你的选择；修改后请保存设置。</p>
           {modelNotice && <p className="warning">{modelNotice}</p>}
               {!cloud && <><p className={keyStatus.configured ? "success" : keyStatus.loadError ? "warning" : "hint"}>
@@ -280,7 +280,7 @@ function LocalSettings({
               <option>CNY</option><option>USD</option>
             </select></label>
           </div>
-          <OfficialPrices quote={quote} state={account.state} model={model} currency={pricingCurrency} />
+          <OfficialPrices quote={quote} state={account.state} model={model} currency={pricingCurrency} readFailed={!!account.error} />
           {pricingMode === 'manual' && <div className="form-grid" key={model}>
             <label>
               输入 / 百万 token

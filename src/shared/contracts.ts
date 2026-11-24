@@ -358,7 +358,7 @@ export interface PlannerService {
 }
 
 export const ApiErrorSchema = z.strictObject({
-  code: z.enum(['VALIDATION', 'NOT_FOUND', 'CONFLICT', 'NO_API_KEY', 'NETWORK', 'RATE_LIMIT', 'AUTH', 'BALANCE', 'AI_RESPONSE', 'CANCELLED', 'STORAGE', 'INTERNAL']),
+  code: z.enum(['VALIDATION', 'NOT_FOUND', 'CONFLICT', 'NO_API_KEY', 'NETWORK', 'RATE_LIMIT', 'AUTH', 'DEVICE_AUTH', 'BALANCE', 'AI_RESPONSE', 'CANCELLED', 'STORAGE', 'INTERNAL']),
   message: shortText, retryable: z.boolean(),
   /** Transport evidence only: an absent value must never be inferred to mean the operation was not sent. */
   delivery: z.enum(['not-sent', 'unknown']).optional(),

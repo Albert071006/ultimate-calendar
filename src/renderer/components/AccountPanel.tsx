@@ -2,8 +2,8 @@ import type { AccountState, PriceQuote } from '../../shared/account';
 import { displayInstant } from '../calendar-layout';
 
 type Status = { updatedAt: string | null; loading: boolean; error: string | null; data: unknown };
-export function AccountResourceStatus({ resource, label, staleAfter }: { resource: Status | undefined; label: string; staleAfter: number }) {
-  if (!resource) return <p className="hint">正在读取{label}状态…</p>;
+export function AccountResourceStatus({ resource, label, staleAfter, readFailed }: { resource: Status | undefined; label: string; staleAfter: number; readFailed: boolean }) {
+  if (!resource) return readFailed ? null : <p className="hint">正在读取{label}状态…</p>;
   const stale = !!resource.updatedAt && Date.now() - Date.parse(resource.updatedAt) > staleAfter;
   return <div className="account-status" aria-live="polite">
     {resource.loading && <p className="hint">正在刷新{label}…</p>}
@@ -36,12 +36,12 @@ export function AccountPanel({ state, error, refreshing, refresh, configured }: 
       <p className={balance.isAvailable ? 'success' : 'warning'}>{balance.isAvailable ? '账户余额可用于 API 调用' : '账户余额不足，暂时无法调用 API'}</p>
       {!balance.balances.length && <p className="hint">接口未返回币种余额明细。</p>}
     </> : <p className="hint">余额暂不可用。</p>}
-    {configured && <AccountResourceStatus resource={state?.balance} label="余额" staleAfter={60_000} />}
+    {configured && <AccountResourceStatus resource={state?.balance} label="余额" staleAfter={60_000} readFailed={!!error} />}
     <p className="fine-print">窗口显示时每 30 秒查询，托盘运行时每 5 分钟查询；AI 请求结束后再刷新。余额以接口返回为准，更新可能有延迟。</p>
   </div>;
 }
 
-export function OfficialPrices({ quote, state, model, currency }: { quote: PriceQuote | undefined; state: AccountState | null; model: string; currency: string }) {
+export function OfficialPrices({ quote, state, model, currency, readFailed }: { quote: PriceQuote | undefined; state: AccountState | null; model: string; currency: string; readFailed: boolean }) {
   return <div className="official-prices">
     <p className="hint">{model} · {currency} / 百万 tokens · 官方单价</p>
     {quote ? <>
@@ -56,7 +56,7 @@ export function OfficialPrices({ quote, state, model, currency }: { quote: Price
       <p className="fine-print">该单价更新于 {displayInstant(quote.updatedAt)}{Date.now() - Date.parse(quote.updatedAt) > 86_400_000 ? ' · 已过期，不用于新的自动估算' : ''}</p>
       <p className="fine-print">来源：<span className="account-source">{quote.sourceUrl}</span></p>
     </> : <p className="hint">暂未获取此模型与币种的官方价格；新请求会记录 token 用量，费用暂不估算。</p>}
-    <AccountResourceStatus resource={state?.prices} label="官方价格" staleAfter={86_400_000} />
+    <AccountResourceStatus resource={state?.prices} label="官方价格" staleAfter={86_400_000} readFailed={readFailed} />
     {state?.prices.data?.rule && <p className="fine-print">{state.prices.data.rule}</p>}
     <p className="fine-print">单价每日从官方价格页同步，也可手动刷新。自动费用显示空闲至高峰的估算范围，实际扣费以 DeepSeek 账单为准。</p>
   </div>;

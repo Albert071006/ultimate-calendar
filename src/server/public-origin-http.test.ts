@@ -6,6 +6,7 @@ import { request as httpRequest } from 'node:http';
 import { createRemoteService } from './service';
 import { createRemoteHttpServer, type RemoteHttpOptions } from './http';
 import { RemoteState } from './state';
+import { createNodeRemoteClient } from '../remote/node-client';
 
 const primary = 'https://private.example.test', publicOrigin = 'https://calendar.example.test';
 const cleanup: (() => Promise<void>)[] = [];
@@ -45,6 +46,27 @@ async function setup(overrides: Partial<Pick<RemoteHttpOptions, 'publicOrigin' |
 }
 
 describe('explicit public HTTPS origin', () => {
+  it('keeps an active native pairing beyond its original expiry and coalesces concurrent renewals', async () => {
+    const f = await setup(), device = await f.pair();
+    vi.spyOn(Date, 'now').mockImplementation(f.now);
+    const renew = vi.spyOn(f.state, 'renewSession'), write = vi.fn();
+    const client = createNodeRemoteClient({ origin: primary, maintainSession: true,
+      credentials: { read: () => ({ version: 1, origin: primary, cookie: device.cookie, identity: device.session.identity, deviceId: device.session.device.id }), write },
+      fetch: (url, init) => f.call(primary, new URL(String(url)).pathname, init) });
+    try {
+      await client.getSession();
+      expect(renew).toHaveBeenCalledTimes(1);
+      f.advance(16 * 86400_000);
+      await Promise.all([client.getAiConfiguration(), client.getAiConfiguration(), client.getSession()]);
+      expect(renew).toHaveBeenCalledTimes(2);
+      f.advance(15 * 86400_000);
+      await expect(client.getSession()).resolves.toMatchObject({ deviceId: device.session.device.id });
+      f.state.revoke(device.session.device.id);
+      f.advance(86400_000);
+      await expect(client.getAiConfiguration()).rejects.toMatchObject({ status: 401 });
+      expect(write).not.toHaveBeenCalled();
+    } finally { client.close(); }
+  });
   it('exposes only backup progress to paired public devices while keeping management status private', async () => {
     const f = await setup(), device = await f.pair(publicOrigin);
     expect((await f.call(publicOrigin, '/api/v1/backup/status')).status).toBe(401);

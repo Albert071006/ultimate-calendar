@@ -141,7 +141,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
           <div className="a2-service"><h2>请从桌面应用打开终极日历</h2><p>此页面未连接本地数据服务。</p></div>
         ) : !snapshot ? (
           <div className="a2-service">
-            <h2>正在载入本机数据…</h2>
+            <h2>{ui.error ? '日历资料暂时无法载入' : '正在载入日历资料…'}</h2>
             {ui.error && <p className="error">{ui.error}</p>}
             <button className="ui-btn" onClick={() => void ui.refresh()}>重新载入</button>
           </div>

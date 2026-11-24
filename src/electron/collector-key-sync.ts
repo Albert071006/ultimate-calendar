@@ -157,7 +157,7 @@ export function createCollectorKeySync(options: CollectorKeySyncOptions) {
       }
       checkOpen(signal);
       const created = (options.createClient ?? createNodeRemoteClient)({ origin: config.origin, credentialsFile: config.credentialsFile,
-        localConnectAddress: config.localConnectAddress, timeoutMs: options.timeoutMs ?? 8000 });
+        localConnectAddress: config.localConnectAddress, timeoutMs: options.timeoutMs ?? 8000, maintainSession: true });
       credential = saved; privateKey = receiver; keyId = id; client = created;
     } catch (error) { if (closed || signal.aborted) checkOpen(signal); if (error instanceof RemoteClientError) throw failure('configuration'); throw failure('receiver'); }
   }

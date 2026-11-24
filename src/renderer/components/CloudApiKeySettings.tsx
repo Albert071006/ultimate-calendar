@@ -13,24 +13,30 @@ export function CloudApiKeySettings({ ui }: { ui: PlannerUI }) {
   const [busy, setBusy] = useState(false);
   const [needsReview, setNeedsReview] = useState(false);
   const [error, setError] = useState('');
+  const [readError, setReadError] = useState('');
   const [message, setMessage] = useState('');
   const [confirmClear, setConfirmClear] = useState(false);
 
   async function readStatus() {
-    if (!host) throw Error('Cloud host unavailable');
-    const result = await host.retryApiKey();
-    if (!result.ok || !result.data.cloudConfiguration) throw Error('Cloud status unavailable');
-    if (alive.current) setStatus(result.data.cloudConfiguration);
+    const result = await host?.retryApiKey().catch(() => undefined);
+    if (!result?.ok || !result.data.cloudConfiguration) {
+      if (alive.current) {
+        setStatus(null); setMessage('');
+        setReadError(result?.ok === false && result.error.code === 'DEVICE_AUTH'
+          ? '请用新的设备配对码重新连接这台电脑，之后即可读取已有的云端密钥配置。'
+          : '无法读取云端配置，请检查连接后重新读取。');
+      }
+      return;
+    }
+    if (alive.current) { setReadError(''); setStatus(result.data.cloudConfiguration); }
     return result.data.cloudConfiguration;
   }
   async function refresh() {
     if (inFlight.current) return;
-    inFlight.current = true; setBusy(true); setError(''); setMessage(''); setConfirmClear(false);
+    inFlight.current = true; setBusy(true); setError(''); setReadError(''); setMessage(''); setConfirmClear(false);
     try {
-      await readStatus();
-      if (alive.current) { setNeedsReview(false); setMessage('已读取云端当前配置。'); }
-    } catch {
-      if (alive.current) { setNeedsReview(true); setError('无法读取云端配置，请检查连接后重新读取。'); }
+      const value = await readStatus();
+      if (alive.current && value) { setNeedsReview(false); setMessage('已读取云端当前配置。'); }
     } finally {
       inFlight.current = false; if (alive.current) setBusy(false);
     }
@@ -46,7 +52,7 @@ export function CloudApiKeySettings({ ui }: { ui: PlannerUI }) {
       // Preserve the revision associated with an in-progress edit or deletion confirmation.
       if (inFlight.current || confirmClear || input.current?.value) return;
       inFlight.current = true;
-      try { await readStatus(); } catch { /* A background read never resubmits a secret or removes a review guard. */ }
+      try { await readStatus(); }
       finally { inFlight.current = false; }
     };
     const timer = window.setInterval(() => void observe(), 5000);
@@ -77,16 +83,16 @@ export function CloudApiKeySettings({ ui }: { ui: PlannerUI }) {
             ? '云端配置已变更，本次未覆盖。请重新读取，再按需填写。'
             : !result.ok && result.error.code === 'VALIDATION'
               ? result.error.message
-              : !result.ok && result.error.code === 'AUTH'
+              : !result.ok && result.error.code === 'DEVICE_AUTH'
                 ? '设备授权已失效，请重新配对后读取配置。'
                 : '本次保存结果尚未确认，已尝试核对云端状态，未自动重发。请重新读取后再决定是否修改。');
         }
         // Reads are safe after an uncertain write. A refreshed configured flag does not prove which key won.
-        try { await readStatus(); } catch { /* Keep the review guard until an explicit successful refresh. */ }
+        await readStatus();
       }
     } catch {
       if (alive.current) { setNeedsReview(true); setError('本次保存结果尚未确认，未自动重发。请重新读取云端配置。'); }
-      try { await readStatus(); } catch { /* No write retry. */ }
+      await readStatus();
     } finally {
       inFlight.current = false; if (alive.current) setBusy(false);
     }
@@ -99,12 +105,13 @@ export function CloudApiKeySettings({ ui }: { ui: PlannerUI }) {
       <p className="ck-lead">手机、电脑的生活助手和 QQ 提炼共用这一份密钥，任一端修改后其他端自动更新。</p>
       <div className="ck-status">
         <i className={`ck-dot ${state}`} aria-hidden="true" />
-        <strong>{status ? status.configured ? '云端已配置 · 不显示完整密钥' : '云端尚未配置 API Key' : '正在读取云端配置…'}</strong>
+        <strong>{status ? status.configured ? '云端已配置 · 不显示完整密钥' : '云端尚未配置 API Key' : readError ? '云端密钥状态未知' : '正在读取云端配置…'}</strong>
         {message && <span role="status" className="ck-note">{message}</span>}
         <button type="button" className="ui-btn sm ghost" aria-label="重新读取云端配置" disabled={busy || ui.busy} onClick={() => void refresh()}>重新读取</button>
       </div>
       {status && !status.editable && <p className="warning">密钥由服务器配置管理，当前不能在设备上修改。</p>}
       {error && <p role="alert" className="warning">{error}</p>}
+      {readError && <p role="alert" className="warning">{readError}</p>}
       <form className="ck-form" onSubmit={event => { event.preventDefault(); void save(); }}>
         <input ref={input} type="password" aria-label="API Key" autoComplete="off" spellCheck={false}
           disabled={disabled} maxLength={512} placeholder={status?.configured ? '填写新的 Key 可替换云端配置' : '输入 DeepSeek API Key'} />

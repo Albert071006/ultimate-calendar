@@ -28,7 +28,7 @@ import type { PlanSource } from '../shared/plan-context';
 export async function startNativeRemote(config: NativeRemoteConfig, directory: string, documentUrl: string) {
   if (!safeStorage.isEncryptionAvailable()) throw Error('系统凭据加密不可用，未保存或发送配对凭据');
   const credentialFile = join(directory, 'credentials', 'remote-device.bin');
-  const client = createNodeRemoteClient({ origin: config.origin, localConnectAddress: config.localConnectAddress, credentials: {
+  const client = createNodeRemoteClient({ origin: config.origin, localConnectAddress: config.localConnectAddress, maintainSession: true, credentials: {
     read() { const value = readPrivate(credentialFile, 32_768); return value ? JSON.parse(safeStorage.decryptString(value)) as RemoteCredential : null; },
     write(value) { writePrivate(credentialFile, safeStorage.encryptString(JSON.stringify(value))); },
   } });
@@ -171,7 +171,7 @@ export async function startNativeRemote(config: NativeRemoteConfig, directory: s
             return result.ok && result.sync ? { ...result, sync: shell.patch(result.sync) } : result;
           } catch (error) {
             if (error instanceof WorkflowError) return failure(error.code, error.message, false);
-            if (error instanceof RemoteClientError) return failure(error.status === 401 ? 'AUTH' : error.status === 409 ? 'CONFLICT' :
+            if (error instanceof RemoteClientError) return failure(error.status === 401 ? 'DEVICE_AUTH' : error.status === 409 ? 'CONFLICT' :
               error.status === 400 || error.status === 403 ? 'VALIDATION' : error.status === 429 ? 'RATE_LIMIT' : 'NETWORK', error.message,
               method === 'setApiKey' || method === 'restore' ? false : error.status === 0 || error.status >= 500);
             return failure('STORAGE', '无法可靠读取或保存连接状态，未确认保存；请检查独立配置目录');

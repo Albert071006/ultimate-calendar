@@ -6,7 +6,7 @@ import { AI_SETTINGS_HEADER, AI_SETTINGS_VERSION, AI_RPC_TIMEOUT_MS, isAiRpcPath
 import { PROFILE_SETTINGS_HEADER, PROFILE_SETTINGS_VERSION } from '../../shared/profile-settings';
 import { LEDGER_QUERY_HEADER, LEDGER_QUERY_VERSION } from '../../shared/ledger-query-compatibility';
 import { applyPlannerPatch, PLANNER_SYNC_HEADER, PLANNER_SYNC_VERSION } from '../../shared/planner-sync';
-import { RemoteOperationSchema, RemoteSessionSchema, type RemoteMethod } from '../../shared/remote';
+import { RemoteOperationSchema, RemoteSessionSchema, SESSION_RENEW_INTERVAL_MS, SESSION_RENEW_RETRY_MS, type RemoteMethod } from '../../shared/remote';
 import { remoteInputs, remoteOutputs } from '../../server/protocol';
 import { allowsOffline, captureBase, instant, localId, projectSnapshot, rebaseWrite, references, resolveAliases, writeLabel } from './queue';
 import { createOfflineStorage, emptyPartition, partitionKey, type OfflineStorage } from './storage';
@@ -16,8 +16,6 @@ interface ClientOptions {
   origin?: string; storage?: OfflineStorage; fetch?: typeof fetch;
   events?: (url: string) => EventSource; timeoutMs?: number; now?: () => number;
 }
-const SESSION_RENEW_INTERVAL_MS = 12 * 60 * 60_000;
-const SESSION_RENEW_RETRY_MS = 5 * 60_000;
 const READ_TIMEOUT_MS = 8_000;
 const RECONNECT_INITIAL_MS = 2_000;
 const RECONNECT_MAX_MS = 30_000;

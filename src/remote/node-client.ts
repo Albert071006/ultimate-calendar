@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
-import { RemoteIdentitySchema, RemoteOperationSchema, RemoteSessionSchema, PairRequestSchema, REMOTE_READ_METHODS, type RemoteIdentity, type RemoteMethod } from '../shared/remote';
+import { RemoteIdentitySchema, RemoteOperationSchema, RemoteSessionSchema, PairRequestSchema, REMOTE_READ_METHODS, SESSION_RENEW_INTERVAL_MS, SESSION_RENEW_RETRY_MS, type RemoteIdentity, type RemoteMethod } from '../shared/remote';
 import { DistilledRequestSchema, DistilledResultSchema, type DistilledRequest } from '../shared/distilled';
 import { AiApiKeySchema, AiConfigurationRevisionSchema, AiConfigurationStatusSchema, type AiConfigurationStatus } from '../shared/ai-configuration';
 import { AiKeySyncRequestSchema, AiKeySyncResponseSchema, MAX_AI_KEY_SYNC_BYTES } from '../shared/ai-key-sync';
@@ -34,7 +34,7 @@ export function sameRemoteIdentity(a: RemoteIdentity, b: RemoteIdentity) { retur
 function parseRemote<S extends z.ZodType>(schema:S,value:unknown,readOnly=false):z.output<S> { const result=schema.safeParse(value);if(!result.success)throw new RemoteClientError(502,readOnly?'资料服务响应不符合接口契约，未能读取最新资料':'资料服务响应不符合接口契约，未确认操作结果');return result.data as z.output<S>; }
 
 /** Node-only transport. Cookies never reach the renderer, redirects are never followed. */
-export function createNodeRemoteClient(options: { origin: string; credentialsFile?: string; credentials?: CredentialStore; fetch?: typeof fetch; timeoutMs?: number; localConnectAddress?: '127.0.0.1' }) {
+export function createNodeRemoteClient(options: { origin: string; credentialsFile?: string; credentials?: CredentialStore; fetch?: typeof fetch; timeoutMs?: number; localConnectAddress?: '127.0.0.1'; maintainSession?: boolean }) {
   const origin = normalizeRemoteOrigin(options.origin);
   const store = options.credentials ?? (options.credentialsFile ? fileCredentialStore(options.credentialsFile) : undefined);
   if (!store) throw Error('必须提供设备凭据存储');
@@ -46,12 +46,14 @@ export function createNodeRemoteClient(options: { origin: string; credentialsFil
   if (credential && credential.origin !== origin) throw new RemoteClientError(409, '凭据属于另一资料服务；请使用独立配置与凭据文件');
   if(credential&&!credential.cookie.startsWith(origin.startsWith('https:')?'__Host-planner_session=':'planner_dev_session='))throw new RemoteClientError(409,'设备 Cookie 类型与服务来源不匹配，请核对独立凭据文件');
   let session: Extract<z.infer<typeof RemoteSessionSchema>, { paired: true }> | undefined;
+  let nextRenewal = 0;
+  let renewal: Promise<void> | undefined;
   const lifetime = new AbortController();
   async function request(path: string, input?: unknown, config: { signal?: AbortSignal; pairing?: boolean; method?: 'GET' | 'POST' | 'PUT' | 'DELETE' } = {}) {
     const method = config.method ?? (input === undefined ? 'GET' : 'POST');
     // RPC reads use POST too. Classify the request actually sent, including a
     // session preflight that can fail before the intended write is dispatched.
-    const readOnly = method === 'GET' || path.startsWith('/api/v1/rpc/') &&
+    const readOnly = method === 'GET' || path === '/api/v1/session/renew' || path.startsWith('/api/v1/rpc/') &&
       (REMOTE_READ_METHODS as readonly string[]).includes(path.slice('/api/v1/rpc/'.length));
     const modelRequest = isAiRpcPath(path);
     const timeout = AbortSignal.timeout(Math.min(modelRequest ? AI_RPC_TIMEOUT_MS : 30_000, Math.max(100, options.timeoutMs ?? (modelRequest ? AI_RPC_TIMEOUT_MS : 30_000))));
@@ -73,7 +75,7 @@ export function createNodeRemoteClient(options: { origin: string; credentialsFil
     try {
       const response = await fetcher(origin + path, { redirect: 'error', cache: 'no-store', signal: AbortSignal.any([timeout, lifetime.signal, ...(config.signal ? [config.signal] : [])]),
         method, headers: { Origin: origin, [AI_SETTINGS_HEADER]: AI_SETTINGS_VERSION, [PROFILE_SETTINGS_HEADER]: PROFILE_SETTINGS_VERSION, [LEDGER_QUERY_HEADER]: LEDGER_QUERY_VERSION, [PLANNER_SYNC_HEADER]: PLANNER_SYNC_VERSION, ...(path.startsWith('/api/v1/rpc/ledger') ? { [LEDGER_API_HEADER]: LEDGER_API_VERSION } : {}), ...(credential && !config.pairing ? { Cookie: credential.cookie } : {}),
-          ...(input === undefined ? {} : { 'Content-Type': 'application/json', 'X-CSRF-Token': session?.csrfToken ?? '' }) },
+          ...(method === 'GET' ? {} : { 'X-CSRF-Token': session?.csrfToken ?? '' }), ...(input === undefined ? {} : { 'Content-Type': 'application/json' }) },
         ...(input === undefined ? {} : { body: JSON.stringify(input) }) });
       if(response.redirected||response.status>=300&&response.status<400){await response.body?.cancel();throw new RemoteClientError(502,'资料服务发生重定向，未将凭据发送到其他地址');}
       // Configuration errors never need a response body, which might echo submitted secrets.
@@ -86,14 +88,43 @@ export function createNodeRemoteClient(options: { origin: string; credentialsFil
       return { body, response };
     } catch (error) { if (error instanceof RemoteClientError) throw error; throw new RemoteClientError(0, aiConfiguration ? '云端配置连接未完成；请重新读取状态核对，不会自动重发' : readOnly ? '资料读取未完成，请检查连接后刷新' : '连接未完成；写入结果可能尚未返回，请查询原操作编号'); }
   }
+  // Only active apps maintain a pairing. A diagnostic GET from the CLI stays read-only.
+  async function renewIfDue() {
+    if (!options.maintainSession || !session) return;
+    if (renewal) return renewal;
+    if (Date.now() < nextRenewal) return;
+    const expected = session;
+    nextRenewal = Date.now() + SESSION_RENEW_RETRY_MS;
+    renewal = (async () => {
+      let body: unknown;
+      try { ({ body } = await request('/api/v1/session/renew', undefined, { method: 'POST' })); }
+      catch (error) {
+        // Older servers and transient outages can still serve an authenticated business request.
+        if (error instanceof RemoteClientError && (error.status === 0 || [404, 405, 429].includes(error.status) || error.status >= 500)) return;
+        session = undefined; nextRenewal = 0; throw error;
+      }
+      const value = parseRemote(RemoteSessionSchema, body, true);
+      if (!value.paired || value.device.id !== expected.device.id || !sameRemoteIdentity(value.identity, expected.identity) || value.csrfToken !== expected.csrfToken) {
+        session = undefined; nextRenewal = 0;
+        throw new RemoteClientError(value.paired ? 409 : 401, value.paired ? '续期时设备或资料身份发生变化，请重新核对连接' : '设备授权已失效，请重新配对');
+      }
+      nextRenewal = Date.now() + SESSION_RENEW_INTERVAL_MS;
+    })().finally(() => { renewal = undefined; });
+    return renewal;
+  }
   async function getSession() {
     const value = parseRemote(RemoteSessionSchema,(await request('/api/v1/session')).body,true);
-    if (!value.paired || !credential) { session = undefined; throw new RemoteClientError(401, '此设备尚未配对或授权已失效'); }
+    if (!value.paired || !credential) { session = undefined; throw new RemoteClientError(401, '此设备尚未配对或授权已失效，请用新的设备配对码重新连接'); }
     if (value.device.id !== credential.deviceId || !sameRemoteIdentity(value.identity, credential.identity)) { session = undefined; throw new RemoteClientError(409, '服务身份或资料代际已变更，旧操作已隔离，不能自动重放'); }
     session = value;
+    await renewIfDue();
     return { identity: value.identity, deviceId: value.device.id, aiConfigured: value.aiConfigured };
   }
-  async function ready() { if (!session) await getSession(); return session!; }
+  async function ready() {
+    if (!session) await getSession(); else await renewIfDue();
+    if (!session) throw new RemoteClientError(401, '设备授权已失效，请重新配对');
+    return session;
+  }
   function configurationRevision(value: unknown) {
     const checked = AiConfigurationRevisionSchema.safeParse(value);
     if (!checked.success) throw new RemoteClientError(400, '请先读取云端配置状态，再进行修改');
@@ -142,7 +173,7 @@ export function createNodeRemoteClient(options: { origin: string; credentialsFil
       const expected = origin.startsWith('https:') ? '__Host-planner_session=' : 'planner_dev_session=';
       const cookie = response.headers.getSetCookie().map(v => v.split(';')[0]!).find(v => v.startsWith(expected));
       const next = parseRemote(CredentialSchema,{ version: 1, origin, cookie, identity: value.identity, deviceId: value.device.id });
-      store.write(next); credential = next; session = value;
+      store.write(next); credential = next; session = value; nextRenewal = Date.now() + SESSION_RENEW_INTERVAL_MS;
       return { identity: value.identity, deviceId: value.device.id, aiConfigured: value.aiConfigured };
     },
     async rpc<M extends RemoteMethod>(method: M, input?: unknown, requestId: string = randomUUID()):Promise<z.output<typeof remoteOutputs[M]>> {

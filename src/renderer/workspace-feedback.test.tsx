@@ -113,6 +113,17 @@ it('invokes undo from the header, disables repeat clicks while busy, and refresh
   expect(api.snapshot).toHaveBeenCalledTimes(2);
 });
 
+it('directs an expired device to pairing without suggesting a change to the AI key', async () => {
+  const { api } = fixture();
+  vi.mocked(api.command).mockResolvedValue({ ok: false, error: { code: 'DEVICE_AUTH', message: '设备授权已失效，请重新配对', retryable: false } });
+  render(<App api={api} />);
+  fireEvent.change(await screen.findByLabelText('自然语言指令'), { target: { value: '显示今天的安排' } });
+  fireEvent.click(screen.getByRole('button', { name: '发送指令' }));
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toContain('请重新配对');
+  expect(within(alert).queryByRole('button', { name: '配置密钥' })).toBeNull();
+});
+
 it('keeps actionable errors visible and removes their row after dismissal', async () => {
   const { api } = fixture();
   vi.mocked(api.command).mockResolvedValue({

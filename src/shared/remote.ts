@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { IdSchema } from './contracts';
 
+export const SESSION_RENEW_INTERVAL_MS = 12 * 60 * 60_000;
+export const SESSION_RENEW_RETRY_MS = 5 * 60_000;
+
 export const RemoteIdentitySchema = z.strictObject({ protocolVersion: z.literal(1), dataInstanceId: z.string().uuid(), generation: z.number().int().positive() });
 export type RemoteIdentity = z.infer<typeof RemoteIdentitySchema>;
 export const REMOTE_METHODS = ['snapshot', 'changes', 'mutate', 'undo', 'command', 'importSource', 'analyzeSource', 'ledgerSnapshot', 'ledgerMutate', 'ledgerUndo', 'saveSettings', 'accountSnapshot', 'refreshAccount', 'importCourses', 'ledgerExportData', 'backupExportData', 'restorePreview', 'restoreConfirm'] as const;
