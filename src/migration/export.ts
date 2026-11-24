@@ -6,7 +6,8 @@ import { openDatabase } from '../storage/database';
 import { kinds, parseState, readDatabaseState, type StoredState } from '../storage/repository';
 import { readLedgerDatabase, validateLedgerData } from '../ledger/service';
 import { LedgerImportPayloadSchema, type LedgerData } from '../shared/ledger';
-import { validateSafeBackup } from '../server/backup';
+import { redactEvidence, validateSafeBackup } from '../server/backup';
+import { migrateLegacyDistilledState } from '../storage/distilled-state';
 
 const sha256=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex');
 function fileDigest(path:string){const hash=createHash('sha256'),fd=openSync(path,'r'),chunk=Buffer.allocUnsafe(1024*1024);try{let length:number;while((length=readSync(fd,chunk,0,chunk.length,null))>0)hash.update(chunk.subarray(0,length));return hash.digest('hex');}finally{closeSync(fd);}}
@@ -118,7 +119,12 @@ export function verifyMigrationBundle(directory:string){
   const raw=JSON.parse(bytes.toString('utf8')) as {planner:unknown;ledger:unknown};
   const payload=validateSafeBackup(raw),actual=counts(payload.planner,payload.ledger);
   const {revision:_revision,...ledger}=payload.ledger;
-  if(JSON.stringify(raw.planner)!==JSON.stringify(payload.planner)||JSON.stringify(raw.ledger)!==JSON.stringify({format:'ultimate-calendar-ledger',formatVersion:1,...ledger})||JSON.stringify(removeMigrationEvidence(raw))!==JSON.stringify(raw))throw Error('迁移包含未清理的来源、图片或原始记账文本，不能当作已脱敏导出');
+  // Check the exact bytes' original planner shape before projecting old event receipts.
+  // Otherwise a quote hidden in a discarded legacy candidate could pass verification.
+  const originalPlanner = parseState(redactEvidence(raw.planner), false);
+  const cleanOriginal = JSON.stringify(originalPlanner) === JSON.stringify(raw.planner);
+  migrateLegacyDistilledState(originalPlanner);
+  if(!cleanOriginal||JSON.stringify(originalPlanner)!==JSON.stringify(payload.planner)||JSON.stringify(raw.ledger)!==JSON.stringify({format:'ultimate-calendar-ledger',formatVersion:1,...ledger})||JSON.stringify(removeMigrationEvidence(raw))!==JSON.stringify(raw))throw Error('迁移包含未清理的来源、图片或原始记账文本，不能当作已脱敏导出');
   if(JSON.stringify(manifest.before)!==JSON.stringify(manifest.after)||JSON.stringify(actual)!==JSON.stringify(manifest.after)||relationships(payload.planner,payload.ledger)!==manifest.relationshipsSha256)throw Error('manifest 记录数量或正式关联摘要核对失败');
   return{manifest,taskCount:payload.planner.entities.task.length,ledgerEntryCount:payload.ledger.entries.length};
 }

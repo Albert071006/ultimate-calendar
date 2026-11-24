@@ -126,6 +126,8 @@ describe('cloud desktop management RPCs', () => {
     expect(full).toMatchObject({ ok: true, data: { format: 'json' } });
     const parsed = LedgerImportPayloadSchema.parse(JSON.parse(full.data.content));
     expect(parsed.entries).toHaveLength(1); expect(parsed.audit).toHaveLength(2); expect(parsed).toHaveProperty('rules'); expect(parsed).toHaveProperty('balanceSnapshots');
+    expect(parsed.entries[0]?.originalText).toBe(raw);
+    expect(parsed.audit.at(-1)?.beforeEntries[0]?.originalText).toBe(raw);
     const csv = await rpc('ledgerExportData', { format: 'csv', month: '2026-09' }, 'reused-read-id') as typeof full;
     expect(csv.data.content).toContain('虚构修订午餐');
     const excluded = await rpc('ledgerExportData', { format: 'csv', month: '2026-10' }, 'reused-read-id') as typeof full;

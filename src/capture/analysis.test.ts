@@ -7,6 +7,8 @@ import { createCaptureStore, type CaptureStore } from './store';
 import { ANALYSIS_VERSION, analyzeCapture, applyCaptureResult, batchMessages, hashInput, prepareAnalysis } from './analysis';
 import type { ExtractedCandidate } from '../ai/schemas';
 import { locationProfile } from '../ai/prompts';
+import { createLocalEvidenceResolver } from '../electron/local-evidence';
+import { CLEARED_CAPTURE_TEXT } from '../shared/capture-evidence';
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); });
@@ -41,6 +43,22 @@ describe('capture analysis and durable candidate application', () => {
     expect(repository.snapshot().sources[0]?.captureRef?.messageId).toBe(message);
     expect(repository.snapshot().tokenUsage).toHaveLength(2);
     expect(store.batch(saved.id)?.status).toBe('applied');
+    const card = repository.snapshot().candidates[0]!, source = repository.snapshot().sources[0]!;
+    const evidenceReceipt = repository.read().operations.find(row => row.id.startsWith('qq-evidence:'))!;
+    expect(JSON.stringify(evidenceReceipt.result)).toContain('明天18点提交报告');
+    repository.writeInternal({ operationId: 'synthetic-edit', changes: [{ entity: 'candidate', id: card.id,
+      expectedVersion: card.version, values: { title: '用户修改的报告标题' } }] });
+    expect(store.cleanup({ accountId: '100', groupId: '200' }).messages).toBe(1);
+    const cleaned = repository.read().operations.find(row => row.id === evidenceReceipt.id)!;
+    expect(cleaned.fingerprint).toBe(evidenceReceipt.fingerprint);
+    expect(cleaned.result).toMatchObject({ entities: [{ id: source.id, text: CLEARED_CAPTURE_TEXT }] });
+    expect(JSON.stringify(repository.read())).not.toContain('明天18点提交报告');
+    expect(store.batch(saved.id)?.result).toEqual({ cleaned: true });
+    expect(repository.snapshot().candidates[0]).toMatchObject({ id: card.id, title: '用户修改的报告标题', action: card.action,
+      deadline: card.deadline, sourceQuote: '', temporalEvidence: [], sourceIds: [source.id] });
+    expect(createLocalEvidenceResolver(repository)({ sourceId: source.id }).sources[0]).toMatchObject({
+      text: CLEARED_CAPTURE_TEXT, captureRef: { messageId: message, cleared: true },
+    });
   });
 
   it('retains a second detail request for review instead of looping or paying a third time', async () => {

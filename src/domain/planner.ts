@@ -3,6 +3,7 @@ import { MutationRequestSchema, MutationResultSchema, type MutationRequest, type
 import { formatFriendlyInstant } from '../shared/display-time';
 import { type Repository, type StoredState, stateSnapshot, diffStates, summarize, findEntity, putEntity, deleteEntity, records } from '../storage/repository';
 import { automaticBackup } from '../storage/backups';
+import { privateOperationFingerprint } from '../storage/operation-fingerprint';
 import { nowInstant, instantAt } from './time';
 import { buildCalendar } from './calendar';
 import { validateRelationships } from './validation';
@@ -132,7 +133,12 @@ export function createPlanner(repository: Repository, options: { automaticBackup
       if (previews.size >= 100) previews.delete(previews.keys().next().value!);
       try {
         const result = repository.transact(state => {
-          const prior = state.operations.find(o => o.id === request.operationId); if (prior) return prior.fingerprint === fingerprint(request) ? MutationResultSchema.parse(prior.result) : clarification('operationId 已用于不同操作，请重新发起');
+          const prior = state.operations.find(o => o.id === request.operationId);
+          if (prior) {
+            const input = fingerprint(request);
+            return prior.fingerprint === input || prior.fingerprint === privateOperationFingerprint(input)
+              ? MutationResultSchema.parse(prior.result) : clarification('operationId 已用于不同操作，请重新发起');
+          }
           const before = structuredClone(state);
           if (request.confirmed) {
             const preview = previews.get(request.confirmationToken!);

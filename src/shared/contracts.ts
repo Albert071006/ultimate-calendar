@@ -88,7 +88,7 @@ function validSource(value: { kind: string; text: string; imageDataUrl: string |
 export const SourceImportSchema = z.strictObject(sourceFields).refine(validSource, '文本不能为空，图片来源必须包含图片');
 export type SourceImport = z.input<typeof SourceImportSchema>;
 const sourceValue = z.strictObject({ ...sourceFields, importedAt: InstantSchema,
-  captureRef: z.strictObject({ messageId: IdSchema, accountId: IdSchema, groupId: IdSchema, attachmentId: IdSchema.nullable(), locator: z.string().max(1000), transcribed: z.boolean() }).optional(),
+  captureRef: z.strictObject({ messageId: IdSchema, accountId: IdSchema, groupId: IdSchema, attachmentId: IdSchema.nullable(), locator: z.string().max(1000), transcribed: z.boolean(), cleared: z.literal(true).optional() }).optional(),
   purpose: z.enum(['message', 'courses']).default('message'),
   status: z.enum(['saved', 'processing', 'needs-review', 'succeeded', 'failed']).default('saved'),
   error: shortText.nullable().default(null),

@@ -1,19 +1,22 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { parseState, readDatabaseState, type Repository, type StoredState } from '../storage/repository';
 import { openDatabase } from '../storage/database';
+import { privateOperationFingerprint } from '../storage/operation-fingerprint';
 import { readLedgerDatabase, validateLedgerData, type LedgerService } from '../ledger/service';
-import { LedgerDataSchema, LedgerImportPayloadSchema, type LedgerImportPayload } from '../shared/ledger';
+import { LedgerDataSchema, LedgerImportPayloadSchema, type LedgerData, type LedgerImportPayload } from '../shared/ledger';
 
 export const SOURCE_PLACEHOLDER = '原文已清理；此处保留提炼结果。';
-/** Source payloads can occur in snapshots, journals and internal receipts. */
-export function redactEvidence<T>(value: T): T {
-  if (Array.isArray(value)) return value.map(item => redactEvidence(item)) as T;
+/** Source payloads and ledger drafts can occur inside journals and workflow receipts. */
+function redactFields<T>(value: T, scope: 'sync' | 'backup'): T {
+  if (Array.isArray(value)) return value.map(item => redactFields(item, scope)) as T;
   if (!value || typeof value !== 'object') return value;
   const record = value as Record<string, unknown>;
-  const next: Record<string, unknown> = Object.fromEntries(Object.entries(record).filter(([key]) => key !== 'captureRef').map(([key, item]) => [key, redactEvidence(item)]));
+  const next: Record<string, unknown> = Object.fromEntries(Object.entries(record)
+    .filter(([key]) => key !== 'captureRef')
+    .map(([key, item]) => [key, scope === 'backup' && key === 'originalText' ? '' : redactFields(item, scope)]));
   if ('imageDataUrl' in record && 'importedAt' in record && ['image', 'text'].includes(String(record.kind))) {
     next.kind = 'text'; next.text = SOURCE_PLACEHOLDER; next.imageDataUrl = null;
     next.label = record.label === '采集电脑提炼' ? '采集电脑提炼' : '手机导入（原文已清理）';
@@ -21,6 +24,7 @@ export function redactEvidence<T>(value: T): T {
   if ('sourceQuote' in record) { next.sourceQuote = ''; next.temporalEvidence = []; }
   return next as T;
 }
+export function redactEvidence<T>(value: T): T { return redactFields(value, 'sync'); }
 const EnvelopeSchema = z.strictObject({
   format: z.literal('ultimate-calendar-safe-backup'), formatVersion: z.literal(1), createdAt: z.string().datetime(),
   planner: z.unknown(), ledger: LedgerImportPayloadSchema,
@@ -34,17 +38,22 @@ function backupFileIdentity(file: string): string | null {
     ? [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs, stat.birthtimeNs].join(':') : null;
 }
 function sanitizePlanner(input: StoredState): StoredState {
-  const planner = parseState(redactEvidence(input));
-  for (const operation of planner.operations) if (operation.fingerprint.startsWith('{')) operation.fingerprint = `redacted:${createHash('sha256').update(operation.fingerprint).digest('hex')}`;
+  const planner = parseState(redactFields(input, 'backup'));
+  // Retain the replay barrier without exposing evidence in an old JSON fingerprint.
+  for (const operation of planner.operations) if (operation.fingerprint.startsWith('{')) operation.fingerprint = privateOperationFingerprint(operation.fingerprint);
   return planner;
+}
+function sanitizeLedger<T extends LedgerImportPayload | LedgerData>(input: T): T {
+  const ledger = redactFields(input, 'backup');
+  ledger.sources = ledger.sources.map(source => ({ ...source, label: '账本来源（原文已清理）', content: '', checksum: '' }));
+  return ledger;
 }
 /** Validate the complete format and money/relationship semantics before any restore writes. */
 export function validateSafeBackup(input: unknown) {
   const envelope = EnvelopeSchema.parse(input), planner = parseState(envelope.planner);
   const { format: _format, formatVersion: _version, ...fields } = envelope.ledger;
   const ledger = LedgerDataSchema.parse({ ...fields, revision: 0 }); validateLedgerData(ledger);
-  ledger.sources = ledger.sources.map(source => ({ ...source, label: '账本来源（原文已清理）', content: '', checksum: '' }));
-  return { planner: sanitizePlanner(planner), ledger };
+  return { planner: sanitizePlanner(planner), ledger: sanitizeLedger(ledger) };
 }
 export function createSafeBackup(options: { repository: Repository; ledger: LedgerService; directory?: string; now?: Date }): string {
   if (options.repository.path !== ':memory:') return createSafeBackupFromDatabase({ databasePath: options.repository.path, directory: options.directory, now: options.now });
@@ -70,10 +79,7 @@ function writeSafeBackup(options: { dataDirectory: string; planner: StoredState;
   if (!delta || !delta.startsWith(`..${sep}`) && delta !== '..' && !isAbsolute(delta)) throw Error('安全备份目录不能是资料目录或其上级');
   mkdirSync(directory, { recursive: true, mode: 0o700 }); if (process.platform !== 'win32') chmodSync(directory, 0o700);
   const planner = sanitizePlanner(options.planner);
-  // Older internal request fingerprints may be literal JSON. Preserve their ID as
-  // a replay barrier without exporting a hidden copy of imported source content.
-  const ledger = options.ledger;
-  ledger.sources = ledger.sources.map(source => ({ ...source, label: '账本来源（原文已清理）', content: '', checksum: '' }));
+  const ledger = sanitizeLedger(options.ledger);
   const now = options.now ?? new Date();
   const value = EnvelopeSchema.parse({ format: 'ultimate-calendar-safe-backup', formatVersion: 1, createdAt: now.toISOString(), planner, ledger });
   const filename = `safe-auto-${now.toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.json`, target = join(directory, filename), temporary = join(directory, `.safe-backup-${randomUUID()}.tmp`);

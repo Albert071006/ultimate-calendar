@@ -10,12 +10,49 @@ import { createLedgerService } from '../ledger/service';
 import { LedgerEntryDraftSchema } from '../shared/ledger';
 import { GoalInputSchema, TaskInputSchema } from '../shared/contracts';
 import { createSafeBackup } from './backup';
+import { backupExportData } from './cloud-export';
 import { createRemoteService } from './service';
 import { flushAutomaticBackups } from '../storage/backups';
 
 vi.mock('node:fs', { spy: true });
 
 describe('sanitized server backups and backup injection compatibility', () => {
+  it('removes original ledger text from on-disk backups, downloads and downloads of older backups, preserving the audit', () => {
+    const root = mkdtempSync(join(tmpdir(), 'calendar-backup-ledger-'));
+    const repository = createRepository(join(root, 'data', 'planner.sqlite'), { automaticBackup() {} });
+    const ledger = createLedgerService(repository.path);
+    try {
+      const beforeText = 'SYNTHETIC-INPUT-BEFORE-EDIT', currentText = 'SYNTHETIC-INPUT-AFTER-EDIT';
+      const paid = LedgerEntryDraftSchema.parse({ id: 'paid', kind: 'expense', date: '2020-01-01', month: '2020-01',
+        title: '合成支出', category: '其他', amountCents: 1500, personalCents: 1500, cashflows: [{ accountId: 'alipay', deltaCents: -1500 }] });
+      const refund = LedgerEntryDraftSchema.parse({ ...paid, id: 'refund', kind: 'refund', title: '合成退款', amountCents: 500, personalCents: 0,
+        cashflows: [{ accountId: 'alipay', deltaCents: 500 }], relatedEntryIds: [paid.id],
+        adjustments: [{ targetEntryIds: [paid.id], amountCents: 500, note: '正式冲减说明' }], originalText: beforeText, note: '正式旧备注' });
+      ledger.mutate({ operationId: 'add', expectedRevision: 0, changes: [paid, refund].map(entry => (
+        { type: 'putEntry', entry, expectedVersion: null, confirmDuplicate: false, note: '' }
+      )) });
+      ledger.mutate({ operationId: 'amend', expectedRevision: 1, changes: [{ type: 'putEntry', expectedVersion: 1, confirmDuplicate: false,
+        entry: { ...refund, originalText: currentText, note: '正式新备注' }, note: '正式更正依据' }] });
+      const full = ledger.exportJson();
+      expect(full.entries.find(entry => entry.id === refund.id)?.originalText).toBe(currentText);
+      expect(full.audit.at(-1)?.beforeEntries[0]?.originalText).toBe(beforeText);
+      const expected = structuredClone(full);
+      for (const entry of expected.entries) entry.originalText = '';
+      for (const audit of expected.audit) for (const entry of audit.beforeEntries) entry.originalText = '';
+
+      const path = createSafeBackup({ repository, ledger, directory: join(root, 'exports') });
+      const onDisk = readFileSync(path, 'utf8');
+      // Older on-disk exports may still have both originals. Download must sanitize them independently.
+      const legacy = join(root, 'old-safe-backup.json');
+      writeFileSync(legacy, JSON.stringify({ ...JSON.parse(onDisk), ledger: full }));
+      for (const bytes of [onDisk, backupExportData(path).content, backupExportData(legacy).content]) {
+        expect(bytes).not.toContain(beforeText);
+        expect(bytes).not.toContain(currentText);
+        expect(JSON.parse(bytes).ledger).toEqual(expected);
+      }
+      expect(ledger.exportJson()).toEqual(full);
+    } finally { ledger.close(); repository.close(); rmSync(root, { recursive: true, force: true }); }
+  });
   it('does not publish or rotate a new export that fails full staged ledger validation', () => {
     const root = mkdtempSync(join(tmpdir(), 'calendar-backup-staging-'));
     const repository = createRepository(':memory:', { automaticBackup() {} }), ledger = createLedgerService(':memory:');

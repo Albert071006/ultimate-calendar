@@ -97,6 +97,7 @@ describe('controlled cloud restore', () => {
     expect(service.state.operation('confirm', 'device')).toEqual({ status: 'unknown' });
     await expect(service.rpc('restoreConfirm', request, 'device')).rejects.toMatchObject({ status: 409 });
     await expect(service.rpc('saveSettings', { requestId: 'old-offline-write', identity, input: { expectedSettings: service.snapshot().settings, settings: service.snapshot().settings } }, 'device')).rejects.toMatchObject({ status: 409 });
+    expect(() => service.importDistilled({ identity, requestId: 'old-bridge', items: [{ distilledId: 'synthetic-event-id', title: '合成更新', action: '', benefit: '', benefitKind: 'unknown', potentialBenefit: '', conditions: [], uncertainties: [], deadline: null, eventStart: null, eventEnd: null, location: '' }] })).toThrow(/代际/);
     expect(service.status().restore.status).toBe('completed');
   });
 

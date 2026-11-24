@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createRepository, type Repository } from '../storage/repository';
+import { createRepository, records, type Repository } from '../storage/repository';
+import { CLEARED_CAPTURE_TEXT } from '../shared/capture-evidence';
 import { createEvidenceIndex, distilledSourceId, evidenceIndexPath } from '../bridge/evidence-index';
 import { projectDistilledFields } from '../bridge/projection';
 import { createLocalEvidenceResolver } from './local-evidence';
@@ -38,6 +39,17 @@ describe('Windows local evidence resolver', () => {
     const distilledId = 'qqd_' + 'b'.repeat(64), index = createEvidenceIndex(evidenceIndexPath(f.repo.path));
     index.remember([{ distilledId, candidateId: 'one', sourceIds: [f.source.id] }, { distilledId, candidateId: 'two', sourceIds: [other.id] }]); index.close();
     expect(new Set(f.resolve({ sourceId: distilledSourceId(distilledId) }).sources.map(value => value.id))).toEqual(new Set([f.source.id, other.id]));
+  });
+  it('honors a cleared marker before returning a source over either lookup route', () => {
+    const f = fixture(), distilledId = 'qqd_' + 'c'.repeat(64);
+    const index = createEvidenceIndex(evidenceIndexPath(f.repo.path));
+    index.remember([{ distilledId, candidateId: 'synthetic-candidate', sourceIds: [f.source.id] }]); index.close();
+    f.repo.transact(state => { records(state, 'source')[0]!.captureRef!.cleared = true; });
+    for (const sourceId of [f.source.id, distilledSourceId(distilledId)]) {
+      const result = f.resolve({ sourceId });
+      expect(result.sources[0]).toMatchObject({ id: f.source.id, text: CLEARED_CAPTURE_TEXT, captureRef: { cleared: true } });
+      expect(JSON.stringify(result)).not.toMatch(/PRIVATE_SYNTHETIC_EVIDENCE|LOCAL_ONLY_GROUP_LABEL|synthetic-locator/);
+    }
   });
   it('does not open or instantiate a repository of its own', () => {
     const f = fixture(); let reads = 0;

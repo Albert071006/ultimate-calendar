@@ -14,6 +14,7 @@ import {
 import { nowInstant } from '../domain/time';
 import { openDatabase } from '../storage/database';
 import { planAttachmentRetention, applyAttachmentRetention, type AttachmentRetentionPolicy } from './retention';
+import { cleanStoredEvidence, deletedCaptureEvidence } from './evidence-cleanup';
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const WECHAT_ATTACHMENT_RETRY_MS = 3 * 24 * 60 * 60_000;
@@ -325,6 +326,12 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
         recoverAttachmentRead(value); saveAttachment(value);
       }
       expireWechatAttachmentRetries(at);
+      // Repair older cleanup tombstones once. Both platforms share this database and marker.
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='records'").get() &&
+          !db.prepare("SELECT 1 FROM capture_meta WHERE id='plannerEvidenceCleanupV1'").get()) {
+        cleanStoredEvidence(db, deletedCaptureEvidence(db));
+        db.prepare("INSERT INTO capture_meta(id,payload) VALUES('plannerEvidenceCleanupV1','1')").run();
+      }
       return { uncertain, pending };
     });
   }
@@ -753,6 +760,7 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
         if (parsed.before) { clauses.push('julianday(sent_at)<julianday(?)'); args.push(parsed.before); }
         const rows = db.prepare(`SELECT payload FROM capture_messages WHERE ${clauses.join(' AND ')}`).all(...args);
         let removedAttachments = 0;
+        const erasedMessages = new Set<string>();
         for (const row of rows) {
           const value = parsePayload(row, StoredMessageSchema)!;
           const member = db.prepare('SELECT b.payload FROM capture_batches b JOIN capture_batch_messages bm ON bm.batch_id=b.id WHERE bm.message_id=?').get(value.id);
@@ -767,12 +775,14 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
             owner.updatedAt = nowInstant(); saveBatch(owner);
           }
           value.text = ''; value.segments = []; value.senderId = null; value.senderName = ''; value.deleted = true; saveMessage(value);
+          erasedMessages.add(value.id);
           for (const item of attachments(value.id)) {
             removedAttachments++; item.locator = null; item.hash = null; item.status = 'deleted'; item.error = '原附件已清理';
             db.prepare('DELETE FROM capture_chunks WHERE attachment_id=?').run(item.id); saveAttachment(item);
           }
         }
         db.exec('DELETE FROM capture_blobs WHERE NOT EXISTS(SELECT 1 FROM capture_attachments a WHERE a.hash=capture_blobs.hash)');
+        cleanStoredEvidence(db, { messages: erasedMessages, attachments: new Set() });
         return { messages: rows.length, attachments: removedAttachments, stats: statistics() };
       });
     },

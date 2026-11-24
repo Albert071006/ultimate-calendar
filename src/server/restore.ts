@@ -1,6 +1,8 @@
 import { chmodSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { createRepository, type Repository } from '../storage/repository';
+import { assignMissingColors } from '../domain/palette';
+import { nowInstant } from '../domain/time';
 import { createLedgerService, readLedgerDatabase, replaceLedgerDatabase, type LedgerService } from '../ledger/service';
 import { openDatabase } from '../storage/database';
 import { RemoteState } from './state';
@@ -27,6 +29,9 @@ export function restoreSafeBackup(options: { backupFile: string; dataDirectory: 
   try {
     const databasePath = join(stage, 'planner.sqlite');
     repository = createRepository(databasePath, { automaticBackup: () => {} });
+    // Resolve legacy colors once, including undo images, so the write and its
+    // independent read-back comparison agree even across Beijing midnight.
+    assignMissingColors(payload.planner, nowInstant().slice(0, 10));
     repository.replaceState(payload.planner, db => replaceLedgerDatabase(db, payload.ledger));
     ledger = createLedgerService(databasePath);
     if (JSON.stringify(repository.read()) !== JSON.stringify(payload.planner)) throw Error('恢复后日历资料核对不一致');

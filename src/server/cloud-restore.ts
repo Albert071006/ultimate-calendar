@@ -4,7 +4,6 @@ import { replaceLedgerDatabase, type LedgerService } from '../ledger/service';
 import { WorkflowError } from '../ai/deepseek';
 import { CloudRestorePreviewRequestSchema, CloudRestoreConfirmRequestSchema } from '../shared/cloud-management';
 import { validateSafeBackup } from './backup';
-import { withoutOriginalText } from './cloud-export';
 import type { RemoteState } from './state';
 
 const hash = (value: unknown) => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
@@ -18,9 +17,10 @@ export function createCloudRestore(options: { repository: Repository; ledger: Le
     preview(input: unknown, deviceId: string) {
       const { content } = CloudRestorePreviewRequestSchema.parse(input);
       let raw: unknown, payload: Preview['payload'];
-      try { raw = JSON.parse(content); payload = validateSafeBackup(withoutOriginalText(raw)); }
+      try { raw = JSON.parse(content); payload = validateSafeBackup(raw); }
       catch { throw new WorkflowError('VALIDATION', '请选择完整有效的云端安全备份 JSON；本机数据库和旧全库备份不能上传恢复'); }
-      // Completed old receipts cannot authorize actions in the restored authority.
+      // Event lineage is validated business state in planner.distilled. Request and
+      // reminder receipts from the previous authority cannot authorize a new action.
       payload.planner.operations = []; payload.planner.receipts = [];
       for (const [token, preview] of previews) if (preview.expires <= now() || preview.deviceId === deviceId) previews.delete(token);
       while (previews.size >= 3) previews.delete(previews.keys().next().value!);

@@ -3,11 +3,14 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { createRepository } from '../storage/repository';
+import { createRepository, readDatabaseState, type StoredState } from '../storage/repository';
 import { createLedgerService, replaceLedgerDatabase } from '../ledger/service';
 import { importDistilled } from './distilled';
 import { DistilledRequestSchema } from '../shared/distilled';
-import { createSafeBackup, validateSafeBackup, SOURCE_PLACEHOLDER } from './backup';
+import { createSafeBackup, redactEvidence, validateSafeBackup, SOURCE_PLACEHOLDER } from './backup';
+import { createCloudRestore } from './cloud-restore';
+import { RemoteState } from './state';
+import { DatabaseSync } from 'node:sqlite';
 
 const identity = { protocolVersion: 1 as const, dataInstanceId: 'e7028f3d-072b-4ab2-bfd2-b915956318d3', generation: 1 };
 function request(requestId = 'batch-one', title = '提交虚构报告') { return DistilledRequestSchema.parse({ requestId, identity, items: [{ distilledId: 'synthetic-stable-id-001', title, deadline: { date: '2027-01-02', time: '20:10' } }] }); }
@@ -123,7 +126,8 @@ describe('strict distilled imports', () => {
       const file = createSafeBackup({ repository, ledger, directory: join(root, 'exports') });
       const backup = validateSafeBackup(JSON.parse(readFileSync(file, 'utf8')));
       expect(backup.planner.operations.find(operation => operation.id === 'synthetic-user-edit')!.fingerprint).toMatch(/^redacted:[a-f0-9]{64}$/);
-      expect(backup.planner.operations.find(operation => operation.id.startsWith('distilled-event:'))!.fingerprint).toMatch(/^event-head-v1:10:1:[a-f0-9]{64}$/);
+      expect(backup.planner.operations.some(operation => operation.id.startsWith('distilled-event:'))).toBe(false);
+      expect(backup.planner.distilled).toContainEqual(expect.objectContaining({ kind: 'event', candidateId: first.candidateIds[0], version: { revision: [10, 1], fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) } }));
       restored.replaceState(backup.planner, db => replaceLedgerDatabase(db, backup.ledger));
       const changed = eventRequest(2, '采集端更新标题'); changed.items[0]!.action = '恢复后补充的报名步骤';
       expect(importDistilled(restored, changed)).toEqual({ candidateIds: first.candidateIds, created: 0 });
@@ -134,19 +138,132 @@ describe('strict distilled imports', () => {
       expect(restored.snapshot().candidates[0]!.action).toBe('恢复后补充的报名步骤');
     } finally { ledger.close(); repository.close(); restored.close(); rmSync(root, { recursive: true, force: true }); }
   });
-  it('validates event head metadata and upgrades the earlier JSON encoding on its next revision', () => {
+  it('atomically upgrades legacy SQLite heads and rejects invalid revision numbers', () => {
+    const root = mkdtempSync(join(tmpdir(), 'calendar-distilled-legacy-')), path = join(root, 'data', 'planner.sqlite');
+    let repository = createRepository(path, { automaticBackup: () => {} });
+    try {
+      const candidateId = importDistilled(repository, eventRequest(1)).candidateIds[0]!;
+      const head = repository.read().distilled!.find(entry => entry.kind === 'event')!;
+      const result = { entities: [repository.snapshot().candidates[0]!] }, legacy = { id: head.id, fingerprint: JSON.stringify(head.version), result };
+      repository.close();
+      const db = new DatabaseSync(path);
+      try {
+        db.exec('DROP TABLE distilled_state');
+        db.prepare('INSERT INTO operations(id,payload) VALUES(?,?)').run(head.id, JSON.stringify(legacy));
+      } finally { db.close(); }
+      const oldBackup = new DatabaseSync(path, { readOnly: true });
+      try {
+        expect(readDatabaseState(oldBackup).distilled).toContainEqual(head);
+        expect(oldBackup.prepare("SELECT 1 FROM sqlite_master WHERE name='distilled_state'").get()).toBeUndefined();
+      } finally { oldBackup.close(); }
+      repository = createRepository(path, { automaticBackup: () => {} });
+      const inspected = new DatabaseSync(path, { readOnly: true });
+      try {
+        expect(inspected.prepare('SELECT 1 FROM operations WHERE id=?').get(head.id)).toBeUndefined();
+        expect(inspected.prepare('SELECT 1 FROM distilled_state WHERE id=?').get(head.id)).toBeTruthy();
+      } finally { inspected.close(); }
+      expect(importDistilled(repository, eventRequest(2)).created).toBe(0);
+      expect(repository.read().distilled).toContainEqual(expect.objectContaining({ kind: 'event', candidateId, version: { revision: [10, 2], fingerprint: expect.any(String) } }));
+      const malformed = { ...legacy, fingerprint: 'event-head-v1:9007199254740992:2:' + 'a'.repeat(64) };
+      expect(() => repository.replaceState({ ...repository.read(), distilled: undefined, operations: [malformed] })).toThrow('事件同步状态损坏');
+    } finally { repository.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+  it.each(['current', 'legacy'] as const)('continues all candidate decisions across an online restore of a %s backup', async format => {
+    const root = mkdtempSync(join(tmpdir(), 'calendar-online-distilled-'));
+    const repository = createRepository(join(root, 'data', 'planner.sqlite'), { automaticBackup: () => {} });
+    const ledger = createLedgerService(repository.path), remote = new RemoteState(join(root, 'data', 'remote-state.sqlite'));
+    const backup = () => createSafeBackup({ repository, ledger, directory: join(root, 'backups') });
+    try {
+      const events = ['a', 'b', 'c', 'd', 'e'];
+      const ids = events.map(event => importDistilled(repository, eventRequest(1, '原通知', event)).candidateIds[0]!);
+      const original = repository.snapshot().candidates;
+      const task = repository.writeInternal({ operationId: 'task', changes: [{ entity: 'task', values: { title: '已确认任务', candidateId: ids[2] } }] }).entities[0]!;
+      repository.writeInternal({ operationId: 'decisions', changes: [
+        { entity: 'candidate', id: ids[1], expectedVersion: 1, values: { title: '人工更正', snoozedUntil: '2027-01-01T00:00:00+08:00' } },
+        { entity: 'candidate', id: ids[2], expectedVersion: 1, values: { status: 'accepted', taskId: task.id } },
+        { entity: 'candidate', id: ids[3], expectedVersion: 1, values: { status: 'ignored' } },
+        { entity: 'candidate', id: ids[4], expectedVersion: 1, delete: true },
+      ] });
+      const before = repository.snapshot();
+      remote.begin('old-transport', 'device', 'saveSettings', 'fixture');
+      const envelope = JSON.parse(readFileSync(backup(), 'utf8')) as { planner: StoredState };
+      if (format === 'legacy') {
+        for (const binding of envelope.planner.distilled!) {
+          if (binding.kind !== 'event' && binding.kind !== 'revision') throw Error('unexpected fixture binding');
+          const candidate = original.find(entry => entry.id === binding.candidateId)!;
+          const fingerprint = binding.kind === 'revision' ? binding.fingerprint : `event-head-v1:10:1:${binding.version!.fingerprint}`;
+          envelope.planner.operations.push({ id: binding.id, fingerprint, result: { entities: [{ ...candidate, sourceQuote: 'SYNTHETIC_RAW_MARKER' }] } });
+        }
+        delete envelope.planner.distilled;
+      }
+      const restore = createCloudRestore({ repository, ledger, state: remote, backup, hasPendingWrites: () => false });
+      const previousIdentity = remote.identity();
+      const preview = restore.preview({ content: JSON.stringify(envelope) }, 'device');
+      const result = await restore.confirm({ token: preview.token, digest: preview.digest }, 'device');
+      expect(result.identity.generation).toBe(previousIdentity.generation + 1);
+      expect(remote.operation('old-transport', 'device')).toEqual({ status: 'unknown' });
+      expect(repository.read().operations).toEqual([]); expect(repository.read().receipts).toEqual([]);
+      expect(JSON.stringify(repository.read().distilled)).not.toContain('SYNTHETIC_RAW_MARKER');
+      const applied = events.map(event => {
+        const update = eventRequest(2, '修订通知', event); update.identity = result.identity;
+        update.items[0]!.action = '补充步骤';
+        return importDistilled(repository, update);
+      });
+      const after = repository.snapshot(), card = (index: number) => after.candidates.find(candidate => candidate.id === ids[index]);
+      expect(card(0)).toMatchObject({ title: '修订通知', action: '补充步骤', version: 2 });
+      expect(card(1)).toMatchObject({ title: '人工更正', action: '补充步骤', snoozedUntil: '2027-01-01T00:00:00+08:00' });
+      expect(card(2)).toEqual(before.candidates.find(candidate => candidate.id === ids[2]));
+      expect(after.tasks).toEqual([task]);
+      expect(after.candidates.find(candidate => candidate.id === applied[2]!.candidateIds[0])).toMatchObject({ status: 'pending', revisionOfId: ids[2], title: '修订通知' });
+      expect(card(3)).toEqual(before.candidates.find(candidate => candidate.id === ids[3]));
+      expect(card(4)).toBeUndefined(); expect(after.candidates).toHaveLength(5);
+      expect(applied.map(item => item.created)).toEqual([0, 0, 1, 0, 0]);
+      const stale = eventRequest(1, '原通知'); stale.identity = result.identity;
+      expect(importDistilled(repository, stale)).toEqual({ created: 0, candidateIds: [ids[0]] });
+      expect(repository.snapshot().candidates).toEqual(after.candidates);
+    } finally { remote.close(); ledger.close(); repository.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+  it('recovers provable event roots after an older restore already erased the complete receipt history', () => {
     const repository = createRepository(':memory:', { automaticBackup: () => {} });
     try {
-      importDistilled(repository, eventRequest(1));
-      repository.transact(state => {
-        const head = state.operations.find(operation => operation.id.startsWith('distilled-event:'))!;
-        head.fingerprint = JSON.stringify({ revision: [10, 1], fingerprint: head.fingerprint.split(':').at(-1) });
-      });
-      expect(importDistilled(repository, eventRequest(2)).created).toBe(0);
-      expect(repository.read().operations.find(operation => operation.id.startsWith('distilled-event:'))!.fingerprint).toMatch(/^event-head-v1:10:2:/);
-      repository.transact(state => { state.operations.find(operation => operation.id.startsWith('distilled-event:'))!.fingerprint = 'event-head-v1:9007199254740992:2:' + 'a'.repeat(64); });
-      expect(() => importDistilled(repository, eventRequest(3))).toThrow('事件同步状态损坏');
-      expect(repository.snapshot().candidates).toHaveLength(1);
+      const id = importDistilled(repository, eventRequest(1)).candidateIds[0]!;
+      const ignored = importDistilled(repository, eventRequest(1, '旧通知', 'c')).candidateIds[0]!;
+      repository.writeInternal({ operationId: 'manual-decisions', changes: [
+        { entity: 'candidate', id, expectedVersion: 1, values: { title: '用户修订', snoozedUntil: '2027-01-01T00:00:00+08:00' } },
+        { entity: 'candidate', id: ignored, expectedVersion: 1, values: { status: 'ignored' } },
+      ] });
+      const legacy = redactEvidence(repository.read());
+      delete legacy.distilled; legacy.operations = []; legacy.receipts = [];
+      repository.replaceState(legacy);
+      const before = repository.snapshot().candidates;
+      expect(importDistilled(repository, eventRequest(2, '采集端标题'))).toEqual({ candidateIds: [id], created: 0 });
+      expect(importDistilled(repository, eventRequest(2, '采集端补充', 'c'))).toEqual({ candidateIds: [ignored], created: 0 });
+      expect(repository.snapshot().candidates).toEqual(before);
+      const next = eventRequest(3, '新版采集端标题'); next.items[0]!.action = '新增报名步骤';
+      expect(importDistilled(repository, next)).toEqual({ candidateIds: [id], created: 0 });
+      expect(importDistilled(repository, eventRequest(3, '已忽略的后续补充', 'c'))).toEqual({ candidateIds: [ignored], created: 0 });
+      expect(repository.snapshot().candidates).toEqual([
+        expect.objectContaining({ id, title: '用户修订', action: '新增报名步骤', snoozedUntil: '2027-01-01T00:00:00+08:00' }),
+        before[1],
+      ]);
+    } finally { repository.close(); }
+  });
+  it.each(['source', 'owner', 'review'] as const)('declines ambiguous receiptless roots with a mismatched %s', scenario => {
+    const repository = createRepository(':memory:', { automaticBackup: () => {} });
+    try {
+      const id = importDistilled(repository, eventRequest(1)).candidateIds[0]!;
+      if (scenario === 'review') {
+        repository.writeInternal({ operationId: 'accept', changes: [{ entity: 'candidate', id, expectedVersion: 1, values: { status: 'accepted' } }] });
+        expect(importDistilled(repository, eventRequest(2, '另一张待审卡')).created).toBe(1);
+      }
+      const legacy = redactEvidence(repository.read());
+      const head = legacy.distilled!.find(entry => entry.kind === 'event')!;
+      delete legacy.distilled; legacy.operations = []; legacy.receipts = [];
+      if (scenario === 'owner') legacy.distilled = [{ ...head, id: 'distilled-event:' + '0'.repeat(64) }];
+      if (scenario === 'source') Object.assign(legacy.entities.source[0]!, { label: '手机导入（原文已清理）' });
+      repository.replaceState(legacy);
+      expect(() => importDistilled(repository, eventRequest(3))).toThrow(/编号与已有资料冲突/);
+      expect(repository.read()).toEqual(legacy);
     } finally { repository.close(); }
   });
   it('binds migrated UUIDs without old distilled receipts, preserving decisions and edits across safe restore', () => {

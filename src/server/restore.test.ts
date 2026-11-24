@@ -1,8 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRepository, newEntity } from '../storage/repository';
+import * as storage from '../storage/repository';
+import { openDatabase } from '../storage/database';
+import { CourseSchema } from '../shared/contracts';
 import { createLedgerService } from '../ledger/service';
 import { LedgerEntryDraftSchema } from '../shared/ledger';
 import { createSafeBackup } from './backup';
@@ -73,14 +76,53 @@ describe('safe backup restore into a new authority', () => {
       }
     } finally { rmSync(value.root, { recursive: true, force: true }); }
   });
-  it('cleans only its newly created staging directory if read-back verification fails', () => {
+  it('restores legacy null course and goal colors with matching undo images and preserves the backup', () => {
     const value = fixture();
     try {
-      const input = JSON.parse(readFileSync(value.file, 'utf8')); input.planner.entities.goal[0].color = null;
-      const file = join(value.root, 'normalization-mismatch.json'); writeFileSync(file, JSON.stringify(input));
+      const input = JSON.parse(readFileSync(value.file, 'utf8'));
+      const goal = input.planner.entities.goal[0];
+      goal.color = null;
+      const course = CourseSchema.parse({ id: 'synthetic-course', version: 2, createdAt: goal.createdAt, updatedAt: goal.updatedAt,
+        title: '合成课程', weekday: 1, startTime: '09:00', endTime: '10:00', firstWeek: 1, lastWeek: 16, termStart: '2026-09-07', color: null });
+      input.planner.entities.course.push(course);
+      const details = [{ entity: 'goal', id: goal.id, before: null, after: goal }, { entity: 'course', id: course.id, before: null, after: course }];
+      input.planner.journal.push({ id: 'old-journal', operationId: 'old-operation', createdAt: goal.createdAt, origin: 'manual', message: '',
+        changes: [], undoneAt: null, undoable: true, details, undoExpected: details });
+      const file = join(value.root, 'legacy-colors.json'), target = join(value.root, 'restored');
+      writeFileSync(file, JSON.stringify(input));
+      const bytes = readFileSync(file);
+      restoreSafeBackup({ backupFile: file, dataDirectory: target });
+      const repository = createRepository(join(target, 'planner.sqlite'), { automaticBackup() {} });
+      try {
+        const { goals, courses } = repository.snapshot();
+        const restoredGoal = goals[0]!, restoredCourse = courses[0]!;
+        expect(restoredGoal).toEqual({ ...goal, color: expect.any(String) });
+        expect(restoredCourse).toEqual({ ...course, color: expect.any(String) });
+        const journal = repository.read().journal.find(record => record.id === 'old-journal')!;
+        for (const images of [journal.details, journal.undoExpected!]) {
+          expect(images.map(detail => detail.after)).toEqual([restoredGoal, restoredCourse]);
+        }
+      } finally { repository.close(); }
+      expect(readFileSync(file)).toEqual(bytes);
+    } finally { rmSync(value.root, { recursive: true, force: true }); }
+  });
+  it('rejects changed persisted business data and cleans only its newly created staging directory', () => {
+    const value = fixture();
+    const open = storage.createRepository;
+    const inject = vi.spyOn(storage, 'createRepository').mockImplementationOnce((path, options) => {
+      const repo = open(path, options);
+      const db = openDatabase(path);
+      try {
+        db.exec(`CREATE TRIGGER damage_restored_goal AFTER INSERT ON records WHEN NEW.kind='goal'
+          BEGIN UPDATE records SET payload=json_set(payload,'$.title','corrupted goal') WHERE kind=NEW.kind AND id=NEW.id; END;`);
+      } finally { db.close(); }
+      return repo;
+    });
+    try {
+      const file = value.file;
       const bytes = readFileSync(file), target = join(value.root, 'failed-target');
       expect(() => restoreSafeBackup({ backupFile: file, dataDirectory: target })).toThrow(/核对不一致/);
       expect(existsSync(target)).toBe(false); expect(readdirSync(value.root).some(name => name.startsWith('.calendar-restore-'))).toBe(false); expect(readFileSync(file)).toEqual(bytes); expect(existsSync(join(value.data, 'planner.sqlite'))).toBe(true);
-    } finally { rmSync(value.root, { recursive: true, force: true }); }
+    } finally { inject.mockRestore(); rmSync(value.root, { recursive: true, force: true }); }
   });
 });

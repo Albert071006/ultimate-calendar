@@ -381,11 +381,11 @@ export function createCaptureService(options: {
       const page = store.listChunks(request.attachmentId, { offset: request.offset ?? 0, limit: request.limit ?? 5 });
       return { ...page, items: page.items.map(c => ({ id: c.id, locator: c.location, text: c.text, imageDataUrl: c.imageDataUrl && ImageDataUrlSchema.safeParse(c.imageDataUrl).success ? c.imageDataUrl : null, status: c.status, error: c.error })) };
     },
-    cleanup(request: Parameters<CaptureStore['cleanup']>[0]) { if (running || historyRunning) throw new WorkflowError('CONFLICT', '请等待当前采集/分析完成后再清理'); store.cleanup(request); emit(); return snapshot(); },
+    cleanup(request: Parameters<CaptureStore['cleanup']>[0]) { if (running || historyRunning) throw new WorkflowError('CONFLICT', '请等待当前采集/分析完成后再清理'); store.cleanup(request); options.onPlannerChanged?.(); emit(); return snapshot(); },
     previewAttachmentRetention: store.previewAttachmentRetention,
     cleanAttachments(policy: Parameters<CaptureStore['cleanAttachments']>[0]) {
       if (running || historyRunning || connectPromise) throw new WorkflowError('CONFLICT', '请等待当前采集/分析完成后再清理附件');
-      const result = store.cleanAttachments(policy); emit(); return result;
+      const result = store.cleanAttachments(policy); if (result.selectedAttachments) options.onPlannerChanged?.(); emit(); return result;
     },
   };
 }

@@ -20,7 +20,11 @@ function setup() {
     store.saveExtraction(attachment.id, { extractorVersion: 'synthetic-v1', chunks: [{ ordinal: 0, location: '第1页', text: `完整通知 ${id}`, imageDataUrl: null, status: 'ready', error: null }] });
     store.sealBatches({ now: at, force: true });
     const batch = store.claimBatch(at)!;
-    store.saveResult(batch.id, { version: 2, units: [{ id: 'unit', text: 'duplicate-input'.repeat(50), imageDataUrl: 'duplicate-image' }], context: [{ text: 'context' }], completed: [{ key: 'key', value: { candidates: [{ sourceQuote: '已提炼的证据' }] } }], final: true }, at);
+    store.saveResult(batch.id, { version: 2, units: [{ id: 'unit', attachmentId: attachment.id, text: 'duplicate-input'.repeat(50), imageDataUrl: 'duplicate-image' }],
+      context: [{ text: 'context' }], completed: [{ key: 'key', value: { candidates: [
+        { sourceIds: ['unaffected-message'], sourceQuote: '已提炼的证据', supportingSources: [{ sourceId: 'unit', quote: '附件原文逐字证据' }] },
+        { title: '已付费的业务摘要', sourceIds: ['unit'], sourceQuote: '附件原文逐字证据', temporalEvidence: [{ quote: '附件原文逐字证据' }] },
+      ] } }], final: true }, at);
     store.markApplied(batch.id, at);
     return { messageId, attachmentId: attachment.id, batchId: batch.id };
   }
@@ -42,7 +46,10 @@ describe('attachment retention', () => {
     expect(store.attachment(a.attachmentId)).toMatchObject({ status: 'deleted', hash: null, locator: null });
     expect(store.listChunks(a.attachmentId).total).toBe(0);
     expect(store.readAttachmentBytes(b.attachmentId)).not.toBeNull();
-    expect(store.batch(a.batchId)?.result).toMatchObject({ completed: [{ value: { candidates: [{ sourceQuote: '已提炼的证据' }] } }], attachmentsCleared: true });
+    expect(store.batch(a.batchId)?.result).toMatchObject({ completed: [{ value: { candidates: [
+      { sourceQuote: '已提炼的证据', supportingSources: [{ sourceId: 'unit', quote: '' }] },
+      { title: '已付费的业务摘要', sourceQuote: '', temporalEvidence: [] },
+    ] } }], attachmentsCleared: true });
     expect(JSON.stringify(store.batch(a.batchId)?.result)).not.toContain('duplicate-input');
     expect(() => store.reanalyzeBatch(a.batchId)).toThrow('附件缓存已清理');
     expect(store.claimBatch()).toBeNull();
@@ -75,7 +82,7 @@ describe('attachment retention', () => {
     expect(store.stats().attachmentBytes).toBe(0);
   });
 
-  it('protects pending candidates and unfinished task evidence without touching any formal records', () => {
+  it('protects pending and unfinished task evidence and clears only the retired source body', () => {
     const { db, store, add } = setup(); const pending = add('pending'), active = add('active'), finished = add('finished');
     db.exec('CREATE TABLE records(kind TEXT,id TEXT,payload TEXT); CREATE TABLE ledger_state(id TEXT,payload TEXT);');
     const insert = (kind: string, id: string, value: unknown) => db.prepare('INSERT INTO records VALUES(?,?,?)').run(kind, id, JSON.stringify(value));
@@ -92,7 +99,8 @@ describe('attachment retention', () => {
     expect(store.readAttachmentBytes(pending.attachmentId)).not.toBeNull();
     expect(store.readAttachmentBytes(active.attachmentId)).not.toBeNull();
     expect(store.readAttachmentBytes(finished.attachmentId)).toBeNull();
-    expect(db.prepare('SELECT * FROM records').all()).toEqual(beforeRecords);
+    expect(db.prepare("SELECT * FROM records WHERE id != 's-finished'").all()).toEqual(beforeRecords.filter(row => row.id !== 's-finished'));
+    expect(JSON.parse(String(db.prepare("SELECT payload FROM records WHERE id='s-finished'").get()!.payload))).toMatchObject({ captureRef: { cleared: true }, text: '这份采集原文已清理。' });
     expect(db.prepare('SELECT * FROM ledger_state').all()).toEqual(beforeLedger);
   });
 

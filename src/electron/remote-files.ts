@@ -11,7 +11,6 @@ import { WorkflowError } from '../ai/deepseek';
 import { parseCourseFile } from '../imports/courses';
 import { boundedFile } from './files';
 import { validateSafeBackup } from '../server/backup';
-import { withoutOriginalText } from '../server/cloud-export';
 import { writeLocalResourcesCompanion, readLocalResourcesCompanion, mergeLocalResources, type LocalResourceRegistry } from '../storage/local-resources';
 
 /** Native file selection stays local; shared data export always comes from the cloud. */
@@ -56,7 +55,7 @@ export function createRemoteFiles(options: { window: BrowserWindow; resourceDire
             const raw = JSON.parse(bytes.toString('utf8')), clean = validateSafeBackup(raw);
             counts = Object.fromEntries(Object.entries(clean.planner.entities).map(([kind, records]) => [kind, records.length]));
             const { revision: _revision, ...ledger } = clean.ledger;
-            content = JSON.stringify(withoutOriginalText({ format: 'ultimate-calendar-safe-backup', formatVersion: 1, createdAt: raw.createdAt, planner: clean.planner, ledger: { format: 'ultimate-calendar-ledger', formatVersion: 1, ...ledger } }));
+            content = JSON.stringify({ format: 'ultimate-calendar-safe-backup', formatVersion: 1, createdAt: raw.createdAt, planner: clean.planner, ledger: { format: 'ultimate-calendar-ledger', formatVersion: 1, ...ledger } });
           } catch { throw new WorkflowError('VALIDATION', '请选择共用资料安全备份 JSON；原本机完整备份仍保留在电脑，不会上传'); }
           const localResources = options.resourceDirectory ? readLocalResourcesCompanion(path) : null;
           const result = remoteOutputs.restorePreview.parse(await options.client.rpc('restorePreview', { content }));

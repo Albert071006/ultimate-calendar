@@ -72,6 +72,22 @@ describe('explicit stopped Windows-copy migration preparation',()=>{
     const unclean=JSON.parse(original.toString('utf8'));unclean.ledger.entries[0].originalText='SYNTHETIC-RAW-REINTRODUCED';const bytes=Buffer.from(JSON.stringify(unclean));writeFileSync(result.backupFile,bytes);
     const matchingManifest=structuredClone(result.manifest);matchingManifest.backup.bytes=bytes.length;matchingManifest.backup.sha256=digest(result.backupFile);writeFileSync(result.manifestFile,JSON.stringify(matchingManifest));expect(()=>verifyMigrationBundle(output)).toThrow(/未清理/);
   });
+  it('verifies old event-receipt bundles and still rejects raw quotes hidden in a legacy baseline', () => {
+    const f = fixture(), output = join(f.root, 'legacy-bundle');
+    const result = exportStoppedWindowsCopy({ sourceDatabase: f.database, outputDirectory: output, stoppedCopy: true });
+    const raw = JSON.parse(readFileSync(result.backupFile, 'utf8')), candidate = structuredClone(raw.planner.entities.candidate[0]);
+    raw.planner.operations.push({ id: 'distilled-event:' + 'a'.repeat(64),
+      fingerprint: 'event-head-v1:1:2:' + 'b'.repeat(64), result: { entities: [candidate] } });
+    function save() {
+      const bytes = Buffer.from(JSON.stringify(raw));
+      writeFileSync(result.backupFile, bytes);
+      writeFileSync(result.manifestFile, JSON.stringify({ ...result.manifest,
+        backup: { ...result.manifest.backup, bytes: bytes.length, sha256: digest(result.backupFile) } }));
+    }
+    save(); expect(verifyMigrationBundle(output).taskCount).toBe(1);
+    candidate.sourceQuote = 'SYNTHETIC-QUOTE-IN-OLD-BASELINE'; save();
+    expect(() => verifyMigrationBundle(output)).toThrow(/未清理/);
+  });
   it('does not initialize a missing or unsupported source as an empty calendar',()=>{
     const root=mkdtempSync(join(tmpdir(),'calendar-migration-missing-'));roots.push(root);const source=join(root,'source');mkdirSync(source);const path=join(source,'missing.sqlite');
     expect(()=>exportStoppedWindowsCopy({sourceDatabase:path,outputDirectory:join(root,'export'),stoppedCopy:true})).toThrow();expect(existsSync(path)).toBe(false);

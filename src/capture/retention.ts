@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 import { InstantSchema } from '../shared/contracts';
 import { nowInstant } from '../domain/time';
+import { cleanStoredEvidence } from './evidence-cleanup';
 
 export interface AttachmentRetentionPolicy { retentionDays: number; maxBytes: number; now?: string }
 export interface AttachmentRetentionSummary {
@@ -165,5 +166,6 @@ export function applyAttachmentRetention(db: DatabaseSync, plan: AttachmentReten
     if (group.savedPayload) db.prepare('UPDATE capture_batches SET payload=? WHERE id=?').run(group.savedPayload, group.id);
   }
   for (const hash of changedHashes) db.prepare('DELETE FROM capture_blobs WHERE hash=? AND NOT EXISTS (SELECT 1 FROM capture_attachments WHERE hash=?)').run(hash, hash);
+  cleanStoredEvidence(db, { messages: new Set(), attachments: new Set(plan.groups.flatMap(group => group.attachments.map(attachment => attachment.id))) });
   return plan.summary;
 }

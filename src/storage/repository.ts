@@ -11,6 +11,8 @@ import { normalizeLegacyRecurringSeries } from './legacy-recurring-series';
 import { describeJournal } from '../domain/journal-description';
 import { assignMissingColors } from '../domain/palette';
 import { createPlannerChangeLog } from './planner-sync';
+import { privateOperationFingerprint } from './operation-fingerprint';
+import { DistilledBindingSchema, migrateLegacyDistilledState } from './distilled-state';
 import type { PlannerChanges, PlannerCursor, PlannerPatch } from '../shared/contracts';
 
 const CancellationUndoBaselineSchema = z.array(z.strictObject({
@@ -21,11 +23,12 @@ const JournalSchema = JournalSummarySchema.extend({ details: z.array(PreviewDeta
 const OperationResultSchema = z.union([MutationResultSchema, z.strictObject({ entities: z.array(EntitySchema) }), WorkflowReceiptSchema]);
 const StateSchema = z.strictObject({ schemaVersion: z.literal(1), entities: z.record(EntityKindSchema, z.array(EntitySchema)), settings: SettingsSchema,
   journal: z.array(JournalSchema), operations: z.array(z.strictObject({ id: IdSchema, fingerprint: z.string(), result: OperationResultSchema })),
-  usage: z.array(TokenUsageSchema), receipts: z.array(z.string()), lastBackupAt: InstantSchema.nullable() });
+  usage: z.array(TokenUsageSchema), receipts: z.array(z.string()), lastBackupAt: InstantSchema.nullable(),
+  distilled: z.array(DistilledBindingSchema).optional() });
 export type StoredState = z.infer<typeof StateSchema>;
 export const kinds = Object.keys(EntitySchemas) as EntityKind[];
 export function emptyState(): StoredState { return { schemaVersion: 1, entities: Object.fromEntries(kinds.map(k => [k, []])) as unknown as StoredState['entities'], settings: SettingsSchema.parse({}), journal: [], operations: [], usage: [], receipts: [], lastBackupAt: null }; }
-export function parseState(value: unknown): StoredState {
+export function parseState(value: unknown, migrateDistilled = true): StoredState {
   const state = StateSchema.parse(value);
   for (const kind of kinds) {
     state.entities[kind] = state.entities[kind].map(record => EntitySchemas[kind].parse(record));
@@ -35,7 +38,9 @@ export function parseState(value: unknown): StoredState {
   for (const journal of state.journal) for (const detail of [...journal.details, ...(journal.undoExpected ?? [])]) {
     for (const value of [detail.before, detail.after]) if (value) { EntitySchemas[detail.entity].parse(value); if (value.id !== detail.id) throw Error('撤销记录 ID 不匹配'); }
   }
-  for (const list of [state.journal, state.operations, state.usage]) if (new Set(list.map(item => item.id)).size !== list.length) throw Error('内部记录 ID 重复');
+  for (const list of [state.journal, state.operations, state.usage, state.distilled ?? []]) if (new Set(list.map(item => item.id)).size !== list.length) throw Error('内部记录 ID 重复');
+  if (migrateDistilled) migrateLegacyDistilledState(state);
+  if (!state.distilled?.length) delete state.distilled;
   validateRelationships(state, false); return state;
 }
 export function records<K extends EntityKind>(state: StoredState, kind: K): EntityMap[K][] { return state.entities[kind] as EntityMap[K][]; }
@@ -67,29 +72,32 @@ export function diffStates(before: StoredState, after: StoredState): PreviewDeta
 export function summarize(details: PreviewDetail[]) { return details.map(d => { const record = d.after ?? d.before; return { entity: d.entity, id: d.id, action: d.before === null ? 'create' as const : d.after === null ? 'delete' as const : 'update' as const, beforeVersion: d.before?.version ?? null, afterVersion: d.after?.version ?? null, title: record && 'title' in record ? record.title : '' }; }); }
 
 /** Table names are fixed internal constants; all external values use prepared parameters. */
-const tables = ['settings', 'journal', 'operations', 'usage', 'receipts', 'metadata'] as const;
+const tables = ['settings', 'journal', 'operations', 'usage', 'receipts', 'metadata', 'distilled_state'] as const;
 function tableEntries(state: StoredState, table: typeof tables[number]): [string, unknown][] {
   switch (table) {
     case 'settings': return [['settings', state.settings]];
     case 'journal': return state.journal.map(j => [j.id, j]);
     case 'operations': return state.operations.map(o => [o.id, o]);
+    case 'distilled_state': return (state.distilled ?? []).map(binding => [binding.id, binding]);
     case 'usage': return state.usage.map(u => [u.id, u]);
     case 'receipts': return state.receipts.map(id => [id, true]);
     case 'metadata': return [['schemaVersion', state.schemaVersion], ['lastBackupAt', state.lastBackupAt]];
   }
 }
-export function readDatabaseState(db: DatabaseSync): StoredState {
+export function readDatabaseState(db: DatabaseSync, migrateDistilled = true): StoredState {
   const state = emptyState();
   for (const row of db.prepare('SELECT kind,id,payload FROM records ORDER BY rowid').all()) { const kind = EntityKindSchema.parse(row['kind']); const record = EntitySchemas[kind].parse(JSON.parse(row['payload'] as string)); if (record.id !== row['id']) throw Error('存储记录 ID 不匹配'); state.entities[kind].push(record); }
-  const data = Object.fromEntries(tables.map(table => [table, db.prepare(`SELECT id,payload FROM ${table} ORDER BY rowid`).all().map(row => [row['id'] as string, JSON.parse(row['payload'] as string)] as [string, unknown])])) as Record<typeof tables[number], [string, unknown][]>;
+  const hasDistilledTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='distilled_state'").get();
+  const data = Object.fromEntries(tables.map(table => [table, table === 'distilled_state' && !hasDistilledTable ? [] : db.prepare(`SELECT id,payload FROM ${table} ORDER BY rowid`).all().map(row => [row['id'] as string, JSON.parse(row['payload'] as string)] as [string, unknown])])) as Record<typeof tables[number], [string, unknown][]>;
   if (data.settings.length !== 1 || data.settings[0]![0] !== 'settings' || data.metadata.length !== 2 || data.metadata.some(([id]) => !['schemaVersion', 'lastBackupAt'].includes(id))) throw Error('存储配置或元数据无效');
-  for (const table of ['journal', 'operations', 'usage'] as const) for (const [id, value] of data[table]) if (!value || typeof value !== 'object' || !('id' in value) || value.id !== id) throw Error('内部记录 ID 不匹配');
+  for (const table of ['journal', 'operations', 'usage', 'distilled_state'] as const) for (const [id, value] of data[table]) if (!value || typeof value !== 'object' || !('id' in value) || value.id !== id) throw Error('内部记录 ID 不匹配');
   if (data.receipts.some(([, value]) => value !== true)) throw Error('提醒记录无效');
   state.settings = SettingsSchema.parse(data.settings.find(([id]) => id === 'settings')?.[1]);
   state.journal = data.journal.map(([, value]) => JournalSchema.parse(value)); state.operations = data.operations.map(([, value]) => StateSchema.shape.operations.element.parse(value));
   state.usage = data.usage.map(([, value]) => TokenUsageSchema.parse(value)); state.receipts = data.receipts.map(([id]) => id);
   state.schemaVersion = z.literal(1).parse(data.metadata.find(([id]) => id === 'schemaVersion')?.[1]);
-  state.lastBackupAt = InstantSchema.nullable().parse(data.metadata.find(([id]) => id === 'lastBackupAt')?.[1]); return parseState(state);
+  if (data.distilled_state.length) state.distilled = data.distilled_state.map(([, value]) => DistilledBindingSchema.parse(value));
+  state.lastBackupAt = InstantSchema.nullable().parse(data.metadata.find(([id]) => id === 'lastBackupAt')?.[1]); return parseState(state, migrateDistilled);
 }
 function persistDiff(db: DatabaseSync, before: StoredState, after: StoredState, details: PreviewDetail[]) {
   for (const d of details) {
@@ -142,7 +150,11 @@ export function createRepository(path: string, options: { automaticBackup?(repos
     transact(work) {
       db.exec('BEGIN IMMEDIATE'); let result;
       try {
-        const state = read(); const before = structuredClone(state); result = work(state); assignMissingColors(state, nowInstant().slice(0, 10)); parseState(state);
+        const state = readDatabaseState(db, false), before = structuredClone(state);
+        // Compare against the physical rows so legacy event heads move atomically to
+        // their business table even on the first no-op transaction after an upgrade.
+        migrateLegacyDistilledState(state);
+        result = work(state); assignMissingColors(state, nowInstant().slice(0, 10)); parseState(state);
         const details = diffStates(before, state); persistDiff(db, before, state, details);
         const oldUsage = new Map(before.usage.map(value => [value.id, JSON.stringify(value)])), nextUsage = new Set(state.usage.map(value => value.id));
         const upserts = state.usage.filter(value => oldUsage.get(value.id) !== JSON.stringify(value)), deletedIds = before.usage.filter(value => !nextUsage.has(value.id)).map(value => value.id);
@@ -158,7 +170,7 @@ export function createRepository(path: string, options: { automaticBackup?(repos
     },
     writeInternal(request) {
       const fingerprint = JSON.stringify(request); const result = repository.transact(state => {
-        const previous = state.operations.find(o => o.id === request.operationId); if (previous) { if (previous.fingerprint !== fingerprint) throw Error('operationId 已用于不同操作'); return previous.result as { entities: Entity[] }; }
+        const previous = state.operations.find(o => o.id === request.operationId); if (previous) { if (previous.fingerprint !== fingerprint && previous.fingerprint !== privateOperationFingerprint(fingerprint)) throw Error('operationId 已用于不同操作'); return previous.result as { entities: Entity[] }; }
         const before = structuredClone(state); const entities: Entity[] = [];
         for (const change of request.changes) {
           if (change.id) { const old = findEntity(state, change.entity, change.id); if (!old || old.version !== change.expectedVersion) throw Error('记录不存在或版本已改变');
@@ -168,7 +180,7 @@ export function createRepository(path: string, options: { automaticBackup?(repos
         validateRelationships(state, true, before);
         if (request.usage) state.usage.push(TokenUsageSchema.parse(request.usage));
         const details = diffStates(before, state); if (details.length && request.journal) state.journal.push({ id: randomUUID(), operationId: request.operationId, createdAt: nowInstant(), origin: 'manual', message: '保存导入数据', changes: summarize(details), details, undoneAt: null, undoable: true });
-        const result = { entities }; state.operations.push({ id: request.operationId, fingerprint, result }); return result;
+        const result = { entities }; state.operations.push({ id: request.operationId, fingerprint: privateOperationFingerprint(fingerprint), result }); return result;
       }); backup(repository); return result;
     },
     saveSettings(value) { const settings = SettingsSchema.parse(value); repository.transact(state => { state.settings = settings; }); backup(repository); return settings; },
@@ -182,7 +194,7 @@ export function createRepository(path: string, options: { automaticBackup?(repos
       const size = Number(db.prepare('PRAGMA page_size').get()!['page_size']);
       return Math.max(0, pages - free) * size;
     },
-    replaceState(value, inTransaction) { const state = parseState(value); repository.transact(live => { Object.assign(live, state); sync.reset(); inTransaction?.(db); }); },
+    replaceState(value, inTransaction) { const state = parseState(value); repository.transact(live => { delete live.distilled; Object.assign(live, state); sync.reset(); inTransaction?.(db); }); },
   };
   // Fail on corrupt/future/incompatible persisted records before returning a usable repository.
   // Records saved before belonging colors existed receive theirs once, durably, at open.
@@ -194,7 +206,7 @@ function initializeDefaults(db: DatabaseSync): void {
   try { readDatabaseState(db); return; } catch (originalError) {
     const plannerTables = ['records', ...tables];
     const unknownTables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().some(row => !plannerTables.includes(row['name'] as typeof plannerTables[number]));
-    if (unknownTables || ['records', 'journal', 'operations', 'usage', 'receipts'].some(table => db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get())) throw originalError;
+    if (unknownTables || ['records', 'journal', 'operations', 'usage', 'receipts', 'distilled_state'].some(table => db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get())) throw originalError;
     const defaults = emptyState();
     const savedSettings = db.prepare('SELECT id,payload FROM settings').all();
     if (savedSettings.length > 1 || savedSettings.some(row => row['id'] !== 'settings' || JSON.stringify(SettingsSchema.parse(JSON.parse(row['payload'] as string))) !== JSON.stringify(defaults.settings))) throw originalError;

@@ -9,6 +9,7 @@ import type { CaptureStore } from '../capture/store';
 import { WorkflowError } from '../ai/deepseek';
 import { readLedgerDatabase, replaceLedgerDatabase } from '../ledger/service';
 import { copyCaptureBackupFile, inspectCaptureBackupFile } from '../capture/backup-file';
+import { cleanCompletedCaptureInputs, cleanRestoredEvidence, deletedCaptureEvidence } from '../capture/evidence-cleanup';
 import { emptyCaptureState, replaceCaptureDatabaseState } from '../capture/store';
 import { resolveBackupDirectory } from './space-policy';
 import { includeLocalResourcesInBackup, readLocalResourcesFromBackup, mergeLocalResources } from './local-resources';
@@ -99,9 +100,14 @@ export function restoreOpenedBackup(repository: Repository, file: OpenBackupFile
   // Add missing private references before the transaction; no existing location is overwritten.
   // Even if the planner restore fails, this only preserves additional recoverable references.
   mergeLocalResources(dirname(repository.path), file.localResources);
+  const deleted = file.capture ? deletedCaptureEvidence(file.db) : null;
+  if (deleted) cleanRestoredEvidence(file.planner, deleted);
   repository.replaceState(file.planner, destination => {
     if (captureStore) {
-      if (file.capture) copyCaptureBackupFile(file.db, destination, file.capture);
+      if (file.capture && deleted) {
+        copyCaptureBackupFile(file.db, destination, file.capture);
+        cleanCompletedCaptureInputs(destination, deleted);
+      }
       else replaceCaptureDatabaseState(destination, emptyCaptureState(), { recover: true });
     }
     replaceLedgerDatabase(destination, file.ledger);

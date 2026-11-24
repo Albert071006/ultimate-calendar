@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { Repository, StoredState } from '../storage/repository';
 import { emptyCaptureState, readCaptureDatabaseState, replaceCaptureDatabaseState, type CaptureExportState, type CaptureStore } from './store';
+import { cleanCompletedCaptureInputs, cleanRestoredEvidence } from './evidence-cleanup';
 
 const TABLES = ['capture_meta', 'capture_selections', 'capture_messages', 'capture_blobs', 'capture_attachments', 'capture_chunks', 'capture_batches', 'capture_batch_messages', 'capture_coverage'];
 
@@ -22,5 +23,15 @@ export function inspectCaptureBackup(db: DatabaseSync): CaptureExportState | nul
 export function replacePlannerAndCapture(repository: Repository, planner: StoredState, capture: CaptureExportState | null, store?: CaptureStore, additional?: (db: DatabaseSync) => void): void {
   if (store && (store.path !== repository.path || store.path === ':memory:')) throw new Error('QQ 采集与日历必须使用同一个 SQLite 数据文件才能同时恢复');
   if (capture && !store) throw new Error('该备份含有 QQ 采集资料，需要同时初始化采集存储后恢复');
-  repository.replaceState(planner, db => { if (store) replaceCaptureDatabaseState(db, capture ?? emptyCaptureState(), { recover: true }); additional?.(db); });
+  const restored = structuredClone(planner);
+  const deleted = capture ? {
+    messages: new Set(capture.messages.filter(item => item.deleted).map(item => item.id)),
+    attachments: new Set(capture.attachments.filter(item => item.status === 'deleted').map(item => item.id)),
+  } : null;
+  if (deleted) cleanRestoredEvidence(restored, deleted);
+  repository.replaceState(restored, db => {
+    if (store) replaceCaptureDatabaseState(db, capture ?? emptyCaptureState(), { recover: true });
+    if (deleted) cleanCompletedCaptureInputs(db, deleted);
+    additional?.(db);
+  });
 }
