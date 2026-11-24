@@ -15,6 +15,7 @@ import { nowInstant } from '../domain/time';
 import { openDatabase } from '../storage/database';
 import { planAttachmentRetention, applyAttachmentRetention, type AttachmentRetentionPolicy } from './retention';
 import { cleanStoredEvidence, deletedCaptureEvidence } from './evidence-cleanup';
+import { checkpointExcludedMessage, recipientContext, recoversWeChatMentions } from './recipients';
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const WECHAT_ATTACHMENT_RETRY_MS = 3 * 24 * 60 * 60_000;
@@ -392,6 +393,7 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
           const updatedAt = nowInstant();
           for (const row of db.prepare(`SELECT payload FROM capture_coverage WHERE ${scope()}`).all()) {
             const coverage = parsePayload(row, GroupCoverageSchema)!;
+            delete coverage.wechatLatestCursor;
             db.prepare('UPDATE capture_coverage SET payload=? WHERE account_id=? AND group_id=?').run(json({ ...coverage,
               status: 'not-started', cursor: null, earliestAt: null, fetchedCount: 0, updatedAt,
               error: '桥接地址或协议已改变，下次补采将重新检查最近七天；已收消息保留',
@@ -425,21 +427,33 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
             }
             const key = (item: { kind: string; locator: unknown }) => json({ kind: item.kind, locator: item.locator });
             const extra = input.attachments.filter(item => ['image', 'file'].includes(item.kind) && !existing.some(value => key(value) === key(item)));
-            if (!extra.length) continue;
+            const upgradeMentions = recoversWeChatMentions(previous.segments, input.segments);
+            if (!extra.length && !upgradeMentions) continue;
             const owner = parsePayload(db.prepare('SELECT b.payload FROM capture_batches b JOIN capture_batch_messages bm ON bm.batch_id=b.id WHERE bm.message_id=?').get(id), BatchSchema);
             if (!owner || !owner.attempts.length && owner.result === null && ['pending', 'failed'].includes(owner.status)) {
               for (const item of extra) saveAttachment({ id: `qqa:${digest(`${id}:media-upgrade:${key(item)}`)}`, messageId: id,
                 name: item.name, kind: item.kind, size: item.size, locator: item.locator, status: 'pending', error: null, hash: null, extractorVersion: null });
               saveMessage({ ...previous, text: input.text, segments: input.segments });
-              if (owner?.status === 'failed') { owner.status = 'pending'; owner.error = null; owner.waitingForAttachments = false; owner.updatedAt = at; saveBatch(owner); }
+              if (extra.length && owner?.status === 'failed') { owner.status = 'pending'; owner.error = null; owner.waitingForAttachments = false; owner.updatedAt = at; saveBatch(owner); }
               continue;
             }
             const sourceMessageId = previous.sourceMessageId ?? previous.messageId;
-            const supplementalId = `media:${digest(json([sourceMessageId, extra.map(key).sort()]))}`;
-            input = { ...input, messageId: supplementalId, sourceMessageId, text: '', attachments: extra,
-              segments: input.segments.filter(raw => !!raw && typeof raw === 'object' && !Array.isArray(raw) && ['image', 'file', 'at'].includes(String(raw.type))) };
-            id = captureMessageId(input.accountId, input.groupId, supplementalId);
-            if (message(id)) continue;
+            const mentionId = 'mentions:' + digest(sourceMessageId);
+            id = captureMessageId(input.accountId, input.groupId, mentionId);
+            if (upgradeMentions && owner.status === 'applied' && !previous.changed && !message(id) &&
+                recipientContext(input).audience !== 'others' && !existing.some(item => item.status === 'deleted') &&
+                checkpointExcludedMessage(owner.result, previous.id)) {
+              const otherMedia = new Set(existing.filter(item => item.messageId !== previous.id).map(key));
+              input = { ...input, messageId: mentionId, sourceMessageId,
+                attachments: input.attachments.filter(item => !otherMedia.has(key(item))).map(({ id: _id, ...item }) => item) };
+            } else {
+              if (!extra.length) continue;
+              const supplementalId = `media:${digest(json([sourceMessageId, extra.map(key).sort()]))}`;
+              input = { ...input, messageId: supplementalId, sourceMessageId, text: '', attachments: extra,
+                segments: input.segments.filter(raw => !!raw && typeof raw === 'object' && !Array.isArray(raw) && ['image', 'file', 'at', 'wechat_mentions'].includes(String(raw.type))) };
+              id = captureMessageId(input.accountId, input.groupId, supplementalId);
+              if (message(id)) continue;
+            }
           }
           const { attachments: incoming, ...fields } = input;
           saveMessage({ ...fields, id, importedAt: input.importedAt ?? at, changed: false, deleted: false });

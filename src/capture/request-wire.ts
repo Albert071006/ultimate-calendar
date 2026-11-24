@@ -57,6 +57,7 @@ export function compactCaptureMessages(messages: ChatMessage[], details?: Captur
   const packedUnits = units.map(unit => ({ id: sourceIds.get(string(unit.id)), messageId: messageIds.get(string(unit.messageId)),
     sentAt: unit.sentAt, text: unit.text, locator: unit.locator, label: labels.indexOf(string(unit.label)),
     ...(unit.hasImage ? { hasImage: true } : {}), attachmentId: attachmentIds.get(string(unit.attachmentId)) ?? null,
+    ...(Array.isArray(unit.warnings) && unit.warnings.length ? { warnings: unit.warnings } : {}),
     recipient: recipient(unit.recipient, string(unit.text)),
   }));
   const evidenceText = new Map(units.map(unit => [string(unit.text), sourceIds.get(string(unit.id))!]));
@@ -86,7 +87,7 @@ export function compactCaptureMessages(messages: ChatMessage[], details?: Captur
     return { ...base, ...Object.fromEntries(extra.map(key => [key, candidate[key]])),
       ...(evidence?.candidates?.has(string(candidate.id)) ? { originalEvidence: evidence.candidates.get(string(candidate.id)) } : {}) };
   });
-  const packed = { format: 'capture-wire-v1', userProfile: input.userProfile, warnings: input.warnings,
+  const packed = { format: 'capture-wire-v1', userProfile: input.userProfile,
     labels, units: packedUnits, context: packedContext, existingCandidates: table(packedCandidates),
     ...(details ? { detailsExpanded: true } : {}) };
   const parts: Exclude<ChatMessage['content'], string> = [{ type: 'text', text: JSON.stringify(packed) }];

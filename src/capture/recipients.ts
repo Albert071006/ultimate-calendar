@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 /** OneBot mentions belong to the outer message, never to an embedded reply/forward. */
 export type RecipientMessage = {
   accountId: string;
@@ -19,6 +21,51 @@ function target(value: unknown, accountId: string): string | null {
 export function mentionLabel(value: unknown, accountId: string): string {
   const recipient = target(value, accountId);
   return recipient === 'all' ? '@全体成员' : recipient === accountId ? '@我' : recipient ? '@其他成员' : '@未知成员';
+}
+
+/** The local WeChat reader folds long lists after inspecting every wxid. */
+export function wechatMentions(data: Record<string, unknown>) {
+  const value = data.audience;
+  const audience = typeof data.truncated === 'boolean' && (value === 'self' || value === 'all' || value === 'others') ? value : 'unknown';
+  const truncated = data.truncated === true;
+  const label = { self: '@我', all: '@全体成员', others: '@其他成员', unknown: '@未知成员' }[audience];
+  return { audience, truncated, label: truncated ? label + '（提及名单已省略）' : '' };
+}
+
+// Older workers silently capped the wxid list at 100. A positive mention is
+// still reliable, but a full legacy prefix cannot prove absence.
+function legacyWeChatMentionPrefix(segments: readonly unknown[]): boolean {
+  if (segments.length < 100) return false;
+  let count = 0;
+  for (const raw of segments) {
+    const { type } = object(raw);
+    if (type === 'wechat_mentions') return false;
+    if (type === 'at') count++;
+  }
+  return count >= 100;
+}
+
+export function recoversWeChatMentions(previous: readonly unknown[], incoming: readonly unknown[]): boolean {
+  return legacyWeChatMentionPrefix(previous) && incoming.some(raw => object(raw).type === 'wechat_mentions');
+}
+
+const completedAudienceEvidence = z.object({
+  version: z.literal(2), final: z.literal(true), pendingResponse: z.never().optional(),
+  context: z.array(z.object({ id: z.string(), recipient: z.object({ audience: z.string() }).optional() })),
+  units: z.array(z.object({ id: z.string(), messageId: z.string() })),
+  completed: z.array(z.object({ value: z.object({ candidates: z.array(z.object({
+    sourceIds: z.array(z.string()), supportingSources: z.array(z.object({ sourceId: z.string() })).optional(),
+  })) }) })).min(1),
+});
+
+/** No new analysis of a previously eligible source. A finished batch can
+ * attest which message was excluded, even when other sources had paid work. */
+export function checkpointExcludedMessage(result: unknown, messageId: string): boolean {
+  const proof = completedAudienceEvidence.safeParse(result);
+  if (!proof.success || proof.data.context.find(row => row.id === messageId)?.recipient?.audience !== 'others') return false;
+  const units = new Set(proof.data.units.filter(row => row.messageId === messageId).map(row => row.id));
+  return units.size > 0 && proof.data.completed.every(({ value }) => value.candidates.every(candidate =>
+    !candidate.sourceIds.some(id => units.has(id)) && !candidate.supportingSources?.some(row => units.has(row.sourceId))));
 }
 
 export function recipientContext(message: RecipientMessage): {
@@ -44,6 +91,16 @@ export function recipientContext(message: RecipientMessage): {
   for (const raw of segments) {
     const segment = object(raw), data = object(segment.data);
     if (segment.type === 'at') append(mention(message.accountId.startsWith('wechat:') ? data.wechat : data.qq));
+    else if (segment.type === 'wechat_mentions' && message.accountId.startsWith('wechat:')) {
+      const summary = wechatMentions(data);
+      seen = true;
+      truncated ||= summary.truncated;
+      self ||= summary.audience === 'self';
+      all ||= summary.audience === 'all';
+      other ||= summary.audience === 'others';
+      unknown ||= summary.audience === 'unknown';
+      append(summary.label);
+    }
     else if (segment.type === 'text' && typeof data.text === 'string') {
       // Legacy CQ strings and literal code examples were stored identically. Only
       // structured at segments prove a recipient; ambiguous text must stay eligible.
@@ -53,7 +110,8 @@ export function recipientContext(message: RecipientMessage): {
     else if (segment.type === 'face') append('[表情]');
     // Deliberately do not descend into reply/forward/node contents.
   }
-  const incomplete = /\[采集提示：消息超过 1000 个片段/.test(message.text ?? '');
+  const incomplete = /\[采集提示：消息超过 1000 个片段/.test(message.text ?? '') ||
+    (message.accountId.startsWith('wechat:') && legacyWeChatMentionPrefix(segments));
   const audience: RecipientAudience = all ? 'all' : self ? 'self' : unknown || incomplete ? 'unknown' : other ? 'others' : 'unspecified';
   return {
     audience,

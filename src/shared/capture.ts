@@ -68,6 +68,8 @@ export const GroupCoverageSchema = z.strictObject({
   status: z.enum(['not-started', 'fetching', 'complete', 'partial', 'failed']),
   windowStart: InstantSchema, windowEnd: InstantSchema, earliestAt: InstantSchema.nullable(),
   cursor: z.string().max(2000).nullable(), fetchedCount: z.number().int().nonnegative(),
+  // WeChat's newest ingested key is independent from cursor, the rotating seven-day inspection.
+  wechatLatestCursor: z.string().max(2000).nullable().optional(),
   updatedAt: InstantSchema, error: z.string().max(2000).nullable(),
 });
 export type GroupCoverage = z.infer<typeof GroupCoverageSchema>;

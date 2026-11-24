@@ -13,6 +13,7 @@ import { createQQCloudBridge, type BridgeTransport } from './service';
 import { createEvidenceIndex, evidenceIndexPath, readEvidenceSourceIds } from './evidence-index';
 import { projectDistilledFields } from './projection';
 import { createCaptureStore } from '../capture/store';
+import { normalizeMessage } from '../capture/service';
 import { analyzeCapture, applyCaptureResult } from '../capture/analysis';
 import { expandCaptureTable } from '../capture/request-wire';
 import { nowInstant } from '../domain/time';
@@ -53,6 +54,53 @@ async function setup(accountId = '900010001', groupId = '900020002') {
 }
 
 describe('local synthetic QQ extraction to cloud inbox', () => {
+  it('syncs a plain QQ notice alongside an unread attachment with warnings only on the owning notice', async () => {
+    const accountId = '900010001', groupId = '900020002';
+    const f = await setup(accountId, groupId);
+    const bridge = createQQCloudBridge(f.config, f.remote); cleanup.push(() => bridge.close());
+    await bridge.once();
+    const store = createCaptureStore(f.source.path); cleanup.push(() => store.close());
+    store.saveConfig({ ...store.config(), accountId, groupIds: [groupId], enabled: true, analysisEnabled: true });
+    const owner = '请按附件领取实验用品', plain = '请预约阅览室座位', filename = '合成私有清单.pdf';
+    const localError = '无法读取 C:\\private\\synthetic-error.log';
+    const raw = { group_id: groupId, time: Math.floor(Date.now() / 1000), user_id: 'synthetic-sender' };
+    const messages = [
+      normalizeMessage({ ...raw, message_id: 'with-file', message: [
+        { type: 'text', data: { text: owner } }, { type: 'file', data: { file: filename } },
+      ] }, accountId, new Map())!,
+      normalizeMessage({ ...raw, message_id: 'plain', message: plain }, accountId, new Map())!,
+    ];
+    const [ownerId] = store.ingest(messages).ids;
+    const file = store.attachments(ownerId!)[0]!;
+    store.setAttachmentStatus(file.id, 'failed', localError);
+    store.sealBatches({ force: true }); const batch = store.claimBatch()!;
+    expect(batch.messageIds).toHaveLength(2);
+    const notice = '该来源的附件未完整读取，请在本机核对';
+    await analyzeCapture({ store, repository: f.source, batch, getApiKey: async () => 'synthetic', canContinue: () => true,
+      fetch: async (_url, init) => {
+        const wire = JSON.parse(String(init?.body)).messages.find((m: { role: string }) => m.role === 'user');
+        const input = JSON.parse(wire.content[0].text);
+        expect(input.warnings).toBeUndefined();
+        const units: { id: string; text: string; warnings?: string[] }[] = input.units;
+        expect(units.find(unit => unit.text === owner)?.warnings).toEqual([notice]);
+        expect(units.find(unit => unit.text === plain)?.warnings).toBeUndefined();
+        expect(JSON.stringify(input)).not.toContain('synthetic-error.log');
+        // Even an exact model echo of the diagnostic must follow verified source ownership.
+        const candidates = units.map(unit => ({ title: unit.text, action: unit.text, benefit: '', potentialBenefit: '', benefitKind: 'unknown',
+          conditions: [], uncertainties: [notice], sourceIds: [unit.id], sourceQuote: unit.text, deadline: null, eventStart: null,
+          eventEnd: null, temporalEvidence: [], location: '', relation: { kind: 'new', candidateId: null } }));
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ candidates }) }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
+      } });
+    expect(store.attachment(file.id)).toMatchObject({ name: filename, error: localError });
+    expect(store.batch(batch.id)?.result).toMatchObject({ warnings: [{ kind: 'attachment-incomplete', messageId: ownerId, attachmentId: file.id }] });
+    expect(await bridge.once()).toMatchObject({ accepted: 2, issue: null });
+    const cloud = f.service.snapshot().candidates;
+    expect(cloud.find(card => card.title === plain)?.uncertainties).toEqual([]);
+    expect(cloud.find(card => card.title === owner)?.uncertainties).toEqual([notice]);
+    const sends = f.requests.filter(request => request.path === '/api/v1/distilled').map(request => request.body).join('');
+    expect(sends).not.toContain(filename); expect(sends).not.toContain('synthetic-error.log');
+  });
   it('delivers a newly required WeChat assignment once when its companion report was ignored in the cloud', async () => {
     const accountId = 'wechat:synthetic-self', groupId = 'synthetic-class@chatroom';
     const f = await setup(accountId, groupId);

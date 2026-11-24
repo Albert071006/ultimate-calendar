@@ -7,19 +7,21 @@ import { createReadOnlyBridge, detectExistingBridge, type ReadOnlyBridge, type B
 import { downloadAttachment, AttachmentDownloadError, attachmentFileName, type CaptureAttachmentLocation } from './download';
 import { EXTRACTOR_VERSION, type DocumentExtraction, type DocumentInput } from './documents';
 import { analyzeCapture } from './analysis';
-import { isAddressedElsewhere, mentionLabel } from './recipients';
+import { isAddressedElsewhere, mentionLabel, wechatMentions } from './recipients';
 import { wechatAttachmentRetryExpired, type CaptureStore, type CapturedMessageInput, type StoredCaptureMessage, type StoredCaptureAttachment } from './store';
 import type { Repository } from '../storage/repository';
 import type { PriceQuote } from '../shared/account';
 import type { ModelRequestRunner } from '../ai/request-queue';
 import { sharedCardText } from './shared-card';
+import { pollWechatHistory, type WechatHistoryWindow } from './wechat-history';
 
 type Raw = Record<string, unknown>;
 function unreadWechatAttachments(items: StoredCaptureAttachment[], retryable: boolean) {
   const details = items.slice(0, 3).map(item => `【${item.name.slice(0, 160)}】${item.error ?? '等待附件读取'}`).join('；');
   return `本次未继续请求 AI。${details}。${retryable ? '系统会稍后自动检查。' : '请处理附件后重试此批。'}`.slice(0, 2000);
 }
-export type CaptureBridge = Pick<ReadOnlyBridge, 'start' | 'stop' | 'getGroups' | 'history' | 'rememberMessage' | 'getReferencedMessage' | 'getForward'> & {
+export type CaptureBridge = Pick<ReadOnlyBridge, 'start' | 'stop' | 'getGroups' | 'rememberMessage' | 'getReferencedMessage' | 'getForward'> & {
+  history(groupId: string, cursor?: string | null, count?: number, window?: WechatHistoryWindow): Promise<Awaited<ReturnType<ReadOnlyBridge['history']>> & { latestCursor?: string | null }>;
   getImage(...args: Parameters<ReadOnlyBridge['getImage']>): Promise<CaptureAttachmentLocation>;
   getFileUrl(...args: Parameters<ReadOnlyBridge['getFileUrl']>): Promise<CaptureAttachmentLocation>;
 };
@@ -40,6 +42,7 @@ export function normalizeMessage(raw: Raw, accountId: string, groupNames: Map<st
     const data = object(segment.data); const type = string(segment.type);
     if (type === 'text') text.push(string(data.text));
     else if (type === 'at') text.push(mentionLabel(accountId.startsWith('wechat:') ? data.wechat : data.qq, accountId));
+    else if (type === 'wechat_mentions' && accountId.startsWith('wechat:')) text.push(wechatMentions(data).label);
     else if (type === 'face') text.push('[表情]');
     else if (type === 'json') {
       const card = sharedCardText(segment);
@@ -176,34 +179,66 @@ export function createCaptureService(options: {
     historyRunning = true; const client = bridge;
     if (platform === 'wechat') lastWechatPoll = Date.now();
     try {
-      const config = store.config(); if (!config.accountId) return;
+      const config = store.config(); const accountId = config.accountId; if (!accountId) return;
       if (!groupNames.size) groupNames = new Map((await client.getGroups()).map(group => [group.id, group.name]));
       for (const groupId of config.groupIds) {
-        if (!permitted(config.accountId, groupId) || client !== bridge || !health?.online) break;
-        const previous = store.getCoverage(config.accountId, groupId);
+        const active = () => permitted(accountId, groupId) && client === bridge && !!health?.online;
+        if (!active()) break;
+        const previous = store.getCoverage(accountId, groupId);
         const resumable = previous && previous.status !== 'complete' && previous.cursor && Date.parse(nowInstant()) - Date.parse(previous.windowEnd) < 86400_000 ? previous : null;
         const end = nowInstant(); const start = fromUnix(Date.parse(end) / 1000 - 7 * 86400)!;
         // Always fill the newest gap first. Starting directly at an old cursor loses messages
         // received while disconnected. Once overlap is reached, jump to the saved older frontier.
         let resumeCursor = resumable?.cursor ?? null; const resumeUntil = resumable?.windowEnd ?? null;
         let cursor: string | null = null; let earliest: string | null = resumable?.earliestAt ?? null; let count = resumable?.fetchedCount ?? 0; let complete = false; let failure: string | null = null;
+        let latest: string | null = null;
+        if (platform === 'wechat' && previous?.wechatLatestCursor !== undefined && Date.parse(previous.windowEnd) >= Date.parse(start)) {
+          latest = previous.wechatLatestCursor;
+          cursor = previous.cursor;
+          earliest = previous.earliestAt; count = previous.fetchedCount;
+        }
         const seen = new Set<string>();
-        const save = (status: 'fetching' | 'complete' | 'partial' | 'failed') => store.saveCoverage({ accountId: config.accountId, groupId, status, windowStart: start, windowEnd: end, earliestAt: earliest, cursor, fetchedCount: count, updatedAt: nowInstant(), error: failure });
+        const save = (status: 'fetching' | 'complete' | 'partial' | 'failed') => store.saveCoverage({ accountId, groupId, status, windowStart: start, windowEnd: end, earliestAt: earliest, cursor,
+          ...(platform === 'wechat' ? { wechatLatestCursor: latest } : {}), fetchedCount: count, updatedAt: nowInstant(), error: failure });
+        const readPage = async (position: string | null, window?: WechatHistoryWindow) => {
+          if (!active()) throw Error('采集状态已改变');
+          const result = await client.history(groupId, position, 100, window);
+          if (!active()) throw Error('采集状态已改变');
+          let pageEarliest: string | null = null;
+          for (const raw of result.messages) {
+            const at = fromUnix(raw.time);
+            if (!at) { failure = '历史消息缺少有效发送时间，无法确认覆盖完整'; continue; }
+            if (!pageEarliest || Date.parse(at) < Date.parse(pageEarliest)) pageEarliest = at;
+            if (!earliest || at < earliest) earliest = at;
+            if (Date.parse(at) <= Date.parse(start)) complete = true;
+            if (Date.parse(at) < Date.parse(start) || Date.parse(at) > Date.parse(end)) continue;
+            const parsed = normalizeMessage({ ...raw, group_id: groupId }, accountId, groupNames);
+            if (parsed) {
+              const inserted = store.ingest([{ ...parsed, origin: 'history' }]).inserted;
+              count += inserted;
+              if (inserted) lastReceivedAt = nowInstant();
+            }
+          }
+          return { ...result, pageEarliest };
+        };
         save('fetching'); emit();
         try {
+          if (platform === 'wechat') {
+            let pages = 0;
+            const since = Math.ceil(Date.parse(start) / 1000);
+            const notice = await pollWechatHistory({ latest, inspection: cursor }, async (position, direction) => {
+              if (pages++) await new Promise(resolve => setTimeout(resolve, 200));
+              return readPage(position, { direction, since });
+            }, progress => {
+              latest = progress.latest; cursor = progress.inspection; save('fetching'); emit();
+            });
+            failure ||= notice;
+            save('partial'); emit(); continue;
+          }
           // A bounded pass is an engineering limit, never a claim of complete history.
           for (let page = 0; page < 200; page++) {
-            if (!permitted(config.accountId, groupId) || bridge !== client || !health?.online) { failure = '连接或采集状态发生变化，补采暂停；重新连接后继续检查最近七天'; break; }
-            const result = await client.history(groupId, cursor, 100);
-            if (!permitted(config.accountId, groupId) || bridge !== client || !health?.online) { failure = '采集状态已改变，已暂停历史读取'; break; }
-            let pageEarliest: string | null = null;
-            for (const raw of result.messages) {
-              const at = fromUnix(raw.time); if (!at) { failure = '历史消息缺少有效发送时间，无法确认覆盖完整'; continue; }
-              if (!pageEarliest || Date.parse(at) < Date.parse(pageEarliest)) pageEarliest = at;
-              if (!earliest || at < earliest) earliest = at;
-              if (Date.parse(at) <= Date.parse(start)) complete = true;
-              if (Date.parse(at) >= Date.parse(start) && Date.parse(at) <= Date.parse(end)) { const parsed = normalizeMessage({ ...raw, group_id: groupId }, config.accountId, groupNames); if (parsed) { const inserted = store.ingest([{ ...parsed, origin: 'history' }]).inserted; count += inserted; if (inserted) lastReceivedAt = nowInstant(); } }
-            }
+            const result = await readPage(cursor);
+            const { pageEarliest } = result;
             if (complete) break;
             if (resumeCursor && resumeUntil && pageEarliest && Date.parse(pageEarliest) <= Date.parse(resumeUntil)) {
               cursor = resumeCursor; resumeCursor = null; seen.add(cursor); save('fetching'); emit();
@@ -215,9 +250,8 @@ export function createCaptureService(options: {
             await new Promise(resolve => setTimeout(resolve, 200));
           }
           if (!complete && !failure) failure = '本轮已达到 200 页；已保存获取的消息，可再次补采核对剩余历史';
-          if (platform === 'wechat' && (complete || !cursor)) failure = '已读取当前可见的本机记录；未同步到电脑的消息无法补采';
           save(complete && !failure ? 'complete' : 'partial');
-        } catch { failure = '历史接口不可用或请求中断，已取得的消息仍保留；可手动补采'; save(count ? 'partial' : 'failed'); }
+        } catch { failure = active() ? '历史接口不可用或请求中断，已取得的消息仍保留；可手动补采' : '采集状态已改变，已暂停历史读取；重新连接后继续检查最近七天'; save(count ? 'partial' : 'failed'); }
         emit();
       }
     } catch { error = 'QQ 补采状态未能保存，请检查本地存储后再试'; }

@@ -6,13 +6,15 @@ import { createCaptureStore } from './store';
 import { createRepository } from '../storage/repository';
 import { inspectCaptureBackupFile, copyCaptureBackupFile } from './backup-file';
 import { openDatabase } from '../storage/database';
-import { prepareAnalysis } from './analysis';
+import { analyzeCapture, prepareAnalysis } from './analysis';
 import { recipientContext } from './recipients';
-import { createCaptureService, normalizeMessage, type CaptureBridgeFactory } from './service';
+import * as recipients from './recipients';
+import { createCaptureService, normalizeMessage, type CaptureBridge, type CaptureBridgeFactory } from './service';
 import { createCandidateReader } from '../bridge/source-reader';
 import { DistilledRequestSchema } from '../shared/distilled';
 import { importDistilled } from '../server/distilled';
 import { instantAt } from '../domain/time';
+import { pollWechatHistory } from './wechat-history';
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { vi.useRealTimers(); for (const close of cleanup.splice(0).reverse()) close(); });
@@ -183,6 +185,87 @@ describe('concurrent QQ and WeChat collection', () => {
     expect(prepareAnalysis(f.wechat, batch).units[0]).toMatchObject({ sentAt: parsed.sentAt, label: '微信 · 合成微信群 · 合成成员' });
   });
 
+  it('passes the full-list WeChat audience to analysis and keeps an unverified legacy prefix eligible', async () => {
+    const { wechat, repo } = fixture();
+    const first100 = Array.from({ length: 100 }, (_, i) => ({ type: 'at', data: { wechat: 'wxid_other_' + i } }));
+    const summary = (audience: string, truncated: boolean) => ({ type: 'wechat_mentions', data: { audience, truncated } });
+    const rosters = {
+      self: [summary('self', true)], all: [summary('all', true)], others: [summary('others', true)],
+      unknown: [summary('unknown', true)], legacy: first100, complete: [...first100, summary('others', false)], reread: first100,
+    };
+    for (const [id, segments] of Object.entries(rosters)) {
+      const raw = { group_id: group, message_id: id, time: Date.parse(at) / 1000,
+        message: [{ type: 'text', data: { text: '请提交合成材料 ' + id } }, ...segments] };
+      wechat.ingest([normalizeMessage(raw, wx, new Map())!]);
+    }
+    const corrected = normalizeMessage({ group_id: group, message_id: 'reread', time: Date.parse(at) / 1000,
+      message: [{ type: 'text', data: { text: '请提交合成材料 reread' } }, summary('self', true)] }, wx, new Map())!;
+    expect(wechat.ingest([corrected])).toMatchObject({ duplicates: 1, inserted: 0 });
+    wechat.sealBatches({ force: true });
+    const audiences: Record<string, string> = {};
+    await analyzeCapture({ store: wechat, repository: repo, batch: wechat.claimBatch()!, getApiKey: async () => 'synthetic', canContinue: () => true,
+      fetch: async (_url, request) => {
+        const input = JSON.parse(JSON.parse(String(request?.body)).messages[1].content[0].text);
+        for (const unit of input.units) {
+          const id = unit.text.match(/请提交合成材料 (\w+)/)[1];
+          audiences[id] = unit.recipient.audience;
+          expect(unit.recipient.truncated).toBe(true);
+        }
+        return new Response(JSON.stringify({ choices: [{ message: { content: '{"candidates":[]}' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+      },
+    });
+    expect(audiences).toEqual({ self: 'self', all: 'all', unknown: 'unknown', legacy: 'unknown', reread: 'self' });
+    const paid = wechat.messageByKey(wx, group, 'legacy');
+    wechat.ingest([{ ...corrected, messageId: 'legacy' }]);
+    expect(wechat.messageByKey(wx, group, 'legacy')).toEqual(paid);
+    expect(wechat.sealBatches({ force: true })).toEqual([]);
+  });
+
+  it.each([false, true])('recovers only the previously excluded source from a completed legacy batch (paid companion: %s)', async companion => {
+    const { wechat, repo } = fixture();
+    const roster = Array.from({ length: 100 }, (_, i) => ({ type: 'at', data: { wechat: 'wxid_other_' + i } }));
+    const raw = (id: string, segments: unknown[]) => normalizeMessage({ group_id: group, message_id: id, time: Date.parse(at) / 1000,
+      message: [{ type: 'text', data: { text: '请提交材料 ' + id } }, ...segments] }, wx, new Map())!;
+    const original = wechat.ingest([raw('hidden', roster)]).ids[0]!;
+    if (companion) wechat.ingest([raw('companion', [])]);
+    const sent: string[][] = [];
+    const run = async () => {
+      wechat.sealBatches({ force: true });
+      const batch = wechat.claimBatch()!;
+      await analyzeCapture({ store: wechat, repository: repo, batch, canContinue: () => true, getApiKey: async () => 'synthetic',
+        fetch: async (_url, request) => {
+          const input = JSON.parse(JSON.parse(String(request?.body)).messages[1].content[0].text);
+          sent.push(input.units.map((unit: { text: string }) => unit.text));
+          return new Response(JSON.stringify({ choices: [{ message: { content: '{"candidates":[]}' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+        } });
+      return wechat.batch(batch.id)!;
+    };
+    // Generate the actual old final checkpoint and receipts with the previous
+    // audience decision; the fixture otherwise uses the ordinary capture path.
+    const classify = recipients.recipientContext;
+    const legacy = vi.spyOn(recipients, 'recipientContext').mockImplementation(message => {
+      const result = classify(message);
+      return message.segments.length === 101 ? { ...result, audience: 'others', truncated: false } : result;
+    });
+    let before;
+    try { before = await run(); } finally { legacy.mockRestore(); }
+    expect(before.status).toBe('applied');
+    expect(before.attempts).toHaveLength(companion ? 1 : 0);
+    expect(sent).toEqual(companion ? [['请提交材料 companion']] : []);
+    const restored = raw('hidden', [{ type: 'wechat_mentions', data: { audience: 'self', truncated: true } }]);
+    const added = wechat.ingest([restored]);
+    expect(added.inserted).toBe(1);
+    expect(wechat.message(added.ids[0]!)).toMatchObject({ sourceMessageId: 'hidden', text: expect.stringContaining('@我') });
+    expect(wechat.ingest([restored]).inserted).toBe(0);
+    expect((await run()).messageIds).toEqual(added.ids);
+    expect(sent.at(-1)).toEqual([expect.stringContaining('请提交材料 hidden')]);
+    expect(wechat.ingest([restored]).inserted).toBe(0);
+    expect(wechat.batch(before.id)).toEqual(before);
+    expect(wechat.message(original)!.segments).toHaveLength(101);
+  });
+
   it('sends only compatible opaque summaries from a wxm source to the unchanged cloud importer', () => {
     const f = fixture(), messageId = f.wechat.ingest([incoming()]).ids[0]!;
     const source = f.repo.writeInternal({ operationId: 'synthetic-source', changes: [{ entity: 'source', values: { kind: 'text', text: 'PRIVATE_WECHAT_ORIGINAL', importedAt: at, sentAt: at, label: '微信 · 合成群', captureRef: { accountId: wx, groupId: group, messageId, attachmentId: null, locator: '消息正文1', transcribed: false } } }] }).entities[0]!;
@@ -198,10 +281,8 @@ describe('concurrent QQ and WeChat collection', () => {
     expect(importDistilled(cloud, request).created).toBe(1); expect(cloud.snapshot().candidates).toHaveLength(1);
   });
 
-  it('polls only selected groups every two minutes without requiring a QQ token', async () => {
-    vi.useFakeTimers(); vi.setSystemTime(new Date(at));
+  function pollingFixture(history: CaptureBridge['history']) {
     const f = fixture(); f.wechat.saveConfig({ ...f.wechat.config(), enabled: false, analysisEnabled: false });
-    const history = vi.fn(async (groupId: string) => ({ messages: [{ group_id: groupId, message_id: 'poll-message', time: Date.now() / 1000, message: '明天中午提交合成材料' }], nextCursor: null, complete: false as const }));
     const factory: CaptureBridgeFactory = options => ({
       async start() { const state = { state: 'online' as const, connected: true, online: true, accountId: wx, maskedAccount: '合成账号', nickname: '合成微信', lastEventAt: null, error: null }; options.onHealth?.(state); return state; },
       stop() {}, getGroups: async () => [{ id: group, name: '合成群' }], history, rememberMessage: () => false,
@@ -210,11 +291,72 @@ describe('concurrent QQ and WeChat collection', () => {
     const token = vi.fn(async () => null);
     const service = createCaptureService({ platform: 'wechat', store: f.wechat, repository: f.repo, bridgeFactory: factory, credentials: { get: token, set: async () => {}, status: () => ({ configured: false }) }, getApiKey: async () => null, extract: async () => ({ status: 'ready', parts: [], warnings: [] }) });
     cleanup.push(() => service.stop());
+    return { f, service, token };
+  }
+
+  it('polls only selected groups every two minutes without requiring a QQ token', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date(at));
+    const history = vi.fn(async (groupId: string) => ({ messages: [{ group_id: groupId, message_id: 'poll-message', time: Date.now() / 1000, message: '明天中午提交合成材料' }], nextCursor: null, complete: false as const }));
+    const { f, service, token } = pollingFixture(history);
     await service.start(); await service.connect(); expect(history).not.toHaveBeenCalled(); expect(token).not.toHaveBeenCalled();
     await service.configure({ ...f.wechat.config(), enabled: true }); await vi.advanceTimersByTimeAsync(0);
     expect(history).toHaveBeenCalledTimes(1); expect(f.wechat.stats().messages).toBe(1);
     await vi.advanceTimersByTimeAsync(120_000); expect(history).toHaveBeenCalledTimes(2); expect(f.wechat.stats().messages).toBe(1);
     await service.configure({ ...f.wechat.config(), enabled: false }); await vi.advanceTimersByTimeAsync(120_000); expect(history).toHaveBeenCalledTimes(2);
     expect(history.mock.calls.every(([id]) => id === group)).toBe(true);
+  });
+
+  it('rotates mid-window pages across manual and automatic polls while keeping a separate latest key', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date(at));
+    const keys = [20, 18, 16, 14, 12, 10, 8, 6, 4, 2], reads: string[] = [];
+    const sent = Math.floor(Date.parse(at) / 1000) - 86400;
+    const { f, service } = pollingFixture(async (groupId, cursor, limit, window) => {
+      expect(limit).toBe(100); expect(window!.since).toBeLessThan(sent);
+      const newer = window!.direction === 'newer';
+      const visible = keys.filter(key => cursor == null || (newer ? key > Number(cursor) : key < Number(cursor)))
+        .sort((a, b) => newer ? a - b : b - a);
+      const key = visible[0];
+      reads.push(window!.direction + ':' + (cursor ?? 'head'));
+      return { messages: key ? [{ group_id: groupId, message_id: 'key-' + key, time: sent, message: '合成通知' }] : [],
+        latestCursor: key ? String(key) : null, nextCursor: visible.length > 1 ? String(key) : null, complete: false };
+    });
+    // Old coverage has only the deepest cursor. It cannot establish a latest key.
+    f.wechat.saveCoverage({ accountId: wx, groupId: group, status: 'partial', earliestAt: at, cursor: '2',
+      windowStart: instantAt(Date.parse(at) - 7 * 86400_000), windowEnd: at, fetchedCount: 0, updatedAt: at, error: null });
+    await service.start(); await service.connect();
+    await service.configure({ ...f.wechat.config(), enabled: true }); await vi.advanceTimersByTimeAsync(2200);
+    expect(reads).toHaveLength(10);
+    expect(f.wechat.getCoverage(wx, group)).toMatchObject({ status: 'partial', cursor: null, wechatLatestCursor: '20' });
+    keys.push(9, 22, 24, 26);
+    reads.length = 0; service.action({ action: 'backfill' }); await vi.advanceTimersByTimeAsync(2000);
+    expect(reads).toEqual(['older:head', 'newer:20', 'newer:22', 'newer:24', 'older:26', 'older:24', 'older:22']);
+    expect(f.wechat.getCoverage(wx, group)).toMatchObject({ cursor: '20', wechatLatestCursor: '26' });
+    expect(f.wechat.messageByKey(wx, group, 'key-9')).toBeNull();
+    const backup = f.wechat.exportState().state;
+    expect(backup.coverage).toContainEqual(expect.objectContaining({ accountId: wx, groupId: group, cursor: '20', wechatLatestCursor: '26' }));
+    f.wechat.replaceState(backup, { pause: false });
+    reads.length = 0; await vi.advanceTimersByTimeAsync(150_000);
+    expect(reads).toEqual(['newer:26', 'older:20', 'older:18', 'older:16', 'older:14']);
+    reads.length = 0; service.action({ action: 'backfill' }); await vi.advanceTimersByTimeAsync(1500);
+    expect(reads).toEqual(['newer:26', 'older:12', 'older:10', 'older:9', 'older:8']);
+    expect(Date.parse(f.wechat.messageByKey(wx, group, 'key-9')!.sentAt)).toBe(sent * 1000);
+    expect(f.wechat.stats().messages).toBe(keys.length);
+  });
+
+  it('reserves inspection pages even when catching up with more than 200 new pages', async () => {
+    const directions: string[] = [];
+    let checkpoint = { latest: '2000' as string | null, inspection: '1000' as string | null };
+    const pass = () => pollWechatHistory(checkpoint, async (cursor, direction) => {
+      directions.push(direction);
+      const next = String(Number(cursor) + (direction === 'newer' ? 1 : -1));
+      return { latestCursor: next, nextCursor: next };
+    }, progress => { checkpoint = progress; });
+    await pass();
+    expect(directions).toHaveLength(200);
+    expect(directions.slice(-4)).toEqual(['older', 'older', 'older', 'older']);
+    expect(checkpoint).toEqual({ latest: '2196', inspection: '996' });
+    directions.length = 0; await pass();
+    expect(directions).toHaveLength(200);
+    expect(checkpoint).toEqual({ latest: '2392', inspection: '992' });
   });
 });

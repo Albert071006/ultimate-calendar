@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { BridgeHealth, BridgeOptions } from './bridge';
 import type { CaptureBridge, CaptureBridgeFactory } from './service';
 import { readWechatMediaLocation } from './wechat-media';
+import { reapWechatSessions, reserveWechatSession } from './wechat-session';
 import { AttachmentDownloadError } from './download';
 
 export interface WechatReaderRuntime {
@@ -13,10 +14,11 @@ export interface WechatReaderRuntime {
   worker: string;
   workdir: string;
   requestTimeoutMs?: number;
+  shutdownGraceMs?: number;
 }
 const identitySchema = z.object({ accountId: z.string().min(8).max(1024).startsWith('wechat:'), nickname: z.string().max(200).default('') });
 const groupsSchema = z.array(z.object({ id: z.string().min(1).max(1024).endsWith('@chatroom'), name: z.string().max(1000) })).max(10000);
-const historySchema = z.object({ messages: z.array(z.record(z.string(), z.unknown())).max(100), nextCursor: z.string().max(2000).nullable(), complete: z.literal(false) });
+const historySchema = z.object({ messages: z.array(z.record(z.string(), z.unknown())).max(100), nextCursor: z.string().max(2000).nullable(), latestCursor: z.string().max(2000).nullable().optional(), complete: z.literal(false) });
 const mediaSchema = z.object({ status: z.literal('ready'), path: z.string().max(4096), name: z.string().min(1).max(1000), size: z.number().int().min(1).max(25 * 1024 * 1024), sha256: z.string().regex(/^[a-f0-9]{64}$/) });
 const pendingMediaErrors = new Map([
   ['NOT_DOWNLOADED', '未找到与消息匹配的完整附件，请在电脑微信中打开或下载原件'],
@@ -35,6 +37,7 @@ type Pending = { resolve(value: unknown): void; reject(reason: Error): void; tim
 export function createWechatBridgeFactory(runtime: WechatReaderRuntime): CaptureBridgeFactory {
   return (options: BridgeOptions): CaptureBridge => {
     let child: ChildProcessWithoutNullStreams | null = null;
+    let sessionPath: string | null = null;
     let generation = 0, active = false, buffer = '';
     let accountId: string | null = options.expectedAccountId ?? null;
     let health: BridgeHealth = { state: 'stopped', connected: false, online: false, accountId: null, maskedAccount: null, nickname: null, lastEventAt: null, error: null };
@@ -43,14 +46,18 @@ export function createWechatBridgeFactory(runtime: WechatReaderRuntime): Capture
     const publish = (next: Partial<BridgeHealth>) => { health = { ...health, ...next }; options.onHealth?.({ ...health }); };
     function shutdown() {
       ++generation; active = false; buffer = ''; sources.clear();
-      const workerProcess = child; child = null;
+      const workerProcess = child; child = null; sessionPath = null;
       for (const request of pending.values()) { clearTimeout(request.timer); request.reject(Error('微信只读采集连接已停止')); }
       pending.clear();
       if (workerProcess) {
         // EOF lets the reader's finally remove its private decrypted cache on Windows.
         workerProcess.stdin.end();
-        const deadline = setTimeout(() => { if (workerProcess.exitCode === null) workerProcess.kill(); }, 5000);
-        deadline.unref(); workerProcess.once('exit', () => clearTimeout(deadline));
+        if (workerProcess.exitCode === null && workerProcess.signalCode === null) {
+          const deadline = setTimeout(() => {
+            if (workerProcess.exitCode === null && workerProcess.signalCode === null) workerProcess.kill('SIGKILL');
+          }, runtime.shutdownGraceMs ?? 5000);
+          deadline.unref(); workerProcess.once('close', () => clearTimeout(deadline));
+        }
       }
     }
     function failed(message = '微信只读读取失败，请确认微信已登录后重新连接') {
@@ -94,14 +101,16 @@ export function createWechatBridgeFactory(runtime: WechatReaderRuntime): Capture
       return true;
     }
     async function media(kind: 'image' | 'file', groupId: string, messageId: string, locatorId: string) {
+      const directory = sessionPath;
       const bound = await verifyIdentity();
       const source = sources.get(JSON.stringify([groupId, messageId]));
       if (!options.isGroupSelected(bound, groupId) || !(kind === 'image' ? source?.images : source?.files)?.has(locatorId)) throw new AttachmentDownloadError('微信附件不属于已授权的群消息');
       const result = mediaSchema.parse(await rpc('media', { groupId, messageId, kind, locatorId }));
       if (!active || !health.online || !options.isGroupSelected(bound, groupId)) throw new AttachmentDownloadError('微信群已停止采集，未读取附件');
       try {
-        const location = await readWechatMediaLocation(runtime.workdir, result);
-        if (!active || !health.online || !options.isGroupSelected(bound, groupId)) throw Error();
+        if (!directory || sessionPath !== directory) throw Error();
+        const location = await readWechatMediaLocation(directory, result);
+        if (sessionPath !== directory || !active || !health.online || !options.isGroupSelected(bound, groupId)) throw Error();
         return location;
       } catch { throw new AttachmentDownloadError('微信附件缓存校验未通过，未读取文件'); }
     }
@@ -115,8 +124,17 @@ export function createWechatBridgeFactory(runtime: WechatReaderRuntime): Capture
         }
         const currentGeneration = generation;
         try {
-          child = spawn(runtime.python, [runtime.worker, '--workdir', runtime.workdir], { windowsHide: true, shell: false, stdio: 'pipe', env: { ...process.env, PYTHONUTF8: '1', PYTHONNOUSERSITE: '1' } });
+          const session = reserveWechatSession(runtime.workdir);
+          const sweep = () => reapWechatSessions(runtime.workdir).catch(() => {});
+          try {
+            await sweep();
+            if (!active || currentGeneration !== generation) { await session.finish(); return { ...health }; }
+            child = spawn(runtime.python, [runtime.worker, '--workdir', session.path, '--cache-root', runtime.workdir], { windowsHide: true, shell: false, stdio: 'pipe', env: { ...process.env, PYTHONUTF8: '1', PYTHONNOUSERSITE: '1' } });
+          } catch (error) { await session.finish(); throw error; }
           const workerProcess = child;
+          sessionPath = session.path;
+          // 'close' follows process termination and drained stdio, including a forced kill.
+          workerProcess.once('close', () => { void session.finish().catch(() => {}).then(sweep); });
           workerProcess.stdout.setEncoding('utf8');
           workerProcess.stdout.on('data', (chunk: string) => {
             if (!active || currentGeneration !== generation) return;
@@ -157,8 +175,9 @@ export function createWechatBridgeFactory(runtime: WechatReaderRuntime): Capture
           workerProcess.stderr.on('data', () => {});
           workerProcess.on('error', () => { if (active && currentGeneration === generation) failed('微信只读组件未能启动，请检查本机运行环境'); });
           workerProcess.on('exit', () => { if (active && currentGeneration === generation) failed('微信只读组件已退出，请确认微信已登录后重新连接'); });
+          session.recordWorker(workerProcess.pid);
           await verifyIdentity();
-        } catch { if (active) failed(); }
+        } catch { if (active && currentGeneration === generation) failed(); }
         return { ...health };
       },
       stop() { shutdown(); publish({ state: 'stopped', online: false, connected: false, error: null }); },
@@ -169,10 +188,10 @@ export function createWechatBridgeFactory(runtime: WechatReaderRuntime): Capture
         if (new Set(result.map(group => group.id)).size !== result.length) throw Error('微信群标识重复');
         return result;
       },
-      async history(groupId, cursor = null, count = 100) {
+      async history(groupId, cursor = null, count = 100, window) {
         const bound = await verifyIdentity();
         if (!groupId.endsWith('@chatroom') || !options.isGroupSelected(bound, groupId)) throw Error('该微信群未获准采集');
-        const result = historySchema.parse(await rpc('history', { groupId, cursor, limit: Math.min(100, Math.max(1, count)) }));
+        const result = historySchema.parse(await rpc('history', { groupId, cursor, ...window, limit: Math.min(100, Math.max(1, count)) }));
         if (!active || !health.online || !options.isGroupSelected(bound, groupId)) throw Error('该微信群已停止采集');
         if (result.messages.some(message => message.group_id !== groupId || message.message_type === 'private')) throw Error('微信返回消息不属于所选群');
         for (const message of result.messages) rememberMessage({ ...message, self_id: bound });

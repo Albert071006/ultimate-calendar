@@ -29,17 +29,18 @@ class MediaError(Exception):
         self.code = code
 
 
-def parse_xml(text):
+def parse_xml(text, *, extract_message=True):
     if not isinstance(text, str) or len(text) > 990000 or '<!DOCTYPE' in text.upper() or '<!ENTITY' in text.upper():
         return None
     candidate = text.strip()
     # Group messages can prepend sender identifiers or a short container prefix
     # to the complete <msg> document. The file kind still requires appmsg/type=6.
     # Refuse declarations/entities anywhere, including outside the extracted XML.
-    start = re.search(r'<msg(?:\s[^<>]*|)>', candidate)
-    end = candidate.rfind('</msg>')
-    if start and start.start() <= 512 and end >= start.end():
-        candidate = candidate[start.start():end + len('</msg>')]
+    if extract_message:
+        start = re.search(r'<msg(?:\s[^<>]*|)>', candidate)
+        end = candidate.rfind('</msg>')
+        if start and start.start() <= 512 and end >= start.end():
+            candidate = candidate[start.start():end + len('</msg>')]
     try:
         return ET.fromstring(candidate)
     except ET.ParseError:

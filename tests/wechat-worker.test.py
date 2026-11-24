@@ -1,6 +1,7 @@
 """Offline tests: synthetic SQLite shards only; never loads the WeChat vendor reader."""
 import base64
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -8,7 +9,7 @@ import sqlite3
 import tempfile
 import types
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 spec = importlib.util.spec_from_file_location(
@@ -82,6 +83,25 @@ class PaginationTests(unittest.TestCase):
         newest, _ = self.page()
         self.assertEqual(self.key(newest[0]), (11, 'message_1', 4))
 
+    def test_forward_catchup_and_rotating_window_inspect_different_keys(self):
+        head, _ = self.page(limit=1)
+        latest = self.key(head[0])
+        # Same-sequence arrivals on another shard retain their deterministic ordering.
+        self.a.execute('INSERT INTO Msg_fixture VALUES (4,1,7,1800000001,?,NULL,NULL,NULL,5104,11)', ('fresh',))
+        self.b.execute('INSERT INTO Msg_fixture VALUES (4,1,7,1800000001,?,NULL,NULL,NULL,5204,11)', ('fresh',))
+        self.b.execute('INSERT INTO Msg_fixture VALUES (5,1,7,1800000000,?,NULL,NULL,NULL,5205,9)', ('delayed',))
+        self.b.execute('INSERT INTO Msg_fixture VALUES (6,1,7,1600000000,?,NULL,NULL,NULL,5206,11)', ('outside window',))
+        read_new = lambda key: worker.strict_rows(self.shards.tables(), key, 1, self.shards.label, 'newer', 1800000000)
+        first, more = read_new(latest)
+        self.assertTrue(more)
+        self.assertEqual(self.key(first[0]), (11, 'message_0', 4))
+        second, more = read_new(self.key(first[0]))
+        self.assertFalse(more)
+        self.assertEqual(self.key(second[0]), (11, 'message_1', 4))
+        around_middle, _ = worker.strict_rows(self.shards.tables(), (10, 'message_0', 2), 2,
+                                               self.shards.label, 'older', 1800000000)
+        self.assertEqual(self.key(around_middle[0]), (9, 'message_1', 5))
+
     def test_exact_full_page_is_followed_by_empty_exhaustion(self):
         rows, more = self.page(limit=6)
         self.assertEqual(len(rows), 6)
@@ -89,6 +109,26 @@ class PaginationTests(unittest.TestCase):
         following, more = self.page(self.key(rows[-1]), 6)
         self.assertEqual(following, [])
         self.assertFalse(more)
+
+    def test_history_reply_distinguishes_newest_key_from_exhausted_next_page(self):
+        reader = worker.Reader.__new__(worker.Reader)
+        reader.db = FakeDB()
+        reader.db._shard_label = self.shards.label
+        reader.db._shard_maps = lambda tables: {}
+        reader.db._run_msg_query = lambda group, query: query(self.shards.tables())
+        reader.groups, reader.names = {'fixture@chatroom': '合成群'}, {}
+        account = 'wechat:wxid_fictional'
+        reader.verify = Mock(return_value=account)
+        request = {'action': 'history', 'accountId': account, 'groupId': 'fixture@chatroom', 'limit': 6}
+        page = reader.handle(request)
+        self.assertIsNone(page['nextCursor'])
+        self.assertFalse(page['complete'])
+        self.assertEqual(worker.parse_cursor(page['latestCursor']), (10, 'message_1', 2))
+        self.b.execute('INSERT INTO Msg_fixture VALUES (5,1,7,1800000000,?,NULL,NULL,NULL,5305,11)', ('fresh',))
+        fresh = reader.handle({**request, 'direction': 'newer', 'cursor': page['latestCursor'], 'since': 1800000000})
+        self.assertEqual([message['message_id'] for message in fresh['messages']], ['s:5305'])
+        self.assertIsNone(fresh['nextCursor'])
+        self.assertEqual(worker.parse_cursor(fresh['latestCursor']), (11, 'message_1', 5))
 
     def test_missing_shard_table_fails_instead_of_returning_partial_history(self):
         self.b.execute('DROP TABLE Msg_fixture')
@@ -157,7 +197,30 @@ class NormalizationTests(unittest.TestCase):
     def test_mentions_use_explicit_source_ids_and_all_marker(self):
         row = {**self.row(), 'source': '<msgsource><atuserlist>wxid_fictional,notify@all</atuserlist></msgsource>'}
         result = self.normalize(row)
-        self.assertEqual([segment['data']['wechat'] for segment in result['message'][1:]], ['wechat:wxid_fictional', 'all'])
+        self.assertEqual([segment['data']['wechat'] for segment in result['message'] if segment['type'] == 'at'], ['wechat:wxid_fictional', 'all'])
+        self.assertEqual(result['message'][-1]['data'], {'audience': 'all', 'truncated': False})
+
+    def test_long_wechat_mentions_classify_the_tail_without_exporting_the_roster(self):
+        first = ['wxid_other_' + str(i) for i in range(105)]
+        for tail, expected in [(['wxid_fictional'], 'self'), (['notify@all'], 'all'),
+                               (['wxid_fictional', 'notify@all'], 'all'), (['wxid_another'], 'others'),
+                               (['unrecognized recipient'], 'unknown')]:
+            with self.subTest(expected=expected, tail=tail):
+                xml = '<msgsource><atuserlist>' + ','.join(first + tail) + '</atuserlist></msgsource>'
+                result = self.normalize({**self.row(), 'source': xml.encode('utf-8')})
+                self.assertEqual(result['message'][1:], [{'type': 'wechat_mentions',
+                                  'data': {'audience': expected, 'truncated': True}}])
+
+    def test_complete_list_at_the_old_limit_and_unreadable_source(self):
+        ids = ['wxid_other_' + str(i) for i in range(100)]
+        xml = '<msgsource><atuserlist>' + ','.join(ids) + '</atuserlist></msgsource>'
+        segments = self.normalize({**self.row(), 'source': xml})['message']
+        self.assertEqual(sum(s['type'] == 'at' for s in segments), 100)
+        self.assertEqual(segments[-1]['data'], {'audience': 'others', 'truncated': False})
+        malformed = self.normalize({**self.row(), 'source': '<msgsource><atuserlist>'})['message']
+        self.assertEqual(malformed[-1]['data']['audience'], 'unknown')
+        nested = '<msgsource><atuserlist>wxid_other</atuserlist><refermsg><msg><msgsource><atuserlist>notify@all</atuserlist></msgsource></msg></refermsg></msgsource>'
+        self.assertEqual(self.normalize({**self.row(), 'source': nested})['message'][-1]['data']['audience'], 'others')
 
     def test_media_has_opaque_locator_and_raw_xml_is_not_displayed(self):
         row = {**self.row(), 'local_type': 3, 'message_content': '<msg><img aeskey="not-a-real-secret"/></msg>'}
@@ -260,6 +323,18 @@ class BoundDatabaseTests(unittest.TestCase):
             self.reader.handle({'id': 'synthetic', 'action': 'groups', 'accountId': 'wechat:wxid_fictional'})
         self.assertEqual(caught.exception.code, 'IDENTITY_UNAVAILABLE')
         self.reader.refresh_groups.assert_not_called()
+
+
+class SessionStartupTests(unittest.TestCase):
+    def test_eof_before_parent_registers_worker_does_not_initialize_cache(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(worker, 'Reader') as reader, \
+                patch.object(worker.sys, 'argv', ['worker.py', '--workdir', directory]), \
+                patch.object(worker.sys, 'stdin', types.SimpleNamespace(buffer=io.BytesIO())), \
+                patch.object(worker.sys, 'stdout', Mock()):
+            worker.main()
+            reader.assert_not_called()
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
 
 class RequestTests(unittest.TestCase):

@@ -105,7 +105,7 @@ describe('capture analysis and durable candidate application', () => {
       { ...plan.units[0]!, id: 'second-batch-image', messageId: 'image-message', text: '', imageDataUrl: 'data:image/png;base64,c3ludGhldGlj' },
     ];
     const context = [{ id: 'context-only-source', sentAt: units[0]!.sentAt, text: '合成前文，仅作背景' }];
-    const second = batchMessages(units, context, [], ['合成附件未完整解析'], { campus: '合成南校区' });
+    const second = batchMessages(units, context, [], [{ kind: 'attachment-incomplete', messageId: units[1]!.messageId, attachmentId: 'synthetic-file' }], { campus: '合成南校区' });
     expect(second[0]).toEqual(first[0]);
     expect(second[0]!.content).toContain('当前允许来源只取 allowedSourceIds');
     expect(second[0]!.content).not.toContain(plan.units[0]!.id);
@@ -114,9 +114,10 @@ describe('capture analysis and durable candidate application', () => {
     if (typeof content === 'string' || content[0]?.type !== 'text') throw Error('Expected capture evidence parts');
     expect(JSON.parse(content[0].text)).toMatchObject({
       allowedSourceIds: ['second-batch-text', 'second-batch-image'],
-      units: [{ id: units[0]!.id, sentAt: units[0]!.sentAt, text: units[0]!.text, hasImage: false }, { id: units[1]!.id, hasImage: true }],
+      units: [{ id: units[0]!.id, sentAt: units[0]!.sentAt, text: units[0]!.text, hasImage: false, warnings: [] },
+        { id: units[1]!.id, hasImage: true, warnings: ['该来源的附件未完整读取，请在本机核对'] }],
       context: [{ ...context[0], contextOnly: true }],
-      warnings: ['合成附件未完整解析'], userProfile: { campus: '合成南校区' },
+      userProfile: { campus: '合成南校区' },
     });
     expect(content.at(-1)).toEqual({ type: 'image_url', image_url: { url: units[1]!.imageDataUrl } });
   });
@@ -171,16 +172,18 @@ describe('capture analysis and durable candidate application', () => {
   });
   it('reuses a legacy mixed-recipient paid checkpoint without regrouping or charging again and suppresses its other-recipient result', async () => {
     const { store, repository, batch, message: ordinary } = setup();
-    const other = store.ingest([{ accountId: '100', groupId: '200', messageId: 'legacy-other', sentAt: '2026-10-23T12:00:00+08:00', text: '@群成员 明天18点提交报告', segments: [{ type: 'at', data: { qq: '999' } }] }]).ids[0]!;
+    const oldWarning = '合成旧文件.pdf：附件未完整解析，请手动查看';
+    const other = store.ingest([{ accountId: '100', groupId: '200', messageId: 'legacy-other', sentAt: '2026-10-23T12:00:00+08:00', text: '@群成员 明天18点提交报告',
+      segments: [{ type: 'at', data: { qq: '999' } }], attachments: [{ kind: 'file', name: '合成旧文件.pdf', locator: {} }] }]).ids[0]!;
     const saved = batch(), prepared = prepareAnalysis(store, saved, { deduplicateAttachments: false, documentGrouping: false, passiveQuestionFilter: false, noticeFirst: false, attachmentContext: false, sharedCards: false });
     const units = prepared.units.map(({ text, imageDataUrl, ...unit }) => ({ ...unit, textHash: hashInput(text), imageHash: imageDataUrl ? hashInput(imageDataUrl) : null }));
     const profile = locationProfile(repository.snapshot().settings);
     const profileFingerprint = profile.campus || profile.locationContext ? { userProfile: profile } : {};
     const originalGroupKey = hashInput(prepared.units.map(unit => unit.id));
     const oldResult = {
-      ...prepared, units,
-      planFingerprint: hashInput({ version: ANALYSIS_VERSION, model: repository.snapshot().settings.model, ...profileFingerprint, units, context: prepared.context, warnings: prepared.warnings }),
-      completed: [{ key: originalGroupKey, value: { candidates: prepared.units.map(unit => candidate(unit.id)) } }], final: false,
+      ...prepared, units, warnings: [oldWarning],
+      planFingerprint: hashInput({ version: ANALYSIS_VERSION, model: repository.snapshot().settings.model, ...profileFingerprint, units, context: prepared.context, warnings: [oldWarning] }),
+      completed: [{ key: originalGroupKey, value: { candidates: prepared.units.map(unit => ({ ...candidate(unit.id), uncertainties: [oldWarning] })) } }], final: false,
     };
     store.startAttempt(saved.id, 'legacy-paid-request'); store.checkpointResult(saved.id, oldResult);
     let calls = 0;
@@ -189,6 +192,7 @@ describe('capture analysis and durable candidate application', () => {
     const snapshot = repository.snapshot();
     expect(snapshot.candidates).toHaveLength(1);
     expect(snapshot.sources.map(source => source.captureRef?.messageId)).toEqual([ordinary]);
+    expect(snapshot.candidates[0]!.uncertainties).not.toContain(oldWarning);
     expect(snapshot.sources.some(source => source.captureRef?.messageId === other)).toBe(false);
     applyCaptureResult(store, repository, store.batch(saved.id)!);
     expect(repository.snapshot().candidates).toHaveLength(1);

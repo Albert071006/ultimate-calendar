@@ -16,14 +16,15 @@ export async function readWechatMediaLocation(workdir: string, result: { path: s
   if (!fileName || fileName.length > 512 || /[\\/:*?"<>|\u0000-\u001f\u007f]/.test(fileName) || !/\.[A-Za-z0-9]{1,16}$/.test(fileName)) throw Error('微信附件文件名无效');
   const parts = inside.split(sep);
   if (isAbsolute(inside) || parts.length !== 3 || !/^reader-[A-Za-z0-9_-]+$/.test(parts[0]!) || parts[1] !== 'media' || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9]{1,16}$/.test(parts[2]!)) throw Error('微信附件不在受限缓存目录中');
-  // Resolve and inspect each ancestor, including the configured root. Windows junctions
-  // are symlinks to lstat; realpath equivalence rejects redirected/reparse paths as well.
+  // Resolve each component through the authorized session root. Its realpath
+  // also detects redirection above it without opening unrelated profile directories.
   let current = target;
   for (;;) {
     const info = await lstat(current);
     if (info.isSymbolicLink() || normalized(await realpath(current)) !== normalized(current)) throw Error('微信附件缓存含链接或重定向');
     if (current === target ? !info.isFile() : !info.isDirectory()) throw Error('微信附件缓存类型无效');
-    const parent = resolve(current, '..'); if (parent === current) break; current = parent;
+    if (!relative(root, current)) break;
+    current = resolve(current, '..');
   }
   const file = await open(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {

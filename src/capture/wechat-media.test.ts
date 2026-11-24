@@ -25,7 +25,7 @@ const metadata = (path: string, bytes: Buffer) => ({ path, size: bytes.length, s
 const account = 'wechat:wxid_media_test', group = 'media@chatroom';
 
 async function pipeline(errorCode?: string, oldPaidPlaceholder = false, onlyImageFails = false, imageAgeMs = 60_000) {
-  const root = directory(), workdir = join(root, 'cache'), media = join(workdir, 'reader-synthetic', 'media'); mkdirSync(media, { recursive: true });
+  const root = directory(), workdir = join(root, 'cache'), media = join(root, 'fixtures'); mkdirSync(media);
   const imagePath = join(media, 'image.png'), docPath = join(media, 'document.docx');
   const docx = fixtureDocx(); writeFileSync(imagePath, PIXEL_PNG); writeFileSync(docPath, docx);
   const responses = { image: { ...metadata(imagePath, PIXEL_PNG), name: '图片通知.png', status: 'ready' }, file: { ...metadata(docPath, docx), name: '合成通知.docx', status: 'ready' } };
@@ -33,8 +33,14 @@ async function pipeline(errorCode?: string, oldPaidPlaceholder = false, onlyImag
   if (!errorCode) writeFileSync(ready, 'ready');
   const now = Date.now(), sentAt = instantAt(now - 60_000), imageSentAt = instantAt(now - imageAgeMs);
   const mediaReads = join(root, 'media-reads.txt');
-  writeFileSync(worker, `import { createInterface } from 'node:readline'; import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+  writeFileSync(worker, `import { createInterface } from 'node:readline'; import { appendFileSync, copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 const results = ${JSON.stringify(responses)};
+const sessionMedia = join(process.argv[process.argv.indexOf('--workdir') + 1], 'reader-synthetic', 'media');
+mkdirSync(sessionMedia, { recursive: true });
+for (const result of Object.values(results)) {
+  const target = join(sessionMedia, basename(result.path)); copyFileSync(result.path, target); result.path = target;
+}
 const lines = createInterface({input:process.stdin});
 lines.on('line', line => { const q=JSON.parse(line); let data;
  if(q.action==='status') data={accountId:${JSON.stringify(account)},nickname:'合成微信'};

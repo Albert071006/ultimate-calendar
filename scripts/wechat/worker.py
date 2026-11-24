@@ -49,23 +49,32 @@ def parse_cursor(value):
     except (ValueError, TypeError, UnicodeError):
         raise ReaderError('VALIDATION', '微信历史游标无效') from None
 
-def strict_rows(tables, cursor, limit, shard_label):
+def strict_rows(tables, cursor, limit, shard_label, direction='older', since=None):
     """Bounded keyset pagination; never swallow a missing/unreadable shard."""
+    if direction not in ('older', 'newer') or (direction == 'newer' and cursor is None):
+        raise ReaderError('VALIDATION', '微信历史分页方向无效')
+    if since is not None and (type(since) is not int or not 0 <= since <= 253370000000):
+        raise ReaderError('VALIDATION', '微信历史时间窗口无效')
+    compare, order = ('<', 'DESC') if direction == 'older' else ('>', 'ASC')
     rows = []
     for conn, table in tables:
         if not re.fullmatch(r'[A-Za-z0-9_]+', table):
             raise ReaderError('STORAGE', '微信消息表格式不支持')
         shard = shard_label(conn)
-        where, params = '', []
+        conditions, params = [], []
         if cursor:
             seq, before_shard, local_id = cursor
-            where = 'WHERE sort_seq < ? OR (sort_seq = ? AND (? < ? OR (? = ? AND local_id < ?)))'
+            conditions.append(f'(sort_seq {compare} ? OR (sort_seq = ? AND (? {compare} ? OR (? = ? AND local_id {compare} ?))))')
             params = [seq, seq, shard, before_shard, shard, before_shard, local_id]
+        if since is not None:
+            conditions.append('create_time >= ?')
+            params.append(since)
+        where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
         rows.extend(conn.execute(
             'SELECT local_id,local_type,real_sender_id,create_time,message_content,source,packed_info_data,compress_content,server_id,sort_seq,? AS shard '
-            f'FROM "{table}" {where} ORDER BY sort_seq DESC,local_id DESC LIMIT ?',
+            f'FROM "{table}" {where} ORDER BY sort_seq {order},local_id {order} LIMIT ?',
             [shard, *params, limit + 1]).fetchall())
-    rows.sort(key=lambda row: (row['sort_seq'], row['shard'], row['local_id']), reverse=True)
+    rows.sort(key=lambda row: (row['sort_seq'], row['shard'], row['local_id']), reverse=direction == 'older')
     return rows[:limit], len(rows) > limit
 
 def xml_root(value):
@@ -92,6 +101,55 @@ def parse_media_locator(value):
         raise ReaderError('VALIDATION', '微信附件来源标识无效') from None
 
 
+def mention_segments(source, self_wxid):
+    if not source:
+        return []
+    if isinstance(source, bytes):
+        source = source.decode('utf-8', errors='replace')
+    root = local_media.parse_xml(source, extract_message=False)
+    unknown = root is None
+    self_mentioned = all_mentioned = False
+    count, segments = 0, []
+    # The source column describes the outer message. Ignore mentions belonging
+    # to nested quotes or forwards, even when their lists are much longer.
+    lists = [] if root is None else root.findall('atuserlist') + root.findall('msgsource/atuserlist')
+    for node in lists:
+        if len(node):
+            unknown = True
+        for item in re.finditer(r'[^,]+', node.text or ''):
+            wxid = item.group().strip()
+            if not wxid:
+                continue
+            count += 1
+            if wxid == 'notify@all':
+                all_mentioned = True
+                target = 'all'
+            elif re.fullmatch(r'[A-Za-z0-9_.-]{1,180}', wxid):
+                self_mentioned |= wxid == self_wxid
+                target = 'wechat:' + wxid
+            else:
+                unknown = True
+                continue
+            if count <= 100:
+                segments.append({'type': 'at', 'data': {'wechat': target}})
+    if not count and not unknown:
+        return []
+    if all_mentioned:
+        audience = 'all'
+    elif self_mentioned:
+        audience = 'self'
+    elif unknown or not self_wxid:
+        audience = 'unknown'
+    else:
+        audience = 'others'
+    # Bound the wire payload, never the membership decision. Only the result
+    # relative to this bound account is needed for a long, folded mention list.
+    if count > 100:
+        segments = []
+    segments.append({'type': 'wechat_mentions', 'data': {'audience': audience, 'truncated': count > 100}})
+    return segments
+
+
 def normalize_row(db, row, maps, group_id, names):
     message = db._msg_row_to_dict(row, maps)
     sender = message.get('sender_username') or ''
@@ -113,14 +171,7 @@ def normalize_row(db, row, maps, group_id, names):
     segments = [{'type': 'text', 'data': {'text': content[:MAX_TEXT]}}] if content else []
     if attachment:
         segments.append({'type': attachment['kind'], 'data': {'file': media_locator(row), 'name': attachment['name'], 'size': attachment['size']}})
-    source = row['source']
-    if isinstance(source, bytes):
-        source = source.decode('utf-8', errors='replace')
-    root = xml_root(source)
-    if root is not None:
-        for wxid in (root.findtext('.//atuserlist') or '').split(',')[:100]:
-            if re.fullmatch(r'[A-Za-z0-9_@.-]{1,180}', wxid):
-                segments.append({'type': 'at', 'data': {'wechat': 'all' if wxid == 'notify@all' else 'wechat:' + wxid}})
+    segments.extend(mention_segments(row['source'], db.wxid))
     return {'message_type': 'group', 'group_id': group_id, 'message_id': message_identity(row),
             'time': row['create_time'], 'user_id': 'wechat:' + sender if sender else '',
             'sender': {'nickname': names.get(sender, '')}, 'message': segments}
@@ -239,7 +290,7 @@ class Reader:
             conn.close()
 
     def handle(self, request):
-        if not isinstance(request, dict) or set(request) - {'id', 'action', 'accountId', 'groupId', 'cursor', 'limit', 'messageId', 'locatorId', 'kind'}:
+        if not isinstance(request, dict) or set(request) - {'id', 'action', 'accountId', 'groupId', 'cursor', 'direction', 'since', 'limit', 'messageId', 'locatorId', 'kind'}:
             raise ReaderError('VALIDATION', '微信采集请求格式无效')
         action = request.get('action')
         if action not in ('status', 'groups', 'history', 'media'):
@@ -285,23 +336,27 @@ class Reader:
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ReaderError('VALIDATION', '微信消息分页大小无效')
         cursor = parse_cursor(request.get('cursor'))
+        direction = request.get('direction', 'older')
         def query(tables):
-            rows, more = strict_rows(tables, cursor, limit, self.db._shard_label)
+            rows, more = strict_rows(tables, cursor, limit, self.db._shard_label, direction, request.get('since'))
             maps = self.db._shard_maps(tables)
             messages = [normalize_row(self.db, row, maps, group, self.names) for row in rows]
-            # Continue once after a nonempty final page; local exhaustion cannot prove cloud completeness.
-            next_cursor = encode_cursor((rows[-1]['sort_seq'], rows[-1]['shard'], rows[-1]['local_id'])) if rows else None
-            return {'messages': messages, 'nextCursor': next_cursor, 'complete': False}
+            def position(row):
+                return encode_cursor((row['sort_seq'], row['shard'], row['local_id']))
+            # Local exhaustion ends this sweep only; another device may sync older rows later.
+            return {'messages': messages, 'nextCursor': position(rows[-1]) if more else None,
+                    'latestCursor': position(rows[0 if direction == 'older' else -1]) if rows else None,
+                    'complete': False}
         return self.db._run_msg_query(group, query) or {'messages': [], 'nextCursor': None, 'complete': False}
 
 def main():
     sys.stdout.reconfigure(encoding='utf-8', errors='strict')
     parser = argparse.ArgumentParser()
     parser.add_argument('--workdir', required=True)
+    parser.add_argument('--cache-root')
     args = parser.parse_args()
     reader = None
     try:
-        reader = Reader(Path(args.workdir).resolve())
         while True:
             line = sys.stdin.buffer.readline(MAX_LINE + 1)
             if not line:
@@ -315,6 +370,16 @@ def main():
                 if not isinstance(request_id, (str, int)) or isinstance(request_id, bool):
                     raise ReaderError('VALIDATION', '缺少请求标识')
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    # The parent persists both PIDs and the directory identity before
+                    # sending the first RPC. EOF during startup creates no plaintext.
+                    if reader is None:
+                        workdir = Path(args.workdir).resolve(strict=bool(args.cache_root))
+                        if args.cache_root:
+                            root = Path(args.cache_root).resolve(strict=True)
+                            if workdir.parent != root or not re.fullmatch(r'session-[0-9a-f-]{36}', workdir.name):
+                                raise ReaderError('PERMISSION', '微信临时会话目录无效')
+                            protect_directory(root)
+                        reader = Reader(workdir)
                     data = reader.handle(request)
                 response = {'id': request_id, 'ok': True, 'data': data}
             except ReaderError as error:
