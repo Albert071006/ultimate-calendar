@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
 import { createPushStore, type PushStore } from './push-store';
 import type { Reminder } from '../shared/contracts';
 import type { PushSubscriptionInput } from '../shared/push';
@@ -15,6 +17,55 @@ function subscription(token: string): PushSubscriptionInput { return { endpoint:
 const reminder: Reminder = { id: 'block:b:2030-01-02T10:00:00+08:00:2030-01-02T10:00:00+08:00', refId: 'b', refKind: 'block', title: '合成活动', dueAt: now, scheduledAt: now, dateOnly: false, message: '即将到期或开始' };
 
 describe('persistent push store', () => {
+  it.each([true, false])('preserves old receipt ownership when the same endpoint is paired again (already swept: %s)', swept => {
+    const root = mkdtempSync(join(tmpdir(), 'uc-push-repair-')); roots.push(root);
+    const file = join(root, 'notifications.sqlite'), store = open(file), endpoint = subscription('same-browser');
+    const old = store.upsertSubscription('old', endpoint, { showDetails: true }, created);
+    const browserId = createHash('sha256').update(endpoint.endpoint).digest('hex');
+    expect(old.id).toBe(browserId);
+    if (swept) {
+      // Before session-aware delivery, existing installed servers used the endpoint hash as their row key too.
+      const legacy = new DatabaseSync(file);
+      try { legacy.prepare('UPDATE push_subscriptions SET id=? WHERE device_id=?').run(browserId, 'old'); } finally { legacy.close(); }
+    }
+    const oldRowId = store.getSubscription('old', browserId)!.rowId;
+    const reminders = ['accepted', 'retry', 'leased', 'pending'].map(id => ({ ...reminder, id }));
+    store.reconcile(reminders.slice(0, 3), now, 900_000);
+    const claimed = store.claimDue(now);
+    for (const delivery of claimed) {
+      if (delivery.reminder.id === 'accepted') store.settle(delivery.id, delivery.leaseToken, { kind: 'accepted' });
+      if (delivery.reminder.id === 'retry') store.settle(delivery.id, delivery.leaseToken, { kind: 'retry', nextAttemptAt: later, reason: 'network' });
+    }
+    store.reconcile(reminders, now, 900_000);
+    expect(() => store.upsertSubscription('replacement', endpoint, {}, later, () => Date.parse(later) + 1000)).toThrow('另一台设备');
+    if (swept) store.expireDevice('old');
+    const replacement = store.upsertSubscription('replacement', endpoint, {}, later, () => null);
+    expect(replacement).toMatchObject({ deviceId: 'replacement', active: true, showDetails: false, createdAt: later });
+    expect(replacement.id).toBe(browserId);
+    expect(store.listSubscriptions('replacement').map(item => item.id)).toEqual([browserId]);
+    expect(store.getSubscription('old', old.id)).toBeNull();
+    const current = store.getSubscription('replacement', browserId)!;
+    expect(current.subscription).toEqual(endpoint);
+    expect(current.rowId).not.toBe(oldRowId);
+    store.disableSubscription(oldRowId); // A late provider 410 for the retired binding.
+    expect(store.getSubscription('replacement', browserId)?.active).toBe(true);
+    expect(store.removeSubscription('old', browserId)).toBe(false);
+    store.reconcile(reminders, later, 900_000);
+    expect(store.claimDue(later)).toEqual([]);
+    const inspect = new DatabaseSync(file, { readOnly: true });
+    try {
+      const history = inspect.prepare('SELECT job_id,status FROM push_deliveries WHERE subscription_id=? ORDER BY job_id').all(oldRowId);
+      expect(history).toEqual([
+        { job_id: 'accepted', status: 'accepted' }, { job_id: 'leased', status: 'cancelled' },
+        { job_id: 'pending', status: 'cancelled' }, { job_id: 'retry', status: 'cancelled' },
+      ]);
+    } finally { inspect.close(); }
+    store.reconcile([{ ...reminder, id: 'new', scheduledAt: later, dueAt: later }], later, 900_000);
+    expect(store.claimDue(later).map(delivery => delivery.target.id)).toEqual([replacement.id]);
+    expect(store.removeSubscription('replacement', browserId)).toBe(true);
+    expect(store.getSubscription('replacement', browserId)).toBeNull();
+  });
+
   it('owns subscriptions by authenticated device and removes only owned records', () => {
     const store = open(); const a = store.upsertSubscription('device-a', subscription('a'), {}, created);
     expect(a.showDetails).toBe(false);

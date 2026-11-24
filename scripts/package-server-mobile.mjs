@@ -4,11 +4,12 @@ import { lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gzipSync, gunzipSync } from 'node:zlib';
+import { backendRuntimeFiles } from '../deploy/backend-files.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const limit = 128 * 1024 * 1024;
-const fixed = ['LICENSE', 'dist-server/cli.mjs', 'dist-server/backup-worker.cjs', 'deploy/server-mobile/ultimate-calendar.service', 'deploy/nginx.conf.example', 'deploy/check-health.mjs', 'docs/server-mobile-deployment.md', 'docs/windows-cloud-mode.md', 'docs/backend-operations.md', 'scripts/retain-web-assets.mjs'];
+const fixed = ['LICENSE', ...backendRuntimeFiles, 'deploy/server-mobile/ultimate-calendar.service', 'deploy/nginx.conf.example', 'deploy/check-health.mjs', 'docs/server-mobile-deployment.md', 'docs/windows-cloud-mode.md', 'docs/backend-operations.md', 'scripts/retain-web-assets.mjs'];
 const allowed = name => fixed.includes(name) || name === 'README.md'
   || /^web\/(?:index\.html|sw\.js|manifest\.webmanifest|assets\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(?:js|css|woff2?|ttf|svg|png|jpe?g|webp)|icons\/[A-Za-z0-9_-]+\.(?:png|svg)|third-party\/[A-Za-z0-9_-]+\.txt)$/.test(name);
 export function serverMobileNames(version) {

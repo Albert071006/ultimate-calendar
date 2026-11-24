@@ -18,7 +18,7 @@ import { MAX_CLOUD_EXPORT_WIRE_BYTES } from '../shared/cloud-management';
 import { MAX_AI_KEY_SYNC_BYTES } from '../shared/ai-key-sync';
 import { BackupProgressSchema } from '../shared/backup-progress';
 
-export interface RemoteHttpContext { device: RemoteDevice; csrfToken: string }
+export interface RemoteHttpContext { device: RemoteDevice; csrfToken: string; activeSessionExpiry(deviceId: string): number | null }
 export interface RemoteHttpOptions {
   service: RemoteService;
   /** Exact externally visible origin, including HTTPS proxy host and optional port. */
@@ -253,7 +253,7 @@ export function createRemoteHttpServer(options: RemoteHttpOptions) {
           sendJson(response, 200, receipt.status === 'completed'
             ? { ...receipt, result: settingsResult(receipt.method, receipt.result) } : receipt); return;
         }
-        if (await options.extension?.(request, response, session)) return;
+        if (await options.extension?.(request, response, { ...session, activeSessionExpiry: id => options.service.state.activeSessionExpiry(id) })) return;
         throw new RemoteFault(404, '接口不存在');
       }
       if (options.staticDirectory && ['GET', 'HEAD'].includes(method)) {

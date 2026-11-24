@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type {
   CourseImportResult,
   SelectedImage,
   Source,
+  SourceImport,
 } from "../../shared/contracts";
 import { displayInstant, operationId } from "../calendar-layout";
 import type { PlannerUI } from "../hooks/usePlanner";
@@ -26,42 +27,41 @@ export function ImportDialog({
     [label, setLabel] = useState(""),
     [sentAt, setSentAt] = useState(""),
     [image, setImage] = useState<SelectedImage | null>(null),
-    [saved, setSaved] = useState<Source | null>(null);
+    [saved, setSaved] = useState<{ draft: SourceImport; id: string } | null>(null);
   const [imageError, setImageError] = useState('');
   const [readingImage, setReadingImage] = useState(false);
+  const cloud = !ui.host || ui.snapshot?.keyStatus.scope === 'cloud';
+  const draft = useMemo(() => ({
+    ...(kind === 'text' ? { kind, text } : { kind, imageDataUrl: image?.imageDataUrl ?? null }),
+    label,
+    sentAt: sentAt ? `${sentAt}:00+08:00` : null,
+  }), [kind, text, image, label, sentAt]);
+  const savedId = saved?.draft === draft ? saved.id : null;
   async function selectBrowserImage(file?: File) {
     if (!file) return;
-    setReadingImage(true); setImageError(''); setImage(null); setSaved(null);
+    setReadingImage(true); setImageError(''); setImage(null);
     try { const selected = await readBrowserImage(file); setImage(selected); if (!label) setLabel(selected.label); }
     catch (error) { setImageError(error instanceof Error ? error.message : '截图读取失败。'); }
     finally { setReadingImage(false); }
   }
   async function save(analyze: boolean) {
     if (!ui.client) return;
-    const source =
-      saved ??
-      (await ui.run(() =>
-        ui.client!.importSource({
-          operationId: operationId(),
-          source: {
-            kind,
-            text,
-            label,
-            sentAt: sentAt ? `${sentAt}:00+08:00` : null,
-            imageDataUrl:
-              kind === "image" ? (image?.imageDataUrl ?? null) : null,
-          },
-        }),
-      ));
-    if (!source) return;
-    setSaved(source);
-    ui.setNotice(ui.host ? "来源已保存在本机" : "来源已由资料服务确认保存");
+    let sourceId = savedId;
+    if (!sourceId) {
+      const source = await ui.run(() =>
+        ui.client!.importSource({ operationId: operationId(), source: draft }),
+      );
+      if (!source) return;
+      sourceId = source.id;
+      setSaved({ draft, id: sourceId });
+    }
+    ui.setNotice(cloud ? "来源已保存在云端资料服务" : "来源已保存在本机");
     if (analyze) {
       const result = await ui.run(
         () =>
           ui.client!.analyzeSource({
             operationId: operationId(),
-            sourceId: source.id,
+            sourceId,
           }),
         (r) => ui.setNotice(r.message),
       );
@@ -70,26 +70,22 @@ export function ImportDialog({
   }
   return (
     <div className="editor-form">
-      {ui.host && !mobile ? <p className="hint">
-        先保存原文，再由你明确提交
-        DeepSeek。缺少发送时间时，相对日期会留待确认。
-      </p> : <p className="hint">原文先保存在云端，你点提交后才发给 DeepSeek 分析；分析完成后原文会清除。</p>}
+      <p className="hint">{cloud
+        ? '原文先保存在云端。你点提交后才发给 DeepSeek 分析，分析完成后会清理云端原文。'
+        : '原文先保存在本机。你点提交后才发给 DeepSeek 分析。'}
+        {cloud && ui.host && '桌面端也会尝试保留本机副本。'}
+        缺少发送时间时，相对日期会留待确认。
+      </p>
       <div className="tabs">
         <button
           className={kind === "text" ? "selected" : ""}
-          onClick={() => {
-            setKind("text");
-            setSaved(null);
-          }}
+          onClick={() => setKind("text")}
         >
           粘贴文字
         </button>
         <button
           className={kind === "image" ? "selected" : ""}
-          onClick={() => {
-            setKind("image");
-            setSaved(null);
-          }}
+          onClick={() => setKind("image")}
         >
           消息截图
         </button>
@@ -98,10 +94,7 @@ export function ImportDialog({
         群 / 来源标签
         <input
           value={label}
-          onChange={(e) => {
-            setLabel(e.target.value);
-            setSaved(null);
-          }}
+          onChange={(e) => setLabel(e.target.value)}
           placeholder="例如：课程通知群"
         />
       </label>
@@ -110,10 +103,7 @@ export function ImportDialog({
         <input
           type="datetime-local"
           value={sentAt}
-          onChange={(e) => {
-            setSentAt(e.target.value);
-            setSaved(null);
-          }}
+          onChange={(e) => setSentAt(e.target.value)}
         />
       </label>
       {kind === "text" ? (
@@ -123,10 +113,7 @@ export function ImportDialog({
             rows={10}
             maxLength={100000}
             value={text}
-            onChange={(e) => {
-              setText(e.target.value);
-              setSaved(null);
-            }}
+            onChange={(e) => setText(e.target.value)}
             placeholder="保留原文，便于核对行动、收益和时间。"
           />
         </label>
@@ -139,7 +126,6 @@ export function ImportDialog({
                 (selected) => {
                   if (selected) {
                     setImage(selected);
-                    setSaved(null);
                     if (!label) setLabel(selected.label);
                   }
                 },
@@ -159,7 +145,7 @@ export function ImportDialog({
           )}
         </div>
       )}
-      {saved && <p className="success">原文已保存，可在导入记录重试。</p>}
+      {savedId && <p className="success">原文已保存，可在导入记录重试。</p>}
       {!ui.snapshot?.keyStatus.configured && (
         <div className="warning">
           DeepSeek 尚未配置。你可以先保存原文。

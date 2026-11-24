@@ -38,7 +38,8 @@ export function createPushHttpExtension(options: { store: PushStore; publicKey: 
     if (path === '/api/v1/push/subscribe') {
       const input = PushSubscribeRequestSchema.parse(await readPushBody(request));
       if (input.subscription.expirationTime != null && input.subscription.expirationTime <= Date.now()) throw new RemoteFault(400, '浏览器推送订阅已过期');
-      try { sendJson(response, 200, { subscription: options.store.upsertSubscription(deviceId, input.subscription, { showDetails: input.showDetails }) }); }
+      if (context.activeSessionExpiry(deviceId) === null) throw new RemoteFault(401, '设备授权已失效，请重新配对');
+      try { sendJson(response, 200, { subscription: options.store.upsertSubscription(deviceId, input.subscription, { showDetails: input.showDetails }, nowInstant(), context.activeSessionExpiry) }); }
       catch (error) { if (error instanceof PushSubscriptionConflict) throw new RemoteFault(409, error.message); throw error; }
       return true;
     }
@@ -46,12 +47,16 @@ export function createPushHttpExtension(options: { store: PushStore; publicKey: 
     const subscription = options.store.getSubscription(deviceId, input.subscriptionId);
     if (!subscription || !subscription.active) throw new RemoteFault(404, '此设备没有有效的推送订阅');
     if (!options.send) throw new RemoteFault(503, '服务端尚未启用推送发送');
+    const sessionExpiry = context.activeSessionExpiry(deviceId);
+    if (sessionExpiry === null) { options.store.expireDevice(deviceId); throw new RemoteFault(401, '设备授权已失效，请重新配对'); }
     const at = nowInstant(); const id = `test:${randomUUID()}`;
-    const payload: PushPayload = { type: 'reminder', showDetails: false, id, title: '终极日历', body: '有一项安排需要查看', tag: 'uc-push-test', url: '/', scheduledAt: at, expiresAt: instantAt(Date.parse(at) + 60_000) };
+    const ttl = Math.min(60, Math.floor((sessionExpiry - Date.parse(at)) / 1000));
+    if (ttl <= 0) throw new RemoteFault(401, '设备授权即将到期，请先续期');
+    const payload: PushPayload = { type: 'reminder', showDetails: false, id, title: '终极日历', body: '有一项安排需要查看', tag: 'uc-push-test', url: '/', scheduledAt: at, expiresAt: instantAt(Date.parse(at) + ttl * 1000) };
     let status: number;
-    try { status = (await options.send(subscription.subscription, payload, { ttl: 60, topic: pushReminderTopic('uc-push-test') })).statusCode; }
+    try { status = (await options.send(subscription.subscription, payload, { ttl, topic: pushReminderTopic('uc-push-test') })).statusCode; }
     catch { throw new RemoteFault(503, '推送暂未发送成功，请稍后重试'); }
-    if (status === 404 || status === 410) { options.store.disableSubscription(subscription.id); throw new RemoteFault(410, '浏览器推送订阅已失效，请重新订阅'); }
+    if (status === 404 || status === 410) { options.store.disableSubscription(subscription.rowId); throw new RemoteFault(410, '浏览器推送订阅已失效，请重新订阅'); }
     if (status < 200 || status >= 300) throw new RemoteFault(503, '推送暂未发送成功，请稍后重试');
     sendJson(response, 200, { accepted: true }); return true;
   };

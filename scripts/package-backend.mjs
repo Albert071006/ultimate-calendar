@@ -3,6 +3,7 @@ import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { backendPackageFiles } from '../deploy/backend-files.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const output = resolve(root, 'release', 'backend');
@@ -10,8 +11,7 @@ const sha = value => createHash('sha256').update(value).digest('hex');
 const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
 if (!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(version)) throw Error('Invalid package version');
 // Exact allowlist: never walk the workspace, release directory, frontend or personal data.
-const names = ['LICENSE', 'dist-server/cli.mjs', 'deploy/ultimate-calendar.service', 'deploy/server.env.example', 'deploy/check-health.mjs', 'deploy/verify-release.mjs', 'deploy/install-backend.sh', 'deploy/rollback-backend.sh', 'deploy/DEPLOYMENT.md'];
-const files = names.map(path => {
+const files = backendPackageFiles.map(path => {
   const absolute = join(root, path), info = lstatSync(absolute); if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw Error(`Not a regular release input: ${path}`);
   const raw = readFileSync(absolute), content = path.startsWith('deploy/') ? Buffer.from(raw.toString('utf8').replace(/\r\n/g, '\n')) : raw;
   return { path, content, mode: path.endsWith('.sh') ? 0o755 : 0o644, sha256: sha(content), size: content.length };

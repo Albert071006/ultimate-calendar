@@ -36,7 +36,8 @@ export async function startRemoteRuntime(options: RemoteRuntimeOptions) {
     store = createPushStore(join(options.dataDirectory, 'notifications.sqlite'));
     if (options.vapidSubject) {
       transport = createWebPushTransport({ store, subject: options.vapidSubject });
-      scheduler = createPushScheduler({ snapshot: service.snapshot, store, send: transport.send, onError: options.onPushError });
+      scheduler = createPushScheduler({ snapshot: service.snapshot, store, send: transport.send,
+        activeSessionExpiry: id => service.state.activeSessionExpiry(id), onError: options.onPushError });
     }
     const pushStore = store;
     http = createRemoteHttpServer({ service, origin: options.origin, publicOrigin: options.publicOrigin, trustLoopbackProxy: options.trustLoopbackProxy, staticDirectory: options.staticDirectory,

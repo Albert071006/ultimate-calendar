@@ -10,16 +10,18 @@ import { nowInstant } from '../domain/time';
 const DeviceIdSchema = z.string().trim().min(1).max(200);
 const VapidKeysSchema = z.strictObject({ publicKey: z.string().regex(/^[A-Za-z0-9_-]{87}$/), privateKey: z.string().regex(/^[A-Za-z0-9_-]{43}$/) });
 export type VapidKeys = z.infer<typeof VapidKeysSchema>;
-export interface StoredPushSubscription extends PushSubscriptionSummary { subscription: PushSubscriptionInput }
+export interface StoredPushSubscription extends PushSubscriptionSummary { rowId: string; subscription: PushSubscriptionInput }
 export interface PushDelivery {
   id: string; reminder: Reminder; target: StoredPushSubscription; attempts: number; leaseToken: string; expiresAt: Instant;
 }
 export type DeliveryOutcome = { kind: 'accepted' } | { kind: 'retry'; nextAttemptAt: Instant; reason: string } | { kind: 'failed' | 'cancelled' | 'expired'; reason?: string };
 export interface PushStore {
-  upsertSubscription(deviceId: string, input: PushSubscriptionInput, preferences?: Partial<PushPreferences>, now?: Instant): PushSubscriptionSummary;
+  upsertSubscription(deviceId: string, input: PushSubscriptionInput, preferences?: Partial<PushPreferences>, now?: Instant, activeSessionExpiry?: (deviceId: string) => number | null): PushSubscriptionSummary;
   listSubscriptions(deviceId: string): PushSubscriptionSummary[];
   getSubscription(deviceId: string, subscriptionId: string): StoredPushSubscription | null;
   removeSubscription(deviceId: string, subscriptionId: string): boolean;
+  subscribedDeviceIds(): string[];
+  expireDevice(deviceId: string): void;
   revokeDevice(deviceId: string): void;
   getPublicVapidKey(): string | null;
   getOrCreateVapidKeys(generate: () => VapidKeys): VapidKeys;
@@ -29,13 +31,14 @@ export interface PushStore {
   currentDelivery(id: string, leaseToken: string, now: Instant): PushDelivery | null;
   settle(id: string, leaseToken: string, outcome: DeliveryOutcome): boolean;
   cancelJob(reminderId: string): void;
-  disableSubscription(subscriptionId: string): void;
+  disableSubscription(rowId: string): void;
   close(): void;
 }
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 export class PushSubscriptionConflict extends Error {}
 function summary(row: Record<string, unknown>): PushSubscriptionSummary {
-  return { id: String(row.id), deviceId: String(row.device_id), showDetails: row.show_details === 1, active: row.active === 1, createdAt: String(row.created_at), updatedAt: String(row.updated_at) };
+  // Existing browsers compute this id directly from their own PushSubscription.endpoint.
+  return { id: hash(String(row.endpoint)), deviceId: String(row.device_id), showDetails: row.show_details === 1, active: row.active === 1, createdAt: String(row.created_at), updatedAt: String(row.updated_at) };
 }
 const ms = (instant: string) => Date.parse(InstantSchema.parse(instant));
 
@@ -72,32 +75,59 @@ export function createPushStore(path: string): PushStore {
   }
   function delivery(row: Record<string, unknown>): PushDelivery {
     return { id: String(row.delivery_id), reminder: ReminderSchema.parse(JSON.parse(String(row.reminder))),
-      target: { ...summary(row), subscription: PushSubscriptionInputSchema.parse(JSON.parse(String(row.subscription))) },
+      target: { ...summary(row), rowId: String(row.id), subscription: PushSubscriptionInputSchema.parse(JSON.parse(String(row.subscription))) },
       attempts: Number(row.attempts), leaseToken: String(row.lease_token), expiresAt: new Date(Number(row.expires_at) + 8 * 3600_000).toISOString().replace('Z', '+08:00') };
   }
   const joined = `SELECT d.id AS delivery_id,d.attempts,d.lease_token,j.payload AS reminder,j.expires_at,
-    s.id,s.device_id,s.show_details,s.active,s.created_at,s.updated_at,s.payload AS subscription
+    s.id,s.device_id,s.endpoint,s.show_details,s.active,s.created_at,s.updated_at,s.payload AS subscription
     FROM push_deliveries d JOIN push_jobs j ON j.id=d.job_id JOIN push_subscriptions s ON s.id=d.subscription_id`;
+  function cancelPending(subscriptionId: string) {
+    db.prepare("UPDATE push_deliveries SET status='cancelled',lease_token=NULL,lease_until=NULL WHERE subscription_id=? AND status IN ('pending','retry','leased')").run(subscriptionId);
+  }
+  function expireSubscriptions(deviceId: string) {
+    const subscriptions = db.prepare('SELECT id FROM push_subscriptions WHERE device_id=? AND endpoint<>id').all(deviceId);
+    for (const row of subscriptions) cancelPending(String(row.id));
+    // Keep the owner and receipt foreign keys. Release the UNIQUE endpoint and erase its
+    // delivery keys; a 64-hex subscription id can never equal a valid HTTPS endpoint.
+    db.prepare("UPDATE push_subscriptions SET active=0,endpoint=id,payload='null' WHERE device_id=? AND endpoint<>id").run(deviceId);
+  }
+  function ownedSubscription(deviceId: string, publicId: string) {
+    DeviceIdSchema.parse(deviceId);
+    // At most ten current endpoints per device. This also handles pre-upgrade rows whose
+    // primary key equals the public id, without exposing an archived owner's binding.
+    return db.prepare('SELECT * FROM push_subscriptions WHERE device_id=? AND endpoint<>id').all(deviceId)
+      .find(row => hash(String(row.endpoint)) === publicId);
+  }
   const store: PushStore = {
-    upsertSubscription(deviceId, value, preferences = {}, now = nowInstant()) {
+    upsertSubscription(deviceId, value, preferences = {}, now = nowInstant(), activeSessionExpiry) {
       DeviceIdSchema.parse(deviceId); const input = PushSubscriptionInputSchema.parse(value); const settings = PushPreferencesSchema.parse(preferences); const at = ms(now);
       if (input.expirationTime !== undefined && input.expirationTime !== null && input.expirationTime <= at) throw Error('浏览器推送订阅已过期');
-      const id = hash(input.endpoint);
       return transaction(() => {
-        const existing = db.prepare('SELECT * FROM push_subscriptions WHERE id=?').get(id);
-        if (existing && existing['device_id'] !== deviceId) throw new PushSubscriptionConflict('推送订阅属于另一台设备，请重新订阅');
-        if (!existing && Number(db.prepare('SELECT count(*) AS n FROM push_subscriptions WHERE device_id=?').get(deviceId)!['n']) >= 10) throw new PushSubscriptionConflict('该设备推送订阅过多，请先删除旧订阅');
+        let existing = db.prepare('SELECT id,device_id FROM push_subscriptions WHERE endpoint=?').get(input.endpoint);
+        if (existing && existing.device_id !== deviceId) {
+          const previousOwner = String(existing.device_id);
+          if (!activeSessionExpiry || activeSessionExpiry(previousOwner) !== null) throw new PushSubscriptionConflict('推送订阅属于另一台设备，请重新订阅');
+          expireSubscriptions(previousOwner);
+          existing = undefined;
+        }
+        if (!existing && Number(db.prepare('SELECT count(*) AS n FROM push_subscriptions WHERE device_id=? AND endpoint<>id').get(deviceId)!['n']) >= 10) throw new PushSubscriptionConflict('该设备推送订阅过多，请先删除旧订阅');
+        const id = existing ? String(existing.id) : hash(randomUUID());
         db.prepare(`INSERT INTO push_subscriptions(id,device_id,endpoint,payload,show_details,created_at,updated_at) VALUES(?,?,?,?,?,?,?)
           ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,show_details=excluded.show_details,active=1,updated_at=excluded.updated_at`).run(id, deviceId, input.endpoint, JSON.stringify(input), Number(settings.showDetails), now, now);
         return summary(db.prepare('SELECT * FROM push_subscriptions WHERE id=?').get(id)!);
       });
     },
-    listSubscriptions(deviceId) { DeviceIdSchema.parse(deviceId); return db.prepare('SELECT * FROM push_subscriptions WHERE device_id=? ORDER BY created_at,id').all(deviceId).map(summary); },
+    listSubscriptions(deviceId) { DeviceIdSchema.parse(deviceId); return db.prepare('SELECT * FROM push_subscriptions WHERE device_id=? AND endpoint<>id ORDER BY created_at,id').all(deviceId).map(summary); },
     getSubscription(deviceId, id) {
-      DeviceIdSchema.parse(deviceId); const row = db.prepare('SELECT * FROM push_subscriptions WHERE id=? AND device_id=?').get(id, deviceId);
-      return row ? { ...summary(row), subscription: PushSubscriptionInputSchema.parse(JSON.parse(String(row.payload))) } : null;
+      const row = ownedSubscription(deviceId, id);
+      return row ? { ...summary(row), rowId: String(row.id), subscription: PushSubscriptionInputSchema.parse(JSON.parse(String(row.payload))) } : null;
     },
-    removeSubscription(deviceId, id) { DeviceIdSchema.parse(deviceId); return db.prepare('DELETE FROM push_subscriptions WHERE id=? AND device_id=?').run(id, deviceId).changes > 0; },
+    removeSubscription(deviceId, id) {
+      const row = ownedSubscription(deviceId, id);
+      return !!row && db.prepare('DELETE FROM push_subscriptions WHERE id=? AND device_id=? AND endpoint<>id').run(row.id!, deviceId).changes > 0;
+    },
+    subscribedDeviceIds() { return db.prepare('SELECT DISTINCT device_id FROM push_subscriptions WHERE endpoint<>id').all().map(row => String(row.device_id)); },
+    expireDevice(deviceId) { DeviceIdSchema.parse(deviceId); transaction(() => expireSubscriptions(deviceId)); },
     revokeDevice(deviceId) { DeviceIdSchema.parse(deviceId); db.prepare('DELETE FROM push_subscriptions WHERE device_id=?').run(deviceId); },
     getPublicVapidKey() { const row = db.prepare("SELECT payload FROM push_metadata WHERE id='vapid'").get(); return row ? VapidKeysSchema.parse(JSON.parse(String(row.payload))).publicKey : null; },
     getOrCreateVapidKeys(generate) {
@@ -154,7 +184,7 @@ export function createPushStore(path: string): PushStore {
     disableSubscription(id) {
       transaction(() => {
         db.prepare('UPDATE push_subscriptions SET active=0 WHERE id=?').run(id);
-        db.prepare("UPDATE push_deliveries SET status='cancelled',lease_token=NULL,lease_until=NULL WHERE subscription_id=? AND status IN ('pending','retry','leased')").run(id);
+        cancelPending(id);
       });
     },
     close() { if (!closed) { closed = true; db.close(); } },

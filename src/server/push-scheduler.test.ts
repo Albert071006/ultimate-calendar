@@ -6,6 +6,7 @@ import { BlockSchema, type Instant } from '../shared/contracts';
 import { emptyState, stateSnapshot } from '../storage/repository';
 import { createPushStore, type PushStore } from './push-store';
 import { createPushScheduler, pushReminderTopic, type PushSend } from './push-scheduler';
+import { RemoteState } from './state';
 
 const stores: PushStore[] = []; const roots: string[] = [];
 afterEach(() => { vi.useRealTimers(); for (const store of stores.splice(0)) store.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -18,10 +19,57 @@ function fixture(path = ':memory:') {
     return store.upsertSubscription(device, { endpoint: `https://fcm.googleapis.com/fcm/send/${device}`, keys: { p256dh: 'B'.repeat(87), auth: 'A'.repeat(22) } }, { showDetails: details }, '2030-01-01T00:00:00+08:00');
   }
   subscribe();
-  return { store, snapshot, subscribe, setNow: (value: Instant) => { now = value; }, clock: () => now };
+  return { store, snapshot, subscribe, activeSessionExpiry: (_deviceId: string) => Number.MAX_SAFE_INTEGER,
+    setNow: (value: Instant) => { now = value; }, clock: () => now };
 }
 
 describe('push scheduler', () => {
+  it('removes naturally expired devices during retry backoff and delivers to an offline device with a valid session', async () => {
+    const f = fixture();
+    const root = mkdtempSync(join(tmpdir(), 'uc-push-expiry-')); roots.push(root);
+    const state = new RemoteState(join(root, 'remote-state.sqlite'), () => Date.parse(f.clock()));
+    try {
+      f.setNow('2029-12-03T10:00:02+08:00');
+      const first = state.pair(state.createPairingCode(), 'Synthetic expiring phone').device;
+      f.setNow('2029-12-04T10:00:00+08:00');
+      const second = state.pair(state.createPairingCode(), 'Synthetic offline phone').device;
+      f.subscribe(first.id, true); f.subscribe(second.id, true);
+      f.setNow('2030-01-02T10:00:00+08:00');
+      const send = vi.fn<PushSend>(async () => ({ statusCode: 429, retryAfterMs: 60_000 }));
+      const scheduler = createPushScheduler({ ...f, snapshot: () => f.snapshot, activeSessionExpiry: id => state.activeSessionExpiry(id), send });
+      expect((await scheduler.tick()).retried).toBe(2);
+      const firstSend = send.mock.calls.find(([target]) => target.endpoint.endsWith(first.id))!;
+      expect(firstSend[2].ttl).toBe(2);
+      expect(Date.parse(firstSend[1].expiresAt)).toBe(Date.parse(f.clock()) + 2000);
+
+      f.setNow('2030-01-02T10:00:02+08:00');
+      await scheduler.tick();
+      expect(f.store.listSubscriptions(first.id)).toEqual([]);
+      expect(f.store.listSubscriptions(second.id)).toHaveLength(1);
+      send.mockClear(); send.mockResolvedValue({ statusCode: 201 });
+      f.setNow('2030-01-02T10:01:00+08:00');
+      expect((await scheduler.tick()).accepted).toBe(1);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send.mock.calls[0]![0].endpoint.endsWith(second.id)).toBe(true);
+    } finally { state.close(); }
+  });
+
+  it('rechecks pairing at dispatch when another device expires during an in-flight send', async () => {
+    const f = fixture(); f.subscribe('two', true);
+    const sessions = new Map([['one', Date.parse(f.clock()) + 5000], ['two', Date.parse(f.clock()) + 5000]]);
+    const activeSessionExpiry = (deviceId: string) => {
+      const expires = sessions.get(deviceId);
+      return expires && expires > Date.parse(f.clock()) ? expires : null;
+    };
+    let finish!: () => void;
+    const send = vi.fn<PushSend>(async () => { await new Promise<void>(resolve => { finish = resolve; }); return { statusCode: 201 }; });
+    const tick = createPushScheduler({ ...f, snapshot: () => f.snapshot, activeSessionExpiry, send }).tick();
+    expect(send).toHaveBeenCalledTimes(1);
+    f.setNow('2030-01-02T10:00:05+08:00'); finish();
+    expect(await tick).toMatchObject({ accepted: 1, cancelled: 1 });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it('sends a private lock screen payload once with stable topic, tag and bounded TTL', async () => {
     const f = fixture(); const send = vi.fn<PushSend>(async () => ({ statusCode: 201 })); const scheduler = createPushScheduler({ ...f, snapshot: () => f.snapshot, send });
     expect((await scheduler.tick()).accepted).toBe(1); expect((await scheduler.tick()).accepted).toBe(0);
@@ -75,7 +123,7 @@ describe('push scheduler', () => {
     const send = vi.fn<PushSend>(async () => { await new Promise<void>(resolve => { release = resolve; }); return { statusCode: 201 }; });
     f.setNow('2030-01-02T10:10:00+08:00'); const scheduler = createPushScheduler({ ...f, snapshot: () => f.snapshot, send });
     const first = scheduler.tick(); expect(scheduler.tick()).toBe(first); release(); await first; f.store.close();
-    const reopened = createPushStore(path); stores.push(reopened); const after = createPushScheduler({ store: reopened, snapshot: () => f.snapshot, send, clock: f.clock });
+    const reopened = createPushStore(path); stores.push(reopened); const after = createPushScheduler({ ...f, store: reopened, snapshot: () => f.snapshot, send });
     await after.tick(); expect(send).toHaveBeenCalledTimes(1);
   });
 
@@ -92,7 +140,7 @@ describe('push scheduler', () => {
     const reopened = createPushStore(path); stores.push(reopened); f.snapshot.blocks[0]!.title = '修改后的合成标题';
     reopened.upsertSubscription('one', { endpoint: 'https://fcm.googleapis.com/fcm/send/one', keys: { p256dh: 'B'.repeat(87), auth: 'A'.repeat(22) } }, { showDetails: true }, f.clock());
     f.setNow('2030-01-02T10:00:06+08:00'); send.mockImplementation(async () => ({ statusCode: 201 }));
-    const restarted = createPushScheduler({ store: reopened, snapshot: () => f.snapshot, clock: f.clock, send });
+    const restarted = createPushScheduler({ ...f, store: reopened, snapshot: () => f.snapshot, send });
     expect((await restarted.tick()).accepted).toBe(1); expect(send.mock.calls[1]![1].title).toBe('修改后的合成标题');
     f.snapshot.blocks[0]!.title = '再修改不重复通知'; await restarted.tick(); expect(send).toHaveBeenCalledTimes(2);
   });

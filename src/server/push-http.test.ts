@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request as httpRequest } from 'node:http';
+import { createHash } from 'node:crypto';
 import { createRemoteService } from './service';
 import { createRemoteHttpServer } from './http';
 import { createPushStore } from './push-store';
@@ -15,7 +16,7 @@ const origin = 'http://localhost:3221';
 const subscription = { endpoint: 'https://web.push.apple.com/synthetic', expirationTime: null, keys: { p256dh: 'B'.repeat(87), auth: 'A'.repeat(22) } };
 async function setup(enabled = true) {
   const folder = mkdtempSync(join(tmpdir(), 'uc-push-http-')); cleanup.push(async () => { rmSync(folder, { recursive: true, force: true }); });
-  const service = createRemoteService({ dataDirectory: folder, getApiKey: async () => null });
+  const service = createRemoteService({ dataDirectory: join(folder, 'data'), backupDirectory: join(folder, 'backups'), getApiKey: async () => null });
   const store = createPushStore(join(folder, 'notifications.sqlite')); const send = vi.fn<PushSend>(async () => ({ statusCode: 201 }));
   const http = createRemoteHttpServer({ service, origin, secureCookie: false, extension: createPushHttpExtension({ store, publicKey: enabled ? 'B'.repeat(87) : null, send }), onRevokeDevice: id => store.revokeDevice(id) });
   const port = await http.listen(0);
@@ -30,10 +31,20 @@ async function setup(enabled = true) {
     expect(response.status).toBe(200);
     return { session: response.body, headers: { Origin: origin, 'Content-Type': 'application/json', Cookie: response.cookie!, 'x-csrf-token': String(response.body.csrfToken) } };
   }
-  return { store, send, call, pair };
+  return { store, send, call, pair, state: service.state };
 }
 
 describe('authenticated push HTTP extension', () => {
+  it('rejects a test push if authorization has expired after authenticating the request', async () => {
+    const f = await setup(); const { headers, session } = await f.pair();
+    const saved = await f.call('/api/v1/push/subscribe', 'POST', headers, { subscription });
+    const subscriptionId = String((saved.body.subscription as { id: string }).id);
+    vi.spyOn(f.state, 'activeSessionExpiry').mockReturnValueOnce(null);
+    expect((await f.call('/api/v1/push/test', 'POST', headers, { subscriptionId })).status).toBe(401);
+    expect(f.send).not.toHaveBeenCalled();
+    expect(f.store.listSubscriptions((session.device as { id: string }).id)).toEqual([]);
+  });
+
   it('requires session and CSRF before accepting a browser subscription, exposing no endpoint or key material', async () => {
     const f = await setup(); expect((await f.call('/api/v1/push')).status).toBe(401);
     const { headers } = await f.pair(); const { 'x-csrf-token': _csrf, ...noCsrf } = headers;
@@ -51,7 +62,9 @@ describe('authenticated push HTTP extension', () => {
     expect((await f.call('/api/v1/push/subscribe', 'POST', one.headers, { subscription: { ...subscription, endpoint: 'https://169.254.169.254/latest/meta-data/' } })).status).toBe(400);
     expect((await f.call('/api/v1/push/subscribe', 'POST', one.headers, { subscription, junk: 'A'.repeat(20_000) })).status).toBe(413);
     const saved = await f.call('/api/v1/push/subscribe', 'POST', one.headers, { subscription, showDetails: true });
-    const id = String((saved.body.subscription as Record<string, unknown>).id);
+    const id = createHash('sha256').update(subscription.endpoint).digest('hex');
+    expect(saved.body.subscription).toMatchObject({ id });
+    expect((await f.call('/api/v1/push', 'GET', one.headers)).body.subscriptions).toMatchObject([{ id }]);
     expect((await f.call('/api/v1/push/subscribe', 'POST', two.headers, { subscription })).status).toBe(409);
     expect((await f.call('/api/v1/push/test', 'POST', two.headers, { subscriptionId: id })).status).toBe(404);
     expect((await f.call('/api/v1/push/unsubscribe', 'POST', two.headers, { subscriptionId: id })).status).toBe(200);

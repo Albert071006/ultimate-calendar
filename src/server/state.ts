@@ -111,6 +111,10 @@ export class RemoteState {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   devices(): RemoteDevice[] { return this.db.prepare('SELECT id,name FROM sessions WHERE expires>?').all(this.now()) as RemoteDevice[]; }
+  activeSessionExpiry(deviceId: string): number | null {
+    const row = this.db.prepare('SELECT expires FROM sessions WHERE id=? AND expires>?').get(deviceId, this.now());
+    return row ? Number(row.expires) : null;
+  }
   revoke(id: string): void { this.db.prepare('DELETE FROM sessions WHERE id=?').run(id); }
   operation(id: string, device: string): RemoteOperation {
     const row = this.db.prepare('SELECT * FROM operations WHERE id=? AND device=? AND generation=?').get(id, device, this.identity().generation) as OpRow | undefined;

@@ -9,6 +9,7 @@ export interface PushSendResult { statusCode: number; retryAfterMs?: number }
 export type PushSend = (subscription: PushSubscriptionInput, payload: PushPayload, options: { ttl: number; topic: string }) => Promise<PushSendResult>;
 export interface PushSchedulerOptions {
   snapshot: () => Snapshot;
+  activeSessionExpiry(deviceId: string): number | null;
   store: PushStore;
   send: PushSend;
   clock?: () => Instant;
@@ -35,6 +36,10 @@ export function createPushScheduler(options: PushSchedulerOptions) {
   const eligible = (now: Instant) => collectReminders(snapshot(), instantAt(Date.parse(now) - catchUpMs), now);
   async function run(): Promise<PushTickResult> {
     const result: PushTickResult = { accepted: 0, retried: 0, cancelled: 0, failed: 0 };
+    // Cancel pending deliveries on expiry even when a device's next retry is still backing off.
+    for (const deviceId of store.subscribedDeviceIds()) {
+      if (options.activeSessionExpiry(deviceId) === null) store.expireDevice(deviceId);
+    }
     const scanAt = readNow(); store.reconcile(eligible(scanAt), scanAt, catchUpMs);
     for (let i = 0; i < 100 && !stopping; i++) {
       const claimed = store.claimDue(readNow(), 1, 60_000)[0]; if (!claimed) break;
@@ -44,10 +49,16 @@ export function createPushScheduler(options: PushSchedulerOptions) {
         if (!reminder) store.cancelJob(claimed.reminder.id);
         store.settle(claimed.id, claimed.leaseToken, { kind: 'cancelled' }); result.cancelled++; continue;
       }
-      const ttl = Math.floor((Date.parse(current.expiresAt) - Date.parse(at)) / 1000);
+      // Authorization may have expired while delivering to another device.
+      const sessionExpiry = options.activeSessionExpiry(current.target.deviceId);
+      if (sessionExpiry === null) {
+        store.expireDevice(current.target.deviceId); result.cancelled++; continue;
+      }
+      const expiresAt = instantAt(Math.min(Date.parse(current.expiresAt), sessionExpiry));
+      const ttl = Math.floor((Date.parse(expiresAt) - Date.parse(readNow())) / 1000);
       if (ttl <= 0) { store.settle(current.id, current.leaseToken, { kind: 'expired' }); result.cancelled++; continue; }
       try {
-        const response = await send(current.target.subscription, pushReminderPayload(reminder, current.target.showDetails, current.expiresAt), { ttl, topic: pushReminderTopic(reminder.id) });
+        const response = await send(current.target.subscription, pushReminderPayload(reminder, current.target.showDetails, expiresAt), { ttl, topic: pushReminderTopic(reminder.id) });
         if (response.statusCode >= 200 && response.statusCode < 300) {
           store.settle(current.id, current.leaseToken, { kind: 'accepted' }); result.accepted++;
         } else handleFailure(current, response, result);
@@ -61,7 +72,7 @@ export function createPushScheduler(options: PushSchedulerOptions) {
   }
   function handleFailure(delivery: PushDelivery, response: PushSendResult, result: PushTickResult): void {
     const code = response.statusCode;
-    if (code === 404 || code === 410) { store.disableSubscription(delivery.target.id); result.failed++; return; }
+    if (code === 404 || code === 410) { store.disableSubscription(delivery.target.rowId); result.failed++; return; }
     if (code === 0 || code === 408 || code === 429 || code >= 500) {
       const backoff = Math.min(300_000, 5000 * 2 ** Math.min(delivery.attempts - 1, 6));
       const requested = Number.isFinite(response.retryAfterMs) ? Math.max(0, response.retryAfterMs!) : 0;
