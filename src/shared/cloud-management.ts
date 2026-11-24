@@ -13,6 +13,21 @@ export const CloudCourseImportRequestSchema = CourseImportRequestSchema.refine(v
 export const LedgerExportDataRequestSchema = z.strictObject({ format: z.enum(['csv', 'json']), month: LedgerMonthSchema.optional() });
 export const MAX_CLOUD_EXPORT_BYTES = 8 * 1024 * 1024;
 export const MAX_CLOUD_EXPORT_WIRE_BYTES = 16 * 1024 * 1024;
+/** Bounded UTF-8 snapshot size, independent from the legacy single-JSON response. */
+export const MAX_CLOUD_BACKUP_BYTES = 64 * 1024 * 1024;
+export const CLOUD_BACKUP_CHUNK_BYTES = 1024 * 1024;
+export const BackupExportManifestSchema = z.strictObject({
+  downloadId: z.string().uuid(), totalBytes: z.number().int().positive().max(MAX_CLOUD_BACKUP_BYTES),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/), chunkBytes: z.literal(CLOUD_BACKUP_CHUNK_BYTES),
+});
+export const BackupExportChunkRequestSchema = z.strictObject({
+  downloadId: z.string().uuid(), offset: z.number().int().nonnegative().lt(MAX_CLOUD_BACKUP_BYTES).multipleOf(CLOUD_BACKUP_CHUNK_BYTES),
+});
+export const BackupExportChunkSchema = BackupExportChunkRequestSchema.extend({
+  data: z.string().min(4).max(4 * Math.ceil(CLOUD_BACKUP_CHUNK_BYTES / 3)).base64(),
+});
+export const BackupExportFinishRequestSchema = BackupExportManifestSchema.pick({ downloadId: true });
+export const BackupExportFinishSchema = z.strictObject({ released: z.literal(true) });
 const exportedContent = z.string().max(MAX_CLOUD_EXPORT_BYTES).refine(value => {
   const encoder = new TextEncoder();
   return encoder.encode(value).byteLength <= MAX_CLOUD_EXPORT_BYTES && encoder.encode(JSON.stringify(value)).byteLength <= MAX_CLOUD_EXPORT_WIRE_BYTES;

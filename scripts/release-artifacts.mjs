@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { open, readFile, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, open, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
@@ -95,14 +95,58 @@ export async function verifyLocalPublicationArtifacts(version, standardDirectory
   return artifacts;
 }
 
-export async function verifyAllReleaseArtifacts(version, standardDirectory = 'release', localDirectory = 'release-local') {
+export async function verifyAllReleaseArtifacts(version, standardDirectory = 'release', localDirectory = 'release-local', serverDirectory = 'release-server') {
   const { verifyServerMobileArtifacts } = await import('./package-server-mobile.mjs');
   const [standard, local, serverBundle] = await Promise.all([
     verifyReleaseArtifacts(standardDirectory, version),
     verifyLocalPublicationArtifacts(version, standardDirectory, localDirectory),
-    verifyServerMobileArtifacts(version),
+    verifyServerMobileArtifacts(version, serverDirectory),
   ]);
   return { local, server: [...standard, ...serverBundle] };
+}
+
+function archiveManifest({ version, commit, buildId }, artifacts) {
+  if (!/^[a-f0-9]{40}$/.test(commit) || typeof buildId !== 'string' || !/^[1-9]\d*$/.test(buildId)) throw Error('A commit SHA and original workflow run ID are required');
+  const files = {};
+  for (const edition of ['local', 'server']) files[edition] = artifacts[edition].map(({ name, size, sha256 }) => ({ name, size, sha256 }));
+  return { format: 'ultimate-calendar-release-archive', version: 1, tag: `v${version}`, commit, buildId, files };
+}
+
+async function assertContents(directory, files, directories = []) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  if (entries.length !== files.length + directories.length || entries.some(entry =>
+    !(entry.isFile() && files.includes(entry.name)) && !(entry.isDirectory() && directories.includes(entry.name))
+  )) throw Error('Missing or unexpected release archive entries');
+}
+
+/** Seal only the eleven verified assets. Keep the two different latest.yml files separate. */
+export async function archiveRelease(directory, identity, standardDir, localDir, serverDir) {
+  const artifacts = await verifyAllReleaseArtifacts(identity.version, standardDir, localDir, serverDir);
+  const manifest = archiveManifest(identity, artifacts);
+  await mkdir(directory); // a completed archive cannot be silently rebuilt in place
+  for (const edition of ['local', 'server']) {
+    const target = join(directory, edition);
+    await mkdir(target);
+    for (const file of artifacts[edition]) await copyFile(file.path, join(target, file.name));
+  }
+  await writeFile(join(directory, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+  return verifyArchivedRelease(directory, identity);
+}
+
+/** A fresh runner checks the immutable artifact against its selected tag, commit
+ * and build, then repeats the updater route, deployment package and byte checks. */
+export async function verifyArchivedRelease(directory, identity) {
+  const { version } = identity;
+  await assertContents(directory, ['manifest.json'], ['local', 'server']);
+  for (const edition of ['local', 'server']) await assertContents(join(directory, edition), publicationArtifactNames(version, edition));
+  const manifestFile = join(directory, 'manifest.json');
+  if ((await stat(manifestFile)).size > 16 * 1024) throw Error('Oversized release archive manifest');
+  const manifest = JSON.parse(await readFile(manifestFile, 'utf8'));
+  const server = join(directory, 'server');
+  const artifacts = await verifyAllReleaseArtifacts(version, server, join(directory, 'local'), server);
+  if (JSON.stringify(manifest) !== JSON.stringify(archiveManifest(identity, artifacts)))
+    throw Error('Release archive identity or asset checksum mismatch');
+  return artifacts;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

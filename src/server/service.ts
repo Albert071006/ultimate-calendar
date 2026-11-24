@@ -24,7 +24,7 @@ import { AiConfigurationUpdateSchema, AiConfigurationClearSchema } from '../shar
 import { createExternalApiKeyConfiguration, type ApiKeyConfiguration } from './ai-configuration';
 import { AiKeySyncRequestSchema } from '../shared/ai-key-sync';
 import { createAiKeyReceiver } from './ai-key-receiver';
-import { ledgerExportData, backupExportData } from './cloud-export';
+import { ledgerExportData, backupExportData, createBackupDownloads } from './cloud-export';
 import { createCloudRestore } from './cloud-restore';
 
 export interface RemoteServiceOptions {
@@ -128,6 +128,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
     },
   });
   async function backup(force = false) { try { return await backups.flush(force); } catch { return undefined; } }
+  const downloads = createBackupDownloads();
   let restoring: Promise<unknown> | undefined;
   function cleanupEvidence() {
     repository.transact(value => {
@@ -186,12 +187,31 @@ export function createRemoteService(options: RemoteServiceOptions) {
       case 'refreshAccount': { startAccount(); return { ok: true, data: await account.refresh({ force: true }) }; }
       case 'importCourses': { const result = await controller.importCourses(remoteInputs.importCourses.parse(input)); cleanupEvidence(); if (result.ok) emit('import'); return result; }
       case 'ledgerExportData': { const request = remoteInputs.ledgerExportData.parse(input); return { ok: true, data: ledgerExportData(request.format === 'json' ? JSON.stringify(ledger.exportJson(), null, 2) : ledger.exportCsv(request.month), request.format) }; }
-      case 'backupExportData': { const path = await backup(true); if (!path) throw new WorkflowError('STORAGE', '安全备份未完成，请检查服务状态'); return { ok: true, data: backupExportData(path) }; }
+      case 'backupExportData':
+      case 'backupExportStart': {
+        const identity = JSON.stringify(state.identity());
+        const makeBackup = async () => {
+          const path = await backup(true);
+          if (!path) throw new WorkflowError('STORAGE', '安全备份未完成，请检查服务状态');
+          if (lifecycle !== 'running' || restoring || identity !== JSON.stringify(state.identity()))
+            throw new WorkflowError('CONFLICT', '备份期间资料状态已改变，请重新导出');
+          return path;
+        };
+        return { ok: true, data: method === 'backupExportStart' ? await downloads.start(deviceId, identity, makeBackup) : backupExportData(await makeBackup()) };
+      }
+      case 'backupExportChunk': {
+        const { downloadId, offset } = remoteInputs.backupExportChunk.parse(input);
+        return { ok: true, data: downloads.chunk(downloadId, offset, deviceId, JSON.stringify(state.identity())) };
+      }
+      case 'backupExportFinish': {
+        const { downloadId } = remoteInputs.backupExportFinish.parse(input);
+        return { ok: true, data: downloads.finish(downloadId, deviceId, JSON.stringify(state.identity())) };
+      }
       case 'restorePreview': return { ok: true, data: restore.preview(input, deviceId) };
       case 'restoreConfirm': {
         if (restoring || running.size) throw new WorkflowError('CONFLICT', '云端还有进行中的修改或恢复，请等待完成后重新预览恢复');
         restoring = restore.confirm(input, deviceId);
-        try { const result = await restoring; backups.markDirty(); emit('restore'); return { ok: true, data: result }; }
+        try { const result = await restoring; downloads.clear(); backups.markDirty(); emit('restore'); return { ok: true, data: result }; }
         finally { restoring = undefined; }
       }
       case 'ledgerSnapshot': { if (!restoring && ledger.ensureMonthlyAllowance()) { backups.markDirty(); emit('mutation', ['ledger']); } return { ok: true, data: ledger.snapshot(remoteInputs.ledgerSnapshot.parse(input)?.month) }; }
@@ -263,7 +283,8 @@ export function createRemoteService(options: RemoteServiceOptions) {
     subscribe(listener: (event: ChangedEvent) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     async rpc(method: RemoteMethod, request: RemoteRequest, deviceId: string, modernAiSettings = false, modernProfileSettings = true): Promise<unknown> {
       if (lifecycle !== 'running') throw new RemoteFault(503, '服务正在退出，请稍后重试原请求');
-      if (restoring && (!(REMOTE_READ_METHODS as readonly RemoteMethod[]).includes(method) || method === 'restorePreview')) throw new RemoteFault(409, '云端正在恢复资料，请完成后重新连接');
+      if (restoring && (!(REMOTE_READ_METHODS as readonly RemoteMethod[]).includes(method) || method === 'restorePreview' ||
+        method === 'backupExportStart' || method === 'backupExportChunk' || method === 'backupExportData')) throw new RemoteFault(409, '云端正在恢复资料，请完成后重新连接');
       const identity = RemoteIdentitySchema.parse(request.identity);
       if (JSON.stringify(identity) !== JSON.stringify(state.identity())) throw new RemoteFault(409, '资料实例或恢复代际已改变，请刷新并核对待提交内容');
       const input = remoteInputs[method].parse(request.input);
@@ -323,7 +344,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
     },
     close(config: { graceMs?: number } = {}): Promise<void> {
       if (closePromise) return closePromise;
-      lifecycle = 'draining'; clearInterval(maintenance); allowance?.stop(); account.stop();
+      lifecycle = 'draining'; clearInterval(maintenance); allowance?.stop(); account.stop(); downloads.clear();
       closePromise = (async () => {
         const timer = setTimeout(() => shutdownAbort.abort(), Math.max(0, config.graceMs ?? 25_000)); timer.unref();
         try {

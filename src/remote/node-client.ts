@@ -56,8 +56,11 @@ export function createNodeRemoteClient(options: { origin: string; credentialsFil
     // session preflight that can fail before the intended write is dispatched.
     const readOnly = method === 'GET' || path === '/api/v1/session/renew' || path.startsWith('/api/v1/rpc/') &&
       (REMOTE_READ_METHODS as readonly string[]).includes(path.slice('/api/v1/rpc/'.length));
-    const modelRequest = isAiRpcPath(path);
-    const timeout = AbortSignal.timeout(Math.min(modelRequest ? AI_RPC_TIMEOUT_MS : 30_000, Math.max(100, options.timeoutMs ?? (modelRequest ? AI_RPC_TIMEOUT_MS : 30_000))));
+    // Preparing a snapshot also runs the backup worker and validates the full file.
+    let deadlineMs = 30_000;
+    if (isAiRpcPath(path)) deadlineMs = AI_RPC_TIMEOUT_MS;
+    if (path === '/api/v1/rpc/backupExportStart') deadlineMs = 120_000;
+    const timeout = AbortSignal.timeout(Math.min(deadlineMs, Math.max(100, options.timeoutMs ?? deadlineMs)));
     const receiverSync = path === '/api/v1/ai/receiver/sync';
     const aiConfiguration = path === '/api/v1/ai/config' || receiverSync;
     const httpFailure = (response: Response) => {

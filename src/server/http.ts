@@ -235,7 +235,9 @@ export function createRemoteHttpServer(options: RemoteHttpOptions) {
         const rpcMatch = /^\/api\/v1\/rpc\/([A-Za-z]+)$/.exec(url.pathname);
         if (rpcMatch && method === 'POST') {
           const rpcMethod = RemoteMethodSchema.parse(rpcMatch[1]);
-          const input = RemoteRequestSchema.parse(await body(request, options.maxBodyBytes ?? (rpcMethod === 'restorePreview' ? MAX_CLOUD_EXPORT_WIRE_BYTES + 64 * 1024 : 15 * 1024 * 1024)));
+          const download = rpcMethod === 'backupExportStart' || rpcMethod === 'backupExportChunk' || rpcMethod === 'backupExportData' || rpcMethod === 'backupExportFinish';
+          const bodyLimit = options.maxBodyBytes ?? (rpcMethod === 'restorePreview' ? MAX_CLOUD_EXPORT_WIRE_BYTES + 64 * 1024 : 15 * 1024 * 1024);
+          const input = RemoteRequestSchema.parse(await body(request, download ? Math.min(bodyLimit, 4096) : bodyLimit));
           // An old ledger UI cannot parse dynamic accounts. Reject before any write,
           // with a normal business error instead of a response that looks offline.
           if (['ledgerSnapshot', 'ledgerMutate', 'ledgerUndo'].includes(rpcMethod)
@@ -244,6 +246,7 @@ export function createRemoteHttpServer(options: RemoteHttpOptions) {
               message: '账本账户功能已升级，请更新电脑端或关闭并重新打开手机日历，再查看或修改账本。原资料和配对均保留。' } }); return;
           }
           const result = await options.service.rpc(rpcMethod, input, session.device.id, modernAiSettings, modernProfileSettings);
+          if (download && !options.service.state.session(token)) throw new RemoteFault(401, '下载期间设备授权已失效，请重新配对');
           sendJson(response, 200, settingsResult(rpcMethod, result)); return;
         }
         const operationMatch = /^\/api\/v1\/operations\/([^/]+)$/.exec(url.pathname);

@@ -126,7 +126,7 @@ Windows 的 CSV/XLSX 文件由主进程选择、限大小并在本机按最新�
 
 `backupExportData` 先生成服务器内部安全备份，再返回 `ultimate-calendar-safe-backup` v1 完整 JSON。包含日历实体/关系、账本历史/余额/规则等正式资料；来源文本、图片、QQ 定位信息、候选引用及账目/审计的 `originalText` 会被清理。会话、Key、VAPID 和本机原文索引不在包内；接口不返回服务器路径。Windows 主进程再让用户选择保存位置。
 
-导出 `content` 的 UTF-8 上限为 **8 MiB**，该字符串经 JSON 转义后的上限为 **16 MiB**。超限返回错误，绝不截断为一个“成功”的不完整文件。内部备份生成失败也不会返回成功导出。
+单次返回 `content` 的旧接口保留 **8 MiB** UTF-8 和 **16 MiB** JSON 转义上限。桌面安全备份另支持最多 **64 MiB** 的分块下载。调用 `backupExportStart` 获取快照的下载编号、字节数、SHA-256 和分块大小，再用 `backupExportChunk` 按 1 MiB 偏移请求 Base64 数据。各块来自同一份脱敏快照，下载会话绑定设备与资料代际。客户端按总长度和摘要核验落盘文件，并在完成或取消时调用 `backupExportFinish` 释放快照。在线恢复预览的上传上限仍为 8 MiB。
 
 恢复只接受上述安全备份格式，不能上传 SQLite、旧本机完整备份或 QQ 原文包。Windows 先在本机校验完整 Schema/关系/金额并清理来源与 `originalText`，再上传清理后的 JSON：
 

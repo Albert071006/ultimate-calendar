@@ -7,10 +7,9 @@ import { z } from 'zod';
 import { SnapshotSchema, PlannerChangesSchema, apiResultSchema, type ApiResult, type Settings, type Snapshot, type PlannerPatch } from '../shared/contracts';
 import { applyPlannerPatch } from '../shared/planner-sync';
 import { RemoteIdentitySchema, type RemoteIdentity, type RemoteMethod } from '../shared/remote';
-import { BackupExportDataSchema, MAX_CLOUD_EXPORT_BYTES } from '../shared/cloud-management';
+import { openRemoteBackup, saveRemoteBackup } from './remote-backup';
 import { nowInstant } from '../domain/time';
 import { WorkflowError } from '../ai/deepseek';
-import { validateSafeBackup } from '../server/backup';
 import { writeLocalResourcesCompanion } from '../storage/local-resources';
 import { readPrivate, writePrivate } from '../remote/private-file';
 import type { NativeRemoteConfig } from './remote-config';
@@ -21,7 +20,7 @@ import { CaptureSnapshotSchema } from '../shared/capture';
 import { COLLECTOR_TRAY_RENEW_MS } from './collector-tray';
 
 const DeviceSettings = z.strictObject({ version: z.literal(1), closeToTray: z.boolean(), autoLaunch: z.boolean() });
-const successfulSnapshot = apiResultSchema(SnapshotSchema), successfulBackup = apiResultSchema(BackupExportDataSchema);
+const successfulSnapshot = apiResultSchema(SnapshotSchema);
 const wait = (milliseconds: number) => new Promise<void>(done => setTimeout(done, milliseconds));
 interface Options {
   window: BrowserWindow;
@@ -139,15 +138,13 @@ export function createRemoteDesktopShell(options: Options) {
   }
   async function backupBeforeInstall() {
     const identity = JSON.stringify(RemoteIdentitySchema.parse(await options.getIdentity()));
-    const result = successfulBackup.parse(await options.rpc('backupExportData'));
+    const result = await openRemoteBackup(options.rpc);
     if (!result.ok) throw new WorkflowError('STORAGE', '云端备份尚未完成，未安装更新。');
-    validateSafeBackup(JSON.parse(result.data.content));
-    if (JSON.stringify(RemoteIdentitySchema.parse(await options.getIdentity())) !== identity) throw new WorkflowError('CONFLICT', '备份期间资料身份改变，未安装更新。');
     const file = join(directory, 'backups', `before-update-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.json`);
-    const bytes = Buffer.from(result.data.content);
-    writePrivate(file, bytes);
+    await saveRemoteBackup(file, result.data, async () => {
+      if (JSON.stringify(RemoteIdentitySchema.parse(await options.getIdentity())) !== identity) throw new WorkflowError('CONFLICT', '备份期间资料身份改变，未安装更新。');
+    }).finally(() => result.data.finish?.());
     writeLocalResourcesCompanion(config.localDataDirectory ?? directory, file);
-    if (!readPrivate(file, MAX_CLOUD_EXPORT_BYTES)?.equals(bytes)) throw new WorkflowError('STORAGE', '更新前备份核对失败，未安装更新。');
   }
   const updates = createUpdateService({
     currentVersion: app.getVersion(), packaged: app.isPackaged, platform: process.platform, isolatedProfile: !production,

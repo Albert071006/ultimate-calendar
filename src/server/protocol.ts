@@ -4,7 +4,7 @@ import { SnapshotSchema, MutationRequestSchema, MutationResultSchema, IdSchema, 
 import { LedgerMonthSchema, LedgerMutationRequestSchema, LedgerMutationResultSchema, LedgerSnapshotSchema, LedgerUndoRequestSchema } from '../shared/ledger';
 import type { RemoteMethod } from '../shared/remote';
 import { AccountStateSchema } from '../shared/account';
-import { CloudSaveSettingsRequestSchema, CloudCourseImportRequestSchema, LedgerExportDataRequestSchema, LedgerExportDataSchema, BackupExportDataSchema, CloudRestorePreviewRequestSchema, CloudRestorePreviewSchema, CloudRestoreConfirmRequestSchema, CloudRestoreConfirmSchema } from '../shared/cloud-management';
+import { CloudSaveSettingsRequestSchema, CloudCourseImportRequestSchema, LedgerExportDataRequestSchema, LedgerExportDataSchema, BackupExportDataSchema, BackupExportManifestSchema, BackupExportChunkRequestSchema, BackupExportChunkSchema, BackupExportFinishRequestSchema, BackupExportFinishSchema, CloudRestorePreviewRequestSchema, CloudRestorePreviewSchema, CloudRestoreConfirmRequestSchema, CloudRestoreConfirmSchema } from '../shared/cloud-management';
 
 /** Deliberately independent of the wider Electron protocol. */
 export const remoteInputs = {
@@ -14,6 +14,7 @@ export const remoteInputs = {
   ledgerMutate: LedgerMutationRequestSchema, ledgerUndo: LedgerUndoRequestSchema,
   saveSettings: CloudSaveSettingsRequestSchema, accountSnapshot: z.undefined(), refreshAccount: z.undefined(),
   importCourses: CloudCourseImportRequestSchema, ledgerExportData: LedgerExportDataRequestSchema, backupExportData: z.undefined(),
+  backupExportStart: z.undefined(), backupExportChunk: BackupExportChunkRequestSchema, backupExportFinish: BackupExportFinishRequestSchema,
   restorePreview: CloudRestorePreviewRequestSchema, restoreConfirm: CloudRestoreConfirmRequestSchema,
 } satisfies Record<RemoteMethod, z.ZodType>;
 export const remoteOutputs = {
@@ -22,5 +23,6 @@ export const remoteOutputs = {
   ledgerSnapshot: apiResultSchema(LedgerSnapshotSchema), ledgerMutate: apiResultSchema(LedgerMutationResultSchema), ledgerUndo: apiResultSchema(LedgerMutationResultSchema),
   saveSettings: apiResultSchema(SettingsSchema), accountSnapshot: apiResultSchema(AccountStateSchema), refreshAccount: apiResultSchema(AccountStateSchema),
   importCourses: apiResultSchema(CourseImportResultSchema), ledgerExportData: apiResultSchema(LedgerExportDataSchema), backupExportData: apiResultSchema(BackupExportDataSchema),
+  backupExportStart: apiResultSchema(BackupExportManifestSchema), backupExportChunk: apiResultSchema(BackupExportChunkSchema), backupExportFinish: apiResultSchema(BackupExportFinishSchema),
   restorePreview: apiResultSchema(CloudRestorePreviewSchema), restoreConfirm: apiResultSchema(CloudRestoreConfirmSchema),
 } satisfies Record<RemoteMethod, z.ZodType>;

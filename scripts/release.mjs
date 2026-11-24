@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { appendFile, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const RELEASE_REPOSITORY = 'Albert071006/ultimate-calendar';
+const base = `https://api.github.com/repos/${RELEASE_REPOSITORY}`;
 
 export function validateTag(version, tag) {
   if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) throw Error('A stable x.y.z version is required');
@@ -20,20 +21,8 @@ function verifyRemoteAssets(assets, artifacts) {
   }
 }
 
-// Stage and verify both drafts before publishing either. The server assets must
-// be public before the local Latest release exposes the legacy update route.
-export async function publishRelease({ version, commit, notes, artifacts, token, fetchImpl = fetch }) {
-  const tag = `v${version}`;
-  validateTag(version, tag);
-  if (!token || !/^[a-f0-9]{40}$/.test(commit) || !notes?.local?.trim() || !notes?.server?.trim()) throw Error('Token, commit SHA and both release notes are required');
-  const { publicationArtifactNames } = await import('./release-artifacts.mjs');
-  for (const edition of ['local', 'server']) {
-    const expectedNames = publicationArtifactNames(version, edition), files = artifacts?.[edition];
-    if (!Array.isArray(files) || files.length !== expectedNames.length || expectedNames.some(name => files.filter(file => file.name === name).length !== 1))
-      throw Error(`Unexpected ${edition} release artifact list: both complete editions are required`);
-  }
-  const base = `https://api.github.com/repos/${RELEASE_REPOSITORY}`;
-  async function request(url, method = 'GET', body, binary = false, allowNotFound = false) {
+function githubRequest(token, fetchImpl) {
+  return async function request(url, method = 'GET', body, binary = false, allowNotFound = false) {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' || !['api.github.com', 'uploads.github.com'].includes(parsed.hostname)
       || !parsed.pathname.startsWith(`/repos/${RELEASE_REPOSITORY}/`)) throw Error('Unexpected GitHub endpoint');
@@ -48,7 +37,80 @@ export async function publishRelease({ version, commit, notes, artifacts, token,
     if (allowNotFound && response.status === 404) return null;
     if (!response.ok) throw Error(`GitHub ${method} ${parsed.pathname} failed (HTTP ${response.status}); release remains unpublished if still draft`);
     return response.status === 204 ? null : response.json();
+  };
+}
+
+/** Resolve once per run. Re-running all jobs still reuses the original archive.
+ * Manual dispatch can only resume a tagged push build from this workflow. */
+export async function selectReleaseBuild({ version, commit, runId, resume, sourceRunId, token, fetchImpl = fetch }) {
+  const tag = `v${version}`, buildId = resume ? sourceRunId : runId;
+  validateTag(version, tag);
+  if (!token || !/^[a-f0-9]{40}$/.test(commit) || typeof buildId !== 'string' || !/^[1-9]\d*$/.test(buildId)) throw Error('A valid original workflow run ID is required');
+  const request = githubRequest(token, fetchImpl), runUrl = `${base}/actions/runs/${buildId}`;
+  const run = await request(runUrl);
+  if (String(run.id) !== buildId || run.event !== 'push' || run.path !== '.github/workflows/release.yml' ||
+      run.repository?.full_name !== RELEASE_REPOSITORY || run.head_sha !== commit)
+    throw Error('Original run does not belong to this release workflow and commit');
+  const name = `release-${tag}-${buildId}`;
+  const response = await request(`${runUrl}/artifacts?name=${name}&per_page=100`);
+  if (!Array.isArray(response.artifacts) || response.total_count !== response.artifacts.length ||
+      response.artifacts.some(artifact => artifact.name !== name) || response.artifacts.length > 1)
+    throw Error('Unexpected release archive listing');
+  if (response.artifacts.length) {
+    if (response.artifacts[0].expired !== false) throw Error('Original release archive has expired; publication stopped');
+    return { buildId, name, build: false };
   }
+  if (resume) throw Error('Original release archive is missing or expired; publication stopped');
+  if (run.run_attempt > 1) {
+    // An artifact can be deleted before either release becomes public. Do not
+    // assign a second set of bytes to a build ID that already finished archiving.
+    for (let page = 1; ; page++) {
+      const { jobs } = await request(`${runUrl}/jobs?filter=all&per_page=100&page=${page}`);
+      if (!Array.isArray(jobs)) throw Error('Invalid GitHub job history');
+      if (jobs.some(job => job.name === 'build' && job.conclusion === 'success'))
+        throw Error('Original release archive is missing after a successful build; publication stopped');
+      if (jobs.length < 100) break;
+    }
+  }
+  // A deleted/expired artifact must never turn a partially public release into
+  // a second build. A failed build before publication is safe to rerun.
+  for (const releaseTag of [`server-${tag}`, tag]) {
+    if (await findRelease(request, releaseTag))
+      throw Error('Release already exists; resume using the original archived build');
+  }
+  return { buildId, name, build: true };
+}
+
+async function findRelease(request, tag) {
+  const byTag = await request(`${base}/releases/tags/${tag}`, 'GET', undefined, false, true);
+  if (byTag) return byTag;
+  // The tag endpoint is for published releases. A draft may only appear in
+  // the authenticated release list after a failure between the two PATCHes.
+  let found = null;
+  for (let page = 1; ; page++) {
+    const rows = await request(`${base}/releases?per_page=100&page=${page}`);
+    if (!Array.isArray(rows)) throw Error('Invalid GitHub release list');
+    for (const row of rows.filter(item => item.tag_name === tag)) {
+      if (found) throw Error(`Ambiguous existing release: ${tag}`);
+      found = row;
+    }
+    if (rows.length < 100) return found;
+  }
+}
+
+// Stage and verify both drafts before publishing either. The server assets must
+// be public before the local Latest release exposes the legacy update route.
+export async function publishRelease({ version, commit, notes, artifacts, token, fetchImpl = fetch }) {
+  const tag = `v${version}`;
+  validateTag(version, tag);
+  if (!token || !/^[a-f0-9]{40}$/.test(commit) || !notes?.local?.trim() || !notes?.server?.trim()) throw Error('Token, commit SHA and both release notes are required');
+  const { publicationArtifactNames } = await import('./release-artifacts.mjs');
+  for (const edition of ['local', 'server']) {
+    const expectedNames = publicationArtifactNames(version, edition), files = artifacts?.[edition];
+    if (!Array.isArray(files) || files.length !== expectedNames.length || expectedNames.some(name => files.filter(file => file.name === name).length !== 1))
+      throw Error(`Unexpected ${edition} release artifact list: both complete editions are required`);
+  }
+  const request = githubRequest(token, fetchImpl);
   async function ensureTag(expectedTag, canCreate) {
     let ref = await request(`${base}/git/ref/tags/${expectedTag}`, 'GET', undefined, false, true);
     if (!ref) {
@@ -69,7 +131,7 @@ export async function publishRelease({ version, commit, notes, artifacts, token,
   const staged = [];
   for (const spec of specifications) {
     const files = artifacts[spec.edition];
-    let release = await request(`${base}/releases/tags/${spec.tag}`, 'GET', undefined, false, true);
+    let release = await findRelease(request, spec.tag);
     if (release && (release.prerelease || release.tag_name !== spec.tag || (release.draft && release.target_commitish !== commit)))
       throw Error('Existing release belongs to a different commit or release type');
     if (release && !release.draft) {
@@ -83,11 +145,19 @@ export async function publishRelease({ version, commit, notes, artifacts, token,
     });
     if (!Number.isSafeInteger(release.id) || !release.draft || release.tag_name !== spec.tag) throw Error('GitHub did not create the expected draft release');
     const oldAssets = await request(`${base}/releases/${release.id}/assets?per_page=100`);
-    // Only same-commit drafts may be replaced. Published assets above are read-only.
-    for (const asset of oldAssets) await request(`${base}/releases/assets/${asset.id}`, 'DELETE');
+    const stagedNames = new Set();
+    for (const asset of oldAssets) {
+      const file = files.find(item => item.name === asset.name);
+      if (!file || stagedNames.has(asset.name)) throw Error(`Unexpected draft asset: ${asset.name}`);
+      // GitHub may leave an empty starter after a failed upload. All uploaded
+      // assets must already match the archived build; only missing bytes are sent.
+      if (asset.state === 'starter' && asset.size === 0) await request(`${base}/releases/assets/${asset.id}`, 'DELETE');
+      else { verifyRemoteAssets([asset], [file]); stagedNames.add(asset.name); }
+    }
     const upload = release.upload_url?.split('{')[0];
     if (!upload) throw Error('Draft release has no upload endpoint');
     for (const file of files) {
+      if (stagedNames.has(file.name)) continue;
       const bytes = await readFile(file.path);
       if (bytes.length !== file.size || createHash('sha256').update(bytes).digest('hex') !== file.sha256)
         throw Error(`Release artifact changed after verification: ${file.name}`);
@@ -120,7 +190,7 @@ export async function publishRelease({ version, commit, notes, artifacts, token,
 
 async function main() {
   const command = process.argv[2];
-  if (!['check-tag', 'publish'].includes(command)) throw Error('Usage: node scripts/release.mjs check-tag|publish');
+  if (!['check-tag', 'select-build', 'archive', 'publish'].includes(command)) throw Error('Usage: node scripts/release.mjs check-tag|select-build|archive|publish');
   const pkg = JSON.parse(await readFile('package.json', 'utf8'));
   const lock = JSON.parse(await readFile('package-lock.json', 'utf8'));
   if (lock.version !== pkg.version || lock.packages[''].version !== pkg.version) throw Error('Package and lockfile versions differ');
@@ -134,8 +204,19 @@ async function main() {
   const notes = { local: await readFile(`docs/release-notes/${pkg.version}.md`, 'utf8'), server: await readFile(`docs/release-notes/server-${pkg.version}.md`, 'utf8') };
   if (!notes.local.trim() || !notes.server.trim()) throw Error('Release notes are empty');
   if (command === 'check-tag') { console.log(`Verified ${tag} at ${commit}`); return; }
-  const { verifyAllReleaseArtifacts } = await import('./release-artifacts.mjs');
-  const artifacts = await verifyAllReleaseArtifacts(pkg.version);
+  if (command === 'select-build') {
+    const { name, buildId, build } = await selectReleaseBuild({ version: pkg.version, commit, runId: process.env.GITHUB_RUN_ID,
+      resume: process.env.GITHUB_EVENT_NAME === 'workflow_dispatch', sourceRunId: process.env.RELEASE_BUILD_ID, token: process.env.GITHUB_TOKEN });
+    await appendFile(process.env.GITHUB_OUTPUT, `name=${name}\nbuild_id=${buildId}\nbuild=${build}\n`);
+    console.log(`${build ? 'Build and archive' : 'Reuse'} ${name} at ${commit}`);
+    return;
+  }
+  const directory = process.env.RELEASE_ARCHIVE_DIR;
+  if (!directory) throw Error('RELEASE_ARCHIVE_DIR is required');
+  const identity = { version: pkg.version, commit, buildId: process.env.RELEASE_BUILD_ID };
+  const { archiveRelease, verifyArchivedRelease } = await import('./release-artifacts.mjs');
+  if (command === 'archive') { await archiveRelease(directory, identity); return; }
+  const artifacts = await verifyArchivedRelease(directory, identity);
   const result = await publishRelease({ version: pkg.version, commit, notes, artifacts, token: process.env.GITHUB_TOKEN });
   for (const edition of ['server', 'local']) console.log(`${result[edition].alreadyPublished ? 'Verified existing' : 'Published'} ${edition} release: ${result[edition].url}`);
 }

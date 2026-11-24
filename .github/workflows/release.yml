@@ -3,6 +3,12 @@ name: Windows release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      archive_run_id:
+        description: '选择原 vX.Y.Z 标签，填写首次归档该版本的 push 工作流 Run ID'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -12,12 +18,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  source:
     if: github.repository == 'Albert071006/ultimate-calendar'
     runs-on: windows-latest
-    timeout-minutes: 50
     permissions:
-      contents: write
+      contents: read
+      actions: read
+    outputs:
+      name: ${{ steps.select.outputs.name }}
+      build_id: ${{ steps.select.outputs.build_id }}
+      build: ${{ steps.select.outputs.build }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Resolve the original release archive
+        id: select
+        run: node scripts/release.mjs select-build
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_BUILD_ID: ${{ inputs.archive_run_id }}
+
+  build:
+    needs: source
+    if: needs.source.outputs.build == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 50
     env:
       TZ: Asia/Shanghai
     steps:
@@ -74,9 +103,45 @@ jobs:
         run: npm run smoke:server
       - name: Prepare legacy desktop update route to server release
         run: node scripts/release-artifacts.mjs --prepare
-      - name: Verify update metadata and checksums
-        run: npm run release:verify
-      - name: Verify both drafts, publish server first, then local Latest
+      - name: Verify and archive both editions and the legacy route
+        run: node scripts/release.mjs archive
+        env:
+          RELEASE_ARCHIVE_DIR: ${{ runner.temp }}/release-archive
+          RELEASE_BUILD_ID: ${{ needs.source.outputs.build_id }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.source.outputs.name }}
+          path: ${{ runner.temp }}/release-archive/
+          retention-days: 90
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    needs: [source, build]
+    if: ${{ !cancelled() && needs.source.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.source.outputs.name }}
+          run-id: ${{ needs.source.outputs.build_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/release-archive
+      - name: Verify archived bytes and both releases, publish server first, then local Latest
         run: npm run release:publish
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_ARCHIVE_DIR: ${{ runner.temp }}/release-archive
+          RELEASE_BUILD_ID: ${{ needs.source.outputs.build_id }}

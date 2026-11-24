@@ -1,17 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, truncateSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, relative, isAbsolute, sep } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createRemoteService, type RemoteServiceOptions } from './service';
 import { createManagedApiKeyConfiguration } from './ai-configuration';
 import { createRepository, newEntity } from '../storage/repository';
 import { createLedgerService } from '../ledger/service';
 import { LedgerEntryDraftSchema, LedgerImportPayloadSchema } from '../shared/ledger';
 import { SettingsSchema } from '../shared/contracts';
-import { MAX_CLOUD_EXPORT_BYTES, MAX_CLOUD_EXPORT_WIRE_BYTES, LedgerExportDataSchema } from '../shared/cloud-management';
+import { BackupExportManifestSchema, BackupExportChunkSchema, CLOUD_BACKUP_CHUNK_BYTES, MAX_CLOUD_BACKUP_BYTES, MAX_CLOUD_EXPORT_BYTES, MAX_CLOUD_EXPORT_WIRE_BYTES, LedgerExportDataSchema } from '../shared/cloud-management';
 import type { RemoteMethod } from '../shared/remote';
-import { ledgerExportData, backupExportData } from './cloud-export';
+import { ledgerExportData, backupExportData, createBackupDownloads } from './cloud-export';
+import { remoteOutputs } from './protocol';
 import { validateSafeBackup } from './backup';
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -138,6 +139,54 @@ describe('cloud desktop management RPCs', () => {
     const validated = validateSafeBackup(JSON.parse(backup.data.content));
     expect(validated.ledger.entries).toHaveLength(1); expect(validated.ledger.audit).toHaveLength(2); expect(validated.planner.settings.campus).toBe('虚构校区');
     expect(service.state.operation('reused-read-id', 'synthetic-device')).toEqual({ status: 'unknown' });
+
+    const start = remoteOutputs.backupExportStart.parse(await rpc('backupExportStart'));
+    if (!start.ok) throw Error(start.error.message);
+    const manifest = BackupExportManifestSchema.parse(start.data);
+    const input = { downloadId: manifest.downloadId, offset: 0 }, device = 'other-synthetic-device';
+    const other = (method: RemoteMethod, input: unknown) => service.rpc(method, { requestId: randomUUID(), identity: service.state.identity(), input }, device);
+    expect(await other('backupExportChunk', input)).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    expect(await other('backupExportFinish', { downloadId: input.downloadId })).toEqual({ ok: true, data: { released: true } });
+    const chunk = remoteOutputs.backupExportChunk.parse(await rpc('backupExportChunk', input, 'chunk-read'));
+    if (!chunk.ok) throw Error(chunk.error.message);
+    const bytes = Buffer.from(BackupExportChunkSchema.parse(chunk.data).data, 'base64');
+    expect(bytes.length).toBe(manifest.totalBytes);
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(manifest.sha256);
+    expect(validateSafeBackup(JSON.parse(bytes.toString('utf8')))).toEqual(validated);
+    for (const forbidden of [raw, image, root, 'apiKey', 'csrfToken']) expect(bytes.toString('utf8')).not.toContain(forbidden);
+    expect(service.state.operation('chunk-read', 'synthetic-device')).toEqual({ status: 'unknown' });
+    service.state.advanceGeneration();
+    expect(await rpc('backupExportChunk', input)).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+  });
+
+  it('pins bytes across rotation, bounds simultaneous preparations, and releases expired or cancelled downloads', async () => {
+    const { root, rpc } = setup();
+    const result = remoteOutputs.backupExportData.parse(await rpc('backupExportData'));
+    if (!result.ok) throw Error(result.error.message);
+    const path = join(root, 'export-fixture.json');
+    writeFileSync(path, result.data.content);
+    const downloads = createBackupDownloads();
+    vi.useFakeTimers();
+    try {
+      const make = vi.fn(async () => path);
+      const prepared = [downloads.start('device-1', 'generation', make), downloads.start('device-2', 'generation', make)];
+      await expect(downloads.start('device-3', 'generation', make)).rejects.toThrow(/下载尚未结束/);
+      expect(make).toHaveBeenCalledTimes(2);
+      const [first, second] = await Promise.all(prepared);
+      expect(downloads.finish(first!.downloadId, 'device-1', 'generation')).toEqual({ released: true });
+      expect(downloads.finish(first!.downloadId, 'device-1', 'generation')).toEqual({ released: true });
+      expect(() => downloads.chunk(first!.downloadId, 0, 'device-1', 'generation')).toThrow(/失效/);
+      const last = await downloads.start('device-3', 'generation', make);
+      unlinkSync(path);
+      expect(() => downloads.chunk(last.downloadId, CLOUD_BACKUP_CHUNK_BYTES, 'device-3', 'generation')).toThrow(/位置无效/);
+      const piece = downloads.chunk(last.downloadId, 0, 'device-3', 'generation');
+      expect(downloads.chunk(last.downloadId, 0, 'device-3', 'generation')).toEqual(piece);
+      expect(createHash('sha256').update(Buffer.from(piece.data, 'base64')).digest('hex')).toBe(last.sha256);
+      await vi.advanceTimersByTimeAsync(15 * 60_000);
+      expect(() => downloads.chunk(second!.downloadId, 0, 'device-2', 'generation')).toThrow(/失效/);
+      writeFileSync(path, ''); truncateSync(path, MAX_CLOUD_BACKUP_BYTES + 1);
+      await expect(downloads.start('device-3', 'generation', make)).rejects.toThrow(/超过 64 MiB/);
+    } finally { downloads.clear(); vi.useRealTimers(); }
   });
 
   it('rejects oversized UTF-8 or JSON-escaped exports without truncating', () => {

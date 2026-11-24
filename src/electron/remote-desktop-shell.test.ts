@@ -1,5 +1,7 @@
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -7,8 +9,14 @@ import type { BrowserWindow } from 'electron';
 import type { createCollectorControlClient } from './collector-control';
 import type { createUpdateService } from './update-service';
 import { SnapshotSchema } from '../shared/contracts';
+import { BackupExportManifestSchema, CLOUD_BACKUP_CHUNK_BYTES, MAX_CLOUD_EXPORT_BYTES } from '../shared/cloud-management';
+import type { RemoteMethod } from '../shared/remote';
 import { applyPlannerPatch } from '../shared/planner-sync';
-import { emptyState } from '../storage/repository';
+import { createRepository, emptyState, newEntity } from '../storage/repository';
+import { readLocalResourcesCompanion, writeLocalResources } from '../storage/local-resources';
+import { createRemoteHttpServer } from '../server/http';
+import { createRemoteService } from '../server/service';
+import { createNodeRemoteClient } from '../remote/node-client';
 import { DEFAULT_LEDGER_RULES } from '../shared/ledger';
 import { createRemoteDesktopShell } from './remote-desktop-shell';
 import { app, powerMonitor } from 'electron';
@@ -58,12 +66,28 @@ const identity = { protocolVersion: 1 as const, dataInstanceId: '11111111-1111-4
 const snapshot = () => SnapshotSchema.parse({ schemaVersion: 1, sources: [], candidates: [], tasks: [], blocks: [], goals: [], courses: [], courseExceptions: [], preferences: [], feedback: [], settings: { closeToTray: false, autoLaunch: true }, journal: [], tokenUsage: [], keyStatus: { configured: false, sessionOnly: false } });
 const backup = () => JSON.stringify({ format: 'ultimate-calendar-safe-backup', formatVersion: 1, createdAt: new Date().toISOString(), planner: emptyState(),
   ledger: { format: 'ultimate-calendar-ledger', formatVersion: 1, entries: [], balanceSnapshots: [], rules: DEFAULT_LEDGER_RULES, audit: [], sources: [] } });
+function backupRpc(content = backup(), damage?: 'changed' | 'short') {
+  const bytes = Buffer.from(content), downloadId = randomUUID(), sha256 = createHash('sha256').update(bytes).digest('hex');
+  return async (method: RemoteMethod, input?: unknown) => {
+    if (method === 'snapshot') return { ok: true, data: snapshot() };
+    if (method === 'backupExportStart') return { ok: true, data: { downloadId, sha256, totalBytes: bytes.length, chunkBytes: CLOUD_BACKUP_CHUNK_BYTES } };
+    if (method === 'backupExportFinish') { expect(input).toEqual({ downloadId }); return { ok: true, data: { released: true } }; }
+    if (method !== 'backupExportChunk') throw Error('Unexpected RPC: ' + method);
+    const request = input as { downloadId: string; offset: number };
+    expect(request.downloadId).toBe(downloadId);
+    let chunk = Buffer.from(bytes.subarray(request.offset, request.offset + CLOUD_BACKUP_CHUNK_BYTES));
+    if (damage === 'short') chunk = chunk.subarray(0, -1);
+    // Swap a timestamp digit, leaving a valid safe backup with the same byte count.
+    if (damage === 'changed') chunk[chunk.indexOf('"createdAt":"') + '"createdAt":"'.length] = '1'.charCodeAt(0);
+    return { ok: true, data: { downloadId, offset: request.offset, data: chunk.toString('base64') } };
+  };
+}
 async function flush() { for (let i = 0; i < 24; i++) await Promise.resolve(); }
 function fixture(production = true) {
   const directory = mkdtempSync(join(tmpdir(), 'calendar-shell-unit-')); roots.push(directory);
   const window = Object.assign(new EventEmitter(), { isDestroyed: vi.fn(() => false), isMinimized: vi.fn(() => false), restore: vi.fn(), show: vi.fn(), hide: vi.fn(), focus: vi.fn(), webContents: { send: vi.fn() } });
   const collector = { invoke: vi.fn(async () => ({ ok: true, data: {} })), setTrayOwner: vi.fn(async (_owner: string, _active: boolean) => ({ ok: true, data: { accepted: true } })), processState: vi.fn(async (): Promise<'running' | 'stopped' | 'unknown'> => 'running'), shutdownAndWait: vi.fn(async () => ({ ok: true, data: { stopped: true } })), close: vi.fn() };
-  const rpc = vi.fn(async (method: string) => method === 'snapshot' ? { ok: true, data: snapshot() } : { ok: true, data: { content: backup() } });
+  const rpc = vi.fn<(method: RemoteMethod, input?: unknown) => Promise<unknown>>(backupRpc());
   const changed = vi.fn(), isBusy = vi.fn(() => false), getIdentity = vi.fn(async () => identity);
   const config = { origin: 'https://synthetic.invalid', deviceName: '合成电脑', ...(production ? { localDataDirectory: join(directory, 'capture-only-source') } : {}) };
   const shell = createRemoteDesktopShell({ window: window as unknown as BrowserWindow, directory, config, rpc, changed, isBusy, getIdentity,
@@ -240,11 +264,117 @@ describe('cloud desktop device shell', () => {
     expect(f.hooks.isBusy()).toBe(false); f.isBusy.mockReturnValue(true); expect(f.hooks.isBusy()).toBe(true);
   });
 
+  it('reads a multi-chunk cloud export through the paired HTTP client and verifies the installed backup before collector shutdown', async () => {
+    vi.useRealTimers();
+    const f = fixture(); await flush();
+    const dataDirectory = join(f.directory, 'synthetic-server'), origin = 'http://localhost:3210';
+    mkdirSync(dataDirectory);
+    const repo = createRepository(join(dataDirectory, 'planner.sqlite'), { automaticBackup: () => {} });
+    const description = '合成资料'.repeat(24_000), taskCount = 32;
+    try {
+      repo.transact(state => {
+        for (let i = 0; i < taskCount; i++) newEntity(state, 'task', { title: '合成任务 ' + i, description });
+      });
+    } finally { repo.close(); }
+    const registry = { format: 1 as const, deviceId: randomUUID(), deviceName: '合成本机资源', locations: [] };
+    writeLocalResources(f.config.localDataDirectory!, registry);
+    const service = createRemoteService({ dataDirectory, backupDirectory: join(f.directory, 'server-backups'), getApiKey: async () => null,
+      controller: { fetch: async () => { throw Error('Unexpected AI call'); } }, startupBackup: false, scheduleMonthlyAllowance: false });
+    const http = createRemoteHttpServer({ service, origin });
+    let client: ReturnType<typeof createNodeRemoteClient> | undefined;
+    try {
+      const port = await http.listen(0);
+      // Route this fixed synthetic Host and Origin to this test's ephemeral listener.
+      const transport: typeof fetch = async (url, init = {}) => {
+        const target = new URL(String(url));
+        if (target.origin !== origin) throw Error('Unexpected external destination');
+        return new Promise((resolve, reject) => {
+          const request = httpRequest({ hostname: '127.0.0.1', port, path: target.pathname, method: init.method,
+            headers: { ...Object.fromEntries(new Headers(init.headers)), Host: target.host }, signal: init.signal ?? undefined }, response => {
+            const bytes: Buffer[] = []; response.on('data', part => bytes.push(Buffer.from(part)));
+            response.once('error', reject); response.on('end', () => {
+              const headers = new Headers();
+              for (const [name, value] of Object.entries(response.headers)) {
+                if (Array.isArray(value)) value.forEach(part => headers.append(name, part));
+                else if (value !== undefined) headers.set(name, value);
+              }
+              resolve(new Response(Buffer.concat(bytes), { status: response.statusCode, headers }));
+            });
+          });
+          request.once('error', reject); request.end(init.body);
+        });
+      };
+      const remote = createNodeRemoteClient({ origin, fetch: transport, credentials: { read: () => null, write: () => {} } });
+      client = remote;
+      await remote.pair(service.state.createPairingCode(), '合成更新测试设备');
+      f.getIdentity.mockImplementation(async () => (await remote.getSession()).identity);
+      const offsets: number[] = [];
+      let manifest: ReturnType<typeof BackupExportManifestSchema.parse> | undefined;
+      f.rpc.mockImplementation(async (method, input) => {
+        const result = await remote.rpc(method, input);
+        if (result.ok && method === 'backupExportStart') manifest = BackupExportManifestSchema.parse(result.data);
+        if (method === 'backupExportChunk') offsets.push((input as { offset: number }).offset);
+        return result;
+      });
+      f.collector.shutdownAndWait.mockImplementation(async () => {
+        const folder = join(f.directory, 'backups');
+        const files = readdirSync(folder), filename = files.find(name => /^before-update-.*\.json$/.test(name) && !name.endsWith('.local-resources.json'))!;
+        expect(files.sort()).toEqual([filename, filename + '.local-resources.json'].sort());
+        const bytes = readFileSync(join(folder, filename));
+        expect(bytes.length).toBeGreaterThan(MAX_CLOUD_EXPORT_BYTES);
+        expect(manifest).toMatchObject({ totalBytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
+        expect(offsets).toEqual(Array.from({ length: Math.ceil(bytes.length / manifest!.chunkBytes) }, (_, i) => i * manifest!.chunkBytes));
+        const tasks = JSON.parse(bytes.toString('utf8')).planner.entities.task;
+        expect(tasks).toHaveLength(taskCount); expect(tasks.at(-1).description).toBe(description);
+        expect(bytes.includes(Buffer.from(registry.deviceName))).toBe(false);
+        expect(readLocalResourcesCompanion(join(folder, filename))).toEqual(registry);
+        return { ok: true, data: { stopped: true } };
+      });
+      await f.hooks.prepareInstall();
+      expect(f.collector.shutdownAndWait).toHaveBeenCalledOnce(); expect(mocks.spawn).not.toHaveBeenCalled();
+      expect(f.rpc.mock.calls.filter(([method]) => method === 'backupExportFinish')).toEqual([['backupExportFinish', { downloadId: manifest!.downloadId }]]);
+    } finally { client?.close(); await http.close(); await service.close(); }
+  }, 30_000);
+
+  it.each(['changed', 'short'] as const)('rejects a %s chunk before publishing the backup, copying local paths or stopping the collector', async damage => {
+    const f = fixture(); await flush();
+    writeLocalResources(f.config.localDataDirectory!, { format: 1, deviceId: randomUUID(), deviceName: '合成本机资源', locations: [] });
+    f.rpc.mockImplementation(backupRpc(backup(), damage));
+    await expect(f.hooks.prepareInstall()).rejects.toThrow();
+    const folder = join(f.directory, 'backups');
+    expect(existsSync(folder) ? readdirSync(folder) : []).toEqual([]);
+    expect(f.collector.shutdownAndWait).not.toHaveBeenCalled(); expect(mocks.spawn).not.toHaveBeenCalled();
+    const request = f.rpc.mock.calls.find(([method]) => method === 'backupExportChunk')![1] as { downloadId: string };
+    expect(f.rpc.mock.calls.filter(([method]) => method === 'backupExportFinish')).toEqual([['backupExportFinish', { downloadId: request.downloadId }]]);
+  });
+
+  it('detects a disk byte change even when every chunk delivered by the server is intact', async () => {
+    const f = fixture(); await flush();
+    const planner = emptyState();
+    for (let i = 0; i < 4; i++) newEntity(planner, 'task', { title: '磁盘校验 ' + i, description: '合'.repeat(99_000) });
+    const content = JSON.stringify({ ...JSON.parse(backup()), planner });
+    const changeAt = Buffer.from(content).indexOf('"createdAt":"') + '"createdAt":"'.length;
+    const serve = backupRpc(content), folder = join(f.directory, 'backups');
+    writeLocalResources(f.config.localDataDirectory!, { format: 1, deviceId: randomUUID(), deviceName: '合成本机资源', locations: [] });
+    let changedOnDisk = false;
+    f.rpc.mockImplementation(async (method, input) => {
+      if (method === 'backupExportChunk' && (input as { offset: number }).offset === CLOUD_BACKUP_CHUNK_BYTES) {
+        const [staged] = readdirSync(folder);
+        const fd = openSync(join(folder, staged!), 'r+');
+        try { writeSync(fd, Buffer.from('1'), 0, 1, changeAt); changedOnDisk = true; } finally { closeSync(fd); }
+      }
+      return serve(method, input);
+    });
+    await expect(f.hooks.prepareInstall()).rejects.toThrow();
+    expect(changedOnDisk).toBe(true); expect(readdirSync(folder)).toEqual([]);
+    expect(f.collector.shutdownAndWait).not.toHaveBeenCalled();
+  });
+
   it('does not stop collectors when the backup fails validation or changes data identity', async () => {
     const f = fixture(); await flush();
-    f.rpc.mockImplementation(async method => method === 'snapshot' ? { ok: true, data: snapshot() } : { ok: true, data: { content: '{}' } });
+    f.rpc.mockImplementation(backupRpc('{}'));
     await expect(f.hooks.prepareInstall()).rejects.toThrow(); expect(f.collector.shutdownAndWait).not.toHaveBeenCalled();
-    f.rpc.mockImplementation(async method => method === 'snapshot' ? { ok: true, data: snapshot() } : { ok: true, data: { content: backup() } });
+    f.rpc.mockImplementation(backupRpc());
     f.getIdentity.mockResolvedValueOnce(identity).mockResolvedValueOnce({ ...identity, generation: 2 });
     await expect(f.hooks.prepareInstall()).rejects.toThrow(/身份改变/); expect(f.collector.shutdownAndWait).not.toHaveBeenCalled();
   });

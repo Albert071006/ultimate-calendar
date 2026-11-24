@@ -11,11 +11,17 @@ import { WorkflowError } from '../ai/deepseek';
 import { parseCourseFile } from '../imports/courses';
 import { boundedFile } from './files';
 import { validateSafeBackup } from '../server/backup';
+import { openRemoteBackup, saveRemoteBackup } from './remote-backup';
 import { writeLocalResourcesCompanion, readLocalResourcesCompanion, mergeLocalResources, type LocalResourceRegistry } from '../storage/local-resources';
 
 /** Native file selection stays local; shared data export always comes from the cloud. */
 export function createRemoteFiles(options: { window: BrowserWindow; resourceDirectory?: string; rpc(method: RemoteMethod, input?: unknown): Promise<unknown>; client: NodeRemoteClient; canRestore(): Promise<boolean> }) {
   let preview: { confirmationToken: string; token: string; digest: string; localResources: LocalResourceRegistry | null } | null = null;
+  async function exportPath(backup: boolean, format: 'json' | 'csv') {
+    const selected = await dialog.showSaveDialog(options.window, { title: backup ? '导出共用日历和账本备份' : '导出云端账本', defaultPath: join(app.getPath('documents'), `终极日历${backup ? '备份' : '账本'}-${new Date().toISOString().slice(0, 10)}.${format}`), filters: [{ name: format.toUpperCase(), extensions: [format] }], properties: ['createDirectory', 'showOverwriteConfirmation'] });
+    if (selected.canceled || !selected.filePath) throw new WorkflowError('CANCELLED', '已取消导出');
+    return selected.filePath;
+  }
   return {
     async handle(method: string, input?: unknown): Promise<ApiResult<unknown> | null> {
       if (method === 'importCourses') {
@@ -31,15 +37,22 @@ export function createRemoteFiles(options: { window: BrowserWindow; resourceDire
         if (!snapshot.ok) return snapshot;
         return { ok: true, data: await parseCourseFile({ name: basename(path), bytes }, snapshot.data.settings) };
       }
-      if (method === 'ledgerExport' || method === 'backup') {
-        const exported = method === 'backup' ? remoteOutputs.backupExportData.parse(await options.rpc('backupExportData')) : remoteOutputs.ledgerExportData.parse(await options.rpc('ledgerExportData', input));
+      if (method === 'ledgerExport') {
+        const exported = remoteOutputs.ledgerExportData.parse(await options.rpc('ledgerExportData', input));
         if (!exported.ok) return exported;
-        const format = 'format' in exported.data && exported.data.format === 'csv' ? 'csv' : 'json';
-        const selected = await dialog.showSaveDialog(options.window, { title: method === 'backup' ? '导出共用日历和账本备份' : '导出云端账本', defaultPath: join(app.getPath('documents'), `终极日历${method === 'backup' ? '备份' : '账本'}-${new Date().toISOString().slice(0, 10)}.${format}`), filters: [{ name: format.toUpperCase(), extensions: [format] }], properties: ['createDirectory', 'showOverwriteConfirmation'] });
-        if (selected.canceled || !selected.filePath) throw new WorkflowError('CANCELLED', '已取消导出');
-        await writeFile(selected.filePath, exported.data.content, { encoding: 'utf8', mode: 0o600 });
-        if (method === 'backup' && options.resourceDirectory) writeLocalResourcesCompanion(options.resourceDirectory, selected.filePath);
-        return { ok: true, data: { path: selected.filePath, ...(method === 'backup' ? { includesSources: false } : {}) } };
+        const path = await exportPath(false, exported.data.format);
+        await writeFile(path, exported.data.content, { encoding: 'utf8', mode: 0o600 });
+        return { ok: true, data: { path } };
+      }
+      if (method === 'backup') {
+        const result = await openRemoteBackup(options.rpc);
+        if (!result.ok) return result;
+        try {
+          const path = await exportPath(true, 'json');
+          await saveRemoteBackup(path, result.data);
+          if (options.resourceDirectory) writeLocalResourcesCompanion(options.resourceDirectory, path);
+          return { ok: true, data: { path, includesSources: false } };
+        } finally { await result.data.finish?.(); }
       }
       if (method === 'restore') {
         const request = RestoreRequestSchema.parse(input);

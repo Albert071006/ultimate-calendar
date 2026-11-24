@@ -79,13 +79,32 @@ describe('native Node remote transport',()=>{
     expect(f.store.write).not.toHaveBeenCalled();f.client.close();
   });
   it.each(REMOTE_READ_METHODS)('recognizes the %s read RPC despite its POST transport and never retries it',async method=>{
-    const input=method==='ledgerExportData'?{format:'json'}:method==='restorePreview'?{content:'synthetic backup'}:method==='changes'?{cursor:{streamId:'11111111-1111-4111-8111-111111111111',revision:0}}:undefined;
+    const inputs: Partial<Record<typeof method, unknown>> = {
+      changes: { cursor: { streamId: identity.dataInstanceId, revision: 0 } },
+      ledgerExportData: { format: 'json' },
+      restorePreview: { content: 'synthetic backup' },
+      backupExportChunk: { downloadId: identity.dataInstanceId, offset: 0 },
+      backupExportFinish: { downloadId: identity.dataInstanceId },
+    };
+    const input = inputs[method];
     const f=setup(path=>{if(path.endsWith('/session'))return json(session);throw Error('synthetic dropped read');});
     await expect(f.client.rpc(method,input)).rejects.toMatchObject({status:0,message:'资料读取未完成，请检查连接后刷新'});
     expect(f.fetcher).toHaveBeenCalledTimes(2);
     expect(f.fetcher.mock.calls[1]![1]!.method).toBe('POST');
     expect(String(f.fetcher.mock.calls[1]![0])).toBe(origin+'/api/v1/rpc/'+method);
     expect(f.store.write).not.toHaveBeenCalled();f.client.close();
+  });
+  it('allows time to prepare the full backup while keeping individual chunk requests short', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const downloadId = '33333333-3333-4333-8333-333333333333';
+    const f = setup(path => path.endsWith('/session') ? json(session) : json({ ok: true, data: path.endsWith('Start')
+      ? { downloadId, totalBytes: 3, chunkBytes: 1024 * 1024, sha256: 'a'.repeat(64) }
+      : { downloadId, offset: 0, data: 'YWJj' } }));
+    try {
+      await f.client.rpc('backupExportStart');
+      await f.client.rpc('backupExportChunk', { downloadId, offset: 0 });
+      expect(timeout.mock.calls.map(([ms]) => ms)).toEqual([30_000, 120_000, 30_000]);
+    } finally { timeout.mockRestore(); f.client.close(); }
   });
   it('does not describe an unsent mutation as an unknown write when its session preflight fails',async()=>{
     const f=setup(()=>{throw Error('synthetic preflight failure');});
