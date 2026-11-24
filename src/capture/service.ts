@@ -8,7 +8,7 @@ import { downloadAttachment, AttachmentDownloadError, attachmentFileName, type C
 import { EXTRACTOR_VERSION, type DocumentExtraction, type DocumentInput } from './documents';
 import { analyzeCapture } from './analysis';
 import { isAddressedElsewhere, mentionLabel } from './recipients';
-import type { CaptureStore, CapturedMessageInput, StoredCaptureMessage, StoredCaptureAttachment } from './store';
+import { wechatAttachmentRetryExpired, type CaptureStore, type CapturedMessageInput, type StoredCaptureMessage, type StoredCaptureAttachment } from './store';
 import type { Repository } from '../storage/repository';
 import type { PriceQuote } from '../shared/account';
 import type { ModelRequestRunner } from '../ai/request-queue';
@@ -228,6 +228,8 @@ export function createCaptureService(options: {
   }
   async function processAttachment(message: StoredCaptureMessage, a: StoredCaptureAttachment) {
     if (a.status === 'ready' || a.status === 'deleted') return;
+    if (platform === 'wechat' && (a.kind === 'image' || a.kind === 'file') &&
+        a.retryable && !a.hash && wechatAttachmentRetryExpired(message.sentAt)) return;
     if (!permitted(message.accountId, message.groupId, false)) throw new WorkflowError('CANCELLED', '来源群已取消选择，已停止附件处理');
     if (['voice', 'video'].includes(a.kind)) { store.setAttachmentStatus(a.id, 'unsupported', a.kind === 'voice' ? '语音不自动分析，请手动查看' : '视频不自动分析，请手动查看'); return; }
     if (a.size && a.size > 25 * 1024 * 1024) { store.setAttachmentStatus(a.id, 'too-large', '文件超过 25 MB 自动处理限额，请手动查看'); return; }
@@ -315,7 +317,7 @@ export function createCaptureService(options: {
           const message = safeError(cause).message;
           if (current.status === 'result-ready') { error = 'AI 结果已保存，候选提交暂未完成；下次检查会继续提交，不重复调用 AI'; break; }
           if (cause instanceof WorkflowError && cause.code === 'CANCELLED' && current.status !== 'requesting') {
-            store.failBatch(batch.id, '分析已暂停，恢复后继续已保存的进度'); store.retryBatch(batch.id); break;
+            store.failBatch(batch.id, '分析已暂停，恢复后继续已保存的进度'); store.retryBatch(batch.id, nowInstant(), 'resume'); break;
           }
           const uncertain = current.status === 'requesting' && (!(cause instanceof WorkflowError) || ['NETWORK', 'AI_RESPONSE', 'STORAGE', 'INTERNAL'].includes(cause.code));
           const savedResponse = current.result && typeof current.result === 'object' && !Array.isArray(current.result) && current.result.pendingResponse;

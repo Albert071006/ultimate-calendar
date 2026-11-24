@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { IdSchema } from '../shared/contracts';
 import { CaptureConfigSchema, GroupCoverageSchema, capturePlatform, type CaptureConfig } from '../shared/capture';
 import { nowInstant } from '../domain/time';
-import { captureBackupSchemas, captureMessageId } from './store';
+import { captureBackupSchemas, captureMessageId, recoverAttachmentRead } from './store';
 
 const TABLES = ['capture_meta', 'capture_selections', 'capture_messages', 'capture_blobs', 'capture_attachments', 'capture_chunks', 'capture_batches', 'capture_batch_messages', 'capture_coverage'] as const;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -111,7 +111,7 @@ export function copyCaptureBackupFile(source: DatabaseSync, destination: Databas
     for (const row of source.prepare(`SELECT ${columns.join(',')} FROM ${table} ORDER BY rowid`).iterate()) {
       if (table === 'capture_attachments') {
         const item = captureBackupSchemas.attachment.parse(payload(row));
-        if (['downloading', 'extracting'].includes(item.status)) { item.status = 'pending'; item.error = null; }
+        recoverAttachmentRead(item);
         row['payload'] = JSON.stringify(item);
       }
       if (table === 'capture_batches') {

@@ -16,6 +16,11 @@ import { openDatabase } from '../storage/database';
 import { planAttachmentRetention, applyAttachmentRetention, type AttachmentRetentionPolicy } from './retention';
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const WECHAT_ATTACHMENT_RETRY_MS = 3 * 24 * 60 * 60_000;
+const EXPIRED_WECHAT_ATTACHMENT = '消息发出已超过 3 天，已停止自动检查附件。需要时可在电脑微信打开原件，再点“重试此批”。';
+export function wechatAttachmentRetryExpired(sentAt: string, now = Date.now()): boolean {
+  return Date.parse(sentAt) < now - WECHAT_ATTACHMENT_RETRY_MS;
+}
 const JsonSchema = z.json();
 const MessageInputSchema = z.strictObject({
   accountId: IdSchema, groupId: IdSchema, messageId: IdSchema,
@@ -46,6 +51,12 @@ const StoredAttachmentSchema = z.strictObject({
   hash: z.string().regex(/^[a-f0-9]{64}$/).nullable(), extractorVersion: z.string().max(500).nullable(),
 });
 export type StoredCaptureAttachment = z.infer<typeof StoredAttachmentSchema>;
+export function recoverAttachmentRead(item: StoredCaptureAttachment) {
+  if (item.status !== 'downloading' && item.status !== 'extracting') return;
+  if (item.messageId.startsWith('wxm:') && item.status === 'downloading' && !item.hash) item.retryable = true;
+  item.status = 'pending';
+  item.error = null;
+}
 const ChunkSchema = z.strictObject({
   id: IdSchema, attachmentId: IdSchema, ordinal: z.number().int().nonnegative(),
   location: z.string().max(1000), text: z.string().max(1_000_000),
@@ -266,6 +277,32 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
       failedAttachments: count(`SELECT count(*) AS n FROM capture_attachments WHERE json_extract(payload,'$.status') IN ('failed','too-large','encrypted','unsupported') AND ${attachmentScope}`),
     });
   }
+  function attachmentWait(messageIds: string[], retryable: boolean, error: string, at: string) {
+    if (retryable && platform === 'wechat' && messageIds.some(id => {
+      const row = db.prepare('SELECT sent_at FROM capture_messages WHERE id=?').get(id);
+      return row && wechatAttachmentRetryExpired(String(row['sent_at']), Date.parse(at));
+    })) return { waitingForAttachments: false, error: EXPIRED_WECHAT_ATTACHMENT };
+    return { waitingForAttachments: retryable, error };
+  }
+
+  // Older collectors periodically moved each unread message back to pending and cleared its wait flag.
+  // The failed attachment still identifies these retries. Leave mixed batches to the per-message split.
+  function expireWechatAttachmentRetries(at: string) {
+    if (platform !== 'wechat') return;
+    const cutoff = new Date(Date.parse(at) - WECHAT_ATTACHMENT_RETRY_MS).toISOString();
+    db.prepare(`UPDATE capture_batches AS b SET status='failed', payload=json_set(b.payload,
+        '$.status','failed','$.waitingForAttachments',json('false'),'$.error',?,'$.updatedAt',?)
+      WHERE ${scope('b.account_id')} AND (b.status='pending' OR (b.status='failed' AND json_extract(b.payload,'$.waitingForAttachments')=1))
+        AND json_array_length(b.payload,'$.messageIds')=1 AND json_array_length(b.payload,'$.attempts')=0
+        AND json_extract(b.payload,'$.result') IS NULL AND EXISTS (
+          SELECT 1 FROM capture_messages m WHERE m.id=json_extract(b.payload,'$.messageIds[0]') AND julianday(m.sent_at)<julianday(?)
+            AND (b.status='failed' OR (
+              SELECT count(*)=1 AND max(a.hash IS NULL AND json_extract(a.payload,'$.kind') IN ('image','file')
+                AND json_extract(a.payload,'$.status') IN ('failed','pending') AND json_extract(a.payload,'$.retryable')=1)
+              FROM capture_attachments a WHERE a.message_id=m.id)))`)
+      .run(EXPIRED_WECHAT_ATTACHMENT, at, cutoff);
+  }
+
   function recoverInterrupted(at = nowInstant()) {
     InstantSchema.parse(at);
     return transaction(() => {
@@ -284,8 +321,10 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
         value.updatedAt = at; saveBatch(value);
       }
       for (const row of db.prepare(`SELECT a.payload FROM capture_attachments a JOIN capture_messages m ON m.id=a.message_id WHERE json_extract(a.payload,'$.status') IN ('downloading','extracting') AND ${scope('m.account_id')}`).all()) {
-        const value = parsePayload(row, StoredAttachmentSchema)!; value.status = 'pending'; value.error = null; saveAttachment(value);
+        const value = parsePayload(row, StoredAttachmentSchema)!;
+        recoverAttachmentRead(value); saveAttachment(value);
       }
+      expireWechatAttachmentRetries(at);
       return { uncertain, pending };
     });
   }
@@ -552,17 +591,25 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
       const attempt = value.attempts.at(-1); if (attempt?.status === 'requesting') { attempt.status = uncertain ? 'uncertain' : 'failed'; attempt.error = error; attempt.finishedAt = at; }
       saveBatch(value); return value;
     },
-    retryBatch(id: string, at = nowInstant()): CaptureBatch {
+    retryBatch(id: string, at = nowInstant(), source: 'user' | 'resume' = 'user'): CaptureBatch {
       InstantSchema.parse(at);
-      const value = batch(id); if (!value || !['failed', 'uncertain'].includes(value.status)) throw Error('仅失败或响应未知的批次可手动重试');
-      if (value.messageIds.some(id => message(id)?.deleted)) throw Error('原文已清理，不能重新分析');
-      value.status = 'pending'; value.error = null; value.waitingForAttachments = false; value.updatedAt = at; saveBatch(value); return value;
+      return transaction(() => {
+        const value = batch(id); if (!value || !['failed', 'uncertain'].includes(value.status)) throw Error('仅失败或响应未知的批次可手动重试');
+        if (value.messageIds.some(id => message(id)?.deleted)) throw Error('原文已清理，不能重新分析');
+        if (platform === 'wechat' && source === 'user') {
+          for (const messageId of value.messageIds) for (const item of attachments(messageId)) {
+            if (!item.retryable || item.hash || item.status === 'deleted') continue;
+            delete item.retryable; item.status = 'pending'; item.error = null; saveAttachment(item);
+          }
+        }
+        value.status = 'pending'; value.error = null; value.waitingForAttachments = false; value.updatedAt = at; saveBatch(value); return value;
+      });
     },
     waitForAttachments(id: string, error: string, retryable: boolean, at = nowInstant()): CaptureBatch {
       InstantSchema.parse(at); z.string().max(2000).parse(error);
       const value = batch(id); if (!value || value.status !== 'preparing') throw Error('仅准备中的批次可等待附件');
-      value.status = 'failed'; value.error = error; value.updatedAt = at;
-      value.waitingForAttachments = retryable && value.attempts.length === 0 && value.result === null;
+      value.status = 'failed'; value.updatedAt = at;
+      Object.assign(value, attachmentWait(value.messageIds, retryable && value.attempts.length === 0 && value.result === null, error, at));
       saveBatch(value); return value;
     },
     isolateUnreadAttachments(id: string, unread: { messageId: string; error: string; retryable: boolean }[], at = nowInstant()): boolean {
@@ -581,8 +628,8 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
           const nextId = index === 0 ? id : `qqb:${randomUUID()}`;
           const next: CaptureBatch = { ...value, id: nextId, operationId: index === 0 ? value.operationId : `qq-apply:${nextId}`,
             messageIds, contextMessageIds: allContext.filter(messageId => !messageIds.includes(messageId)).slice(0, 1000),
-            status: waiting ? 'failed' : 'pending', waitingForAttachments: waiting?.retryable ?? false,
-            updatedAt: at, error: waiting?.error ?? null };
+            status: waiting ? 'failed' : 'pending', updatedAt: at,
+            ...(waiting ? attachmentWait(messageIds, waiting.retryable, waiting.error, at) : { waitingForAttachments: false, error: null }) };
           saveBatch(next);
           for (const [ordinal, messageId] of messageIds.entries()) db.prepare('INSERT INTO capture_batch_messages(batch_id,message_id,ordinal) VALUES(?,?,?)').run(nextId, messageId, ordinal);
         }
@@ -592,6 +639,7 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
     retryWaitingAttachments(at = nowInstant()): number {
       InstantSchema.parse(at);
       return transaction(() => {
+        expireWechatAttachmentRetries(at);
         const active = config(); if (!active.analysisEnabled || !active.accountId || !active.groupIds.length) return 0;
         let count = 0;
         for (const row of db.prepare(`SELECT payload FROM capture_batches WHERE account_id=? AND status='failed' AND json_extract(payload,'$.waitingForAttachments')=1`).all(active.accountId)) {
@@ -613,7 +661,9 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
         value.waitingForAttachments = false;
         value.status = 'pending'; value.updatedAt = at; value.error = null;
         for (const id of value.messageIds) for (const item of attachments(id)) {
-          if (['failed', 'encrypted', 'too-large'].includes(item.status)) { item.status = 'pending'; item.error = null; saveAttachment(item); }
+          if (['failed', 'encrypted', 'too-large'].includes(item.status) || platform === 'wechat' && item.retryable && item.status === 'pending') {
+            item.status = 'pending'; item.error = null; delete item.retryable; saveAttachment(item);
+          }
         }
         saveBatch(value); return value;
       });
@@ -756,7 +806,7 @@ export function createCaptureStore(path: string, internal: { platform?: CaptureP
         for (const item of state.messages) saveMessage(item);
         for (const item of state.blobs) db.prepare('INSERT INTO capture_blobs(hash,bytes) VALUES(?,?)').run(item.hash, Buffer.from(item.bytes, 'base64'));
         for (const item of state.attachments) {
-          if (options.recover !== false && ['downloading', 'extracting'].includes(item.status)) { item.status = 'pending'; item.error = null; }
+          if (options.recover !== false) recoverAttachmentRead(item);
           saveAttachment(item);
         }
         for (const item of state.chunks) db.prepare('INSERT INTO capture_chunks(id,attachment_id,ordinal,payload) VALUES(?,?,?,?)').run(item.id, item.attachmentId, item.ordinal, json(item));

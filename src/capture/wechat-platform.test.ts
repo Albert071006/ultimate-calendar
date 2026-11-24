@@ -12,6 +12,7 @@ import { createCaptureService, normalizeMessage, type CaptureBridgeFactory } fro
 import { createCandidateReader } from '../bridge/source-reader';
 import { DistilledRequestSchema } from '../shared/distilled';
 import { importDistilled } from '../server/distilled';
+import { instantAt } from '../domain/time';
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { vi.useRealTimers(); for (const close of cleanup.splice(0).reverse()) close(); });
@@ -28,7 +29,53 @@ function fixture() {
 }
 const incoming = (accountId = wx, groupId = group, messageId = 'server:1') => ({ accountId, groupId, messageId, sentAt: at, importedAt: at, text: '明天中午提交合成材料', attachments: [{ kind: 'file' as const, name: '合成材料.txt' }] });
 
+function waitingForFile(store: ReturnType<typeof createCaptureStore>, messageId: string, sentAt: string, importedAt: string) {
+  const [id] = store.ingest([{ ...incoming(wx, group, messageId), sentAt, importedAt }], importedAt).ids;
+  const [batch] = store.sealBatches({ force: true, now: importedAt });
+  expect(store.claimBatch(importedAt)?.id).toBe(batch!.id);
+  const [file] = store.attachments(id!);
+  store.setAttachmentStatus(file!.id, 'failed', '合成附件未下载', true);
+  store.waitForAttachments(batch!.id, '合成附件未下载', true, importedAt);
+  return batch!.id;
+}
+
 describe('concurrent QQ and WeChat collection', () => {
+  it('expires the retry window against sentAt to the millisecond, independently of the recent import time', () => {
+    const { wechat } = fixture();
+    const now = Date.parse(at), cutoff = now - 72 * 3600_000;
+    const imported = instantAt(now - 60_000);
+    const expired = waitingForFile(wechat, 'outside-window', instantAt(cutoff - 1), imported);
+    const exact = waitingForFile(wechat, 'exact-window', instantAt(cutoff), imported);
+    const recent = waitingForFile(wechat, 'within-window', instantAt(cutoff + 1), imported);
+    expect(wechat.retryWaitingAttachments(at)).toBe(2);
+    expect(wechat.batch(expired)).toMatchObject({ status: 'failed', waitingForAttachments: false, error: expect.stringContaining('已超过 3 天') });
+    expect(wechat.batch(exact)?.status).toBe('pending');
+    expect(wechat.batch(recent)?.status).toBe('pending');
+  });
+
+  it.each(['waiting', 'pending', 'preparing', 'downloading'])('parks an expired legacy %s retry when the WeChat store restarts', state => {
+    const { path, wechat } = fixture();
+    const now = Date.parse(at), earlier = instantAt(now - 60_000);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(earlier));
+    const id = waitingForFile(wechat, 'already-tried', instantAt(now - 72 * 3600_000 - 1), earlier);
+    if (state !== 'waiting') {
+      expect(wechat.retryWaitingAttachments(earlier)).toBe(1);
+      if (state === 'preparing' || state === 'downloading') expect(wechat.claimBatch(earlier)?.id).toBe(id);
+      if (state === 'downloading') {
+        const [message] = wechat.batchMessages(id);
+        const [file] = wechat.attachments(message!.id);
+        wechat.setAttachmentStatus(file!.id, 'downloading');
+      }
+    }
+    vi.setSystemTime(new Date(at));
+    const restarted = createCaptureStore(path, { platform: 'wechat' });
+    cleanup.push(() => restarted.close());
+    expect(restarted.batch(id)).toMatchObject({ status: 'failed', waitingForAttachments: false, error: expect.stringContaining('已超过 3 天') });
+    expect(restarted.retryWaitingAttachments(at)).toBe(0);
+    expect(restarted.claimBatch(at)).toBeNull();
+  });
+
   it('enriches uncharged placeholders but keeps paid text checkpoints immutable when media arrives later', () => {
     const f = fixture(), raw = { ...incoming(), text: '明天中午提交合成材料：请按附件要求提交', attachments: [] };
     const id = f.wechat.ingest([raw]).ids[0]!;

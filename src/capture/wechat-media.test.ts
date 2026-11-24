@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readWechatMediaLocation } from './wechat-media';
@@ -24,22 +24,23 @@ function directory() {
 const metadata = (path: string, bytes: Buffer) => ({ path, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
 const account = 'wechat:wxid_media_test', group = 'media@chatroom';
 
-async function pipeline(errorCode?: string, oldPaidPlaceholder = false, onlyImageFails = false) {
+async function pipeline(errorCode?: string, oldPaidPlaceholder = false, onlyImageFails = false, imageAgeMs = 60_000) {
   const root = directory(), workdir = join(root, 'cache'), media = join(workdir, 'reader-synthetic', 'media'); mkdirSync(media, { recursive: true });
   const imagePath = join(media, 'image.png'), docPath = join(media, 'document.docx');
   const docx = fixtureDocx(); writeFileSync(imagePath, PIXEL_PNG); writeFileSync(docPath, docx);
   const responses = { image: { ...metadata(imagePath, PIXEL_PNG), name: '图片通知.png', status: 'ready' }, file: { ...metadata(docPath, docx), name: '合成通知.docx', status: 'ready' } };
   const ready = join(root, 'ready'), closed = join(root, 'closed'), worker = join(root, 'worker.mjs');
   if (!errorCode) writeFileSync(ready, 'ready');
-  const sentAt = instantAt(Date.now() - 60_000);
-  writeFileSync(worker, `import { createInterface } from 'node:readline'; import { existsSync, writeFileSync } from 'node:fs';
+  const now = Date.now(), sentAt = instantAt(now - 60_000), imageSentAt = instantAt(now - imageAgeMs);
+  const mediaReads = join(root, 'media-reads.txt');
+  writeFileSync(worker, `import { createInterface } from 'node:readline'; import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 const results = ${JSON.stringify(responses)};
 const lines = createInterface({input:process.stdin});
 lines.on('line', line => { const q=JSON.parse(line); let data;
  if(q.action==='status') data={accountId:${JSON.stringify(account)},nickname:'合成微信'};
  else if(q.action==='groups') data=[{id:${JSON.stringify(group)},name:'合成媒体群'}];
- else if(q.action==='history') data={messages:['image','file'].map((kind,index)=>({self_id:${JSON.stringify(account)},group_id:q.groupId,message_id:'s:'+index,time:${Date.parse(sentAt) / 1000},message_type:'group',message:[{type:kind,data:{file:'wm1:'+kind,name:results[kind].name}}]})),nextCursor:null,complete:false};
- else if(q.action==='media') {if(q.messageId !== (q.kind==='image'?'s:0':'s:1')) throw Error('Wrong original message'); if(!existsSync(${JSON.stringify(ready)}) && (!${onlyImageFails} || q.kind==='image')) {process.stdout.write(JSON.stringify({id:q.id,ok:false,error:{code:${JSON.stringify(errorCode ?? 'NOT_DOWNLOADED')},message:'PRIVATE_MEDIA_PATH'}})+'\\n');return;} data=results[q.kind];}
+ else if(q.action==='history') data={messages:['image','file'].map((kind,index)=>({self_id:${JSON.stringify(account)},group_id:q.groupId,message_id:'s:'+index,time:kind==='image'?${Date.parse(imageSentAt) / 1000}:${Date.parse(sentAt) / 1000},message_type:'group',message:[{type:kind,data:{file:'wm1:'+kind,name:results[kind].name}}]})),nextCursor:null,complete:false};
+ else if(q.action==='media') {appendFileSync(${JSON.stringify(mediaReads)}, q.kind+'\\n'); if(q.messageId !== (q.kind==='image'?'s:0':'s:1')) throw Error('Wrong original message'); if(!existsSync(${JSON.stringify(ready)}) && (!${onlyImageFails} || q.kind==='image')) {process.stdout.write(JSON.stringify({id:q.id,ok:false,error:{code:${JSON.stringify(errorCode ?? 'NOT_DOWNLOADED')},message:'PRIVATE_MEDIA_PATH'}})+'\\n');return;} data=results[q.kind];}
  process.stdout.write(JSON.stringify({id:q.id,ok:true,data})+'\\n');
 }); lines.on('close',()=>writeFileSync(${JSON.stringify(closed)},'closed'));`);
   const repository = createRepository(join(root, 'planner.sqlite'), { automaticBackup: () => {} }); cleanups.push(() => repository.close());
@@ -66,7 +67,8 @@ lines.on('line', line => { const q=JSON.parse(line); let data;
   cleanups.push(async () => { service.stop(); await until(() => !service.busy() && existsSync(closed)); });
   await service.connect(); await service.configure({ ...store.config(), groupIds: [group], enabled: true }); await until(() => !service.busy());
   const run = async () => { await service.configure({ ...store.config(), analysisEnabled: true }); await until(() => !service.busy()); service.action({ action: 'analyze' }); await until(() => !service.busy()); };
-  return { root, workdir, store, repository, service, run, ready, requests, fetcher, sentAt, responses, previousBatch };
+  const imageReadCount = () => readFileSync(mediaReads, 'utf8').trim().split('\n').filter(kind => kind === 'image').length;
+  return { root, workdir, store, repository, service, run, ready, imageReadCount, requests, fetcher, sentAt, responses, previousBatch };
 }
 
 describe('WeChat bounded media extraction', () => {
@@ -130,6 +132,61 @@ describe('WeChat bounded media extraction', () => {
     const missingMessageId = f.store.batchMessages(failed.id)[0]!.id;
     expect(f.repository.snapshot().sources.every(source => source.captureRef?.messageId !== missingMessageId)).toBe(true);
     expect(f.store.exportState().state.batches.every(batch => batch.messageIds.length === 1)).toBe(true);
+  });
+
+  it('keeps a newly discovered old image available for a single manual attempt while the recent document advances', async () => {
+    const f = await pipeline('NOT_DOWNLOADED', false, true, 4 * 86400_000);
+    await f.run();
+    const batch = f.store.listBatches().items.find(item => item.status === 'failed')!;
+    const expectParked = () => expect(f.store.batch(batch.id)).toMatchObject({
+      status: 'failed', waitingForAttachments: false, error: expect.stringContaining('已超过 3 天'), attempts: [],
+    });
+    expect(f.imageReadCount()).toBe(1);
+    expectParked();
+    expect(f.repository.snapshot().candidates.map(item => item.title)).toContain('提交合成报告');
+    const imageMessage = f.store.batchMessages(batch.id)[0]!.id;
+    expect(f.repository.snapshot().sources.some(item => item.captureRef?.messageId === imageMessage)).toBe(false);
+
+    const runAction = async (action: 'retry' | 'analyze' | 'backfill') => {
+      f.service.action(action === 'retry' ? { action, batchId: batch.id } : { action });
+      await until(() => !f.service.busy());
+    };
+    await runAction('retry');
+    expect(f.imageReadCount()).toBe(2);
+    expectParked();
+    expect(f.store.retryWaitingAttachments()).toBe(0);
+    await runAction('backfill');
+    await runAction('analyze');
+    expect(f.imageReadCount()).toBe(2);
+    expect(f.fetcher).toHaveBeenCalledTimes(1);
+
+    writeFileSync(f.ready, 'ready');
+    await runAction('retry');
+    expect(f.imageReadCount()).toBe(3);
+    expect(f.store.batch(batch.id)?.status).toBe('applied');
+    expect(f.fetcher).toHaveBeenCalledTimes(2);
+    expect(f.repository.snapshot().sources.some(item => item.captureRef?.messageId === imageMessage)).toBe(true);
+  });
+
+  it('does not read an already queued image again when it expires between scheduling and processing', async () => {
+    const f = await pipeline('NOT_DOWNLOADED', false, true);
+    await f.run();
+    const batch = f.store.listBatches().items.find(item => item.status === 'failed')!;
+    const [message] = f.store.batchMessages(batch.id);
+    const deadline = Date.parse(message!.sentAt) + 72 * 3600_000;
+    expect(f.store.retryWaitingAttachments(instantAt(deadline))).toBe(1);
+    expect(f.store.batch(batch.id)?.status).toBe('pending');
+    writeFileSync(f.ready, 'ready');
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(deadline + 1);
+    try {
+      f.service.action({ action: 'analyze' });
+      await until(() => !f.service.busy());
+      expect(f.imageReadCount()).toBe(1);
+      expect(f.store.batch(batch.id)).toMatchObject({ status: 'failed', waitingForAttachments: false, error: expect.stringContaining('已超过 3 天') });
+      expect(f.fetcher).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('reads new media on old paid messages using the original RPC identity without charging the old text again', async () => {

@@ -259,7 +259,7 @@ export function CapturePage({ ui, initialReference, platform = 'qq' }: { ui: Pla
           <div><strong>{snapshot.stats.failedAttachments}</strong><span>附件待查看</span></div>
         </div>
         <div className="toolbar"><button disabled={busy || !configuredAccount || !snapshot.config.analysisEnabled} onClick={() => void action('analyze')}>立即分析</button><button disabled={busy || snapshot.connection !== 'online' || !snapshot.config.enabled} onClick={() => void action('backfill')}>补采最近 7 天</button></div>
-        <p className="fine-print">自动分析不设每日预算上限，沿用设置中的 DeepSeek 模型与真实余额。{wechat ? '可分析文字、卡片标题，以及电脑微信已缓存或下载的图片和文件；尚未下载时，请先在微信中打开或下载，再重试对应批次。最近 7 天曾未读到的附件，也可点“补采最近 7 天”重新检查。语音、视频和压缩包需手动查看。' : '语音、视频和压缩包需手动查看。'}</p>
+        <p className="fine-print">自动分析不设每日预算上限，沿用设置中的 DeepSeek 模型与真实余额。{wechat ? '可分析文字、卡片标题，以及电脑微信已缓存或下载的图片和文件。消息发出超过 3 天后，日历会停止自动重试没读到的附件。以后想看时，在电脑微信打开原件，再点“重试此批”即可。语音、视频和压缩包需手动查看。' : '语音、视频和压缩包需手动查看。'}</p>
       </section>
     </div>
     <section className="settings-card capture-records">
