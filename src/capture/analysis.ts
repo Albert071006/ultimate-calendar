@@ -174,7 +174,8 @@ export function batchMessages(units: AnalysisUnit[], context: Checkpoint['contex
   const content: Exclude<ChatMessage['content'], string> = [{ type: 'text', text: JSON.stringify({ units: units.map(({ imageDataUrl, attachmentAliases: _aliases, ...u }) => ({ ...u, hasImage: !!imageDataUrl, recipient: recipientHint(recipients?.get(u.messageId)) })), allowedSourceIds: units.map(unit => unit.id), context: context.map(message => ({ ...message, recipient: recipientHint(message.recipient ?? recipients?.get(message.id)), contextOnly: true })), warnings, userProfile: locationProfile(profile), existingCandidates: existing.map(c => captureCandidateContext(c, sources)) }) }];
   for (const unit of units) if (unit.imageDataUrl) content.push({ type: 'text', text: `以下图片属于 unit.id=${unit.id}，位置=${unit.locator}` }, { type: 'image_url', image_url: { url: unit.imageDataUrl } });
   const summaryPrivacy = '业务摘要与原文证据分开：title、action、benefit、potentialBenefit、conditions、uncertainties、location 不复制网址（URL）、本机路径、附件文件名或 QQ 账号/群号、微信账号/群号/wxid。保留必要的平台名称、行动、条件与地点；登录、下载等要求概括为“登录通知中的平台”“查看通知附件中的操作说明”，缺失信息只描述待核对的问题，不复述这些标识。sourceQuote、supportingSources[].quote、temporalEvidence[].quote 必须保留对应来源的连续原文，不为摘要隐私规则改写、替换或删去引文内容；原始资料和来源证据仍在本机保留。';
-  return [{ role: 'system', content: `${system}\n${captureActionabilityInstructions}\n${eventExtractionInstructions}\n${candidateFieldInstructions}\n${temporalExtractionInstructions}\n活动只给日期或“周六晚上”等时段时，eventStart、eventEnd 相应字段填 null，在 temporalEvidence 和 uncertainties 保留原话。\n${summaryPrivacy}` }, { role: 'user', content }];
+  const additionalWork = '逐项比较原卡与本次通知要求完成的成果。旧要求之外又增加一项可以单独完成和验收的行动时，使用 relation.kind=independent_action，candidateId 指向用于比较的旧卡。新卡标题与行动只写新增工作，sourceQuote 引用明确要求它的原文。例如原卡仅要求交观察日志，后来要求制作标本图，与日志一并交，应单独提取制作标本图。一起提交、同一课程、同一截止日都不等于同一项工作。混合通知里重申旧行动无需重建，有实质细节才单列 supplement，新增工作用不同 eventKey。仅添附件模板、规定份数、调整截止或补充资格仍按原卡补充或变更。已存在覆盖新增工作的候选时，重发关联那张卡做 duplicate；不要再次关联更早的旧事项另起新卡。';
+  return [{ role: 'system', content: `${system}\n${captureActionabilityInstructions}\n${eventExtractionInstructions}\n${additionalWork}\n${candidateFieldInstructions}\n${temporalExtractionInstructions}\n活动只给日期或“周六晚上”等时段时，eventStart、eventEnd 相应字段填 null，在 temporalEvidence 和 uncertainties 保留原话。\n${summaryPrivacy}` }, { role: 'user', content }];
 }
 function virtualSource(unit: AnalysisUnit): Source {
   const at = nowInstant();
@@ -198,7 +199,7 @@ function replayCandidates(completed: CompletedCapture[], batch: CaptureBatch, un
   const classifyPractice = documentGrouping ? createPracticeClassifier(units.filter(eligible)) : () => null;
   const practiceTargets = new Map<string, string>(), practiceMembers = new Map<string, Set<string>>();
   for (const entry of entries) {
-    const hint = classifyPractice(entry);
+    const hint = entry.independentOf ? null : classifyPractice(entry);
     const relatedId = entry.candidate.relation.candidateId;
     const resolvedRelation = relatedId ? aliases.get(relatedId) ?? relatedId : null;
     const practice = hint && (entry.candidate.relation.kind === 'new' && !relatedId
@@ -244,7 +245,8 @@ function replayCandidates(completed: CompletedCapture[], batch: CaptureBatch, un
       return source?.kind === 'text' ? [{ quote: ref.quote, sentAt: source.sentAt }] : [];
     });
     const decision = reconcileCaptureCandidate(item, sources.get(unit.id)!, evidenceIds, existing,
-      [...warnings, ...(evidenceIds.some(id => byId.get(id)!.imageDataUrl) ? ['图片文字由 AI 转写，请对照原图核对'] : [])], [...sink.sources(), ...sources.values()], supportingDeadlineQuotes);
+      [...warnings, ...(evidenceIds.some(id => byId.get(id)!.imageDataUrl) ? ['图片文字由 AI 转写，请对照原图核对'] : [])], [...sink.sources(), ...sources.values()], supportingDeadlineQuotes,
+      entry.independentOf && (aliases.get(entry.independentOf) ?? entry.independentOf));
     if (decision.kind === 'ignore') { aliases.set(entry.id, decision.id); rememberPractice(decision.id); sink.remember?.(entry, decision.id); continue; }
     if (practice && practiceTarget) {
       // Append only the newly observed exercise to the live text. Never replay deleted steps or replace a user's edited summary.
@@ -295,7 +297,8 @@ function validateResponse(value: CaptureExtraction, units: AnalysisUnit[], exist
     const unit = units.find(unit => unit.id === candidate.sourceIds[0]);
     if (candidate.sourceIds.length !== 1 || !unit) throw new WorkflowError('AI_RESPONSE', 'AI 引用了当前分片之外的来源，请手动重试或校对');
     if (candidate.relation.candidateId && !(requestedCandidateIds ?? existing.map(item => item.id)).includes(candidate.relation.candidateId)) throw new WorkflowError('AI_RESPONSE', 'AI 引用了未知候选 ID，请人工校对');
-    assertArrivalFollowup({ candidate, unit, context, existingCandidates: existing });
+    assertArrivalFollowup({ candidate: { ...candidate, relation: candidate.relation.kind === 'independent_action' ? { kind: 'new', candidateId: null } : candidate.relation },
+      unit, context, existingCandidates: existing });
   }
 }
 /** Durable checkpoints precede every subsequent paid request; requests never retry implicitly. */

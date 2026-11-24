@@ -36,6 +36,50 @@ describe('capture-only event reconciliation', () => {
     if (result.kind !== 'ignore') expect(result.values.action).toContain('携带校园卡');
   });
 
+  const journal = { ...original, title: '提交观察日志', action: '提交观察日志', sourceQuote: '请提交观察日志' };
+  function addedWork(text: string, target = journal) {
+    return { ...candidate, title: '观察日志补充要求', action: text, sourceQuote: text,
+      relation: { kind: 'supplement' as const, candidateId: target.id } };
+  }
+  it.each([
+    ['请绘制路线图，与观察日志一同提交。', '绘制路线图'],
+    ['同学们，请将这本练习册打印出来，手写完成，最后和观察日志一起上交。', '打印并手写完成练习册'],
+  ])('recognizes a previously mislabelled joint submission and keeps its repeat on the new card', (text, title) => {
+    const current = { ...source, text }, proposal = addedWork(text);
+    const result = reconcileCaptureCandidate(proposal, current, [current.id], [journal], []);
+    expect(result).toMatchObject({ kind: 'create', values: { title, revisionOfId: null, duplicateOfId: null, sourceIds: [current.id] } });
+    if (result.kind !== 'create') throw Error('Expected a separate deliverable');
+    const independent = CandidateSchema.parse({ ...result.values, id: 'separate-deliverable', version: 1, createdAt: at, updatedAt: at });
+    const repeated = { ...current, id: 'repeat-source' };
+    const next = { ...proposal, relation: { kind: 'duplicate' as const, candidateId: journal.id }, sourceIds: [repeated.id] };
+    expect(reconcileCaptureCandidate(next, repeated, [repeated.id], [journal, independent], [])).toMatchObject({ kind: 'update', id: independent.id });
+    expect(reconcileCaptureCandidate(next, repeated, [repeated.id], [journal, { ...independent, status: 'ignored' }], [])).toEqual({ kind: 'ignore', id: independent.id });
+  });
+
+  it.each(['请将观察日志双面打印一式两份。', '请带上现成的模板，和观察日志一起交。', '请补上封面，和观察日志一起交。', '观察日志截止改到周五。'])
+  ('keeps ordinary requirements on the existing deliverable: %s', text => {
+    const current = { ...source, text };
+    expect(reconcileCaptureCandidate(addedWork(text), current, [current.id], [journal], [])).toMatchObject({ kind: 'update', id: journal.id });
+  });
+
+  it('resolves an explicit independent action on its own evidence even if the old card was ignored and event keys collide', () => {
+    const text = '日志仍按原格式交。另外请为同学演示测量过程。', current = { ...source, text };
+    const extra = { ...addedWork(text), title: '演示测量过程', action: '为同学演示测量过程', sourceQuote: '请为同学演示测量过程',
+      eventKey: 'same-course', relation: { kind: 'independent_action' as const, candidateId: journal.id } };
+    const value = captureRequestSchema([source.id]).parse({ candidates: [{ ...addedWork(text), eventKey: extra.eventKey }, extra] });
+    const [, entry] = captureEntries([{ key: 'mixed', value }], 'replayable-op');
+    const ignored = { ...journal, status: 'ignored' as const };
+    expect(entry!.independentOf).toBe(journal.id);
+    expect(reconcileCaptureCandidate(entry!.candidate, current, [current.id], [ignored], [], [], [], entry!.independentOf))
+      .toMatchObject({ kind: 'create', values: { title: extra.title, revisionOfId: null, duplicateOfId: null, status: 'pending' } });
+    expect(reconcileCaptureCandidate({ ...entry!.candidate, sourceQuote: text }, current, [current.id],
+      [{ ...ignored, sourceQuote: text }], [], [], [], journal.id)).toMatchObject({ kind: 'create', values: { title: extra.title, revisionOfId: null } });
+    for (const unchanged of [journal.sourceQuote, '将观察日志双面打印一式两份。']) {
+      expect(reconcileCaptureCandidate({ ...entry!.candidate, sourceQuote: unchanged }, { ...source, text: unchanged },
+        [source.id], [ignored], [], [], [], journal.id)).toEqual({ kind: 'ignore', id: journal.id });
+    }
+  });
+
   it('keeps an accepted paraphrase as a linked review and never revives an ignored original', () => {
     const accepted = { ...original, status: 'accepted' as const, taskId: 'accepted-task' };
     expect(reconcileCaptureCandidate(candidate, source, [source.id], [accepted], [])).toMatchObject({ kind: 'create', values: {

@@ -12,14 +12,18 @@ import { parseBridgeConfig } from './config';
 import { createQQCloudBridge, type BridgeTransport } from './service';
 import { createEvidenceIndex, evidenceIndexPath, readEvidenceSourceIds } from './evidence-index';
 import { projectDistilledFields } from './projection';
+import { createCaptureStore } from '../capture/store';
+import { analyzeCapture, applyCaptureResult } from '../capture/analysis';
+import { expandCaptureTable } from '../capture/request-wire';
+import { nowInstant } from '../domain/time';
 
 const cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
-async function setup() {
+async function setup(accountId = '900010001', groupId = '900020002') {
   const root = mkdtempSync(join(tmpdir(), 'uc-bridge-e2e-'));
   cleanup.push(() => { const rel = relative(tmpdir(), root); if (!rel || rel.startsWith('..') || isAbsolute(rel)) throw Error('Unsafe synthetic cleanup'); rmSync(root, { recursive: true, force: true }); });
   const source = createRepository(join(root, 'synthetic-local.sqlite'), { automaticBackup: () => {} }); cleanup.push(() => source.close());
-  const localSource = source.writeInternal({ operationId: 'synthetic-local-source', changes: [{ entity: 'source', values: { kind: 'text', text: 'RAW_NEVER_UPLOAD QQ 900010001 group 900020002 C:\\private\\raw.pdf', label: 'PRIVATE_GROUP_LABEL', importedAt: '2020-01-01T00:00:00+08:00', captureRef: { messageId: 'PRIVATE_MESSAGE', accountId: '900010001', groupId: '900020002', attachmentId: null, locator: 'PRIVATE_ATTACHMENT_LOCATION', transcribed: false } } }] }).entities[0]!;
+  const localSource = source.writeInternal({ operationId: 'synthetic-local-source', changes: [{ entity: 'source', values: { kind: 'text', text: 'RAW_NEVER_UPLOAD QQ 900010001 group 900020002 C:\\private\\raw.pdf', label: 'PRIVATE_GROUP_LABEL', importedAt: '2020-01-01T00:00:00+08:00', captureRef: { messageId: 'PRIVATE_MESSAGE', accountId, groupId, attachmentId: null, locator: 'PRIVATE_ATTACHMENT_LOCATION', transcribed: false } } }] }).entities[0]!;
   const values = { title: '提交合成报告', action: '整理材料后提交', sourceIds: [localSource.id], sourceQuote: 'RAW_NEVER_UPLOAD', temporalEvidence: [] };
   const candidate = source.writeInternal({ operationId: 'synthetic-candidate', changes: [{ entity: 'candidate', values }] }).entities[0]!;
   const service = createRemoteService({ dataDirectory: join(root, 'cloud-data'), backupDirectory: join(root, 'cloud-backups'), getApiKey: async () => null, controller: { fetch: async () => { throw Error('Synthetic bridge must not call any model or external network'); } } });
@@ -49,6 +53,53 @@ async function setup() {
 }
 
 describe('local synthetic QQ extraction to cloud inbox', () => {
+  it('delivers a newly required WeChat assignment once when its companion report was ignored in the cloud', async () => {
+    const accountId = 'wechat:synthetic-self', groupId = 'synthetic-class@chatroom';
+    const f = await setup(accountId, groupId);
+    const bridge = createQQCloudBridge(f.config, f.remote);
+    cleanup.push(() => bridge.close());
+    await bridge.once();
+    const original = f.service.snapshot().candidates[0]!;
+    const ignore = MutationRequestSchema.parse({ operationId: 'ignore-original-report', origin: 'manual',
+      mutations: [{ type: 'ignoreCandidate', id: original.id, expectedVersion: original.version }] });
+    const result = await f.remote.rpc('mutate', ignore);
+    if (!result.ok) throw Error('Could not ignore synthetic report');
+    if (result.data.status === 'preview') await f.remote.rpc('mutate', { ...ignore, confirmed: true, confirmationToken: result.data.confirmationToken });
+    const ignored = f.service.snapshot().candidates[0]!;
+    expect(ignored.status).toBe('ignored');
+    expect(f.source.snapshot().candidates[0]!.status).toBe('pending');
+
+    const store = createCaptureStore(f.source.path, { platform: 'wechat' });
+    cleanup.push(() => store.close());
+    store.saveConfig({ ...store.config(), accountId, groupIds: [groupId], enabled: true, analysisEnabled: true });
+    const text = '请绘制线路图，和合成报告一起提交。';
+    store.ingest([{ accountId, groupId, messageId: 'additional-drawing', sentAt: nowInstant(), text }]);
+    store.sealBatches({ force: true });
+    const batch = store.claimBatch()!;
+    // Reproduce the original model mistake, including its explicit link to the old report.
+    await analyzeCapture({ store, repository: f.source, batch, getApiKey: async () => 'synthetic', canContinue: () => true,
+      fetch: async (_url, init) => {
+        const wire = JSON.parse(String(init?.body)).messages.find((m: { role: string }) => m.role === 'user');
+        const sent = JSON.parse(wire.content[0].text);
+        const unitId = sent.units[0].id;
+        const originalAlias = expandCaptureTable(sent.existingCandidates).find(card => card.title === original.title)?.id;
+        expect(originalAlias).toBeDefined();
+        const item = { title: '绘制线路图', action: text, benefit: '', benefitKind: 'unknown', potentialBenefit: '',
+          conditions: [], uncertainties: [], sourceIds: [unitId], sourceQuote: text, deadline: null, eventStart: null,
+          eventEnd: null, location: '', temporalEvidence: [], relation: { kind: 'supplement', candidateId: originalAlias } };
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ candidates: [item] }) }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
+      } });
+    expect(await bridge.once()).toMatchObject({ accepted: 1, issue: null });
+    const delivered = f.service.snapshot().candidates;
+    expect(delivered).toHaveLength(2);
+    expect(delivered.find(card => card.id === ignored.id)).toEqual(ignored);
+    expect(delivered.find(card => card.id !== ignored.id)).toMatchObject({ title: expect.stringContaining('线路图'),
+      status: 'pending', deadline: null, taskId: null, revisionOfId: null, duplicateOfId: null });
+    applyCaptureResult(store, f.source, store.batch(batch.id)!);
+    await bridge.once();
+    expect(f.service.snapshot().candidates).toEqual(delivered);
+  });
   it('recovers a lost HTTP receipt after bridge restart without duplicating an event', async () => {
     const f = await setup(); let now = 1000; let lose = true;
     const flaky: BridgeTransport = { origin: f.remote.origin, getSession: f.remote.getSession, async sendDistilled(request, options) {

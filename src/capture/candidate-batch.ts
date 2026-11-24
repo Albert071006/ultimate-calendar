@@ -5,9 +5,11 @@ import { WorkflowError } from '../ai/deepseek';
 import { CandidateInputSchema, CandidateSchema, IdSchema, type Candidate, type CandidateInput, type Source } from '../shared/contracts';
 import { candidateFingerprint, normalizeCandidate, supplementCandidate } from '../imports/messages';
 import { candidateDatesConflict, hasExplicitReschedule } from '../domain/candidate-dates';
+import { distinguishIndependentAction } from './independent-action';
 
 // Optional without defaults: parsing an old paid checkpoint must not change its receipt hash.
 export const CaptureCandidateSchema = ExtractedCandidateSchema.extend({
+  relation: z.union([ExtractedCandidateSchema.shape.relation, z.strictObject({ kind: z.literal('independent_action'), candidateId: IdSchema })]),
   supportingSources: z.array(z.strictObject({ sourceId: IdSchema, quote: z.string().min(1).max(2000) })).max(99).optional(),
   eventKey: z.string().trim().min(1).max(80).optional(),
 });
@@ -27,7 +29,7 @@ export function captureRequestSchema(sourceIds: string[]) {
 }
 export type CaptureExtraction = z.infer<typeof CaptureExtractionSchema>;
 export type CompletedCapture = { key: string; value: CaptureExtraction };
-export type CaptureEntry = { id: string; candidate: ExtractedCandidate; supportingSources: { sourceId: string; quote: string }[]; groupKey: string };
+export type CaptureEntry = { id: string; candidate: ExtractedCandidate; independentOf?: string; supportingSources: { sourceId: string; quote: string }[]; groupKey: string };
 
 /** Stable aliases derive only from the saved request/result, never a fresh UUID or current planner state. */
 export function captureEntries(completed: CompletedCapture[], operationId: string): CaptureEntry[] {
@@ -35,7 +37,13 @@ export function captureEntries(completed: CompletedCapture[], operationId: strin
     const eventIds = new Map<string, { id: string; targetId: string | null }>();
     return group.value.candidates.map((item, index) => {
       const id = `qq-stage:${createHash('sha256').update(JSON.stringify([operationId, group.key, index])).digest('hex')}`;
-      const { eventKey, supportingSources = [], ...candidate } = item;
+      const { eventKey, supportingSources = [], relation, ...fields } = item;
+      if (relation.kind === 'independent_action') {
+        // This id compares the old obligation; it must not become the new event's lineage.
+        return { id, candidate: { ...fields, relation: { kind: 'new' as const, candidateId: null } },
+          independentOf: relation.candidateId, supportingSources, groupKey: group.key };
+      }
+      const candidate: ExtractedCandidate = { ...fields, relation };
       const prior = eventKey ? eventIds.get(eventKey) : undefined;
       if (prior) {
         if (candidate.relation.candidateId && candidate.relation.candidateId !== prior.id && candidate.relation.candidateId !== prior.targetId) throw new WorkflowError('AI_RESPONSE', '同一事项的批内标识与关联候选不一致，请人工校对');
@@ -70,7 +78,8 @@ const exceedsEvidenceLimit = (left: string[], right: string[]) => new Set([...le
 
 /** Both staged context and the final transaction use these exact same additive decisions. */
 export function reconcileCaptureCandidate(item: ExtractedCandidate, source: Source, sourceIds: string[], existing: Candidate[], warnings: string[], sources: Source[] = [],
-  supportingDeadlineQuotes: { quote: string; sentAt: string | null }[] = []): CaptureDecision {
+  supportingDeadlineQuotes: { quote: string; sentAt: string | null }[] = [], independentOf?: string): CaptureDecision {
+  item = distinguishIndependentAction(item, source, existing, sources, independentOf);
   // An explicit same-event relation can use different wording. Apply the same guarded, additive
   // merge as a supplement instead of creating a fresh root from that paraphrase.
   if (item.relation.kind === 'duplicate' && item.relation.candidateId) item = { ...item, relation: { ...item.relation, kind: 'supplement' } };
