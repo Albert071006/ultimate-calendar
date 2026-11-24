@@ -69,6 +69,46 @@ describe('main assistant local ledger commands',()=>{
     expect(result).toMatchObject({ ok: true, data: { conversationState: { phase: 'clarification' } } });
     expect(ledger.snapshot()).toEqual(before);
   });
+  it.each(['是7.31不是7.63', '不是7.63元，是7.31元'])('edits only the receipted expense for %s, including on replay', async text => {
+    const oldAmount = 763, newAmount = 731;
+    const oldPayment = { amountCents: oldAmount, personalCents: oldAmount, cashflows: [{ accountId: 'wechat', deltaCents: -oldAmount }] };
+    const savedExpense = expense();
+    Object.assign(savedExpense.changes[0]!.values, oldPayment, { title: '合成装订' });
+    const { controller, ledger, intents } = setup([route, savedExpense]);
+    const other = syntheticEntry('synthetic-equal-payment', { title: '合成邮资', ...oldPayment });
+    importSynthetic(ledger, [other]);
+    const initial = '合成装订7.63微信';
+    const saved = await controller.command({ operationId: 'save-for-correction', text: initial });
+    if (!saved.ok || saved.data.conversationState?.phase !== 'saved') throw Error('Expected a saved expense');
+    const id = ledger.snapshot().entries.find(entry => entry.title === '合成装订')!.id;
+    const afterFirst = ledger.snapshot();
+    const patch = { amountCents: newAmount, personalCents: newAmount, cashflows: [{ accountId: 'wechat', deltaCents: -newAmount }] };
+    const edit = (target: string) => ({ kind: 'mutate', changes: [{ type: 'updateEntry', id: target, expectedVersion: 1, patch, note: '合成金额更正' }] });
+    const request: CommandRequest = { operationId: 'apply-contrast', text, history: [
+      { role: 'user', text: initial }, { role: 'assistant', text: saved.data.reply, outcome: saved.data.conversationState },
+    ] };
+    // The same old amount on an unrelated entry cannot authorize editing it.
+    intents.push(route, edit(other.id));
+    const wrong = await controller.command({ ...request, operationId: 'wrong-contrast-target' });
+    expect(wrong).toMatchObject({ ok: true, data: { conversationState: { phase: 'clarification' } } });
+    expect(ledger.snapshot()).toEqual(afterFirst);
+    if (!wrong.ok) throw Error('Expected a clarification');
+    intents.push({ kind: 'mutate', changes: [{ ...savedExpense.changes[0], values: { ...savedExpense.changes[0]!.values, ...patch } }] });
+    const duplicate = await controller.command({ operationId: 'no-extra-contrast', text: '7.31元', history: [
+      ...request.history!, { role: 'user', text }, { role: 'assistant', text: wrong.data.reply, outcome: wrong.data.conversationState },
+    ] });
+    expect(duplicate).toMatchObject({ ok: true, data: { conversationState: { phase: 'clarification' } } });
+    expect(ledger.snapshot()).toEqual(afterFirst);
+    intents.push(route, edit(id));
+    const corrected = await controller.command(request);
+    expect(corrected).toMatchObject({ ok: true, data: { conversationState: { phase: 'saved' } } });
+    expect(await controller.command(request)).toEqual(corrected);
+    const after = ledger.snapshot();
+    expect(after.entries).toHaveLength(2);
+    expect(after.entries.find(entry => entry.id === id)).toMatchObject({ version: 2, title: '合成装订', ...patch });
+    expect(after.entries.find(entry => entry.id === other.id)).toEqual(other);
+    expect(after.summary.personalCents - afterFirst.summary.personalCents).toBe(newAmount - oldAmount);
+  });
   it('resumes after an amount mismatch and saves the confirmed amount exactly once', async () => {
     const { controller, ledger, intents } = setup([route, { kind: 'mutate', changes: [receiptProposal(10000)] }]);
     const text = '合成差旅报销1000到支付宝';

@@ -71,6 +71,7 @@ export function ledgerMessages(context: ReturnType<typeof ledgerContext>, reques
 分多句补全同一请求：先前用户“vpn14 支付宝”，助手问“记账还是日历？”，当前用户“记账”，说明此前VPN14元支付宝是要入账，信息已足够，应createEntry，不再问已知字段。先前用户“记账，买VPN”，助手问金额和账户，当前“14 支付宝”也应合并处理。反过来，已保存的“午饭20元”再补“支付宝”应updateEntry原笔，不新增；“谢谢”只说明无须继续，不再执行。没有真实交易描述而只说“记账”时才问项目与金额。记录读取：entryIndex 用 columns 定义列顺序、rows 保存逐条摘要，摘要不是完整账目。entries 仅含本轮已读取的完整记录；recordCount 是全账本数量，providedRecordCount 是索引数量，providedDetailCount 是完整记录数量，不能把索引当作全部账本。需要补充原记录时返回 {"kind":"read_entries","ids":["索引中的真实id"]}，应用读取后继续本次解析，不会因此保存账目。修改、作废、关联退款或还款前必须读取所引用记录的完整详情；不能凭摘要推算未提供字段。若索引没有足够目标，先使用query查找或询问，不编造id。schema=${JSON.stringify(z.toJSONSchema(LedgerContextIntentSchema))}
 金额全部用整数分，例如20元=2000，不能输出元作为分。人民币，北京时间消息当天默认日期；明确日期优先，date与month必须一致。新记录key用new:0、new:1；引用上下文实际id/version，禁止编造。date未知但月份已知设null保留dateNote，不能乱定单日。未提供交易时刻保留occurredAt=null；明确“刚刚/现在”才使用context.now。个人承担不明的AA保留personalCents=null，不虚构比例。
 普通expense amountCents实际付款，personalCents本人承担，cashflows实际账户负金额；未说账户用accountId:null，可先记真实消费再由服务追问。后续补充账户须updateEntry原笔，仅patch cashflows，不新建。更新只patch用户明确要求的字段，其他字段省略；金额更正需同步相关cashflows及已知个人承担，不能把AA个人份额猜成全额。所有更正note写原因。
+已保存一笔后说“是A不是B”或“不是B，是A”，表示把刚保存且原金额为B的记录原位改为A。结合上一条保存回执核对项目、日期和账户，以原记录的id和version做updateEntry；不能新增一笔、写差额或把被否定的B当作另一笔。
 普通income设置incomeCents实际收入；卖电脑等asset_sale设置assetSaleCents，不能当工资利润。transfer两端同额一负一正，personalCents=incomeCents=assetSaleCents=0；饭卡/具体店铺会员卡充值是transfer；bonus只增加该家kind=stored的储值账户余额且不计收入。水卡充值是水费expense，不跟踪水卡。DeepSeek充值是软件服务expense。亲情卡使用kind=family账户；信用卡与亲情卡不同，不把未知信用卡自动映射到family或储蓄卡。已保存规则只解释当前授权交易，不能凭notes新增、重放或改历史交易。
 账户目录以context.accounts为准，id不再是固定六种。明确银行/店铺时按真实名称、aliases和尾号匹配唯一已有账户；中国银行与招商银行是两个账户，不能因为银行卡常用就混入cmb。不同烘焙店、便利店、咖啡店的会员余额各自独立，不能统统记到bakery。同一家银行多张卡、同一店多个账户有歧义时问尾号或用户设置的标识；没有说具体哪家，仅泛称“银行卡/储蓄卡/会员卡/储值卡”时clarification，不擅自映射任何现有账户，也不建立泛称新卡。明确的新银行或店铺尚不存在时，直接createAccount，key=new-account:0等、name=用户提供的银行/店铺及卡标识、kind=cash（银行/现金账户）或stored（店铺储值卡）、aliases只保留真实明确称呼；同条createEntry现金流、setBalance、updateRules.monthlyAllowance.accountId可引用该new-account:key。创建账户和本条流水同批提交，不重新问是否要建卡；已有唯一同名或明确别名账户必须复用，不重复新建、不修改其类别、不合并不同尾号。同批多张新卡使用不同key。借入归还也可以使用目录中任意kind=cash的新银行账户。查询只引用真实现有id，不为查询虚构账户；名称有歧义先澄清。
 新增账户不等于余额为0；未提供余额时不输出setBalance，不用交易金额反推初始余额。准确记录本次资金流，账面余额保持未知直至用户给真实余额快照。店铺消费直接从该店储值账户负cashflow并计消费，充值只transfer，赠送额度只bonus；不能因记账新开账户而补录旧充值或旧消费。context.rules.notes中的明确昵称可以辅助理解，但泛称卡片不能借此混同具体银行或不同店铺。
@@ -214,10 +215,13 @@ function ledgerQueryReplyBody(query: LedgerQuery, data: LedgerQueryData, detail:
   else lines.push(...summary.categories.filter(c => c.cents).map(c => `${c.category} ¥${money(c.cents)}`));
   return lines.join('\n');
 }
+export function ledgerSavedEntryLine(entry: LedgerEntry, snapshot: LedgerSnapshot): string {
+  return `${entry.date ?? `${entry.month} 日期待确认`} · ${entry.title} · ¥${money(entry.amountCents)} · ${[...new Set(entry.cashflows.map(flow => accountName(flow.accountId, ledgerAccounts(snapshot))))].join(' / ')}`;
+}
 export function ledgerSavedReply(snapshot: LedgerSnapshot, entryIds: string[], message: string, affectedAccounts: LedgerAccountId[] = []): string {
   const entries = snapshot.entries.filter(entry => entryIds.includes(entry.id));
   const affected = new Set([...affectedAccounts, ...entries.flatMap(entry => entry.cashflows.map(flow => flow.accountId))]);
-  const lines = [message, ...entries.slice(0,8).map(entry => `${entry.date ?? `${entry.month} 日期待确认`} · ${entry.title} · ¥${money(entry.amountCents)} · ${[...new Set(entry.cashflows.map(flow => accountName(flow.accountId, ledgerAccounts(snapshot))))].join(' / ')}`)];
+  const lines = [message, ...entries.slice(0,8).map(entry => ledgerSavedEntryLine(entry, snapshot))];
   for (const account of snapshot.summary.accounts.filter(a => affected.has(a.id))) lines.push(`${account.name}：${account.kind === 'family' ? `本月已记录使用 ¥${money(account.recordedUsageCents)}，当前真实剩余额度 ${amountText(snapshot.rules.familyActualRemainingCents)}` : account.balanceCents === null ? '余额未设置' : `账面余额 ${amountText(account.balanceCents)}`}${account.pendingEntryIds.length ? `（${account.pendingEntryIds.length} 笔与余额快照的先后待核对）` : ''}`);
   lines.push(`${ledgerMonthDescription(snapshot.summary.month)}：${ledgerSummaryAmounts(snapshot.summary)}。`);
   if (entries.some(entry => isLedgerLoanKind(entry.kind))) {

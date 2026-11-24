@@ -93,21 +93,29 @@ describe('phone layout', () => {
   });
   it('opens the assistant as a full page with a close button and keeps the conversation on this phone', async () => {
     const { client } = fixture();
-    vi.mocked(client.command).mockResolvedValue({ ok:true, data:{ reply:'明天下午 14:00 后有空', mutationResult:null, items:[] } } as never);
+    const reply = '已保存并核对本地账本\n2026-01-06 · 合成装订 · ¥7.63 · 微信余额';
+    const outcome = { domain:'ledger', phase:'saved' } as const;
+    vi.mocked(client.command).mockResolvedValue({ ok:true, data:{ reply, conversationState:outcome, mutationResult:null, items:[] } });
     localStorage.clear();
     const first = render(<MobileApp client={client} connection={online} conversationKey="synthetic-conversation" />);
     fireEvent.click(await screen.findByRole('button', { name:/问问生活助手/ }));
     const page = screen.getByRole('dialog', { name:'生活助手' });
-    fireEvent.change(within(page).getByLabelText('对生活助手说'), { target:{ value:'明天下午有空吗' } });
+    fireEvent.change(within(page).getByLabelText('对生活助手说'), { target:{ value:'合成装订7.63微信' } });
     fireEvent.click(within(page).getByRole('button', { name:'发送' }));
-    expect(within(page).getByText('明天下午有空吗')).toBeTruthy();
-    await within(page).findByText('明天下午 14:00 后有空');
+    expect(within(page).getByText('合成装订7.63微信')).toBeTruthy();
+    await within(page).findByText(/周二 1月6日 · 合成装订/);
     fireEvent.click(within(page).getByRole('button', { name:'关闭生活助手' }));
     expect(screen.queryByRole('dialog', { name:'生活助手' })).toBeNull();
     first.unmount();
     render(<MobileApp client={client} connection={online} conversationKey="synthetic-conversation" />);
     fireEvent.click(await screen.findByRole('button', { name:/问问生活助手/ }));
-    expect(within(screen.getByRole('dialog', { name:'生活助手' })).getByText('明天下午 14:00 后有空')).toBeTruthy();
+    const restored = within(screen.getByRole('dialog', { name:'生活助手' }));
+    expect(restored.getByText(/周二 1月6日 · 合成装订/)).toBeTruthy();
+    fireEvent.change(restored.getByLabelText('对生活助手说'), { target:{ value:'是7.31不是7.63' } });
+    fireEvent.click(restored.getByRole('button', { name:'发送' }));
+    expect(vi.mocked(client.command).mock.calls.at(-1)?.[0]).toMatchObject({ text:'是7.31不是7.63', history:[
+      { role:'user', text:'合成装订7.63微信' }, { role:'assistant', text:reply, outcome },
+    ] });
     localStorage.clear();
   });
   it('opens candidate details only on demand while keeping quick decisions visible', async () => {

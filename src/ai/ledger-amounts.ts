@@ -2,9 +2,10 @@ import { hasCommandAttachments, type CommandRequest } from '../shared/contracts'
 import { ledgerLoans } from '../shared/ledger-loans';
 import { pendingClarificationHistory } from '../shared/command-continuation';
 import { formatLedgerMoney, ledgerAccounts, type LedgerMutationRequest, type LedgerSnapshot } from '../shared/ledger';
+import { ledgerSavedEntryLine } from './ledger';
 
 type Changes = LedgerMutationRequest['changes'];
-type Amount = { cents: number; clause: string; prefix: string; suffix: string };
+type Amount = { cents: number; clause: string; prefix: string; suffix: string; between: string };
 type Proposed = { cents: number; title: string; labels: string[] };
 const money = (cents: number) => '¥' + formatLedgerMoney(cents);
 const digits = '零〇一二两三四五六七八九';
@@ -53,7 +54,9 @@ function amountsIn(text: string): Amount[] {
     .replace(/(?:第\s*)?\d+(?:\.\d+)?\s*(?:月份?|分钟|小时|公斤|GB|TB|[年月日号点时岁折%期页次人件份张笔个瓶杯天斤])/gi, ' ')
     .replace(/(?:汇率|汇价)\s*[:约是为]?\s*\d+(?:\.\d+)?/g, ' ');
   const amounts: Amount[] = [];
-  for (const clause of clean.split(/[,;；。！!？?\n、]/)) {
+  let previousEnd = 0;
+  for (const chunk of clean.matchAll(/[^,;；。！!？?\n、]+/g)) {
+    const clause = chunk[0];
     if (/^\s*(?:别|不要|不用|不必)(?:再|另外|另行|单独)?(?:补|新增|新建|加|记)/.test(clause)) continue;
     const matches = [...clause.matchAll(amountPattern)];
     for (let index = 0; index < matches.length; index++) {
@@ -79,10 +82,44 @@ function amountsIn(text: string): Amount[] {
         suffix = clause.slice(end).trimStart();
         index++;
       }
-      amounts.push({ cents, prefix, suffix, clause });
+      amounts.push({ cents, prefix, suffix, clause, between: clean.slice(previousEnd, chunk.index + match.index).trim() });
+      previousEnd = chunk.index + end;
     }
   }
   return amounts;
+}
+
+function amountEditIn(amounts: Amount[]): { replacement: Amount; prior?: Amount; contrast?: boolean } | undefined {
+  const [first, second] = amounts;
+  if (amounts.length === 2 && first && second) {
+    const negated = /(?:不是|并非|而非)\s*$/;
+    if (negated.test(first.prefix) && /^[\s,、;。]*(?:而|实际|其实|应该|正确的?)?(?:是|为)\s*$/.test(second.between))
+      return { prior: first, replacement: second, contrast: true };
+    if (!negated.test(first.prefix) && /^[\s,、;。]*(?:而不是|并不是|不是|而非|并非)\s*$/.test(second.between))
+      return { prior: second, replacement: first, contrast: true };
+  }
+  const replacement = amounts.find(amount => /(?:改(?:成|为|到)|更正(?:成|为)|调整(?:成|为))\s*$/.test(amount.prefix));
+  if (!replacement) return;
+  const prior = amounts.find(amount => amount.clause === replacement.clause &&
+    /^(?:元|块)?\s*(?:改(?:成|为|到)|更正(?:成|为)|调整(?:成|为))/.test(amount.suffix));
+  return { replacement, prior };
+}
+
+/** The two amounts come from the user. The last completed receipt only identifies
+ * the record, including when another record happens to have the same amount. */
+function contrastTarget(request: CommandRequest, pendingTurns: number, text: string, priorCents: number, snapshot: LedgerSnapshot): string | undefined {
+  const candidates = snapshot.entries.filter(entry => !entry.voided && entry.amountCents === priorCents);
+  const named = candidates.filter(entry => text.includes(entry.title) || text.includes(entry.id));
+  if (named.length === 1) return named[0]!.id;
+  const eligible = named.length ? named : candidates;
+  const history = request.history ?? [];
+  const receipt = history[history.length - pendingTurns - 1];
+  if (receipt?.role === 'assistant' && receipt.outcome?.domain === 'ledger' && receipt.outcome.phase === 'saved') {
+    const lines = new Set(receipt.text.split(/\r?\n/));
+    const receipted = eligible.filter(entry => lines.has(ledgerSavedEntryLine(entry, snapshot)));
+    if (receipted.length === 1) return receipted[0]!.id;
+  }
+  return eligible.find(entry => entry.id === request.ledgerView?.selectedEntryId)?.id;
 }
 
 function accountLabels(ids: (string | null)[], changes: Changes, snapshot: LedgerSnapshot): string[] {
@@ -166,7 +203,10 @@ function fullSettlementCents(text: string, changes: Changes, snapshot: LedgerSna
 export function ledgerAmountQuestion(request: CommandRequest, changes: Changes, snapshot: LedgerSnapshot): string | undefined {
   const history = pendingClarificationHistory(request);
   const turns = [...history.filter(turn => turn.role === 'user').map(turn => turn.text), request.text];
-  const evidence = turns.map(text => ({ text, amounts: amountsIn(text) })).filter(turn => turn.amounts.length);
+  const evidence = turns.map(text => {
+    const amounts = amountsIn(text);
+    return { text, amounts, edit: amountEditIn(amounts) };
+  }).filter(turn => turn.amounts.length);
   const source = evidence.at(-1);
   if (!source) {
     const rows = proposedAmounts(changes, snapshot, false);
@@ -182,15 +222,18 @@ export function ledgerAmountQuestion(request: CommandRequest, changes: Changes, 
     return '你还没有说明实际金额，拟保存的金额是' + display(rows.map(row => row.cents)) + '。请补充每笔实际金额。';
   }
 
-  const replacementPattern = /(?:改(?:成|为|到)|更正(?:成|为)|调整(?:成|为))\s*$/;
-  const editSource = evidence.findLast(turn => turn.amounts.some(amount => replacementPattern.test(amount.prefix)));
-  const statedReplacement = editSource?.amounts.find(amount => replacementPattern.test(amount.prefix));
-  const priorAmount = statedReplacement && editSource!.amounts.find(amount => amount.clause === statedReplacement.clause &&
-    /^(?:元|块)?\s*(?:改(?:成|为|到)|更正(?:成|为)|调整(?:成|为))/.test(amount.suffix));
+  const editSource = evidence.findLast(turn => turn.edit);
+  const statedReplacement = editSource?.edit?.replacement;
+  const priorAmount = editSource?.edit?.prior;
   const replacement = source === editSource ? statedReplacement : source.amounts.length === 1 && statedReplacement ? source.amounts[0] : undefined;
   if (statedReplacement && priorAmount) {
     const rows = proposedAmounts(changes, snapshot, true);
     const edits = changes.filter(change => change.type === 'putEntry');
+    if (editSource?.edit?.contrast) {
+      const target = contrastTarget(request, history.length, turns.join('\n'), priorAmount.cents, snapshot);
+      if (!target) return '请指出原来金额为' + money(priorAmount.cents) + '的那笔账目（项目或在账单中选中），以便原位更正。';
+      if (changes.length !== 1 || edits[0]?.entry.id !== target) return '需要在原来金额为' + money(priorAmount.cents) + '的同一笔账目上更正为' + money(replacement?.cents ?? statedReplacement.cents) + '。请核对原项目。';
+    }
     if (rows.length !== 1 || edits.length !== 1 || edits[0]!.expectedVersion === null ||
         snapshot.entries.find(entry => entry.id === edits[0]!.entry.id)?.amountCents !== priorAmount.cents ||
         rows[0]!.cents !== replacement?.cents || changes.some(change => change.type === 'voidEntry')) {
