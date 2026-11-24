@@ -40,9 +40,17 @@ async function removeSession(root: string, name: string, closed?: Owner) {
   unlinkSync(ownerFile);
 }
 
+function verifiedRoot(workdir: string, create = false) {
+  if (!isAbsolute(workdir)) throw Error('微信临时目录必须使用绝对路径');
+  const checked = privatePath(resolve(workdir));
+  if (create) mkdirSync(checked, { recursive: true, mode: 0o700 });
+  const canonical = privatePath(realpathSync.native(checked));
+  directoryId(canonical);
+  return canonical;
+}
+
 export async function reapWechatSessions(workdir: string) {
-  const root = privatePath(workdir);
-  directoryId(root);
+  const root = verifiedRoot(workdir, false);
   for (const name of readdirSync(root)) {
     if (!name.endsWith(marker)) continue;
     try { await removeSession(root, name.slice(0, -marker.length)); }
@@ -51,10 +59,7 @@ export async function reapWechatSessions(workdir: string) {
 }
 
 export function reserveWechatSession(workdir: string) {
-  if (!isAbsolute(workdir)) throw Error('微信临时目录必须使用绝对路径');
-  const root = privatePath(resolve(workdir));
-  mkdirSync(root, { recursive: true, mode: 0o700 });
-  directoryId(root);
+  const root = verifiedRoot(workdir, true);
   const path = join(root, 'session-' + randomUUID());
   mkdirSync(path, { mode: 0o700 });
   const id = directoryId(path), name = basename(path);

@@ -103,4 +103,19 @@ describe('private WeChat reader bridge', () => {
     expect(await bridge.start()).toMatchObject({ online: false, state: 'error', error: expect.stringContaining('尚未配置') });
     bridge.stop();
   });
+
+  it('canonicalizes non-canonical Windows drive/short workdir paths while still rejecting symlinks', async () => {
+    const f = fixture();
+    const alternate = process.platform === 'win32' ? f.root.replace(/^([A-Z]):/, (_, d: string) => `${d.toLowerCase()}:`) : f.root;
+    const session = reserveWechatSession(alternate);
+    try {
+      expect(existsSync(session.path)).toBe(true);
+    } finally {
+      await session.finish();
+    }
+    expect(existsSync(session.path)).toBe(false);
+    const linked = join(f.root, 'linked-workdir');
+    symlinkSync(f.root, linked, process.platform === 'win32' ? 'junction' : 'dir');
+    expect(() => reserveWechatSession(linked)).toThrow();
+  });
 });
