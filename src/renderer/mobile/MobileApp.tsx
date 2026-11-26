@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { friendlyReplyText } from '../components/shell/AssistantText';
+import { FeedbackContext } from '../hooks/useFeedback';
+import { Toast } from '../components/shell/Toast';
 import { CalendarDays, Inbox as InboxIcon, Sun, UserRound, Wallet } from 'lucide-react';
 import type { CourseImportResult, LedgerViewContext } from '../../shared/contracts';
 import type { PlannerClient } from '../../shared/client';
@@ -8,6 +9,7 @@ import { useCurrentTime } from '../hooks/useCurrentTime';
 import { isPendingCandidate } from '../../domain/candidate-eligibility';
 import { unscheduledTasks } from '../../domain/unscheduled';
 import { todayDate } from '../calendar-layout';
+import { mobileViewPreference, useCalendarView } from '../hooks/useCalendarView';
 import { taskActionHandlers } from '../task-actions';
 import type { Selection } from '../components/Calendar';
 import type { Page } from '../components/shell/Nav';
@@ -27,7 +29,7 @@ import { Sheet } from './Sheet';
 import { StatusBanner } from './StatusBanner';
 import { UnscheduledSheet } from './UnscheduledSheet';
 import { TodayPage } from './pages/TodayPage';
-import { CalendarPage, nextSlot, type PhoneView } from './pages/CalendarPage';
+import { CalendarPage, nextSlot } from './pages/CalendarPage';
 import '../theme/tokens.css';
 import '../theme/base.css';
 import '../theme/forms.css';
@@ -63,7 +65,7 @@ export function MobileApp({ client, connection, settingsPages = [], pendingView,
   const [page, setPage] = useState<Page>('today');
   const [meSection, setMeSection] = useState<string | null>(null);
   const [date, setDate] = useState(todayDate());
-  const [calendarView, setCalendarView] = useState<PhoneView>('day');
+  const [calendarView, setCalendarView] = useCalendarView(mobileViewPreference);
   const [selected, setSelected] = useState<Selection | null>(null);
   const [editor, setEditor] = useState<EditorTarget | null>(null);
   const [unscheduledOpen, setUnscheduledOpen] = useState(false);
@@ -97,7 +99,7 @@ export function MobileApp({ client, connection, settingsPages = [], pendingView,
     ?? snapshot.sources.find(value => value.id === id)?.label ?? undefined);
 
   return (
-    <MobileProvider mobile>
+    <FeedbackContext.Provider value={ui}><MobileProvider mobile>
       <div className="a2 is-mobile m-app">
         <StatusBanner connection={banner} onOpen={() => setStatusOpen(true)} />
         {ui.error && <div className="m-error" role="alert">
@@ -129,7 +131,7 @@ export function MobileApp({ client, connection, settingsPages = [], pendingView,
               settingsPages={settingsPages} select={select} edit={editRecord} openSource={setSourceId} coursePreview={coursePreview} />
           )}
         </main>
-        {snapshot && <Toast ui={ui} />}
+        {snapshot && <Toast notice={ui.toast} dismiss={ui.dismissNotice} />}
         {snapshot && <MobileAssistant ui={ui} selected={selected} date={date} domain={page === 'ledger' ? 'ledger' : undefined} connectionStatus={connection.status}
           ledgerView={page === 'ledger' ? ledgerView : undefined} storageKey={conversationKey} open={assistantOpen} setOpen={setAssistantOpen} />}
         <nav className="m-tabs-bar" aria-label="主导航">
@@ -167,26 +169,6 @@ export function MobileApp({ client, connection, settingsPages = [], pendingView,
         </Sheet>}
         {statusOpen && <Sheet title="连接与待提交" onClose={() => setStatusOpen(false)}>{pendingView}</Sheet>}
       </div>
-    </MobileProvider>
-  );
-}
-
-/** The latest save result for a few seconds, with undo while the last change can still be undone. */
-function Toast({ ui }: { ui: ReturnType<typeof usePlanner> }) {
-  const [shown, setShown] = useState('');
-  useEffect(() => {
-    if (!ui.notice) return;
-    setShown(ui.notice);
-    const timer = setTimeout(() => setShown(''), 4000);
-    return () => clearTimeout(timer);
-  }, [ui.notice]);
-  const text = ui.busy ? '正在处理…' : ui.error ? '' : shown;
-  if (!text) return null;
-  const undoable = !ui.busy && !/^(尚未执行|已取消)/.test(text) && !!ui.snapshot?.journal.some(entry => entry.undoable && !entry.undoneAt);
-  return (
-    <div className="m-toast" role="status" aria-live="polite">
-      <span>{friendlyReplyText(undoable ? text.replace(/[，,]?\s*可撤销$/, '') : text)}</span>
-      {undoable && <button className="m-link" onClick={() => { setShown(''); void ui.undo(); }}>撤销</button>}
-    </div>
+    </MobileProvider></FeedbackContext.Provider>
   );
 }

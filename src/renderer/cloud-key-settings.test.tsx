@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
+import { renderWithFeedback as render } from '../../tests/feedback-host';
 import { afterEach, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { SnapshotSchema } from '../shared/contracts';
 import type { AiConfigurationStatus } from '../shared/ai-configuration';
 import type { PlannerUI } from './hooks/usePlanner';
@@ -18,7 +19,7 @@ function setup(status = initial) {
   render(<Settings snapshot={snapshot} ui={ui} courses={() => {}} section="ai" />);
   return host;
 }
-async function ready() { await screen.findByText('已读取云端当前配置。'); }
+async function ready() { await screen.findByText(/云端已配置 · 不显示完整密钥|云端尚未配置 API Key/); }
 it('labels an unreadable device session, stops the loading messages, and recovers on a successful read', async () => {
   const host = setup(changed); await ready();
   host.retryApiKey.mockResolvedValue({ ok: false, error: { code: 'DEVICE_AUTH', message: 'synthetic device expired' } });

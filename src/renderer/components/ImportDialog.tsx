@@ -64,7 +64,7 @@ export function ImportDialog({
             operationId: operationId(),
             sourceId,
           }),
-        (r) => ui.setNotice(r.message),
+        (r) => r.status === 'failed' ? ui.setError(r.message) : ui.setNotice(r.message),
       );
       if (result) onClose();
     } else onClose();
@@ -222,7 +222,7 @@ export function SourceViewer({
             operationId: operationId(),
             sourceId: source.id,
           }),
-        (r) => ui.setNotice(r.message),
+        (r) => r.status === 'failed' ? ui.setError(r.message) : ui.setNotice(r.message),
       );
   }
   if (ui.host && !mobile && ui.snapshot?.keyStatus.scope === 'cloud' && (isExtractedQQSource(source) || isClearedPhoneSource(source))) return <LocalSourceViewer sourceId={source.id} host={ui.host} onClose={onClose} onCapture={onCapture} />;

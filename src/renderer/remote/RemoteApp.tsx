@@ -32,7 +32,7 @@ export function RemoteApp({ controller }: { controller: RemoteController }) {
     if (state.status === 'expired' && state.pending.length) { setError('请先把旧修改保存为本机档案，再重新配对。'); return; }
     await run(() => controller.pair(code.trim(), name.trim())); setCode('');
   }
-  const feedback = <>{error && <p className="m-note error" role="alert">{error}</p>}{notice && <p className="m-note ok" role="status">{notice}</p>}</>;
+  const warning = error && <p className="m-note error" role="alert">{error}</p>;
 
   const pendingQueue = <section className="m-pending" aria-label="未提交队列">
     {!state.pending.length ? <p className="m-empty">没有待提交的修改。</p> : state.pending.map(item => <article className={`m-pending-item status-${item.status}`} key={item.id}>
@@ -58,7 +58,8 @@ export function RemoteApp({ controller }: { controller: RemoteController }) {
         <p className="m-pair-brand">终极日历</p>
         <h1>{state.status === 'expired' ? '重新连接这台手机' : '连接云端'}</h1>
         {state.status === 'expired' && !recoveryRequired && <p className="m-hint">这台手机的授权已失效，请用新的配对码重新连接。</p>}
-        {feedback}
+        {warning}
+        {notice && <p className="m-note ok" role="status">{notice}</p>}
         {recoveryRequired && <section className="m-recovery" aria-label="旧修改">
           <h2>还有 {state.pending.length} 项修改没提交</h2>
           <p>重新配对前，先把它们保存为本机档案。档案只留在这台手机上，不会提交到新的配对。</p>
@@ -84,7 +85,7 @@ export function RemoteApp({ controller }: { controller: RemoteController }) {
   return <MobileApp key={`${state.session!.identity.dataInstanceId}:${state.session!.identity.generation}:${state.session!.device.id}`} client={controller.client} connection={state}
     conversationKey={`ultimate-calendar:assistant:${state.session!.identity.dataInstanceId}:${state.session!.identity.generation}:${state.session!.device.id}`}
     discardPreview={token => { const item = state.pending.find(value => value.status === 'review' && value.preview?.confirmationToken === token); if (item) void controller.resolve(item.id, 'discard').catch(() => {}); }}
-    pendingView={<>{feedback}{connectionLine}{pendingQueue}</>}
+    pendingView={<>{warning}{connectionLine}{pendingQueue}</>}
     settingsPages={[
       { id: 'ai', label: '生活助手', content: <AiKeyPage controller={controller} online={online} /> },
       { id: 'reminders', label: '手机提醒', content: <ReminderPage controller={controller} online={online} /> },

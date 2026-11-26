@@ -16,6 +16,8 @@ import {
 } from "../calendar-layout";
 import { DAY_HEIGHT, DAY_MINUTES, HOUR_HEIGHT, dayStart, draftRange, gestureRange, localDateTime, minuteAt, minutePosition, positionIntervals, type TimelineOperation } from '../calendar-timeline';
 import { useCurrentTime } from '../hooks/useCurrentTime';
+import type { DesktopCalendarView } from '../hooks/useCalendarView';
+import { useCalendarWheel } from '../hooks/useCalendarWheel';
 import { CurrentTimeIndicator, currentTimePosition } from './CurrentTimeIndicator';
 import { MonthView } from './calendar/MonthView';
 import { DaySidebar } from './calendar/DaySidebar';
@@ -59,6 +61,8 @@ export function Calendar({
   snapshot,
   date,
   setDate,
+  view,
+  setView,
   select,
   edit,
   schedule,
@@ -74,12 +78,14 @@ export function Calendar({
   snapshot: Snapshot;
   date: string;
   setDate: (value: string) => void;
+  view: DesktopCalendarView;
+  setView: (view: DesktopCalendarView) => void;
   select: (item: Selection) => void;
   /** Double-click: open the edit panel directly. */
   edit?: (item: Selection) => void;
   schedule: (draft: ScheduleDraft) => void;
   courses: () => void;
-  /** Supplies the save notice and undo in the toolbar. */
+  /** Supplies the persistent toolbar undo. */
   ui?: PlannerUI;
   /** The edit panel; while open it takes the drawer's place. */
   panel?: ReactNode;
@@ -91,7 +97,8 @@ export function Calendar({
   toggleDrawer?: () => void;
   unscheduledCount?: number;
 }) {
-  const [view, setView] = useState<CalendarView>("week");
+  const turnPage = (direction: -1 | 1) => setDate(moveDate(date, view, direction));
+  const calendarRoot = useCalendarWheel(turnPage);
   const [pending, setPending] = useState(snapshot.settings.showPending);
   const now = useCurrentTime();
   const scroll = useRef<HTMLDivElement>(null);
@@ -271,13 +278,13 @@ export function Calendar({
       .filter(Boolean).join(" · ");
   };
   return (
-    <div className="a2-page a2-calendar-page">
+    <div className="a2-page a2-calendar-page" ref={calendarRoot}>
       <PageToolbar ui={ui} title={title} sub={termLabel ? <span className="calendar-term-week">{termLabel}</span> : undefined}
-        floatingNotice secondary={<span className="ui-legend" aria-label="日历图例"><i className="course" />课程<i className="work" />执行时段<i className="event" />活动<i className="pending" />待定</span>}
+        secondary={<span className="ui-legend" aria-label="日历图例"><i className="course" />课程<i className="work" />执行时段<i className="event" />活动<i className="pending" />待定</span>}
         lead={<div className="a2-cal-nav">
-          <button className="ui-btn icon" onClick={() => setDate(moveDate(date, view, -1))} aria-label="上一页"><ChevronLeft aria-hidden="true" /></button>
+          <button className="ui-btn icon" onClick={() => turnPage(-1)} aria-label="上一页"><ChevronLeft aria-hidden="true" /></button>
           <button className="ui-btn" onClick={() => { setDate(today); focusCurrentTime(scroll.current, today, view); }}>今天</button>
-          <button className="ui-btn icon" onClick={() => setDate(moveDate(date, view, 1))} aria-label="下一页"><ChevronRight aria-hidden="true" /></button>
+          <button className="ui-btn icon" onClick={() => turnPage(1)} aria-label="下一页"><ChevronRight aria-hidden="true" /></button>
         </div>}>
         <label className="a2-check"><input type="checkbox" checked={pending} onChange={(e) => setPending(e.target.checked)} />待判断标记</label>
         <div className="ui-seg" role="group" aria-label="视图">

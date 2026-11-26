@@ -7,10 +7,11 @@ import { operationId, todayDate } from '../../calendar-layout';
 import { localDateTime } from '../../calendar-timeline';
 import { ledgerMoney } from './money';
 import { CategoryCombobox } from './CategoryCombobox';
+import { kinds, summarizeEntryChanges } from './entry-changes';
 
 export type Change = LedgerMutationRequest['changes'][number];
 export type Save = (changes: Change[]) => Promise<boolean>;
-export const kinds: Record<LedgerEntryKind, string> = { expense: '消费', income: '普通收入', asset_sale: '资产变现', transfer: '账户转账', bonus: '赠送额度', refund: '退款', reimbursement: '费用报销', aa_return: 'AA / 代垫返款', loan_borrow: '借入', loan_lend: '借出', loan_repay: '归还借款', loan_collect: '收回借款', repayment: '其他还款（信用卡等）', adjustment: '个人开销调整' };
+export { kinds };
 export const accountName = (id: LedgerAccountId | null, accounts: readonly LedgerAccount[]) => accounts.find(value => value.id === id)?.name ?? '账户待确认';
 export const timeText = (value: string | null | undefined) => value ? localDateTime(Date.parse(value)).replace('T', ' ') : '时点未明确';
 export const inKinds: LedgerEntryKind[] = ['income', 'asset_sale', 'bonus', 'refund', 'reimbursement', 'aa_return', 'loan_borrow', 'loan_collect'];
@@ -68,7 +69,7 @@ export function EntryEditor({ entry, snapshot, busy, error, save, close }: { ent
   })));
   const [flowRows, setFlowRows] = useState(originalFlowRows);
   const [extraIncome, setExtraIncome] = useState(centsInput(entry?.incomeCents ?? 0));
-  const [note, setNote] = useState(entry?.note ?? ''), [reason, setReason] = useState(''), [formError, setFormError] = useState('');
+  const [note, setNote] = useState(entry?.note ?? ''), [formError, setFormError] = useState('');
   const [related, setRelated] = useState<string[]>(entry?.relatedEntryIds ?? []);
   const [adjustmentRows, setAdjustmentRows] = useState<AdjustmentRow[]>(() => entry?.adjustments.length
     ? entry.adjustments.map(item => ({ key: operationId(), targets: item.targetEntryIds, amount: centsInput(item.amountCents), note: item.note }))
@@ -102,12 +103,11 @@ export function EntryEditor({ entry, snapshot, busy, error, save, close }: { ent
       const amountCents = kind === 'adjustment' ? 0 : parseMoney(amount, '实际金额'), personalCents = loanKind ? 0 : kind === 'expense' ? personalUnknown ? null : parseMoney(personalTouched ? personal : amount, '个人开销') : entry?.kind === kind ? entry.personalCents : 0;
       const unchangedCashflow = entry && kind === entry.kind && amountCents === entry.amountCents &&
         account === (originalAccount ?? '') && toAccount === (entry.cashflows.find(value => value.deltaCents > 0)?.accountId ?? '');
-      if (entry && !reason.trim()) throw new Error('请写一句更正说明，保留修改依据。');
       const adjustments = canAdjust ? adjustmentRows.flatMap(row => {
         const cents = parseMoney(row.amount || '0', '冲减金额');
         if (!cents) return [];
         if (!row.targets.length) throw new Error('冲减个人开销时，请选择原消费；原消费不在账本中则保持冲减为 0。');
-        return [{ targetEntryIds: row.targets, amountCents: cents, note: row.note ?? (reason || note) }];
+        return [{ targetEntryIds: row.targets, amountCents: cents, note: row.note ?? note }];
       }) : [];
       if (loanKind && amountCents <= 0) throw new Error('借款本金须大于 0。');
       const paymentAccounts = split ? flowRows.map(row => row.account) : [account];
@@ -135,7 +135,7 @@ export function EntryEditor({ entry, snapshot, busy, error, save, close }: { ent
         const match = !entry && snapshot.entries.find(item => duplicateLedgerEntry(item, draft));
         setReview(match ? { draft: signature, revision: snapshot.revision, id: match.id, version: match.version, approved: false } : null);
       }
-      if (await save([{ type: 'putEntry', entry: draft, expectedVersion: entry?.version ?? null, confirmDuplicate, note: entry ? reason : '手工记账' }])) close();
+      if (await save([{ type: 'putEntry', entry: draft, expectedVersion: entry?.version ?? null, confirmDuplicate, note: entry ? summarizeEntryChanges(entry, draft, snapshot) : '手工记账' }])) close();
     } catch (value) { setFormError(value instanceof Error ? value.message : '请检查填写内容。'); }
   };
   return <form className="editor-form ledger-form" onSubmit={event => void submit(event)} onChangeCapture={event => {
@@ -180,7 +180,7 @@ export function EntryEditor({ entry, snapshot, busy, error, save, close }: { ent
       <p className="ledger-form-note">{kind === 'aa_return' ? '资金回流后，关联原消费可结清代垫。' : kind === 'adjustment'
         ? '选择原消费，填写要冲减的个人开销。' : '只收回代垫时，选择返款关联的原账，冲减金额填 0。已计入本人开销的退款或报销另选冲减对象和金额。'}</p>
     </fieldset>}
-    <label>备注<textarea rows={2} value={note} onChange={event => setNote(event.target.value)} /></label>{entry && <label>更正说明<input required value={reason} onChange={event => setReason(event.target.value)} placeholder="例如：补充支付账户为支付宝" /></label>}
+    <label>备注<textarea rows={2} value={note} onChange={event => setNote(event.target.value)} /></label>
     {review && reviewedEntry && (/已有相同(?:日期|月份)/.test(error) || review.approved) && <fieldset>
       <legend>核对重复账目</legend>
       <p>{reviewedEntry.date ?? reviewedEntry.month} · {reviewedEntry.title} · {ledgerMoney(reviewedEntry.amountCents)}（原账编号末段 {reviewedEntry.id.slice(-16)}）</p>
@@ -193,7 +193,10 @@ export function EntryEditor({ entry, snapshot, busy, error, save, close }: { ent
 
 export function VoidEditor({ entry, busy, error, save, close }: { entry: LedgerEntry; busy: boolean; error: string; save: (changes: Change[]) => Promise<boolean>; close: () => void }) {
   const [note, setNote] = useState('');
-  return <form className="editor-form ledger-form" onSubmit={event => { event.preventDefault(); void save([{ type: 'voidEntry', id: entry.id, expectedVersion: entry.version, note }]).then(saved => { if (saved) close(); }); }}><p>作废“{entry.title}” {ledgerMoney(entry.amountCents)} 后，这笔不再计入开销与账户变化，原记录和更正历史仍会保留。</p><label>作废说明<input required value={note} onChange={event => setNote(event.target.value)} placeholder="例如：误记，实际没有发生" /></label>{error && <p className="error" role="alert">{error}</p>}<footer className="form-footer"><button type="button" disabled={busy} onClick={close}>保留</button><button className="danger" disabled={busy}>确认作废</button></footer></form>;
+  return <form className="editor-form ledger-form" onSubmit={event => {
+    event.preventDefault();
+    void save([{ type: 'voidEntry', id: entry.id, expectedVersion: entry.version, note: note.trim() || '手工移除' }]).then(saved => { if (saved) close(); });
+  }}><p>作废“{entry.title}” {ledgerMoney(entry.amountCents)} 后，这笔不再计入开销与账户变化，原记录和更正历史仍会保留。</p><label>作废说明（选填）<input value={note} onChange={event => setNote(event.target.value)} placeholder="例如：误记，实际没有发生" /></label>{error && <p className="error" role="alert">{error}</p>}<footer className="form-footer"><button type="button" disabled={busy} onClick={close}>保留</button><button className="danger" disabled={busy}>确认作废</button></footer></form>;
 }
 
 export function BalanceEditor({ accountId, snapshot, busy, error, save, close }: { accountId: LedgerAccountId; snapshot: LedgerSnapshot; busy: boolean; error: string; save: (changes: Change[]) => Promise<boolean>; close: () => void }) {

@@ -421,6 +421,7 @@ describe('main assistant local ledger commands',()=>{
     const after = ledger.snapshot();
     expect(after.entries).toHaveLength(1);
     expect(after.entries[0]).toMatchObject({ ...original, category: '快递物流', version: 2, updatedAt: new Date(at).toISOString() });
+    expect(after.audit.at(-1)?.note).toBe('用户明确更正分类');
     expect(after.summary.personalCents).toBe(before.summary.personalCents);
     expect(after.summary.accounts).toEqual(before.summary.accounts);
     expect(after.summary.categories).toEqual([{ category: '快递物流', cents: 100 }]);

@@ -1,6 +1,6 @@
 import { operationPending } from '../operation-feedback';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { friendlyReplyText } from './shell/AssistantText';
+import { useFeedback } from '../hooks/useFeedback';
 import { ChevronLeft, History, Import, Plus } from "lucide-react";
 import type { Candidate, Snapshot } from "../../shared/contracts";
 import { CAPTURE_BATCH_WAIT_SECONDS, type CaptureSnapshot } from "../../shared/capture";
@@ -11,7 +11,7 @@ import type { Selection } from "./Calendar";
 import { candidateDisposition } from '../../domain/candidate-eligibility';
 import { useCurrentTime } from '../hooks/useCurrentTime';
 import { PageToolbar } from "./shell/PageToolbar";
-import { InboxList, type Toast } from "./inbox/InboxList";
+import { InboxList } from "./inbox/InboxList";
 import { CandidateDetail, type Decision } from "./inbox/CandidateDetail";
 import { arrival, dayWord, indexInbox, type InboxNotice } from "./inbox/format";
 import "./inbox/Inbox.css";
@@ -69,7 +69,7 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
   const [fallback, setFallback] = useState(0);
   const [reason, setReason] = useState("");
   const [snoozing, setSnoozing] = useState(false);
-  const [toast, setToast] = useState<Toast | null>(null);
+  const { setNotice } = useFeedback();
   const capture = useCaptureStatus(host);
 
   const { items, positions, counts, earliestSnooze } = useMemo(() => {
@@ -121,11 +121,6 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus]);
   useEffect(() => { setSnoozing(false); }, [current?.id]);
-  useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => setToast(null), 10_000);
-    return () => clearTimeout(timer);
-  }, [toast]);
 
   const pick = (id: string) => { setSelectedId(id); setDetailOpen(true); setFallback(positions.get(id) ?? 0); };
   const changePage = (next: number) => {
@@ -134,29 +129,28 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
   };
   async function decide(candidate: Candidate, type: Decision) {
     const index = positions.get(candidate.id) ?? 0;
-    const result = await ui.mutate([{ type, id: candidate.id, expectedVersion: candidate.version, reason }]);
+    const result = await ui.mutate([{ type, id: candidate.id, expectedVersion: candidate.version, reason }],
+      receipt => decisionNotice(`${type === "acceptCandidate" ? "已接受" : "已忽略"}「${candidate.title}」`, receipt.transactionId, candidate.id));
     if (result?.status !== "applied") return;
     setDetailOpen(false);
     setReason("");
     setFallback(Math.max(0, index));
     if (selectedId === candidate.id) setSelectedId(null);
-    setToast({ text: `${type === "acceptCandidate" ? "已接受" : "已忽略"}「${candidate.title}」`, transactionId: result.transactionId, id: candidate.id });
   }
   async function snooze(candidate: Candidate, until: string) {
     const index = positions.get(candidate.id) ?? 0;
-    const result = await ui.mutate([{ type: "snoozeCandidate", id: candidate.id, expectedVersion: candidate.version, until, reason }]);
+    const result = await ui.mutate([{ type: "snoozeCandidate", id: candidate.id, expectedVersion: candidate.version, until, reason }],
+      receipt => decisionNotice(`已推迟「${candidate.title}」`, receipt.transactionId, candidate.id));
     if (result?.status !== "applied") return;
     setReason("");
     setFallback(Math.max(0, index));
     if (selectedId === candidate.id) setSelectedId(null);
-    setToast({ text: `已推迟「${candidate.title}」`, transactionId: result.transactionId, id: candidate.id });
   }
-  async function undo() {
-    if (!toast) return;
-    const { transactionId, id } = toast;
-    setToast(null);
-    await ui.undo(transactionId);
-    setSelectedId(id);
+  function decisionNotice(text: string, transactionId: string, id: string) {
+    setNotice(text, async () => {
+      await ui.undo(transactionId);
+      setSelectedId(id);
+    });
   }
 
   const keys = useRef({ items, position, current, quick, busy: current ? operationPending(ui, `candidate:${current.id}`) : false, decide, setSnoozing, pick });
@@ -244,7 +238,7 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
         </div>}
         {items.length ? <>
           <InboxList items={visible} page={page} pageCount={pageCount} changePage={changePage} selectedId={current?.id} today={today} quick={quick} busy={ui.busy} pending={id => operationPending(ui, `candidate:${id}`)}
-            select={pick} decide={(candidate, type) => void decide(candidate, type)} toast={null} undo={() => {}} />
+            select={pick} decide={(candidate, type) => void decide(candidate, type)} />
           {detail}
         </> : <div className="m-ib-empty">
           <p className="title">{tab === "pending" ? "都处理完了" : tab === "snoozed" ? "没有稍后决定的通知" : "这里还没有事项"}</p>
@@ -290,12 +284,11 @@ export function Inbox({ snapshot, ui, select, edit, importMessage, openSource, f
         {items.length ? (
           <div className="a2-ib-body">
             <InboxList items={visible} page={page} pageCount={pageCount} changePage={changePage} selectedId={current?.id} today={today} quick={quick} busy={ui.busy} pending={id => operationPending(ui, `candidate:${id}`)}
-              select={pick} decide={(candidate, type) => void decide(candidate, type)} toast={toast} undo={() => void undo()} />
+              select={pick} decide={(candidate, type) => void decide(candidate, type)} />
             {detail}
           </div>
         ) : (
           <div className="a2-ib-empty">
-            {toast && <div className="ui-toast a2-ib-toast" role="status">{friendlyReplyText(toast.text)}<button onClick={() => void undo()}>撤销</button></div>}
             {tab === "pending" ? <div className="ui-empty center">
               <h4>都处理完了</h4>
               {(capture || earliestSnooze) && <p>{waiting}</p>}

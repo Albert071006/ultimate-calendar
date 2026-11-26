@@ -10,7 +10,7 @@
   font-family: var(--font-ui);
   font-size: 14px;
 }
-.app-shell.a2.desktop-chrome .a2-main { padding-top: env(titlebar-area-height, 32px); }
+.app-shell.a2.desktop-chrome .a2-main { --titlebar-height: env(titlebar-area-height, 32px); padding-top: var(--titlebar-height); }
 .app-shell.a2.desktop-chrome .a2-nav { padding-top: calc(env(titlebar-area-height, 32px) + 4px); }
 
 .a2-nav { position: relative; border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 18px 12px 14px; min-height: 0; }
@@ -36,14 +36,25 @@
 .a2-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; padding: 14px 22px; min-height: 61px; border-bottom: 1px solid var(--line); }
 .a2-title { margin: 0; font-family: var(--font-display); font-size: 20px; font-weight: 600; letter-spacing: 0.3px; display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
 .a2-title small { font-family: var(--font-ui); font-size: 13px; font-weight: 400; color: var(--ink-3); letter-spacing: 0; }
-.a2-notice { flex: 0 1 auto; min-width: 0; max-width: min(360px, 100%); font-size: 12.5px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .a2-toolbar-actions { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 10px; min-width: 0; max-width: 100%; }
 .a2-toolbar-actions > * { flex-shrink: 0; }
 .a2-toolbar-secondary { flex: 0 0 100%; display: flex; align-items: center; min-width: 0; }
-/* A calendar save notice never reflows its navigation or covers date controls. */
-.a2-notice-floating { position: fixed; right: 22px; bottom: 82px; z-index: 30; display: flex; align-items: flex-start; gap: 10px; max-width: min(520px, calc(100vw - 32px)); max-height: min(200px, 35vh); overflow: auto; padding: 10px 12px; color: var(--ink); background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); box-shadow: 0 4px 18px #0002; font-size: 13px; line-height: 1.6; white-space: normal; overflow-wrap: anywhere; }
-.a2-notice-floating > span { min-width: 0; }
-.a2-notice-floating .ui-btn { flex-shrink: 0; width: 26px; height: 26px; min-width: 26px; padding: 3px; }
+
+/* Follow the actual composer or conversation edge, including wrapped drafts and resized panels. */
+.a2-assist:not(.open), .a2-assist.open .a2-assist-panel { anchor-name: --toast-edge; }
+.a2-toast-layer { position: absolute; inset-inline: 16px; bottom: 68px; bottom: calc(anchor(--toast-edge top, 60px) + 8px); z-index: 26; display: flex; justify-content: center; pointer-events: none; }
+.a2-main:has(.a2-assist.open) > .a2-toast-layer { top: var(--titlebar-height, 0px); align-items: flex-end; }
+.a2-main:has(.a2-assist.open) .a2-toast { max-height: 100%; overflow: auto; align-items: safe center; }
+.a2-toast { display: flex; align-items: center; gap: 10px; width: max-content; max-width: min(100%, 560px); min-height: 36px; padding: 4px 14px; border-radius: 18px; background: var(--ink); color: var(--on-dark); box-shadow: var(--overlay-shadow); font-size: 13.5px; line-height: 1.5; pointer-events: auto; transition: opacity 160ms ease; }
+.a2-toast > span { min-width: 0; max-height: min(25vh, 160px); overflow: auto; overflow-wrap: anywhere; white-space: pre-line; }
+.a2-toast button { flex: none; padding: 3px 6px; color: #f3b8a8; background: transparent; border: 0; border-radius: 4px; font: inherit; font-weight: 600; }
+.a2-toast button:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }
+.a2-toast.fading { opacity: 0; }
+@media (prefers-reduced-motion: reduce) { .a2-toast { transition: none; } }
+@supports not (anchor-name: --toast-edge) {
+  .a2-main:has(.a2-assist.open) > .a2-toast-layer { top: calc(var(--titlebar-height, 0px) + 4px); bottom: auto; }
+  .a2-main:has(.a2-assist.open) .a2-toast { max-height: 40px; }
+}
 
 .a2-error { grid-row: 1; display: flex; align-items: center; gap: 10px; margin: 10px 22px 0; padding: 8px 12px; border: 1px solid var(--accent); background: var(--accent-soft); border-radius: var(--radius); font-size: 13px; }
 .a2-error .error { flex: 1; white-space: pre-wrap; color: var(--accent); }

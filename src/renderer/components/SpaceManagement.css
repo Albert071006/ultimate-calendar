@@ -37,7 +37,6 @@
 .space-scope p { margin: 6px 0 0; line-height: 1.7; }
 .space-warnings { margin: 12px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.7; color: var(--accent); }
 .space-last-run { margin: 10px 0 0; font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; }
-.space-notice { margin: 10px 0 0; font-size: 12.5px; color: var(--income); }
 
 @media (max-width: 1080px) {
   .space-usage { grid-template-columns: repeat(2, minmax(0, 1fr)); }

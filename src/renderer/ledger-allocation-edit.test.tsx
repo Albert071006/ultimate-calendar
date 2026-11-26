@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { DEFAULT_LEDGER_RULES, LedgerEntrySchema, type LedgerEntry } from '../shared/ledger';
 import { ledgerReceivable } from '../ledger/receivable';
 import { summarizeLedger } from '../ledger/summary';
-import { EntryEditor, type Change } from './components/ledger/editors';
+import { EntryEditor, VoidEditor, type Change } from './components/ledger/editors';
 
 afterEach(cleanup);
 const month = '2026-05', stamp = '2026-05-01T12:00:00+08:00';
@@ -17,7 +17,6 @@ function edit(entry: LedgerEntry, entries = [entry]) {
   const snapshot = { revision: 1, entries, accounts: undefined, audit: [], sources: [], balanceSnapshots: [], rules: DEFAULT_LEDGER_RULES,
     summary: summarizeLedger({ entries, balanceSnapshots: [] }, { month }) };
   render(<EntryEditor entry={entry} snapshot={snapshot} busy={false} error="" save={save} close={vi.fn()} />);
-  fireEvent.change(screen.getByLabelText('更正说明'), { target: { value: '合成更正' } });
   return save;
 }
 const setField = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
@@ -39,6 +38,7 @@ it('retains the expense adjustment and the separate settled advance when only a 
   submit();
   const after = savedEntry(save);
   const { version, createdAt, updatedAt, voided, sameDayBalanceOrder, ...originalDraft } = receipt;
+  expect(save.mock.calls[0]![0][0]).toMatchObject({ note: '修改备注' });
   expect(after).toEqual({ ...originalDraft, note: '只补充备注' });
   expect(ledgerReceivable([personal, advance, { ...receipt, ...after }], month).cents).toBe(0);
 });
@@ -55,6 +55,7 @@ it('edits one adjustment without regrouping any other allocation or rewriting th
   const after = savedEntry(save);
   expect(after.relatedEntryIds).toEqual([advance.id]);
   expect(after.adjustments).toEqual([receipt.adjustments[0], { ...receipt.adjustments[1], amountCents: 1200 }]);
+  expect(save.mock.calls[0]![0][0]).toMatchObject({ note: '修改：冲减 合成乙 15.00 → 合成乙 12.00' });
 });
 
 it('keeps the original cashflow allocation when only editing metadata', () => {
@@ -79,6 +80,24 @@ it('requires allocations to sum to the edited expense and preserves the individu
   expect(savedEntry(save)).toMatchObject({ amountCents: 9000, personalCents: 8000, cashflows: [
     { accountId: 'wechat', deltaCents: -6000 }, { accountId: 'alipay', deltaCents: -3000 },
   ] });
+  expect(save.mock.calls[0]![0][0]).toMatchObject({ note: '修改：分项收付 支付宝余额 −¥40.00 → 支付宝余额 −¥30.00；金额 100.00 → 90.00' });
+});
+
+it('records a manual review when the submitted values are unchanged', () => {
+  const save = edit(expense('合成核对', 260, 260));
+  setField('实际支付（元）', '2.6');
+  submit();
+  expect(save.mock.calls[0]![0][0]).toMatchObject({ type: 'putEntry', note: '手工核对保存' });
+});
+
+it.each(['', '  '])('supplies the manual void reason for blank input %j', value => {
+  const entry = expense('合成作废', 260, 260);
+  const save = vi.fn(async (_changes: Change[]) => true);
+  render(<VoidEditor entry={entry} busy={false} error="" save={save} close={vi.fn()} />);
+  expect(screen.getByLabelText('作废说明（选填）')).toHaveProperty('required', false);
+  setField('作废说明（选填）', value);
+  fireEvent.click(screen.getByRole('button', { name: '确认作废' }));
+  expect(save).toHaveBeenCalledWith([{ type: 'voidEntry', id: entry.id, expectedVersion: 1, note: '手工移除' }]);
 });
 
 it('preserves each side of a split transfer when correcting its total', () => {

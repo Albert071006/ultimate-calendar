@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { SnapshotSchema } from '../shared/contracts';
-import { Calendar } from './components/Calendar';
+import { CalendarFixture as Calendar } from '../../tests/CalendarFixture';
 import { currentTimePosition } from './components/CurrentTimeIndicator';
 import { DAY_HEIGHT, HOUR_HEIGHT, minutePosition } from './calendar-timeline';
 

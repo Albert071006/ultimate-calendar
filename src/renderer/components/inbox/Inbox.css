@@ -25,7 +25,6 @@
 .a2-ib-item .qa .no:hover { color: var(--ink); border-color: var(--ink-2); }
 .a2-ib-item .qa button:disabled { opacity: 0.45; cursor: default; }
 .a2-ib-item .qa button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
-.a2-ib-toast { margin: 12px 16px; }
 .a2-ib-keys { margin: 0; padding: 12px 16px; font-size: 12px; color: var(--ink-3); }
 
 .a2-ib-detail { min-height: 0; overflow: auto; padding: 22px 32px 0; }
@@ -77,7 +76,6 @@
 .a2-ib-done { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-2); }
 
 .a2-ib-empty { min-height: 0; overflow: auto; display: flex; flex-direction: column; align-items: center; padding-top: 72px; }
-.a2-ib-empty .a2-ib-toast { margin: -48px 0 24px; }
 .a2-ib-sourcelist { min-height: 0; overflow: auto; padding: 12px 22px 18px; display: flex; flex-direction: column; gap: 8px; }
 .a2-ib-source { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 14px; font: inherit; color: var(--ink); text-align: left; background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); cursor: pointer; }
 .a2-ib-source:hover { border-color: var(--ink-3); }

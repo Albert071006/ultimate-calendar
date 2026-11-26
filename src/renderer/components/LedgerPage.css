@@ -1,8 +1,7 @@
 /* 账单: ink-ruled totals, plain bars and day-grouped transactions. */
 .a2-page.a2-ledger { grid-template-rows: auto auto minmax(0, 1fr); }
+.a2-page.a2-ledger:has(> .a2-error) { grid-template-rows: auto auto auto minmax(0, 1fr); }
 .a2-ledger .ui-tabs { align-items: center; }
-.a2-ledger-status { margin: 0 0 0 auto; font-size: 12.5px; color: var(--ink-3); }
-.a2-ledger-status.error { color: var(--accent); }
 .a2-ledger-body { min-height: 0; overflow: auto; padding: 18px 22px 24px; }
 .a2-ledger-empty { display: flex; justify-content: center; padding-top: 72px; }
 .a2-ledger .a2-sec-h { display: flex; align-items: baseline; gap: 10px; margin: 0 0 12px; }

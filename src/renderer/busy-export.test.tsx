@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { renderWithFeedback } from '../../tests/feedback-host';
 import type { ApiResult } from '../shared/contracts';
 import type { BusyExportDesktopAPI, BusyExportPreview } from '../shared/busy-context';
 import { BusyExportPanel } from './components/BusyExportPanel';
@@ -22,8 +23,8 @@ function fixture() {
     busyExportPreview: vi.fn<BusyExportDesktopAPI['busyExportPreview']>(async () => ({ ok: true, data: preview() })),
     busyExportSave: vi.fn<BusyExportDesktopAPI['busyExportSave']>(async () => ({ ok: true, data: { saved: true, filename: 'synthetic.calendar-busy.json' } })),
   };
-  const onBusyChange = vi.fn(), onSaved = vi.fn();
-  return { host, onBusyChange, onSaved, show: () => render(<BusyExportPanel host={host} onBusyChange={onBusyChange} onSaved={onSaved} />) };
+  const onBusyChange = vi.fn();
+  return { host, onBusyChange, show: () => renderWithFeedback(<BusyExportPanel host={host} onBusyChange={onBusyChange} />) };
 }
 const button = (name: string) => screen.getByRole('button', { name }) as HTMLButtonElement;
 const input = (name: string) => screen.getByLabelText(name) as HTMLInputElement;
@@ -93,10 +94,10 @@ describe('busy time export', () => {
     expect(input('隐藏日程名称，仅保留忙碌时间').disabled).toBe(true);
     await act(async () => pendingSave.resolve({ ok: true, data: { saved: false } }));
     expect(screen.getByRole('status').textContent).toBe('已取消保存，可继续使用当前预览。');
-    expect(f.onSaved).not.toHaveBeenCalled();
+    expect(screen.queryByText(/已保存忙碌时间/)).toBeNull();
     expect(f.onBusyChange).toHaveBeenLastCalledWith(false);
     fireEvent.click(button('保存忙碌时间文件'));
-    await waitFor(() => expect(f.onSaved).toHaveBeenCalledWith('已保存忙碌时间：synthetic.calendar-busy.json'));
+    expect((await screen.findByText('已保存忙碌时间：synthetic.calendar-busy.json')).closest('.a2-toast')).toBeTruthy();
     expect(f.host.busyExportSave).toHaveBeenCalledTimes(2);
     expect(button('保存忙碌时间文件').disabled).toBe(true);
   });
@@ -112,6 +113,6 @@ describe('busy time export', () => {
     fireEvent.click(button('预览忙碌时间'));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('连接中断'));
     expect(f.onBusyChange).toHaveBeenLastCalledWith(false);
-    expect(f.onSaved).not.toHaveBeenCalled();
+    expect(screen.queryByRole('status')).toBeNull();
   });
 });

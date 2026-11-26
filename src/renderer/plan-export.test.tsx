@@ -9,6 +9,7 @@ import { DetailPopover } from './components/detail/DetailPopover';
 import { Goals } from './pages/me/Goals';
 import { MobileProvider } from './mobile/layout';
 import { App } from './App';
+import { renderWithFeedback } from '../../tests/feedback-host';
 
 vi.mock('./calendar-layout', async importOriginal => ({ ...await importOriginal<typeof import('./calendar-layout')>(), todayDate: () => '2030-04-17' }));
 afterEach(cleanup);
@@ -28,8 +29,8 @@ function fixture(initial = preview()) {
     planExportPreview: vi.fn<(request: PlanExportRequest) => Promise<ApiResult<PlanExportPreview>>>(async () => ({ ok: true, data: initial })),
     planExportSave: vi.fn<PlanExportDesktopAPI['planExportSave']>(async () => ({ ok: true, data: { saved: true, filename: 'synthetic-goal.calendar-context.json' } })),
   };
-  const onClose = vi.fn(), onSaved = vi.fn();
-  return { host, onClose, onSaved, show: () => render(<PlanExportDialog host={host} goal={goal} onClose={onClose} onSaved={onSaved} />) };
+  const onClose = vi.fn();
+  return { host, onClose, show: () => renderWithFeedback(<PlanExportDialog host={host} goal={goal} onClose={onClose} />) };
 }
 const button = (name: string) => screen.getByRole('button', { name }) as HTMLButtonElement;
 const input = (name: string) => screen.getByLabelText(name) as HTMLInputElement;
@@ -115,7 +116,7 @@ describe('goal context export', () => {
     expect(f.onClose).not.toHaveBeenCalled();
     await act(async () => pendingSave.resolve({ ok: true, data: { saved: true, filename: 'synthetic.calendar-context.json' } }));
     expect(screen.getByRole('status').textContent).toBe('已保存上下文文件：synthetic.calendar-context.json');
-    expect(f.onSaved).toHaveBeenCalledWith('已保存上下文文件：synthetic.calendar-context.json');
+    expect(within(screen.getByRole('dialog')).queryByRole('status')).toBeNull();
     expect(button('保存上下文文件').disabled).toBe(true);
   });
 
@@ -125,10 +126,10 @@ describe('goal context export', () => {
     fireEvent.click(button('预览导出内容')); await screen.findByText('本机资料');
     fireEvent.click(button('保存上下文文件'));
     expect(await screen.findByRole('status')).toHaveProperty('textContent', '已取消保存，未生成上下文文件。');
-    expect(f.onSaved).not.toHaveBeenCalled();
+    expect(screen.queryByText(/已保存上下文文件/)).toBeNull();
     expect(button('保存上下文文件').disabled).toBe(false);
     fireEvent.click(button('保存上下文文件'));
-    await waitFor(() => expect(f.onSaved).toHaveBeenCalledTimes(1));
+    expect((await screen.findByText('已保存上下文文件：synthetic-goal.calendar-context.json')).closest('.a2-toast')).toBeTruthy();
     expect(f.host.planExportSave).toHaveBeenCalledTimes(2);
   });
 
@@ -140,7 +141,7 @@ describe('goal context export', () => {
     expect(await screen.findByRole('alert')).toHaveProperty('textContent', '资料已变化，请重新预览');
     expect(button('保存上下文文件').disabled).toBe(true);
     expect(screen.queryByRole('region', { name: '导出内容预览' })).toBeNull();
-    expect(f.onSaved).not.toHaveBeenCalled();
+    expect(screen.queryByRole('status')).toBeNull();
     f.host.planExportPreview.mockResolvedValueOnce({ ok: false, error: { code: 'NETWORK', message: '连接失败，请重试', retryable: true } });
     fireEvent.click(button('预览导出内容'));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('连接失败，请重试'));
@@ -161,7 +162,9 @@ describe('goal context export', () => {
     fireEvent.mouseDown(input('续排要求（选填）'));
     expect(screen.getByRole('dialog', { name: '导出给外部智能体' })).toBeTruthy();
     fireEvent.click(button('预览导出内容')); await screen.findByRole('region', { name: '导出内容预览' });
-    fireEvent.click(button('保存上下文文件')); await within(screen.getByRole('dialog', { name: '导出给外部智能体' })).findByRole('status');
+    fireEvent.click(button('保存上下文文件'));
+    expect((await screen.findByRole('status')).closest('.a2-main')).toBeTruthy();
+    expect(within(screen.getByRole('dialog', { name: '导出给外部智能体' })).queryByRole('status')).toBeNull();
     expect(snapshotRead).toHaveBeenCalledTimes(1);
     expect(mutate).not.toHaveBeenCalled();
   });

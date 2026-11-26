@@ -3,6 +3,7 @@ import type { ApiResult } from '../../shared/contracts';
 import type { HostCapabilities } from '../../shared/client';
 import { SpacePolicySchema, type SpacePolicy, type SpaceSnapshot } from '../../shared/space';
 import { displayInstant } from '../calendar-layout';
+import { useFeedback } from '../hooks/useFeedback';
 import './SpaceManagement.css';
 
 function size(bytes: number) {
@@ -31,7 +32,7 @@ export function SpaceManagement({ host, active = true, plannerBusy = false, clou
   const [policy, setPolicy] = useState<SpacePolicy>(SpacePolicySchema.parse({}));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+  const { setNotice } = useFeedback();
   const [confirm, setConfirm] = useState(false);
   const [clearCache, setClearCache] = useState(false);
   const dirty = snapshot !== null && JSON.stringify(policy) !== JSON.stringify(snapshot.policy);
@@ -54,7 +55,7 @@ export function SpaceManagement({ host, active = true, plannerBusy = false, clou
   if (!supported) return null;
 
   async function run(work: () => Promise<ApiResult<SpaceSnapshot>>, success: (value: SpaceSnapshot) => void) {
-    setBusy(true); setError(''); setNotice('');
+    setBusy(true); setError('');
     try {
       const result = await work();
       if (result.ok) { setSnapshot(result.data); success(result.data); }
@@ -64,7 +65,7 @@ export function SpaceManagement({ host, active = true, plannerBusy = false, clou
   }
   function change(key: keyof SpacePolicy, value: number | boolean) {
     setPolicy(previous => ({ ...previous, [key]: value }));
-    setConfirm(false); setNotice('');
+    setConfirm(false);
   }
   function savePolicy() {
     const parsed = SpacePolicySchema.safeParse(policy);
@@ -145,6 +146,5 @@ export function SpaceManagement({ host, active = true, plannerBusy = false, clou
     </>}
     {!snapshot && !error && <p className="space-muted">正在读取空间占用…</p>}
     {error && <p className="error" role="alert">{error}</p>}
-    {notice && <p className="space-notice" role="status">{notice}</p>}
   </section>;
 }

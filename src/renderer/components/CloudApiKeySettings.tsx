@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AiApiKeySchema, type AiConfigurationStatus } from '../../shared/ai-configuration';
 import type { PlannerUI } from '../hooks/usePlanner';
+import { useFeedback } from '../hooks/useFeedback';
 import './CloudApiKeySettings.css';
 
 /** The value is submitted once, never kept in component state or read back from the service. */
@@ -14,14 +15,14 @@ export function CloudApiKeySettings({ ui }: { ui: PlannerUI }) {
   const [needsReview, setNeedsReview] = useState(false);
   const [error, setError] = useState('');
   const [readError, setReadError] = useState('');
-  const [message, setMessage] = useState('');
+  const { setNotice } = useFeedback();
   const [confirmClear, setConfirmClear] = useState(false);
 
   async function readStatus() {
     const result = await host?.retryApiKey().catch(() => undefined);
     if (!result?.ok || !result.data.cloudConfiguration) {
       if (alive.current) {
-        setStatus(null); setMessage('');
+        setStatus(null);
         setReadError(result?.ok === false && result.error.code === 'DEVICE_AUTH'
           ? '请用新的设备配对码重新连接这台电脑，之后即可读取已有的云端密钥配置。'
           : '无法读取云端配置，请检查连接后重新读取。');
@@ -31,19 +32,19 @@ export function CloudApiKeySettings({ ui }: { ui: PlannerUI }) {
     if (alive.current) { setReadError(''); setStatus(result.data.cloudConfiguration); }
     return result.data.cloudConfiguration;
   }
-  async function refresh() {
+  async function refresh(notify = true) {
     if (inFlight.current) return;
-    inFlight.current = true; setBusy(true); setError(''); setReadError(''); setMessage(''); setConfirmClear(false);
+    inFlight.current = true; setBusy(true); setError(''); setReadError(''); setConfirmClear(false);
     try {
       const value = await readStatus();
-      if (alive.current && value) { setNeedsReview(false); setMessage('已读取云端当前配置。'); }
+      if (alive.current && value) { setNeedsReview(false); if (notify) setNotice('已读取云端当前配置。'); }
     } finally {
       inFlight.current = false; if (alive.current) setBusy(false);
     }
   }
   useEffect(() => {
     alive.current = true;
-    void refresh();
+    void refresh(false);
     return () => { alive.current = false; if (input.current) input.current.value = ''; };
   }, [host]);
 
@@ -64,7 +65,7 @@ export function CloudApiKeySettings({ ui }: { ui: PlannerUI }) {
     if (!host || !status?.editable || needsReview || inFlight.current || ui.busy) return;
     const key = clear ? null : AiApiKeySchema.safeParse(input.current?.value ?? '');
     if (key !== null && !key.success) { setError('请输入有效的 API Key（16–512 个字符，不含空格）。'); return; }
-    inFlight.current = true; setBusy(true); setError(''); setMessage(''); setConfirmClear(false);
+    inFlight.current = true; setBusy(true); setError(''); setConfirmClear(false);
     // Clear the input before awaiting the main process; no key is placed in UI notices or a retry queue.
     const value = key === null ? null : key.data;
     if (input.current) input.current.value = '';
@@ -73,7 +74,7 @@ export function CloudApiKeySettings({ ui }: { ui: PlannerUI }) {
       if (result.ok && result.data.cloudConfiguration) {
         if (alive.current) {
           setStatus(result.data.cloudConfiguration); setNeedsReview(false);
-          setMessage(clear ? '云端密钥已清除，手机和电脑的生活助手将共同停用这份密钥。' : '云端密钥已保存，手机和电脑的生活助手共用。');
+          setNotice(clear ? '云端密钥已清除，手机和电脑的生活助手将共同停用这份密钥。' : '云端密钥已保存，手机和电脑的生活助手共用。');
         }
         void ui.refresh().catch(() => {});
       } else {
@@ -106,7 +107,6 @@ export function CloudApiKeySettings({ ui }: { ui: PlannerUI }) {
       <div className="ck-status">
         <i className={`ck-dot ${state}`} aria-hidden="true" />
         <strong>{status ? status.configured ? '云端已配置 · 不显示完整密钥' : '云端尚未配置 API Key' : readError ? '云端密钥状态未知' : '正在读取云端配置…'}</strong>
-        {message && <span role="status" className="ck-note">{message}</span>}
         <button type="button" className="ui-btn sm ghost" aria-label="重新读取云端配置" disabled={busy || ui.busy} onClick={() => void refresh()}>重新读取</button>
       </div>
       {status && !status.editable && <p className="warning">密钥由服务器配置管理，当前不能在设备上修改。</p>}

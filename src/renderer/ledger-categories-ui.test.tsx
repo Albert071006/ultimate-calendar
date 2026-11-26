@@ -40,10 +40,9 @@ describe('open ledger category input', () => {
     const save = setup(original);
     expect((screen.getByLabelText('分类') as HTMLInputElement).value).toBe('自定义寄件');
     fireEvent.change(screen.getByLabelText('备注'), { target: { value: '合成备注补充' } });
-    fireEvent.change(screen.getByLabelText('更正说明'), { target: { value: '补充备注' } });
     fireEvent.click(screen.getByRole('button', { name: '保存更正' }));
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
-    expect(save.mock.calls[0]![0][0]).toMatchObject({ expectedVersion: 1, entry: {
+    expect(save.mock.calls[0]![0][0]).toMatchObject({ expectedVersion: 1, note: '修改备注', entry: {
       category: original.category, amountCents: original.amountCents, personalCents: original.personalCents, cashflows: original.cashflows,
     } });
   });

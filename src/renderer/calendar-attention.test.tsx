@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { buildCalendar } from '../domain/calendar';
 import { BlockSchema, CandidateSchema, CourseSchema, SnapshotSchema, TaskSchema, type CalendarItem, type Snapshot } from '../shared/contracts';
 import { calendarAttention } from './calendar-attention';
-import { Calendar } from './components/Calendar';
+import { CalendarFixture as Calendar } from '../../tests/CalendarFixture';
 
 const metadata = { version: 1, createdAt: '2026-10-22T08:00:00+08:00', updatedAt: '2026-10-22T08:00:00+08:00' };
 function snapshot(): Snapshot {

@@ -536,6 +536,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
       // Read-only projection bypasses the write lock; it never sends or acknowledges a draft.
       snapshot: calendarSnapshot,
       currentSnapshot: cachedSnapshot,
+      ledgerExportData: input => rpc('ledgerExportData', input),
       ledgerSnapshot: input => locked(() => read('ledgerSnapshot', input)),
       mutate: input => locked(() => write('mutate', input)), undo: id => locked(() => write('undo', id ?? partition?.snapshot?.journal.findLast(entry => entry.undoable && !entry.undoneAt)?.id)),
       command, importSource: input => locked(() => write('importSource', input)),

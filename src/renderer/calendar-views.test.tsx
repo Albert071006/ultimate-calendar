@@ -3,10 +3,11 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { BlockSchema, CandidateSchema, CourseSchema, SnapshotSchema, TaskSchema, type DesktopAPI, type Snapshot } from '../shared/contracts';
 import { App } from './App';
+import { desktopViewPreference, mobileViewPreference } from './hooks/useCalendarView';
 
 vi.mock('./calendar-layout', async importOriginal => ({ ...await importOriginal<typeof import('./calendar-layout')>(), todayDate: () => '2026-10-22' }));
 beforeEach(() => { vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-22T09:00:00+08:00')); });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); localStorage.clear(); });
 
 const metadata = { version: 1, createdAt: '2026-10-01T09:00:00+08:00', updatedAt: '2026-10-01T09:00:00+08:00' };
 function snapshot(): Snapshot {
@@ -35,6 +36,135 @@ function setup() {
   return { ...view, mutate };
 }
 const switchTo = (name: '日' | '周' | '月') => fireEvent.click(within(screen.getByRole('group', { name: '视图' })).getByRole('button', { name }));
+
+function wheel(target: Element, init: WheelEventInit) {
+  const event = new WheelEvent('wheel', { bubbles: true, cancelable: true, ...init });
+  // happy-dom's WheelEvent extends UIEvent and omits the browser's mouse modifier properties.
+  for (const key of ['shiftKey', 'ctrlKey', 'metaKey'] as const) {
+    Object.defineProperty(event, key, { value: init[key] ?? false });
+  }
+  return fireEvent(target, event);
+}
+const heading = () => screen.getByRole('heading', { level: 1 }).textContent;
+
+it('pages day and week from the header, Shift wheel or a horizontal gesture, leaving vertical timeline scrolling native', async () => {
+  const { container } = setup();
+  await screen.findByRole('group', { name: '视图' });
+  const timeline = container.querySelector('.time-scroll')!;
+  const dayHeader = container.querySelector('.a2-days')!;
+  const toolbar = screen.getByRole('button', { name: '下一页' });
+  const clock = vi.spyOn(performance, 'now').mockReturnValue(0);
+  expect(heading()).toContain('10月19日');
+  expect(wheel(timeline, { deltaY: 120 })).toBe(true);
+  expect(wheel(timeline, { deltaX: 2, deltaY: 10 })).toBe(true);
+  expect(wheel(dayHeader, { deltaY: 2 })).toBe(true);
+  expect(heading()).toContain('10月19日');
+  expect(wheel(dayHeader, { deltaY: 120 })).toBe(false);
+  expect(heading()).toContain('10月26日');
+  // A long inertial tail is still one gesture, even after 250 ms from its first frame.
+  for (const elapsed of [100, 210, 350, 480]) {
+    clock.mockReturnValue(elapsed);
+    expect(wheel(toolbar, { deltaY: 60 })).toBe(false);
+    expect(heading()).toContain('10月26日');
+  }
+  clock.mockReturnValue(740);
+  wheel(toolbar, { deltaY: -3, deltaMode: 1 });
+  expect(heading()).toContain('10月19日');
+  switchTo('日');
+  clock.mockReturnValue(1000);
+  expect(wheel(timeline, { shiftKey: true, deltaY: 80 })).toBe(false);
+  expect(heading()).toContain('10月23日');
+  clock.mockReturnValue(1300);
+  expect(wheel(timeline, { shiftKey: true, deltaX: -80 })).toBe(false);
+  expect(heading()).toContain('10月22日');
+  clock.mockReturnValue(1600);
+  // Small horizontal deltas from a touchpad accumulate to the minimum distance.
+  for (let i = 0; i < 4; i++) wheel(timeline, { deltaX: 12, deltaY: -2 });
+  expect(heading()).toContain('10月23日');
+});
+
+it('checks the actual month viewport on each wheel and leaves overflowing months scrollable', async () => {
+  const { container } = setup();
+  await screen.findByRole('group', { name: '视图' }); switchTo('月');
+  const viewport = container.querySelector('.a2-month')!;
+  const grid = container.querySelector('.a2-m-grid')!;
+  Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 600 });
+  Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 601 });
+  const clock = vi.spyOn(performance, 'now').mockReturnValue(0);
+  expect(wheel(grid, { deltaY: 120 })).toBe(false);
+  expect(heading()).toContain('11 月');
+  Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 240 });
+  clock.mockReturnValue(300);
+  expect(wheel(grid, { deltaY: 120 })).toBe(true);
+  expect(heading()).toContain('11 月');
+  expect(wheel(container.querySelector('.a2-m-head')!, { deltaY: -120 })).toBe(false);
+  expect(heading()).toContain('10 月');
+  clock.mockReturnValue(600);
+  expect(wheel(grid, { shiftKey: true, deltaY: 120 })).toBe(false);
+  expect(heading()).toContain('11 月');
+  clock.mockReturnValue(900);
+  expect(wheel(grid, { deltaX: -60, deltaY: 20 })).toBe(false);
+  expect(heading()).toContain('10 月');
+});
+
+it('does not page through dialogs, detail cards, the drawer, assistant, inputs, or zoom gestures', async () => {
+  const { container } = setup();
+  await screen.findByRole('group', { name: '视图' });
+  const header = container.querySelector('.a2-days')!;
+  const before = heading();
+  for (const target of [container.querySelector('.a2-drawer')!, screen.getByRole('checkbox', { name: '待判断标记' })]) {
+    expect(wheel(target, { shiftKey: true, deltaY: 80 })).toBe(true);
+  }
+  expect(wheel(header, { ctrlKey: true, deltaY: 80 })).toBe(true);
+  expect(wheel(header, { metaKey: true, deltaX: -80 })).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: /^合成例会/ }));
+  expect(wheel(container.querySelector('.a2-pop')!, { deltaX: 100 })).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: '关闭详情' }));
+  fireEvent.click(screen.getByRole('button', { name: '展开对话' }));
+  expect(wheel(container.querySelector('.a2-assist.open')!, { deltaX: 100 })).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: '收起对话' }));
+  expect(heading()).toBe(before);
+  fireEvent.click(screen.getByRole('button', { name: '月' }));
+  fireEvent.click(screen.getByRole('button', { name: '在 2026-10-22 安排' }));
+  await screen.findByRole('dialog');
+  expect(wheel(container.querySelector('.a2-m-head')!, { deltaY: 100 })).toBe(true);
+  expect(heading()).toContain('10 月');
+});
+
+it('remembers the desktop view across navigation and restart, including drilling down from a month, and restarts on today', async () => {
+  localStorage.setItem(desktopViewPreference.key, 'three-day');
+  localStorage.setItem(mobileViewPreference.key, 'three-day');
+  const first = setup();
+  await screen.findByRole('group', { name: '视图' });
+  expect(first.container.querySelector('.view-week')).toBeTruthy();
+  switchTo('月');
+  fireEvent.click(screen.getByRole('button', { name: '打开 10月19日' }));
+  expect(heading()).toContain('10月19日');
+  expect(localStorage.getItem(desktopViewPreference.key)).toBe('day');
+  expect(localStorage.getItem(mobileViewPreference.key)).toBe('three-day');
+  const nav = within(screen.getByRole('navigation', { name: '主导航' }));
+  fireEvent.click(nav.getByRole('button', { name: '今天' }));
+  fireEvent.click(nav.getByRole('button', { name: '日历' }));
+  expect(first.container.querySelector('.view-day')).toBeTruthy();
+  first.unmount();
+  setup();
+  await screen.findByRole('group', { name: '视图' });
+  expect(heading()).toContain('10月22日');
+  expect(screen.getByRole('button', { name: '日' }).getAttribute('aria-pressed')).toBe('true');
+});
+
+it('uses the default when storage is blocked and retains the selected view for this session', async () => {
+  vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('disabled'); });
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('disabled'); });
+  const { container } = setup();
+  await screen.findByRole('group', { name: '视图' });
+  expect(container.querySelector('.view-week')).toBeTruthy();
+  switchTo('月');
+  const nav = within(screen.getByRole('navigation', { name: '主导航' }));
+  fireEvent.click(nav.getByRole('button', { name: '今天' }));
+  fireEvent.click(nav.getByRole('button', { name: '日历' }));
+  expect(container.querySelector('.view-month')).toBeTruthy();
+});
 
 it('keeps day-view sessions on a narrower layer and shows the day sidebar above the drawer', async () => {
   const { container, mutate } = setup();

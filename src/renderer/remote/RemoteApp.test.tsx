@@ -4,8 +4,17 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import type { ReactNode } from 'react';
 import type { PendingWrite, RecoveryArchive, RemoteClientState, RemoteController } from './types';
 import { RemoteApp } from './RemoteApp';
+import { FeedbackContext, useToastNotice } from '../hooks/useFeedback';
+import { Toast } from '../components/shell/Toast';
 
-vi.mock('../mobile/MobileApp',()=>({MobileApp:({settingsPages,pendingView}:{settingsPages:{id:string;label:string;content:ReactNode}[];pendingView:ReactNode})=><main><aside data-testid="pending">{pendingView}</aside>{settingsPages.map(page=><section key={page.id} aria-label={page.label}>{page.content}</section>)}</main>}));
+vi.mock('../mobile/MobileApp',()=>({MobileApp:({settingsPages,pendingView}:{settingsPages:{id:string;label:string;content:ReactNode}[];pendingView:ReactNode})=>{
+  const feedback = useToastNotice();
+  return <FeedbackContext.Provider value={{...feedback, setError: vi.fn()}}><main>
+    <aside data-testid="pending">{pendingView}</aside>
+    {settingsPages.map(page=><section key={page.id} aria-label={page.label}>{page.content}</section>)}
+    <Toast notice={feedback.toast} dismiss={feedback.dismissNotice} />
+  </main></FeedbackContext.Provider>;
+}}));
 afterEach(()=>{cleanup();vi.unstubAllGlobals();vi.restoreAllMocks();delete (navigator as unknown as Record<string,unknown>).serviceWorker;});
 const identity={protocolVersion:1 as const,dataInstanceId:'11111111-1111-4111-8111-111111111111',generation:1};
 const session={paired:true as const,identity,device:{id:'22222222-2222-4222-8222-222222222222',name:'合成手机'},csrfToken:'synthetic',aiConfigured:true};
@@ -71,6 +80,7 @@ describe('remote browser shell',()=>{
     await device.findByText('合成设备');expect(device.getAllByRole('button',{name:'撤销'})).toHaveLength(1);
     fireEvent.click(device.getByRole('button',{name:'撤销'}));expect(f.controller.revokeDevice).not.toHaveBeenCalled();
     fireEvent.click(device.getByRole('button',{name:'确认撤销'}));await waitFor(()=>expect(f.controller.revokeDevice).toHaveBeenCalledWith('synthetic-device'));
+    expect((await screen.findByText('已撤销「合成设备」。')).closest('.a2-toast')).toBeTruthy();
   });
   it('lets the user abandon an unconfirmed preview and does not retry terminal failures',async()=>{
     const f=fake({pending:[pending('review'),pending('failed')]});render(<RemoteApp controller={f.controller}/>);
@@ -116,6 +126,7 @@ describe('remote browser shell',()=>{
     fireEvent.click(button);
     await waitFor(()=>expect(f.controller.request).toHaveBeenCalledWith('/api/v1/push/subscribe',expect.objectContaining({showDetails:false}),'POST'));
     expect(register).toHaveBeenCalledWith('/sw.js');expect(order[0]).toBe('permission');expect(subscribe).toHaveBeenCalledTimes(1);
+    expect((await screen.findByText('已开启提醒。')).closest('.a2-toast')).toBeTruthy();
     expect(vi.mocked(f.controller.request).mock.calls.some(([path])=>path==='/api/v1/push/test')).toBe(false);
   });
   it('updates notification detail preferences and cancels the matching browser subscription',async()=>{
@@ -155,6 +166,7 @@ describe('remote browser shell',()=>{
     fireEvent.click(page.getByRole('button',{name:'保存'}));
     await waitFor(()=>expect(f.controller.request).toHaveBeenCalledWith('/api/v1/ai/config',{identity,expectedRevision:null,apiKey:'synthetic-example-key-do-not-use'},'PUT'));
     await page.findByText('已配置');expect((page.getByLabelText('换一个 Key') as HTMLInputElement).value).toBe('');
+    expect((await screen.findByText('已保存，之后的助手请求会使用这个 Key。')).closest('.a2-toast')).toBeTruthy();
     expect(screen.queryByText(/synthetic-example-key/)).toBeNull();
   });
   it('re-reads after a revision conflict and asks to check, without resending, when the result is unclear',async()=>{

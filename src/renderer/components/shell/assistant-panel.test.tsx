@@ -16,11 +16,11 @@ beforeEach(() => {
   });
 });
 afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals(); document.querySelectorAll('style[data-panel-test]').forEach(style => style.remove()); });
-function fixture() {
+function fixture(titlebar = 0) {
   const command = vi.fn(async (): Promise<ApiResult<CommandResult>> => ({ ok: true, data: { reply: '合成回复', items: [], mutationResult: null } }));
   const ui = { client: { command }, busy: false, error: '', receive: vi.fn(), run: async <T,>(job: () => Promise<ApiResult<T>>) => { const result = await job(); return result.ok ? result.data : undefined; } } as unknown as PlannerUI;
   const wheel = vi.fn();
-  const view = render(<div onWheel={wheel}><Assistant ui={ui} selected={null} date="2030-04-15" /></div>);
+  const view = render(<div className="a2-main" style={{ paddingTop: titlebar }} onWheel={wheel}><Assistant ui={ui} selected={null} date="2030-04-15" /></div>);
   fireEvent.click(screen.getByRole('button', { name: '展开对话' }));
   return { command, wheel, ...view };
 }
@@ -71,5 +71,12 @@ describe('desktop assistant panel', () => {
     anchor = 300; vi.stubGlobal('innerHeight', 350); fireEvent(window, new Event('resize'));
     expect(panelHeight()).toBe(222); expect(localStorage.getItem(ASSISTANT_HEIGHT_KEY)).toBe('644');
     anchor = 700; vi.stubGlobal('innerHeight', 800); fireEvent(window, new Event('resize')); expect(panelHeight()).toBe(644);
+  });
+
+  it('leaves a visible toast and its gap below the desktop titlebar at maximum panel height', () => {
+    fixture(32);
+    fireEvent.keyDown(handle(), { key: 'End' });
+    const panelTop = anchor - 8 - panelHeight();
+    expect(panelTop - 32).toBeGreaterThanOrEqual(48);
   });
 });

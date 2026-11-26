@@ -54,7 +54,7 @@ it.each([
   expect(planner.snapshot().courseExceptions).toHaveLength(0);
   expect(planner.snapshot().courses[0]!.startTime).toBe('08:00');
   fireEvent.click(preview.getByRole('button', { name: '确认执行' }));
-  await screen.findByText('已保存，可撤销');
+  await screen.findByText('已保存');
   const snapshot = planner.snapshot();
   expect(snapshot.courseExceptions).toHaveLength(exceptions as number);
   expect(buildCalendar(snapshot, '2026-10-22', '2026-10-22', false)[0]!.start).toBe(`2026-10-22T${firstTime}:00+08:00`);
@@ -75,7 +75,7 @@ it('reschedules Monday to Tuesday, selects and edits the moved occurrence, and u
   expect(buildCalendar(planner.snapshot(), '2026-10-19', '2026-10-20', false)[0]?.date).toBe('2026-10-19');
   expect(preview.getByText(/2026-10-20 10:00/)).toBeTruthy();
   fireEvent.click(preview.getByRole('button', { name: '确认执行' }));
-  await screen.findByText('已保存，可撤销');
+  await screen.findByText('已保存');
   const first = planner.snapshot().courseExceptions[0]!;
   expect(first).toMatchObject({ originalDate: '2026-10-19', replacement: { title: '合成调课', location: '合成B202', start: '2026-10-20T10:00:00+08:00' } });
   expect(buildCalendar(planner.snapshot(), '2026-11-02', '2026-11-02', false)[0]?.start).toBe('2026-11-02T08:00:00+08:00');
@@ -94,7 +94,7 @@ it('reschedules Monday to Tuesday, selects and edits the moved occurrence, and u
   preview = within(await screen.findByRole('dialog', { name: '更改预览' }));
   expect(planner.snapshot().courseExceptions[0]).toEqual(first);
   fireEvent.click(preview.getByRole('button', { name: '确认执行' }));
-  await screen.findByText('已保存，可撤销');
+  await screen.findByText('已保存');
   expect(planner.snapshot().courseExceptions).toHaveLength(1);
   expect(planner.snapshot().courseExceptions[0]).toMatchObject({ id: first.id, originalDate: '2026-10-19', replacement: { start: '2026-10-21T10:00:00+08:00' } });
   fireEvent.click(screen.getByRole('button', { name: '撤销上次操作' }));

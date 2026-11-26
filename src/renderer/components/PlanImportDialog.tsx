@@ -33,7 +33,6 @@ export function PlanImportDialog({ host, ui, onClose }: {
   const [allowDeletions, setAllowDeletions] = useState(false);
   const [busy, setBusy] = useState<'open' | 'confirm' | 'template' | null>(null);
   const [error, setError] = useState('');
-  const [feedback, setFeedback] = useState('');
   const [busyExportOpen, setBusyExportOpen] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const exporting = useRef(false);
@@ -52,7 +51,7 @@ export function PlanImportDialog({ host, ui, onClose }: {
 
   async function run(action: NonNullable<typeof busy>, job: () => Promise<void>) {
     if (working.current || exporting.current) return;
-    working.current = true; setBusy(action); setError(''); setFeedback('');
+    working.current = true; setBusy(action); setError('');
     try { await job(); }
     catch (failure) { setError(failure instanceof Error ? failure.message : '操作失败，请重试。'); }
     finally { working.current = false; setBusy(null); }
@@ -68,7 +67,7 @@ export function PlanImportDialog({ host, ui, onClose }: {
   const saveTemplate = () => run('template', async () => {
     const result = await host.planImportTemplate();
     if (!result.ok) setError(result.error.message);
-    else if (result.data.saved) setFeedback('示例 JSON 已保存，可交给外部智能体按相同格式生成计划。');
+    else if (result.data.saved) ui.setNotice('示例 JSON 已保存，可交给外部智能体按相同格式生成计划。');
   });
   const confirm = () => {
     if (!preview || !confirmable) return;
@@ -79,10 +78,9 @@ export function PlanImportDialog({ host, ui, onClose }: {
       if (!result.ok) { setError(result.error.message); return; }
       const receipt = result.data;
       setReport(receipt); setPreview(receipt.preview ?? null); setAllowConflicts(false); setAllowDeletions(false);
-      ui.setNotice(receipt.message);
       try { await ui.refresh(); }
-      catch { ui.setNotice(`${receipt.message} 页面刷新失败，请重新载入。`); }
-      if (receipt.status === 'complete') onClose();
+      catch { setError(`${receipt.message} 页面刷新失败，请重新载入。`); return; }
+      if (receipt.status === 'complete') { ui.setNotice(receipt.message); onClose(); }
     });
   };
 
@@ -96,8 +94,7 @@ export function PlanImportDialog({ host, ui, onClose }: {
           {busyHost && <button className="link" disabled={locked} aria-expanded={busyExportOpen} aria-controls={busyPanelId} onClick={() => { if (!working.current && !exporting.current) setBusyExportOpen(open => !open); }}>导出忙碌时间</button>}
         </span>
       </div>
-      {busyExportOpen && busyHost && <div id={busyPanelId}><BusyExportPanel host={busyHost} disabled={Boolean(busy)} onBusyChange={value => { exporting.current = value; setExportBusy(value); }} onSaved={ui.setNotice} /></div>}
-      {feedback && <p role="status">{feedback}</p>}
+      {busyExportOpen && busyHost && <div id={busyPanelId}><BusyExportPanel host={busyHost} disabled={Boolean(busy)} onBusyChange={value => { exporting.current = value; setExportBusy(value); }} /></div>}
       {error && <p className="error" role="alert">{error}</p>}
       {report?.status === 'partial' && <section className="warning plan-import-receipt" role="status" aria-label="导入进度">
         <strong>已保存 {report.applied} 条 · 未完成 {report.remaining} 条</strong>

@@ -62,8 +62,6 @@
 .ui-kbd { font-family: var(--font-time); font-size: 11px; color: var(--ink-3); border: 1px solid var(--line-2); border-radius: 3px; padding: 2px 6px; }
 .ui-hint { color: var(--ink-3); font-size: 12.5px; }
 
-.ui-toast { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--ink); color: var(--surface); border-radius: var(--radius); font-size: 13px; }
-.ui-toast button { margin-left: auto; font: inherit; font-weight: 600; color: #f3b8a8; background: none; border: 0; cursor: pointer; padding: 0; }
 
 .ui-overlay { background: var(--surface); border: 1px solid var(--ink); border-radius: var(--radius); box-shadow: var(--overlay-shadow); }
 

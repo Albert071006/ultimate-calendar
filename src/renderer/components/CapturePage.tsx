@@ -4,6 +4,7 @@ import { CaptureConfigSchema, type AttachmentSummary, type CaptureBatchView, typ
 import type { CaptureDesktopAPI } from '../../shared/capture-api';
 import type { PlannerUI } from '../hooks/usePlanner';
 import { useAccount } from '../hooks/useAccount';
+import { useFeedback } from '../hooks/useFeedback';
 import { displayInstant } from '../calendar-layout';
 import { Modal } from './Modal';
 import { QQSearchActions } from './QQSearchActions';
@@ -34,7 +35,8 @@ export function CapturePage({ ui, initialReference, platform = 'qq' }: { ui: Pla
   const model = ui.snapshot?.settings.model;
   const modelModalities = account.state?.models.data?.find(item => item.id === model)?.inputModalities;
   const [snapshot, setSnapshot] = useState<CaptureSnapshot | null>(null);
-  const [error, setError] = useState(''), [notice, setNotice] = useState(''), [busy, setBusy] = useState(false);
+  const [error, setError] = useState(''), [busy, setBusy] = useState(false);
+  const { setNotice, dismissNotice } = useFeedback();
   const [endpoint, setEndpoint] = useState('ws://127.0.0.1:43131');
   const [flavor, setFlavor] = useState<'napcat' | 'snowluma'>('napcat');
   const token = useRef<HTMLInputElement>(null);
@@ -59,11 +61,11 @@ export function CapturePage({ ui, initialReference, platform = 'qq' }: { ui: Pla
   const acceptSnapshot = useCallback((next: CaptureSnapshot) => {
     snapshotRevision.current++;
     setSnapshot(next); setRevision(n => n + 1);
-    if (!next.config.analysisEnabled) setNotice(current => current === analysisStartedNotice ? '' : current);
-  }, []);
+    if (!next.config.analysisEnabled) dismissNotice(analysisStartedNotice);
+  }, [dismissNotice]);
   const request = useCallback(async <T,>(job: () => Promise<ApiResult<T>>, success?: (value: T) => void) => {
     pendingRequests.current++;
-    setBusy(true); setError(''); setNotice('');
+    setBusy(true); setError('');
     try {
       const result = await job();
       if (!mounted.current) return;
@@ -162,7 +164,9 @@ export function CapturePage({ ui, initialReference, platform = 'qq' }: { ui: Pla
     let value: CaptureConfig;
     try { value = CaptureConfigSchema.parse({ ...snapshot.config, ...change }); }
     catch { setError('请检查本机地址、账号与群选择。'); return; }
-    await requestSnapshot(() => api.captureConfigure(value), next => { setNotice(message === analysisStartedNotice && !next.config.analysisEnabled ? '' : message); });
+    await requestSnapshot(() => api.captureConfigure(value), next => {
+      if (message !== analysisStartedNotice || next.config.analysisEnabled) setNotice(message);
+    });
   }
   async function connect(detect: boolean) {
     if (!api || !snapshot) return;
@@ -213,7 +217,7 @@ export function CapturePage({ ui, initialReference, platform = 'qq' }: { ui: Pla
   const page = tab === 'batches' ? visibleBatches : visibleMessages;
   const attachmentMessage = attachment ? visibleMessages.items.find(message => message.attachments.some(item => item.id === attachment.id)) : undefined;
   if (!api) return <div className="empty-state">请在 Windows 桌面应用中打开{label}采集。</div>;
-  if (!snapshot) return <div className="capture-page"><p role="status">{error || `正在读取${label}采集状态…`}</p></div>;
+  if (!snapshot) return <div className="capture-page"><p role={error ? 'alert' : 'status'} className={error ? 'error' : undefined}>{error || `正在读取${label}采集状态…`}</p></div>;
   const analysisPausedReason = !snapshot.config.analysisEnabled ? snapshot.error : null;
 
   return <div className="capture-page">
@@ -221,7 +225,6 @@ export function CapturePage({ ui, initialReference, platform = 'qq' }: { ui: Pla
       <span className={`capture-status ${snapshot.connection === 'online' ? 'is-online' : ''}`}>{connections[snapshot.connection]}</span>
     </div>
     {error && <div className="error capture-alert" role="alert">{error}</div>}
-    {notice && <div className="success capture-alert" role="status">{notice}</div>}
     {snapshot.error && !analysisPausedReason && <div className="warning capture-alert" role="status">{snapshot.error}</div>}
     <section className="settings-card capture-connection">
       <div className="capture-card-heading"><h3>{wechat ? '本机微信连接' : '日历专用 QQ 连接'}</h3><span className="hint">{wechat ? '本机只读采集' : snapshot.config.flavor === 'snowluma' ? 'SnowLuma' : 'NapCat'} · {connections[snapshot.connection]}</span></div>

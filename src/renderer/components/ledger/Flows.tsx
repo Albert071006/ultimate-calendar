@@ -105,7 +105,14 @@ export function LedgerRow({ entry, snapshot, owed, busy, onEdit, onVoid }: { ent
     {adjustments.map((value, index) => <p key={`${value.entry.id}:${index}`}>{value.entry.title} · {value.targetEntryIds.length > 1 ? `关联 ${value.targetEntryIds.length} 笔消费，共冲减` : '冲减原消费'} {ledgerMoney(value.amountCents)}{value.note ? ` · ${value.note}` : ''}</p>)}
     {entry.adjustments.map((value, index) => <p key={index}>冲减关联原消费 {ledgerMoney(value.amountCents)} · {value.targetEntryIds.map(id => snapshot.entries.find(item => item.id === id)?.title ?? id).join('、')}</p>)}
     {!!linked.length && <><strong>关联款项</strong><ul>{linked.map(value => <li key={value.id}>{value.date ?? value.month} · {value.title} · {kinds[value.kind]} {ledgerMoney(value.amountCents)}{value.note && ` · ${value.note}`}</li>)}</ul></>}
-    {!!audit.length && <details><summary>修改记录（{audit.length}）</summary><ul>{audit.map(value => <li key={value.id}>{timeText(value.at)} · {value.action} · {value.note || '保存记录'}{value.beforeEntries.find(previous => previous.id === entry.id) && <span> · 修改前：{value.beforeEntries.find(previous => previous.id === entry.id)!.title} {ledgerMoney(value.beforeEntries.find(previous => previous.id === entry.id)!.amountCents)}</span>}</li>)}</ul></details>}
+    {!!audit.length && <details><summary>修改记录（{audit.length}）</summary><ul>{audit.map(value => {
+      const previous = value.beforeEntries.find(item => item.id === entry.id);
+      return <li key={value.id}>
+        <time dateTime={value.at}>{timeText(value.at)}</time> · {value.action}
+        <p>{value.note || '保存记录'}</p>
+        {previous && <small>修改前：{previous.title} {ledgerMoney(previous.amountCents)}</small>}
+      </li>;
+    })}</ul></details>}
     {!entry.voided && <div className="acts"><button className="ui-btn sm" disabled={busy} onClick={onEdit}>{entry.cashflows.some(value => value.accountId === null) ? '补充账户 / 更正' : '更正这笔'}</button><button className="ui-btn sm ghost danger-text" disabled={busy} onClick={onVoid}>作废</button></div>}
   </div></details>;
 }

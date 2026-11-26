@@ -67,6 +67,15 @@ async function fixture(){
 }
 
 describe('durable remote client against a real synthetic authority',()=>{
+  it('exports the requested ledger month from the paired service without queueing a write', async () => {
+    const f = await fixture(), phone = f.browser(), controller = phone.open();
+    await f.pair(controller);
+    const request = { month: '2020-01', format: 'csv' } as const;
+    const result = await controller.client.ledgerExportData!(request);
+    expect(result).toMatchObject({ ok: true, data: { format: 'csv', content: expect.any(String) } });
+    expect(phone.calls.filter(call => call.path.endsWith('/ledgerExportData'))).toHaveLength(1);
+    expect(controller.getState().pending).toHaveLength(0);
+  });
   it('serializes a delayed canonical read before a write receipt so stale data cannot replace the committed cache', async () => {
     const f = await fixture(), phone = f.browser(), controller = phone.open(); await f.pair(controller);
     const held = phone.holdNextCalendarRead(), read = controller.client.snapshot(); await held.started;

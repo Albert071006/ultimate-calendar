@@ -9,12 +9,12 @@ import type { PushSubscriptionSummary } from '../../shared/push';
 import type { DeviceSummary, RecoveryArchive, RemoteClientState, RemoteController } from './types';
 import { ArchiveList } from './readable';
 import { CloudModelSettings } from './CloudModelSettings';
+import { useFeedback } from '../hooks/useFeedback';
 
-type Tone = 'ok' | 'warn' | 'error';
-type Message = { tone: Tone; text: string } | null;
+type Message = { tone: 'warn' | 'error'; text: string } | null;
 const httpStatus = (error: unknown) => (error as { status?: number } | null)?.status;
 const reason = (error: unknown, fallback: string) => error instanceof Error && error.message ? error.message : fallback;
-const Note = ({ message }: { message: Message }) => message && <p className={`m-note ${message.tone}`} role={message.tone === 'error' ? 'alert' : 'status'}>{message.text}</p>;
+const Note = ({ message }: { message: Message }) => message && <p className={`m-note ${message.tone}`} role="alert">{message.text}</p>;
 export const connectionNames: Record<RemoteClientState['status'], string> = { connecting: '正在连接云端', online: '云端已连接', offline: '离线', unpaired: '尚未配对', expired: '设备授权已失效', error: '云端连接异常' };
 
 // Mirrors AiApiKeySchema so the form can say what is wrong before anything is sent.
@@ -26,6 +26,7 @@ interface AiConfiguration { ok: true; identity: RemoteIdentity; configuration: A
  * it is never read back, cached or queued, and an unclear result is re-read rather than resent.
  */
 export function AiKeyPage({ controller, online }: { controller: RemoteController; online: boolean }) {
+  const { setNotice } = useFeedback();
   const [config, setConfig] = useState<AiConfiguration | null>(null);
   const [loading, setLoading] = useState(true);
   const [key, setKey] = useState(''), [visible, setVisible] = useState(false);
@@ -45,7 +46,7 @@ export function AiKeyPage({ controller, online }: { controller: RemoteController
     try {
       const next = await controller.request<AiConfiguration>('/api/v1/ai/config', method === 'PUT' ? { ...base, apiKey: key.trim() } : base, method);
       setConfig(next); setKey(''); setVisible(false); setConfirmClear(false); setUnclear(false);
-      setMessage({ tone: 'ok', text: method === 'PUT' ? '已保存，之后的助手请求会使用这个 Key。' : '已清除，助手不再使用这个 Key。' });
+      setNotice(method === 'PUT' ? '已保存，之后的助手请求会使用这个 Key。' : '已清除，助手不再使用这个 Key。');
     } catch (error) {
       const status = httpStatus(error);
       if (status === 409) { await read(true); setMessage({ tone: 'warn', text: 'Key 刚在其他设备改过，已刷新状态，请核对后再操作。' }); }
@@ -92,6 +93,7 @@ const appleTouch = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
 
 /** Web Push on this phone. Permission is asked only from the button; nothing is sent as a test. */
 export function ReminderPage({ controller, online }: { controller: RemoteController; online: boolean }) {
+  const { setNotice } = useFeedback();
   const [push, setPush] = useState<PushState | null>(null), [mine, setMine] = useState<PushSubscriptionSummary | null>(null);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState<Message>(null);
   async function refresh() {
@@ -103,7 +105,7 @@ export function ReminderPage({ controller, online }: { controller: RemoteControl
   useEffect(() => { void refresh().catch(error => setMessage({ tone: 'error', text: reason(error, '暂时读不到提醒状态。') })); }, []);
   async function run(action: () => Promise<unknown>, done?: string) {
     setBusy(true); setMessage(null);
-    try { await action(); if (done) setMessage({ tone: 'ok', text: done }); }
+    try { await action(); if (done) setNotice(done); }
     catch (error) { setMessage({ tone: 'error', text: reason(error, '没有完成，请重试。') }); }
     finally { setBusy(false); }
   }
@@ -148,6 +150,7 @@ export function ReminderPage({ controller, online }: { controller: RemoteControl
 
 /** This device, other authorised devices, cache and sign-out, and archives kept from an earlier pairing. */
 export function DevicePage({ controller, state }: { controller: RemoteController; state: RemoteClientState }) {
+  const { setNotice } = useFeedback();
   const readBackup = useCallback(async () => { const status = await controller.request<unknown>('/api/v1/backup/status'); return { ok: true as const, data: BackupProgressSchema.parse(status) }; }, [controller]);
   const [devices, setDevices] = useState<DeviceSummary[] | null>(null), [archives, setArchives] = useState<RecoveryArchive[]>([]);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState<Message>(null), [confirm, setConfirm] = useState<string | null>(null);
@@ -157,7 +160,7 @@ export function DevicePage({ controller, state }: { controller: RemoteController
   }, [controller]);
   async function run(action: () => Promise<unknown>, done?: string) {
     setBusy(true); setMessage(null); setConfirm(null);
-    try { await action(); if (done) setMessage({ tone: 'ok', text: done }); }
+    try { await action(); if (done) setNotice(done); }
     catch (error) { setMessage({ tone: 'error', text: reason(error, '没有完成，请重试。') }); }
     finally { setBusy(false); }
   }

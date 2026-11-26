@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { addCalendarDays } from '../../shared/contracts';
 import { PlanExportRequestSchema, type PlanExportDesktopAPI, type PlanExportPreview } from '../../shared/plan-context';
 import { todayDate } from '../calendar-layout';
+import { useFeedback } from '../hooks/useFeedback';
 import { Modal } from './Modal';
 import './plan-export.css';
 import { formatFriendlyRange } from '../../shared/display-time';
@@ -17,11 +18,10 @@ export function hasPlanExport(host: Partial<PlanExportDesktopAPI> | undefined): 
   return Boolean(host && typeof host.planExportPreview === 'function' && typeof host.planExportSave === 'function');
 }
 
-export function PlanExportDialog({ host, goal, onClose, onSaved }: {
+export function PlanExportDialog({ host, goal, onClose }: {
   host: PlanExportDesktopAPI;
   goal: { id: string; title: string };
   onClose: () => void;
-  onSaved?: (message: string) => void;
 }) {
   const [fromDate, setFromDate] = useState(todayDate);
   const [toDate, setToDate] = useState(() => addCalendarDays(todayDate(), 6));
@@ -30,7 +30,7 @@ export function PlanExportDialog({ host, goal, onClose, onSaved }: {
   const [preview, setPreview] = useState<PlanExportPreview | null>(null);
   const [busy, setBusy] = useState<'preview' | 'save' | null>(null);
   const [error, setError] = useState('');
-  const [feedback, setFeedback] = useState('');
+  const { setNotice } = useFeedback();
   const working = useRef(false);
   const request = PlanExportRequestSchema.safeParse({ goalId: goal.id, fromDate, toDate, instructions, includeBusyTitles: !hideBusyTitles });
   const validationError = request.success ? '' : request.error.issues[0]?.message;
@@ -38,11 +38,11 @@ export function PlanExportDialog({ host, goal, onClose, onSaved }: {
   const close = () => { if (!working.current) onClose(); };
   const updateParameters = (update: () => void) => {
     if (working.current) return;
-    update(); setPreview(null); setError(''); setFeedback('');
+    update(); setPreview(null); setError('');
   };
   async function run(action: NonNullable<typeof busy>, job: () => Promise<void>) {
     if (working.current) return;
-    working.current = true; setBusy(action); setError(''); setFeedback('');
+    working.current = true; setBusy(action); setError('');
     try { await job(); }
     catch (failure) { setPreview(null); setError(failure instanceof Error ? failure.message : '导出失败，请重新预览后重试。'); }
     finally { working.current = false; setBusy(null); }
@@ -61,9 +61,9 @@ export function PlanExportDialog({ host, goal, onClose, onSaved }: {
     return run('save', async () => {
       const result = await host.planExportSave({ token: preview.token });
       if (!result.ok) { setPreview(null); setError(result.error.message); return; }
-      if (!result.data.saved) { setFeedback('已取消保存，未生成上下文文件。'); return; }
+      if (!result.data.saved) { setNotice('已取消保存，未生成上下文文件。'); return; }
       const message = result.data.filename ? `已保存上下文文件：${result.data.filename}` : '上下文文件已保存。';
-      setFeedback(message); setPreview(null); onSaved?.(message);
+      setNotice(message); setPreview(null);
     });
   };
 
@@ -79,7 +79,6 @@ export function PlanExportDialog({ host, goal, onClose, onSaved }: {
       <label>续排要求（选填）<textarea rows={3} maxLength={10000} value={instructions} disabled={Boolean(busy)} placeholder="例如：保留已有安排，为尚未安排的任务补充 4 个学习时段，每次 45 分钟。" onChange={event => updateParameters(() => setInstructions(event.target.value))} /></label>
       <label className="check"><input type="checkbox" checked={hideBusyTitles} disabled={Boolean(busy)} onChange={event => updateParameters(() => setHideBusyTitles(event.target.checked))} />隐藏其他日程名称，仅提供忙碌时间</label>
       {error && <p className="error" role="alert">{error}</p>}
-      {feedback && <p className="plan-export-feedback" role="status">{feedback}</p>}
       {preview && <section className="plan-export-summary" aria-label="导出内容预览">
         <dl className="plan-export-counts">
           <div><dt>目标</dt><dd>1</dd></div>

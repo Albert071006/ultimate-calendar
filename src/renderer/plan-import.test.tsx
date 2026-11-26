@@ -70,9 +70,21 @@ describe('JSON plan import', () => {
     expect(screen.getByText('还未选择计划文件')).toBeTruthy();
     expect(button('确认批量导入').disabled).toBe(true);
     fireEvent.click(button('保存示例文件'));
-    expect(await screen.findByText('示例 JSON 已保存，可交给外部智能体按相同格式生成计划。')).toBeTruthy();
+    await waitFor(() => expect(f.ui.setNotice).toHaveBeenCalledWith('示例 JSON 已保存，可交给外部智能体按相同格式生成计划。'));
+    expect(within(screen.getByRole('dialog')).queryByRole('status')).toBeNull();
     expect(f.host.planImportTemplate).toHaveBeenCalledTimes(1);
     expect(f.host.planImportConfirm).not.toHaveBeenCalled();
+  });
+
+  it('keeps the dialog open with a persistent alert if refresh fails after the import completed', async () => {
+    const f = fixture();
+    f.ui.refresh.mockRejectedValueOnce(new Error('合成读取失败'));
+    f.show(); fireEvent.click(button('选择 JSON 文件')); await screen.findByText('一周学习计划');
+    fireEvent.click(button('确认批量导入'));
+    expect((await screen.findByRole('alert')).textContent).toContain('计划已导入 页面刷新失败，请重新载入。');
+    expect(f.ui.setNotice).not.toHaveBeenCalled();
+    expect(f.onClose).not.toHaveBeenCalled();
+    expect(button('确认批量导入').disabled).toBe(true);
   });
 
   it('requires acknowledging conflicts and blocks closing, replacing files, and duplicate submission while writing', async () => {

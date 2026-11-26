@@ -3,37 +3,39 @@ import type { Settings } from '../../shared/contracts';
 import { reasoningOptions, supportsReasoningEffort, type ReasoningEffort } from '../../shared/ai-reasoning';
 import { remoteOutputs } from '../../server/protocol';
 import type { RemoteController } from './types';
+import { useFeedback } from '../hooks/useFeedback';
 
 /** Online, explicit settings writes. A lost reply is re-read, never resent. */
 export function CloudModelSettings({ controller, online }: { controller: RemoteController; online: boolean }) {
+  const { setNotice } = useFeedback();
   const [saved, setSaved] = useState<Settings | null>(null), [model, setModel] = useState('');
   const [effort, setEffort] = useState<ReasoningEffort>('none'), [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState(''), [unclear, setUnclear] = useState(false);
+  const [error, setError] = useState(''), [unclear, setUnclear] = useState(false);
   function input(value?: unknown) {
     const session = controller.getState().session;
     if (!session || !online) throw Error('请先连接云端再修改设置。');
     return { requestId: crypto.randomUUID(), identity: session.identity, ...(value === undefined ? {} : { input: value }) };
   }
   async function read() {
-    setBusy(true); setMessage('');
+    setBusy(true); setError('');
     try {
       const result = remoteOutputs.snapshot.parse(await controller.request('/api/v1/rpc/snapshot', input(), 'POST'));
       if (!result.ok) throw Error(result.error.message);
       setSaved(result.data.settings); setModel(result.data.settings.model); setEffort(result.data.settings.reasoningEffort ?? 'none'); setUnclear(false);
-    } catch (error) { setMessage(error instanceof Error ? error.message : '读取设置失败，请稍后重试。'); }
+    } catch (error) { setError(error instanceof Error ? error.message : '读取设置失败，请稍后重试。'); }
     finally { setBusy(false); }
   }
   useEffect(() => { if (online) void read(); }, [online]);
   async function save(event: FormEvent) {
     event.preventDefault(); if (!saved || unclear) return;
-    setBusy(true); setMessage('');
+    setBusy(true); setError('');
     const settings = { ...saved, model, ...(saved.reasoningEffort !== undefined || effort !== 'none' ? { reasoningEffort: effort } : {}) };
     try {
       const result = remoteOutputs.saveSettings.parse(await controller.request('/api/v1/rpc/saveSettings', input({ settings, expectedSettings: saved }), 'POST'));
-      if (!result.ok) { setUnclear(true); throw Error(result.error.message); }
-      setSaved(result.data); setMessage('已保存；手机、电脑生活助手与本机群采集使用这份设置。');
+      if (!result.ok) throw Error(result.error.message);
+      setSaved(result.data); setNotice('已保存；手机、电脑生活助手与本机群采集使用这份设置。');
     } catch (error) {
-      setUnclear(true); setMessage(`${error instanceof Error ? error.message : '保存结果尚未确认。'} 请先重新读取设置核对，不会自动重发。`);
+      setUnclear(true); setError(`${error instanceof Error ? error.message : '保存结果尚未确认。'} 请先重新读取设置核对，不会自动重发。`);
     } finally { setBusy(false); }
   }
   return <section className="m-settings" aria-label="模型与思考强度">
@@ -50,6 +52,6 @@ export function CloudModelSettings({ controller, online }: { controller: RemoteC
       <button type="submit" className="m-btn primary" disabled={busy || !online || unclear}>保存 AI 设置</button>
     </form>}
     <button type="button" className="m-link" disabled={busy || !online} onClick={() => void read()}>重新读取 AI 设置</button>
-    {message && <p className={`m-note ${unclear ? 'warn' : 'ok'}`} role="status">{message}</p>}
+    {error && <p className="m-note error" role="alert">{error}</p>}
   </section>;
 }

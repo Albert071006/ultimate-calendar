@@ -57,7 +57,7 @@ it('completes and deletes from the card through the existing mutations, each und
   const { planner } = setup();
   fireEvent.click(await block());
   fireEvent.click(within(screen.getByRole('complementary', { name: '时段详情' })).getByRole('button', { name: '完成任务' }));
-  await screen.findByText('已保存，可撤销');
+  await screen.findByText('已保存');
   expect(planner.snapshot().blocks[0]!.completed).toBe(true);
   expect(planner.snapshot().tasks[0]!.status).toBe('done');
   fireEvent.click(screen.getByRole('button', { name: '撤销上次操作' }));
@@ -156,7 +156,7 @@ it('links a task to a course from its form, one choice per course, and the sessi
   expect([...select.options].map(option => option.textContent)).toEqual(['无', '合成高数']);
   fireEvent.change(select, { target: { value: select.options[1]!.value } });
   fireEvent.click(form.getByRole('button', { name: '保存' }));
-  await screen.findByText('已保存，可撤销');
+  await screen.findByText('已保存');
   expect(mutate.mock.calls.at(-1)![0]).toMatchObject({ mutations: [{ type: 'update', entity: 'task', values: { courseId: select.options[1]!.value } }] });
   expect(planner.snapshot().tasks[0]!.courseId).toBe(select.options[1]!.value);
   await vi.waitFor(async () => expect((await block()).closest<HTMLElement>('.timeline-event')!.style.getPropertyValue('--c')).toBe(color));

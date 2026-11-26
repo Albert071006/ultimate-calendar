@@ -23,9 +23,12 @@ export function useAssistantPanelSize(root: RefObject<HTMLElement | null>, expan
     const measure = () => {
       const viewport = window.visualViewport;
       const top = viewport?.offsetTop ?? 0, bottom = top + (viewport?.height ?? window.innerHeight);
+      const main = root.current?.closest('.a2-main');
+      const titlebar = main ? parseFloat(getComputedStyle(main).paddingTop) || 0 : 0;
       const rect = root.current?.getBoundingClientRect();
       const anchor = rect && (rect.height || rect.top) ? rect.top : bottom - 80;
-      setMaximum(Math.max(0, Math.floor(Math.min(anchor - 8, bottom - 80) - (top + 48))));
+      // Keep the toast above even the tallest panel, clear of the window controls.
+      setMaximum(Math.max(0, Math.floor(Math.min(anchor - 8, bottom - 80) - (top + titlebar + 48))));
     };
     measure();
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);

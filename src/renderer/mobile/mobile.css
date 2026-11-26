@@ -17,7 +17,7 @@ body:has(.app-shell.is-mobile) { min-width:0; overflow:hidden; overscroll-behavi
 .is-mobile .a2-nav nav b { position:absolute; top:3px; right:8px; min-width:18px; height:18px; padding:0 3px; font-size:10px; background:var(--bg); }
 .is-mobile .a2-nav-update,.is-mobile .window-drag-region { display:none; }
 /* Touch targets for the shared desktop components; the phone shell's own m- parts size themselves. */
-.is-mobile :is(button,.ui-btn,.ui-btn.sm,.ui-btn.icon,.ui-btn.sm.icon,.ui-more):not(:is(.m-page,.m-tabs-bar,.m-sheet-head,.m-toast,.m-error,.m-list) *):not([class^="m-"]) { min-height:44px; min-width:44px; height:auto; }
+.is-mobile :is(button,.ui-btn,.ui-btn.sm,.ui-btn.icon,.ui-btn.sm.icon,.ui-more):not(:is(.m-page,.m-tabs-bar,.m-sheet-head,.m-error,.m-list) *):not([class^="m-"]) { min-height:44px; min-width:44px; height:auto; }
 .is-mobile :is(input,select,textarea) { font-size:16px!important; }
 .is-mobile input:not([type=checkbox],[type=radio],[type=range]),.is-mobile select { min-height:44px; }
 .is-mobile input[type=checkbox] { width:20px; height:20px; }
@@ -26,7 +26,6 @@ body:has(.app-shell.is-mobile) { min-width:0; overflow:hidden; overscroll-behavi
 .is-mobile .a2-title { font-size:21px; white-space:normal; flex-wrap:wrap; gap:4px; flex:1 1 100%; line-height:1.6; }
 .is-mobile .a2-title small { font-size:12px; }
 .is-mobile .a2-toolbar-actions { margin-left:0; width:100%; flex-wrap:wrap; gap:4px; }
-.is-mobile .a2-notice { white-space:normal; max-width:none; order:3; width:100%; font-size:12px; }
 .is-mobile .a2-error { flex:none; margin:8px 16px; flex-wrap:wrap; }
 .is-mobile .ui-tabs { padding:0 16px; gap:18px; flex-wrap:wrap; }
 .is-mobile .ui-tabs > button { min-height:44px; }
@@ -159,7 +158,6 @@ body:has(.app-shell.is-mobile) { min-width:0; overflow:hidden; overscroll-behavi
 .is-mobile .a2-tx > summary .chev { grid-column:3; grid-row:1; }
 .is-mobile .a2-tx-detail { padding:12px; }
 .is-mobile .a2-tx-detail dl { grid-template-columns:80px minmax(0,1fr); }
-.is-mobile .a2-ledger-status { width:100%; margin:0 0 8px; }
 .is-mobile .a2-ledger-filters > input { flex-basis:100%; }
 .is-mobile .ledger-rules-grid { grid-template-columns:minmax(0,1fr); }
 .is-mobile .sticky-save { flex-wrap:wrap; }

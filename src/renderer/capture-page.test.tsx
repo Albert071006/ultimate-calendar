@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
+import { renderWithFeedback as render } from '../../tests/feedback-host';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { CapturePage } from './components/CapturePage';
 import { SourceViewer } from './components/ImportDialog';
 import { CaptureConfigSchema, CaptureSnapshotSchema, type CaptureSnapshot } from '../shared/capture';

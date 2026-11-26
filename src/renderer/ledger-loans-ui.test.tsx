@@ -110,7 +110,7 @@ describe('loan recording and balances on desktop and mobile', () => {
     const borrowed = loan(), paid = loan({ id: 'family-paid', kind: 'loan_repay', amountCents: 7500, cashflows: [{ accountId: 'family', deltaCents: -7500 }], relatedEntryIds: ['borrowed'] });
     const save = editor([borrowed, paid], paid);
     expect((screen.getByLabelText('支付账户') as HTMLSelectElement).value).toBe('family');
-    fireEvent.change(screen.getByLabelText('更正说明'), { target: { value: '合成补充备注' } });
+    fireEvent.change(screen.getByLabelText('备注'), { target: { value: '合成补充备注' } });
     fireEvent.click(screen.getByRole('button', { name: '保存更正' }));
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(save.mock.calls[0]![0][0]).toMatchObject({ expectedVersion: 1, entry: { id: 'family-paid', kind: 'loan_repay', personalCents: 0,
@@ -148,7 +148,7 @@ describe('loan recording and balances on desktop and mobile', () => {
     const borrowed = loan(), paid = loan({ id: 'paid', kind: 'loan_repay', amountCents: 12000, cashflows: [{ accountId: 'wechat', deltaCents: -12000 }], relatedEntryIds: ['borrowed'] });
     const save = editor([borrowed, paid], paid);
     expect(screen.getByText(/这笔本金剩余 ¥180.00/)).toBeTruthy();
-    fireEvent.change(screen.getByLabelText('更正说明'), { target: { value: '合成补充备注' } });
+    fireEvent.change(screen.getByLabelText('备注'), { target: { value: '合成补充备注' } });
     fireEvent.click(screen.getByRole('button', { name: '保存更正' }));
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(save.mock.calls[0]![0][0]).toMatchObject({ expectedVersion: 1, entry: { id: 'paid', amountCents: 12000, relatedEntryIds: ['borrowed'] } });

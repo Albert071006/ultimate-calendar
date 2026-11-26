@@ -3,9 +3,7 @@ import type { Candidate } from "../../../shared/contracts";
 import { dayWord, fullDay, sourceLine, type InboxNotice } from "./format";
 import { useMobile } from '../../mobile/layout';
 import { dayDistance } from "../../../domain/time";
-import { friendlyReplyText } from '../shell/AssistantText';
 
-export interface Toast { text: string; transactionId: string; id: string }
 
 /** Time chips for a notice: its deadline, its activity, or that no time was given. */
 function Chips({ notice, today }: { notice: InboxNotice; today: string }) {
@@ -28,7 +26,7 @@ function TimeLine({ notice, today }: { notice: InboxNotice; today: string }) {
   return <small>{parts.length ? parts : "时间未说明"}</small>;
 }
 
-export function InboxList({ items, selectedId, today, quick, busy, pending, select, decide, toast, undo, page, pageCount, changePage }: {
+export function InboxList({ items, selectedId, today, quick, busy, pending, select, decide, page, pageCount, changePage }: {
   items: InboxNotice[];
   page: number;
   pageCount: number;
@@ -41,8 +39,6 @@ export function InboxList({ items, selectedId, today, quick, busy, pending, sele
   pending?: (id: string) => boolean;
   select: (id: string) => void;
   decide: (candidate: Candidate, type: "acceptCandidate" | "ignoreCandidate") => void;
-  toast: Toast | null;
-  undo: () => void;
 }) {
   const mobile = useMobile();
   // The phone row keeps only what decides it: the title, one time line, and 忽略 / 接受 as text.
@@ -88,7 +84,6 @@ export function InboxList({ items, selectedId, today, quick, busy, pending, sele
         <span>{page + 1} / {pageCount}</span>
         <button disabled={page + 1 === pageCount} onClick={() => changePage(page + 1)}>下一页</button>
       </nav>}
-      {toast && <div className="ui-toast a2-ib-toast" role="status">{friendlyReplyText(toast.text)}<button onClick={undo}>撤销</button></div>}
       {items.length > 0 && quick && <p className="a2-ib-keys">上下键切换 · A 接受 · I 忽略 · L 稍后</p>}
     </section>
   );

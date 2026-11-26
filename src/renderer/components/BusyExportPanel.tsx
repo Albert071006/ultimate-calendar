@@ -2,17 +2,17 @@ import { useRef, useState } from 'react';
 import { addCalendarDays } from '../../shared/contracts';
 import { BusyExportRequestSchema, type BusyExportDesktopAPI, type BusyExportPreview } from '../../shared/busy-context';
 import { todayDate } from '../calendar-layout';
+import { useFeedback } from '../hooks/useFeedback';
 import './busy-export.css';
 
 export function hasBusyExport(host: Partial<BusyExportDesktopAPI> | undefined): host is BusyExportDesktopAPI {
   return Boolean(host && typeof host.busyExportPreview === 'function' && typeof host.busyExportSave === 'function');
 }
 
-export function BusyExportPanel({ host, disabled = false, onBusyChange, onSaved }: {
+export function BusyExportPanel({ host, disabled = false, onBusyChange }: {
   host: BusyExportDesktopAPI;
   disabled?: boolean;
   onBusyChange: (busy: boolean) => void;
-  onSaved?: (message: string) => void;
 }) {
   const [fromDate, setFromDate] = useState(todayDate);
   const [toDate, setToDate] = useState(() => addCalendarDays(fromDate, 6));
@@ -21,17 +21,17 @@ export function BusyExportPanel({ host, disabled = false, onBusyChange, onSaved 
   const [preview, setPreview] = useState<BusyExportPreview | null>(null);
   const [busy, setBusy] = useState<'preview' | 'save' | null>(null);
   const [error, setError] = useState('');
-  const [feedback, setFeedback] = useState('');
+  const { setNotice } = useFeedback();
   const working = useRef(false);
   const locked = disabled || Boolean(busy);
   const request = BusyExportRequestSchema.safeParse({ fromDate, toDate, includeBusyTitles: !hideTitles, instructions });
   const updateParameters = (update: () => void) => {
     if (working.current || disabled) return;
-    update(); setPreview(null); setError(''); setFeedback('');
+    update(); setPreview(null); setError('');
   };
   async function run(action: NonNullable<typeof busy>, job: () => Promise<void>) {
     if (working.current || disabled) return;
-    working.current = true; setBusy(action); onBusyChange(true); setError(''); setFeedback('');
+    working.current = true; setBusy(action); onBusyChange(true); setError('');
     try { await job(); }
     catch (failure) { setPreview(null); setError(failure instanceof Error ? failure.message : '导出失败，请重新预览后重试。'); }
     finally { working.current = false; setBusy(null); onBusyChange(false); }
@@ -50,9 +50,9 @@ export function BusyExportPanel({ host, disabled = false, onBusyChange, onSaved 
     return run('save', async () => {
       const result = await host.busyExportSave({ token: preview.token });
       if (!result.ok) { setPreview(null); setError(result.error.message); return; }
-      if (!result.data.saved) { setFeedback('已取消保存，可继续使用当前预览。'); return; }
+      if (!result.data.saved) { setNotice('已取消保存，可继续使用当前预览。'); return; }
       const message = result.data.filename ? `已保存忙碌时间：${result.data.filename}` : '忙碌时间文件已保存。';
-      setFeedback(message); setPreview(null); onSaved?.(message);
+      setNotice(message); setPreview(null);
     });
   };
 
@@ -66,7 +66,6 @@ export function BusyExportPanel({ host, disabled = false, onBusyChange, onSaved 
     <label>规划要求（选填）<textarea rows={2} maxLength={10000} value={instructions} disabled={locked} placeholder="例如：请规划一个月的学习目标，每次学习 45 分钟，避开已有课程。" onChange={event => updateParameters(() => setInstructions(event.target.value))} /></label>
     <label className="check"><input type="checkbox" checked={hideTitles} disabled={locked} onChange={event => updateParameters(() => setHideTitles(event.target.checked))} />隐藏日程名称，仅保留忙碌时间</label>
     {error && <p className="error" role="alert">{error}</p>}
-    {feedback && <p role="status" className="busy-export-feedback">{feedback}</p>}
     {preview && <section className="busy-export-summary" aria-label="忙碌时间预览">
       <dl className="busy-export-counts">
         <div><dt>忙碌区间</dt><dd>{preview.counts.intervals}</dd></div>

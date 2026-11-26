@@ -3,8 +3,6 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { SnapshotSchema, type ApiResult, type DesktopAPI, type JournalSummary, type MutationResult } from '../shared/contracts';
 import { App } from './App';
-import { PageToolbar } from './components/shell/PageToolbar';
-import type { PlannerUI } from './hooks/usePlanner';
 
 afterEach(cleanup);
 
@@ -13,19 +11,6 @@ const journalEntry: JournalSummary = {
   origin: 'manual', message: '已保存，可撤销', changes: [], undoneAt: null, undoable: true,
 };
 
-it('keeps a long calendar notification in a dismissible floating status without removing its text', () => {
-  const { snapshot } = fixture();
-  const setNotice = vi.fn();
-  const notice = '已加入日历：合成安排。请携带资料并在主楼集合，完整提示应可换行查看。';
-  const ui = { snapshot, notice, busy: false, error: '', setNotice, undo: vi.fn() } as unknown as PlannerUI;
-  const { container } = render(<PageToolbar title="11月9日 – 15日" ui={ui} floatingNotice secondary={<span>日历图例</span>}><button>周视图</button></PageToolbar>);
-  const status = screen.getByRole('status');
-  expect(status.classList.contains('a2-notice-floating')).toBe(true);
-  expect(status.textContent).toBe(notice);
-  expect(container.querySelector('.a2-toolbar-actions')?.contains(status)).toBe(false);
-  fireEvent.click(screen.getByRole('button', { name: '关闭状态提示' }));
-  expect(setNotice).toHaveBeenCalledWith('');
-});
 const applied = (message: string): ApiResult<MutationResult> => ({
   ok: true, data: { status: 'applied', message, changes: [], conflicts: [], transactionId: 'transaction-1' },
 });
@@ -49,7 +34,7 @@ function fixture(journal: JournalSummary[] = []) {
   return { api, snapshot };
 }
 
-it('puts saved feedback beside the page title without adding a separate status row', async () => {
+it('shows a planner receipt above the assistant and keeps its specific undo across navigation', async () => {
   const { api } = fixture();
   const { container } = render(<App api={api} />);
   fireEvent.click(within(await screen.findByRole('navigation', { name: '主导航' })).getByRole('button', { name: '今天' }));
@@ -58,17 +43,16 @@ it('puts saved feedback beside the page title without adding a separate status r
   fireEvent.change(form.getByLabelText('名称'), { target: { value: '合成反馈测试' } });
   fireEvent.click(form.getByRole('button', { name: '保存' }));
   const notice = await screen.findByRole('status');
-  await waitFor(() => expect(notice.textContent).toBe('已保存，可撤销'));
-  const header = container.querySelector<HTMLElement>('.a2-toolbar')!;
-  const title = within(header).getByRole('heading', { level: 1 });
-  expect(notice.parentElement).toBe(title.parentElement);
-  expect(within(header).getByRole('status')).toBe(notice);
-  expect(notice.getAttribute('title')).toBe('已保存，可撤销');
-  expect(container.querySelector('.workspace-status')).toBeNull();
-  expect((screen.getByRole('button', { name: '撤销上次操作' }) as HTMLButtonElement).disabled).toBe(false);
+  await within(notice).findByText('已保存');
+  const main = container.querySelector('.a2-main')!;
+  expect(main.contains(notice)).toBe(true);
+  expect(container.querySelector('.a2-toolbar')!.contains(notice)).toBe(false);
   fireEvent.click(within(screen.getByRole('navigation', { name: '主导航' })).getByRole('button', { name: '日历' }));
-  await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
   expect((screen.getByRole('button', { name: '撤销上次操作' }) as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(within(notice).getByRole('button', { name: '撤销' }));
+  await waitFor(() => expect(api.undo).toHaveBeenCalledWith('transaction-1'));
+  expect(await screen.findByText('已撤销')).toBeTruthy();
+  expect(within(screen.getByRole('status')).queryByRole('button')).toBeNull();
 });
 
 it.each([
@@ -102,7 +86,7 @@ it('invokes undo from the header, disables repeat clicks while busy, and refresh
   expect(api.undo).toHaveBeenCalledTimes(1);
   expect(api.undo).toHaveBeenCalledWith(undefined);
   expect((button as HTMLButtonElement).disabled).toBe(true);
-  expect(within(container.querySelector<HTMLElement>('.a2-toolbar')!).getByRole('status').textContent).toBe('正在处理…');
+  expect(within(container.querySelector<HTMLElement>('.a2-toolbar')!).queryByRole('status')).toBeNull();
   expect(container.querySelector('.workspace-status')).toBeNull();
   fireEvent.click(button);
   expect(api.undo).toHaveBeenCalledTimes(1);

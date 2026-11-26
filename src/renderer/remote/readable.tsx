@@ -1,3 +1,4 @@
+import { downloadFile } from '../download-file';
 import type { ReactNode } from 'react';
 import type { PendingWrite, RecoveryArchive } from './types';
 
@@ -35,9 +36,7 @@ export function Readable({ value, depth = 0 }: { value: unknown; depth?: number 
 export function downloadArchive(archive: RecoveryArchive) {
   const payload = { format: 'ultimate-calendar-isolated-queue', formatVersion: 1, warning: '私密本机档案，未上传，也不会自动提交到新的配对。其中结果未知的操作可能已在原云端执行，请先核对，不要照抄重建。', archive };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
-  const url = URL.createObjectURL(blob), link = document.createElement('a');
-  link.href = url; link.download = `终极日历-本机档案-${archive.createdAt.slice(0, 10)}-${archive.id.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 12)}.json`;
-  document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 0);
+  downloadFile(blob, `终极日历-本机档案-${archive.createdAt.slice(0, 10)}-${archive.id.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 12)}.json`);
 }
 
 /** Archived changes from an earlier pairing: read-only, exportable, never resent. */

@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { BlockSchema, CandidateSchema, CourseSchema, SnapshotSchema, TaskSchema, type Snapshot } from '../shared/contracts';
-import { Calendar } from './components/Calendar';
+import { CalendarFixture as Calendar } from '../../tests/CalendarFixture';
 import { DAY_HEIGHT, minutePosition } from './calendar-timeline';
 
 const date = '2026-10-23';

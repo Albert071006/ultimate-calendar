@@ -9,9 +9,11 @@ import type {
 import type { HostCapabilities, PlannerClient, PlannerMutationResult } from "../../shared/client";
 import { operationId } from "../calendar-layout";
 import { applyPlannerPatch } from '../../shared/planner-sync';
+import { useToastNotice } from './useFeedback';
 type PlannerError = { message: string; code: ApiError["code"] | null };
 type PendingOperation = { id: string; targets: string[]; label: string; status: 'submitting' | 'refreshing' | 'uncertain' };
 type RunOptions = { targets?: string[]; label?: string };
+type AppliedResult = Extract<MutationResult, { status: 'applied' }>;
 function mutationTargets(mutations: MutationInput[], snapshot: Snapshot | null): string[] {
   const targets = new Set<string>();
   for (const mutation of mutations) {
@@ -48,7 +50,7 @@ export function usePlanner(api: PlannerClient | undefined, host?: HostCapabiliti
     setActionError(message ? { message, code: null } : null);
     if (!message) setReadError(null);
   }, []);
-  const [notice, setNotice] = useState("");
+  const { toast, setNotice, dismissNotice } = useToastNotice();
   const [preview, setPreview] = useState<Extract<
     MutationResult,
     { status: "preview" }
@@ -98,18 +100,23 @@ export function usePlanner(api: PlannerClient | undefined, host?: HostCapabiliti
     });
     return () => { unsubscribe(); settledSnapshotRequest.current = ++snapshotRequest.current; };
   }, [api, refresh, readSnapshot]);
-  const receive = useCallback((result: PlannerMutationResult) => {
+  function receive(result: PlannerMutationResult, onApplied?: (result: AppliedResult) => void) {
     if (result.status === "preview") {
       setPreview(result);
       setNotice("尚未执行 · 请确认更改");
     } else if (result.status === "clarification") {
-      setNotice("尚未执行 · 需要补充信息");
+      dismissNotice();
       setActionError({ message: result.questions.join("；"), code: null });
     } else {
       setPreview(null);
-      setNotice(result.message);
+      if (result.status === 'applied' && onApplied) onApplied(result);
+      else if (result.status === 'applied') {
+        // An assistant or a replay can return a transaction already marked as undone.
+        const entry = snapshotRef.current?.journal.find(item => item.id === result.transactionId);
+        setNotice(result.message, !entry || (entry.undoable && !entry.undoneAt) ? () => void undo(result.transactionId) : undefined);
+      } else setNotice(result.message);
     }
-  }, []);
+  }
   async function run<T>(
     job: () => Promise<ApiResult<T>>,
     success?: (data: T) => void,
@@ -161,7 +168,7 @@ export function usePlanner(api: PlannerClient | undefined, host?: HostCapabiliti
       }
     }
   }
-  async function mutate(mutations: MutationInput[]) {
+  async function mutate(mutations: MutationInput[], onApplied?: (result: AppliedResult) => void) {
     if (!api) return;
     return run(
       () =>
@@ -171,7 +178,7 @@ export function usePlanner(api: PlannerClient | undefined, host?: HostCapabiliti
           confirmed: false,
           mutations,
         }),
-      receive,
+      result => receive(result, onApplied),
       { targets: mutationTargets(mutations, snapshotRef.current), label: '正在保存' },
     );
   }
@@ -190,7 +197,7 @@ export function usePlanner(api: PlannerClient | undefined, host?: HostCapabiliti
     );
   }
   async function undo(id?: string) {
-    if (api) await run(() => api.undo(id), receive, { targets: ['undo'], label: '正在撤销' });
+    if (api) await run(() => api.undo(id), result => receive(result, receipt => setNotice(receipt.message)), { targets: ['undo'], label: '正在撤销' });
   }
   return {
     client: api,
@@ -199,7 +206,9 @@ export function usePlanner(api: PlannerClient | undefined, host?: HostCapabiliti
     error,
     errorCode,
     setError,
-    notice,
+    notice: toast?.text ?? '',
+    toast,
+    dismissNotice,
     setNotice,
     busy,
     isPending,

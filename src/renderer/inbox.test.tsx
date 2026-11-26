@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
+import { renderWithFeedback as render } from '../../tests/feedback-host';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { CandidateSchema, SnapshotSchema, SourceSchema, type CandidateInput, type Candidate, type Settings, type Snapshot, type Source } from '../shared/contracts';
 import type { HostCapabilities } from '../shared/client';
 import { Inbox } from './components/Inbox';
@@ -13,7 +14,11 @@ const make = (id: string, extra: Partial<CandidateInput & Pick<Candidate, 'creat
 function view(candidates: ReturnType<typeof make>[], settings: Partial<Settings> = {}, host?: HostCapabilities, options: { mobile?: boolean; sources?: Source[]; pending?: string[]; focus?: string; beforeRender?: (snapshot: Snapshot) => void } = {}) {
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date(now));
   const snapshot = SnapshotSchema.parse({ schemaVersion: 1, sources: options.sources ?? [SourceSchema.parse({ id: 'source', version: 1, createdAt: now, updatedAt: now, kind: 'text', text: '保留原通知', label: '合成通知群', sentAt: '2026-10-23T10:42:00+08:00', importedAt: now })], candidates, tasks: [], blocks: [], goals: [], courses: [], courseExceptions: [], preferences: [], feedback: [], settings, journal: [], tokenUsage: [], keyStatus: { configured: false, sessionOnly: false } });
-  const mutate = vi.fn(async (_mutations: unknown[]) => ({ status: 'applied', transactionId: 'tx-1', message: '已保存' }));
+  const receipt = { status: 'applied', transactionId: 'tx-1', message: '已保存' };
+  const mutate = vi.fn(async (_mutations: unknown[], onApplied?: (result: typeof receipt) => void) => {
+    onApplied?.(receipt);
+    return receipt;
+  });
   const undo = vi.fn(async (_id?: string) => {}), edit = vi.fn(), openSource = vi.fn();
   const ui = { busy: !!options.pending?.length, isPending: (target: string) => options.pending?.some(id => target === `candidate:${id}`) ?? false, mutate, undo, notice: '', error: '' } as unknown as PlannerUI;
   options.beforeRender?.(snapshot);
@@ -230,14 +235,14 @@ describe('quick decisions', () => {
   it('accepts or ignores from the row, offers undo and returns the notice to its place', async () => {
     const f = view([make('第一条'), make('第二条'), make('第三条')]);
     await act(async () => { fireEvent.click(within(list()).getByRole('button', { name: '忽略 第二条' })); });
-    expect(f.mutate).toHaveBeenLastCalledWith([{ type: 'ignoreCandidate', id: '第二条', expectedVersion: 1, reason: '' }]);
-    const toast = within(list()).getByRole('status');
+    expect(f.mutate).toHaveBeenLastCalledWith([{ type: 'ignoreCandidate', id: '第二条', expectedVersion: 1, reason: '' }], expect.any(Function));
+    const toast = screen.getByRole('status');
     expect(toast.textContent).toContain('已忽略「第二条」');
     await act(async () => { fireEvent.click(within(toast).getByRole('button', { name: '撤销' })); });
     expect(f.undo).toHaveBeenCalledWith('tx-1');
     expect(list().querySelector('[aria-current="true"]')!.getAttribute('data-candidate-id')).toBe('第二条');
     await act(async () => { fireEvent.click(within(list()).getByRole('button', { name: '接受 第三条' })); });
-    expect(f.mutate).toHaveBeenLastCalledWith([{ type: 'acceptCandidate', id: '第三条', expectedVersion: 1, reason: '' }]);
+    expect(f.mutate).toHaveBeenLastCalledWith([{ type: 'acceptCandidate', id: '第三条', expectedVersion: 1, reason: '' }], expect.any(Function));
   });
 
   it('decides the selected notice from the keyboard, records the reason, and ignores keys typed into the reason', async () => {
@@ -249,15 +254,15 @@ describe('quick decisions', () => {
     fireEvent.keyDown(reason, { key: 'a' });
     expect(f.mutate).not.toHaveBeenCalled();
     await act(async () => { fireEvent.keyDown(document.body, { key: 'i' }); });
-    expect(f.mutate).toHaveBeenLastCalledWith([{ type: 'ignoreCandidate', id: '第二条', expectedVersion: 1, reason: '时间冲突' }]);
+    expect(f.mutate).toHaveBeenLastCalledWith([{ type: 'ignoreCandidate', id: '第二条', expectedVersion: 1, reason: '时间冲突' }], expect.any(Function));
     fireEvent.keyDown(document.body, { key: 'ArrowUp' });
     fireEvent.keyDown(document.body, { key: 'l' });
     const until = within(detail()).getByLabelText('再次查看时间') as HTMLInputElement;
     expect(until.value).toBe('2026-10-23T18:00');
     await act(async () => { fireEvent.click(within(detail()).getByRole('button', { name: '稍后再看' })); });
-    expect(f.mutate).toHaveBeenLastCalledWith([{ type: 'snoozeCandidate', id: '第一条', expectedVersion: 1, until: '2026-10-23T18:00:00+08:00', reason: '' }]);
+    expect(f.mutate).toHaveBeenLastCalledWith([{ type: 'snoozeCandidate', id: '第一条', expectedVersion: 1, until: '2026-10-23T18:00:00+08:00', reason: '' }], expect.any(Function));
     await act(async () => { fireEvent.keyDown(document.body, { key: 'A' }); });
-    expect(f.mutate).toHaveBeenLastCalledWith([{ type: 'acceptCandidate', id: '第一条', expectedVersion: 1, reason: '' }]);
+    expect(f.mutate).toHaveBeenLastCalledWith([{ type: 'acceptCandidate', id: '第一条', expectedVersion: 1, reason: '' }], expect.any(Function));
   });
 });
 

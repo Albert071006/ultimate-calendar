@@ -3,7 +3,10 @@ import type { CourseImportResult, DesktopAPI, LedgerViewContext, Source } from "
 import type { HostCapabilities, PlannerClient } from "../shared/client";
 import { resolveConnection } from "./client-context";
 import { todayDate } from "./calendar-layout";
+import { desktopViewPreference, useCalendarView } from './hooks/useCalendarView';
 import { usePlanner } from "./hooks/usePlanner";
+import { FeedbackContext } from './hooks/useFeedback';
+import { Toast } from './components/shell/Toast';
 import { isPendingCandidate } from '../domain/candidate-eligibility';
 import { useCurrentTime } from './hooks/useCurrentTime';
 import { useAppUpdates } from './hooks/useAppUpdates';
@@ -46,6 +49,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
   const planExportHost = hasPlanExport(host) ? host : undefined;
   const [captureReference, setCaptureReference] = useState<NonNullable<Source['captureRef']>>();
   const [ledgerView, setLedgerView] = useState<LedgerViewContext>();
+  const [calendarView, setCalendarView] = useCalendarView(desktopViewPreference);
   const [page, setPage] = useState<Page>("calendar"),
     [meSection, setMeSection] = useState<MeSection>("goals"),
     [date, setDate] = useState(todayDate()),
@@ -56,14 +60,6 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
     [sourceId, setSourceId] = useState<string | null>(null),
     [drawerOpen, setDrawerOpen] = useState(true),
     [anchor, setAnchor] = useState<DOMRect | null>(null);
-  const previousPage = useRef(page);
-  useEffect(() => {
-    if (previousPage.current === page) return;
-    previousPage.current = page;
-    // A completed action belongs to the page where it happened. Keep errors
-    // and undo history, but do not carry its success receipt into every header.
-    ui.setNotice("");
-  }, [page, ui.setNotice]);
   const pointer = useRef<{ target: Element; at: number } | null>(null);
   useEffect(() => {
     const down = (event: PointerEvent) => { pointer.current = { target: event.target as Element, at: Date.now() }; };
@@ -132,7 +128,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
   );
   const source = snapshot?.sources.find((s) => s.id === sourceId);
   return (
-    <div className={`app-shell a2${host ? ' desktop-chrome' : ''}`}>
+    <FeedbackContext.Provider value={ui}><div className={`app-shell a2${host ? ' desktop-chrome' : ''}`}>
       {host && <div className="window-drag-region" aria-hidden="true" />}
       <Nav page={page} navigate={(next) => { setEditor(null); setPage(next); }} pending={pending} importPlan={planImportHost ? () => setPlanImportOpen(true) : undefined} />
       {host && <div className="a2-nav-update"><UpdateShortcut updates={updates} open={() => setUpdateOpen(true)} /></div>}
@@ -161,7 +157,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
                   openRecord={editRecord} goCalendar={() => setPage("calendar")} {...taskActions} />
               )}
               {page === "calendar" && (
-                <Calendar snapshot={snapshot} date={date} setDate={setDate} select={select} schedule={schedule} ui={ui}
+                <Calendar snapshot={snapshot} date={date} setDate={setDate} view={calendarView} setView={setCalendarView} select={select} schedule={schedule} ui={ui}
                   edit={(s) => { if (["task", "block", "course", "candidate"].includes(s.entity)) editRecord({ ...s, entity: s.entity as EditorTarget["entity"] }); }}
                   courses={() => { setCoursePreview(undefined); openMe("courses"); }}
                   drawerOpen={drawerOpen} toggleDrawer={() => setDrawerOpen(open => !open)} unscheduledCount={unscheduledTasks(snapshot, now).length}
@@ -183,12 +179,13 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
             </div>
             {(page !== "inbox" || selected?.entity !== "candidate") && !editor && detail()}
             <Assistant ui={ui} selected={selected} date={date} domain={page === "ledger" ? "ledger" : undefined} ledgerView={page === "ledger" ? ledgerView : undefined} />
+            <Toast notice={ui.toast} dismiss={ui.dismissNotice} />
           </>
         )}
       </main>
       {updateOpen && <Modal title="软件更新" onClose={() => setUpdateOpen(false)}><SoftwareUpdate updates={updates} plannerBusy={ui.busy} /></Modal>}
       {planImportOpen && planImportHost && <PlanImportDialog host={planImportHost} ui={ui} onClose={() => setPlanImportOpen(false)} />}
-      {planExportGoal && planExportHost && <PlanExportDialog key={planExportGoal.id} host={planExportHost} goal={planExportGoal} onClose={() => setPlanExportGoal(null)} onSaved={ui.setNotice} />}
+      {planExportGoal && planExportHost && <PlanExportDialog key={planExportGoal.id} host={planExportHost} goal={planExportGoal} onClose={() => setPlanExportGoal(null)} />}
       {snapshot && (
         <>
           {importing && (
@@ -217,6 +214,6 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
           )}
         </>
       )}
-    </div>
+    </div></FeedbackContext.Provider>
   );
 }

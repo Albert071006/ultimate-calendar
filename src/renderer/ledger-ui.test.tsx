@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
+import { renderWithFeedback as render } from '../../tests/feedback-host';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type { ApiResult, ChangedEvent, DesktopAPI } from '../shared/contracts';
 import { DEFAULT_LEDGER_RULES, LEDGER_ACCOUNTS, LedgerEntrySchema, LedgerSnapshotSchema, type LedgerMutationRequest, type LedgerMutationResult, type LedgerSnapshot } from '../shared/ledger';
 import { todayDate } from './calendar-layout';
@@ -45,7 +46,7 @@ describe('local ledger UI', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '保存账单' }));
     await waitFor(() => expect(f.ledgerMutate).toHaveBeenCalledTimes(1));
     expect(f.ledgerMutate.mock.calls[0]![0].changes[0]).toMatchObject({ type: 'putEntry', expectedVersion: null, entry: { title: '晚饭', amountCents: 1850, personalCents: 1850, cashflows: [{ accountId: null, deltaCents: -1850 }] } });
-    expect(await screen.findByRole('status')).toHaveProperty('textContent', '已记账');
+    expect(within(await screen.findByRole('status')).getByText('已记账')).toBeTruthy();
   });
 
   it('retries an unconfirmed save with the same operation ID instead of duplicating the expense', async () => {
@@ -89,14 +90,25 @@ describe('local ledger UI', () => {
 
   it('supplements the account on the same original entry and retains personal share, source, and audit note', async () => {
     const f = fixture(); await screen.findByText('午饭');
+    f.ledgerMutate.mockImplementationOnce(async request => {
+      const change = request.changes[0]!;
+      if (change.type !== 'putEntry') throw new Error('Expected a corrected entry');
+      const snapshot = { ...f.snapshot, entries: [{ ...entry, ...change.entry, version: 2 }], revision: 2, audit: [{
+        id: 'fixture-audit', operationId: request.operationId, at: stamp, action: '更正账目', entryIds: [entry.id], note: change.note, beforeEntries: [entry],
+      }] };
+      return { ok: true, data: { status: 'saved', operationId: request.operationId, snapshot, entryIds: [entry.id], message: '合成更正已保存', undoAvailable: true } };
+    });
     const row = screen.getByText('午饭').closest('details')!; fireEvent.click(row.querySelector('summary')!);
     fireEvent.click(within(row).getByRole('button', { name: '补充账户 / 更正' }));
     const dialog = screen.getByRole('dialog', { name: '更正账单' });
     fireEvent.change(within(dialog).getByLabelText('支付账户'), { target: { value: 'alipay' } });
-    fireEvent.change(within(dialog).getByLabelText('更正说明'), { target: { value: '补充账户为支付宝' } });
+    expect(within(dialog).queryByLabelText('更正说明')).toBeNull();
     fireEvent.click(within(dialog).getByRole('button', { name: '保存更正' }));
     await waitFor(() => expect(f.ledgerMutate).toHaveBeenCalledTimes(1));
-    expect(f.ledgerMutate.mock.calls[0]![0].changes[0]).toMatchObject({ type: 'putEntry', expectedVersion: 1, note: '补充账户为支付宝', entry: { id: 'lunch', personalCents: 1200, amountCents: 2000, sourceId: 'old-source', sourceKey: 'old-001', cashflows: [{ accountId: 'alipay', deltaCents: -2000 }] } });
+    expect(f.ledgerMutate.mock.calls[0]![0].changes[0]).toMatchObject({ type: 'putEntry', expectedVersion: 1, note: '修改：支付账户 待确认 → 支付宝余额', entry: { id: 'lunch', personalCents: 1200, amountCents: 2000, sourceId: 'old-source', sourceKey: 'old-001', cashflows: [{ accountId: 'alipay', deltaCents: -2000 }] } });
+    fireEvent.click(await within(row).findByText('修改记录（1）'));
+    expect(within(row).getByText('修改：支付账户 待确认 → 支付宝余额')).toBeTruthy();
+    expect(within(row).getByText('修改前：午饭 ¥20.00')).toBeTruthy();
   });
 
   it('keeps duplicate clarification visible after refreshing and only proceeds after explicit verification', async () => {
@@ -182,11 +194,11 @@ describe('local ledger UI', () => {
     expect(f.ledgerMutate).toHaveBeenCalledTimes(1);
   });
 
-  it('voids an entry only with an explicit reason and records a balance snapshot separately from income', async () => {
+  it('keeps an optional void reason and records a balance snapshot separately from income', async () => {
     const f = fixture(); await screen.findByText('午饭');
     const row = screen.getByText('午饭').closest('details')!; fireEvent.click(row.querySelector('summary')!);
     fireEvent.click(within(row).getByRole('button', { name: '作废' }));
-    fireEvent.change(screen.getByLabelText('作废说明'), { target: { value: '误记了' } });
+    fireEvent.change(screen.getByLabelText('作废说明（选填）'), { target: { value: '误记了' } });
     fireEvent.click(screen.getByRole('button', { name: '确认作废' }));
     await waitFor(() => expect(f.ledgerMutate).toHaveBeenCalledTimes(1));
     expect(f.ledgerMutate.mock.calls[0]![0].changes).toEqual([{ type: 'voidEntry', id: 'lunch', expectedVersion: 1, note: '误记了' }]);

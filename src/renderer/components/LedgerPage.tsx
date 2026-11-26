@@ -20,7 +20,7 @@ type Tab = 'flows' | 'accounts';
 export function LedgerPage({ api, host, createRequest = 0, onViewChange }: { api: PlannerClient; host?: HostCapabilities; createRequest?: number; onViewChange?: (view: LedgerViewContext | undefined) => void }) {
   const ledger = useLedger(api, host);
   const mobile = useMobile();
-  const { month, snapshot, busy, error, notice } = ledger;
+  const { month, snapshot, busy, error } = ledger;
   const [tab, setTab] = useState<Tab>('flows');
   const [filter, setFilter] = useState<FlowFilter>(noFilter);
   const [editor, setEditor] = useState<LedgerEntry | 'new' | null>(null);
@@ -32,7 +32,7 @@ export function LedgerPage({ api, host, createRequest = 0, onViewChange }: { api
   useEffect(() => () => { onViewChange?.(undefined); }, [onViewChange]);
   const moveMonth = (direction: number) => { ledger.moveMonth(direction); setFilter(value => ({ ...value, day: '' })); };
   const title = `${Number(month.slice(0, 4))} 年 ${Number(month.slice(5))} 月`;
-  const exportItems = host ? [
+  const exportItems = host || api.ledgerExportData ? [
     { label: '导出本月 CSV', disabled: busy, onSelect: () => void ledger.exportLedger('csv') },
     { label: '导出完整账本', disabled: busy, onSelect: () => void ledger.exportLedger('json') },
   ] : [];
@@ -54,7 +54,6 @@ export function LedgerPage({ api, host, createRequest = 0, onViewChange }: { api
         {([['flows', '收支'], ['accounts', '账户']] as const).map(([key, label]) => <button key={key} role="tab" aria-selected={tab === key} onClick={() => setTab(key)}>{label}</button>)}
       </div>
     </div>
-    {error && <p role="alert" className="a2-ledger-status error">{error}</p>}
   </header> : null;
   return <div className={`a2-page a2-ledger${mobile ? ' m-ledger' : ''}`}>
     {header ?? <><PageToolbar title={title} undo={false}
@@ -68,8 +67,10 @@ export function LedgerPage({ api, host, createRequest = 0, onViewChange }: { api
     </PageToolbar>
     <div className="ui-tabs" role="tablist" aria-label="账单页面">
       {([['flows', '收支'], ['accounts', '账户']] as const).map(([key, label]) => <button key={key} role="tab" aria-selected={tab === key} onClick={() => setTab(key)}>{label}</button>)}
-      <p role={error ? 'alert' : 'status'} className={`a2-ledger-status${error ? ' error' : ''}`}>{error || notice}</p>
     </div></>}
+    {error && <div role="alert" className={mobile ? 'm-error' : 'a2-error'}>
+      <span className="error">{error}</span><button className="ui-btn sm ghost" onClick={() => ledger.setError('')}>关闭提示</button>
+    </div>}
     {!snapshot ? <div className="a2-ledger-empty"><div className="ui-empty center"><h4>{host ? '正在载入本地账本…' : '正在载入账本…'}</h4><div className="actions"><button className="ui-btn" onClick={() => void ledger.refresh()}>重新载入账本</button></div></div></div>
       : <section className="a2-ledger-body" role="tabpanel" aria-label={tab === 'flows' ? '收支' : '账户'}>
         {tab === 'flows' ? <Flows snapshot={snapshot} month={month} busy={busy} filter={filter} setFilter={setFilter} create={() => setEditor('new')} edit={setEditor} voidEntry={setVoidTarget} />

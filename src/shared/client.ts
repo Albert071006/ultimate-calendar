@@ -12,6 +12,7 @@ export type PlannerMutationResult = MutationResult | QueuedWrite;
 export type PlannerClient = Omit<Pick<DesktopAPI, typeof PLANNER_CLIENT_METHODS[number]>, 'mutate' | 'ledgerMutate'> & {
   /** Adapters may expose their just-persisted canonical state plus labeled offline drafts after a write. */
   currentSnapshot?(): Snapshot | null;
+  ledgerExportData?(request: { format: 'csv' | 'json'; month?: string }): Promise<ApiResult<{ format: 'csv' | 'json'; content: string }>>;
   mutate(request: MutationRequestInput): Promise<ApiResult<PlannerMutationResult>>;
   ledgerMutate(request: LedgerMutationRequest): Promise<ApiResult<LedgerMutationResult | QueuedWrite>>;
 };

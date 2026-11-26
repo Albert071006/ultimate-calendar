@@ -6,6 +6,7 @@ import { BlockSchema, CandidateSchema, CourseSchema, SnapshotSchema, SourceSchem
 import type { PendingWrite, RemoteClientState } from '../remote/types';
 import type { PlannerClient } from '../../shared/client';
 import { calendarDays, todayDate } from '../calendar-layout';
+import { desktopViewPreference, mobileViewPreference } from '../hooks/useCalendarView';
 import * as calendar from '../../domain/calendar';
 import { CalendarPage } from './pages/CalendarPage';
 import { readBrowserImage } from './browser-image';
@@ -28,6 +29,39 @@ describe('course weeks on the phone', () => {
 });
 
 describe('phone layout', () => {
+  it('persists its own calendar view, including drilling into a date, and starts each launch on Today', async () => {
+    const { client } = fixture();
+    localStorage.setItem(desktopViewPreference.key, 'month');
+    localStorage.setItem(mobileViewPreference.key, 'week');
+    const launch = async () => {
+      const page = render(<MobileApp client={client} connection={online} />);
+      await screen.findByRole('region', { name: '今天的安排' });
+      fireEvent.click(screen.getByRole('button', { name: '日历' }));
+      return page;
+    };
+    try {
+      const first = await launch();
+      expect(screen.getByRole('button', { name: '日' }).getAttribute('aria-pressed')).toBe('true');
+      fireEvent.click(screen.getByRole('button', { name: '3天' }));
+      expect(localStorage.getItem(mobileViewPreference.key)).toBe('three-day');
+      const tabs = within(screen.getByRole('navigation', { name: '主导航' }));
+      fireEvent.click(tabs.getByRole('button', { name: '今天' }));
+      fireEvent.click(tabs.getByRole('button', { name: '日历' }));
+      expect(screen.getByRole('button', { name: '3天' }).getAttribute('aria-pressed')).toBe('true');
+      first.unmount();
+      const second = await launch();
+      expect(second.container.querySelectorAll('.day-column')).toHaveLength(3);
+      fireEvent.click(screen.getByRole('button', { name: '月' }));
+      expect(localStorage.getItem(mobileViewPreference.key)).toBe('month');
+      fireEvent.click(second.container.querySelector('[role="gridcell"]:not(.today)')!);
+      expect(localStorage.getItem(mobileViewPreference.key)).toBe('day');
+      expect(second.container.querySelector('.day-column')?.getAttribute('data-day')).not.toBe(todayDate());
+      second.unmount();
+      const third = await launch();
+      expect(third.container.querySelector('.view-day .day-column')?.getAttribute('data-day')).toBe(todayDate());
+      expect(localStorage.getItem(desktopViewPreference.key)).toBe('month');
+    } finally { localStorage.clear(); }
+  });
   it('reuses one weekly calendar across the date strip and timeline, preserving per-day counts at midnight', () => {
     const { snapshot } = fixture(), date = '2026-12-07';
     const at = (day: string, time: string) => `${day}T${time}:00+08:00`;

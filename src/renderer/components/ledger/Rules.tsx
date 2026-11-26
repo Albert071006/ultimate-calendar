@@ -84,7 +84,7 @@ export function LedgerRulesSettings({ api }: { api: PlannerClient }) {
   const ledger = useLedger(api);
   if (!ledger.snapshot) return <div className="ui-empty"><h4>正在载入账本…</h4>{ledger.error && <p role="alert" className="error">{ledger.error}</p>}</div>;
   return <div className="a2-ledger-rules">
-    <p role={ledger.error ? 'alert' : 'status'} className={ledger.error ? 'error' : 'ui-hint'}>{ledger.error || ledger.notice}</p>
+    {ledger.error && <p role="alert" className="error">{ledger.error}</p>}
     <RulesEditor rules={ledger.snapshot.rules} accounts={ledgerAccounts(ledger.snapshot)} busy={ledger.busy} save={ledger.save} draftClient={api} />
   </div>;
 }
