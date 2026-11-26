@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useRef } from 'react';
+import { useEffectEvent, useLayoutEffect, useRef } from 'react';
 
 const gestureGapMs = 250;
 const minimumPixels = 32;
@@ -23,7 +23,7 @@ function pagingDistance(event: WheelEvent): number {
 export function useCalendarWheel(turnPage: (direction: -1 | 1) => void) {
   const root = useRef<HTMLDivElement>(null);
   const navigate = useEffectEvent(turnPage);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const page = root.current;
     if (!page) return;
     let lastWheel = -Infinity, distance = 0, paged = false;
