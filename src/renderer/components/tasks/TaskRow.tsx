@@ -1,3 +1,4 @@
+import { FocusStart } from '../../focus/TimerViews';
 import { operationPending } from '../../operation-feedback';
 import type { Snapshot, Task } from "../../../shared/contracts";
 import type { PlannerUI } from "../../hooks/usePlanner";
@@ -57,6 +58,7 @@ export function TaskRow({ task, snapshot, ui, now, today, actions }: {
       <div className="a2-task-main">
         <button className="a2-task-title" onClick={() => actions.select ? actions.select({ entity: "task", id: task.id }) : actions.editTask(task.id)}>{task.title}</button>
         <div className="a2-task-meta">
+          {task.status === "open" && <FocusStart snapshot={snapshot} taskId={task.id} />}
           {operationPending(ui, `task:${task.id}`) && <span role="status">正在保存…</span>}
           {meta && <span className={attention ? "warn" : ""}>{meta}</span>}
           {(course || goal) && <span className="a2-task-belonging">

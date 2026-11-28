@@ -1,3 +1,4 @@
+import { FocusStart } from '../../focus/TimerViews';
 import { operationPending } from '../../operation-feedback';
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Check, FileOutput, Pencil, Trash2, X } from "lucide-react";
@@ -140,6 +141,7 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
       ? { type: "cancelRecurringEvent", id: block.id, expectedVersion: block.version, scope: "single" }
       : { type: "delete", entity: "block", id: block.id, expectedVersion: block.version }]);
     footer = <>
+      {block.kind === "work" && !block.cancelled && <FocusStart snapshot={snapshot} blockId={block.id} close={close} />}
       {!block.cancelled && <button className="ui-btn sm dark" disabled={operationPending(ui, `${selection.entity}:${selection.id}`)}
         onClick={() => void ui.mutate([{ type: "finishBlock", id: block.id, expectedVersion: block.version, completed: !completed }])}>
         <Check aria-hidden="true" />{operationPending(ui, `block:${block.id}`) ? "正在保存…" : multiple ? completed ? "恢复本次未完成" : "完成本次时段" : completed ? "恢复未完成" : singleTask ? "完成任务" : "完成"}</button>}
@@ -198,6 +200,7 @@ export function DetailPopover({ snapshot, selection, anchor, ui, close, actions 
       </section>}
     </>;
     footer = <>
+      <FocusStart snapshot={snapshot} taskId={task.id} close={close} />
       {task.status !== "done" && <button className="ui-btn sm dark" disabled={operationPending(ui, `${selection.entity}:${selection.id}`)}
         onClick={() => void ui.mutate([{ type: "finishTask", id: task.id, expectedVersion: task.version, completed: true }])}><Check aria-hidden="true" />{operationPending(ui, `task:${task.id}`) ? "正在保存…" : "完成任务"}</button>}
       {editButton}

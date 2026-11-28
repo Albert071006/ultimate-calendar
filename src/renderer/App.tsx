@@ -1,3 +1,5 @@
+import { FocusProvider } from './focus/FocusProvider';
+import { FocusPanel, PlannerToast } from './focus/TimerViews';
 import { useEffect, useRef, useState } from "react";
 import type { CourseImportResult, DesktopAPI, LedgerViewContext, Source } from "../shared/contracts";
 import type { HostCapabilities, PlannerClient } from "../shared/client";
@@ -6,7 +8,6 @@ import { todayDate } from "./calendar-layout";
 import { desktopViewPreference, useCalendarView } from './hooks/useCalendarView';
 import { usePlanner } from "./hooks/usePlanner";
 import { FeedbackContext } from './hooks/useFeedback';
-import { Toast } from './components/shell/Toast';
 import { isPendingCandidate } from '../domain/candidate-eligibility';
 import { useCurrentTime } from './hooks/useCurrentTime';
 import { useAppUpdates } from './hooks/useAppUpdates';
@@ -128,7 +129,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
   );
   const source = snapshot?.sources.find((s) => s.id === sourceId);
   return (
-    <FeedbackContext.Provider value={ui}><div className={`app-shell a2${host ? ' desktop-chrome' : ''}`}>
+    <FeedbackContext.Provider value={ui}><FocusProvider ui={ui} scope={snapshot?.cursor ? "desktop:" + snapshot.cursor.streamId : null} openStats={() => openMe("focus-stats")}><div className={`app-shell a2${host ? ' desktop-chrome' : ''}`}>
       {host && <div className="window-drag-region" aria-hidden="true" />}
       <Nav page={page} navigate={(next) => { setEditor(null); setPage(next); }} pending={pending} importPlan={planImportHost ? () => setPlanImportOpen(true) : undefined} />
       {host && <div className="a2-nav-update"><UpdateShortcut updates={updates} open={() => setUpdateOpen(true)} /></div>}
@@ -179,7 +180,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
             </div>
             {(page !== "inbox" || selected?.entity !== "candidate") && !editor && detail()}
             <Assistant ui={ui} selected={selected} date={date} domain={page === "ledger" ? "ledger" : undefined} ledgerView={page === "ledger" ? ledgerView : undefined} />
-            <Toast notice={ui.toast} dismiss={ui.dismissNotice} />
+            <PlannerToast ui={ui} />
           </>
         )}
       </main>
@@ -214,6 +215,7 @@ export function App(props: { api?: DesktopAPI; client?: PlannerClient; host?: Ho
           )}
         </>
       )}
-    </div></FeedbackContext.Provider>
+      <FocusPanel ui={ui} />
+    </div></FocusProvider></FeedbackContext.Provider>
   );
 }

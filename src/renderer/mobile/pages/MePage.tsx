@@ -1,3 +1,5 @@
+import { FocusStats } from '../../focus/FocusStats';
+import { FocusSettings } from '../../focus/FocusSettings';
 import type { ReactNode } from 'react';
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react';
 import type { CourseImportResult, Snapshot } from '../../../shared/contracts';
@@ -27,6 +29,8 @@ export function MePage({ snapshot, ui, section, setSection, pendingCount, openPe
   const courseCount = new Set(snapshot.courses.map(course => course.title)).size;
   const week = teachingWeek(snapshot.settings.termStart, todayDate());
   const pages: SettingsPage[] = [
+    { id: 'focus-stats', label: '专注统计', content: <FocusStats snapshot={snapshot} ui={ui} /> },
+    { id: 'focus-settings', label: '番茄钟与专注', content: <FocusSettings snapshot={snapshot} ui={ui} /> },
     { id: 'goals', label: '目标', summary: activeGoals ? `${activeGoals} 个进行中` : '未设定', content: <Goals snapshot={snapshot} ui={ui} select={select} create={() => edit({ entity: 'goal' })} /> },
     { id: 'courses', label: '课程表', summary: courseCount ? `${courseCount} 门课` : '未添加',
       subtitle: [week && week <= snapshot.settings.termWeeks ? `第 ${week} 周 · 共 ${snapshot.settings.termWeeks} 周` : '', courseCount ? `${courseCount} 门课` : ''].filter(Boolean).join(' · '),
@@ -51,7 +55,7 @@ export function MePage({ snapshot, ui, section, setSection, pendingCount, openPe
     <span className="m-card-main"><b>{page.label}</b></span>
     {page.summary && <span className={`m-card-value${page.id === 'ai' && !snapshot.keyStatus.configured ? ' attn' : ''}`}>{page.summary}</span>}<ChevronRight aria-hidden="true" />
   </button></li>;
-  const planning = ['goals', 'courses'], order = ['ai', 'reminders', 'ledger-rules', 'device'];
+  const planning = ['goals', 'courses', 'focus-stats'], order = ['ai', 'reminders', 'ledger-rules', 'device'];
   return (
     <div className="m-page m-me">
       <header className="m-hero"><div><h1>我的</h1></div></header>

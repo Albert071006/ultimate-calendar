@@ -1,3 +1,4 @@
+import { FocusShortcut } from '../../focus/TimerViews';
 import { CalendarDays, FileInput, Inbox, Sun, UserRound, Wallet } from "lucide-react";
 
 export type Page = "today" | "calendar" | "inbox" | "ledger" | "me";
@@ -26,6 +27,7 @@ export function Nav({ page, navigate, pending, importPlan }: { page: Page; navig
         ))}
         {importPlan && <button className="a2-nav-import" onClick={importPlan}><FileInput size={18} strokeWidth={1.7} aria-hidden="true" /><span>导入计划</span></button>}
       </nav>
+      <FocusShortcut />
     </aside>
   );
 }

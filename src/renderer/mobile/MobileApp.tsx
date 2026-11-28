@@ -1,6 +1,7 @@
+import { FocusProvider } from '../focus/FocusProvider';
+import { FocusPanel, FocusShortcut, PlannerToast } from '../focus/TimerViews';
 import { useEffect, useState, type ReactNode } from 'react';
 import { FeedbackContext } from '../hooks/useFeedback';
-import { Toast } from '../components/shell/Toast';
 import { CalendarDays, Inbox as InboxIcon, Sun, UserRound, Wallet } from 'lucide-react';
 import type { CourseImportResult, LedgerViewContext } from '../../shared/contracts';
 import type { PlannerClient } from '../../shared/client';
@@ -99,7 +100,7 @@ export function MobileApp({ client, connection, settingsPages = [], pendingView,
     ?? snapshot.sources.find(value => value.id === id)?.label ?? undefined);
 
   return (
-    <FeedbackContext.Provider value={ui}><MobileProvider mobile>
+    <FeedbackContext.Provider value={ui}><MobileProvider mobile><FocusProvider ui={ui} scope={snapshot && (conversationKey || snapshot.cursor) ? JSON.stringify(['mobile', conversationKey, snapshot.cursor?.streamId]) : null} openStats={() => openMe('focus-stats')}>
       <div className="a2 is-mobile m-app">
         <StatusBanner connection={banner} onOpen={() => setStatusOpen(true)} />
         {ui.error && <div className="m-error" role="alert">
@@ -131,9 +132,10 @@ export function MobileApp({ client, connection, settingsPages = [], pendingView,
               settingsPages={settingsPages} select={select} edit={editRecord} openSource={setSourceId} coursePreview={coursePreview} />
           )}
         </main>
-        {snapshot && <Toast notice={ui.toast} dismiss={ui.dismissNotice} />}
+        {snapshot && <PlannerToast ui={ui} />}
         {snapshot && <MobileAssistant ui={ui} selected={selected} date={date} domain={page === 'ledger' ? 'ledger' : undefined} connectionStatus={connection.status}
           ledgerView={page === 'ledger' ? ledgerView : undefined} storageKey={conversationKey} open={assistantOpen} setOpen={setAssistantOpen} />}
+        <FocusShortcut mobile />
         <nav className="m-tabs-bar" aria-label="主导航">
           {tabs.map(([id, label, Icon]) => (
             <button key={id} aria-current={page === id ? 'page' : undefined} onClick={() => navigate(id)}>
@@ -168,7 +170,8 @@ export function MobileApp({ client, connection, settingsPages = [], pendingView,
           <Preview value={ui.preview} confirm={() => void ui.confirm()} cancel={declinePreview} busy={ui.busy} names={names} />
         </Sheet>}
         {statusOpen && <Sheet title="连接与待提交" onClose={() => setStatusOpen(false)}>{pendingView}</Sheet>}
+        <FocusPanel ui={ui} mobile />
       </div>
-    </MobileProvider></FeedbackContext.Provider>
+    </FocusProvider></MobileProvider></FeedbackContext.Provider>
   );
 }

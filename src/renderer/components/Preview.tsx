@@ -6,6 +6,7 @@ import { formatFriendlyRange } from '../../shared/display-time';
 const labels: Record<string, string> = {
   title: "名称",
   description: "说明",
+  mode: "计时模式", durationSeconds: "有效秒数", plannedMinutes: "目标分钟数", completedTarget: "达到目标", note: "备注", blockId: "关联时段",
   status: "状态",
   deadline: "截止（日期 / 时刻）",
   start: "开始",
@@ -53,6 +54,7 @@ const labels: Record<string, string> = {
 // Only storage metadata is omitted. New business fields must remain reviewable.
 const internalFields = new Set(["id", "version", "createdAt", "updatedAt", "recurrence"]);
 const values: Record<string, string> = {
+  pomodoro: "番茄", stopwatch: "正向计时", manual: "手动补录",
   open: "待完成",
   done: "已完成",
   active: "进行中",
@@ -74,7 +76,7 @@ const values: Record<string, string> = {
   event: "固定活动",
 };
 // Fields that point at another record; the preview names the record instead of showing its id.
-const linkFields = new Set(["taskId", "goalId", "courseId", "candidateId", "duplicateOfId", "revisionOfId", "sourceIds"]);
+const linkFields = new Set(["taskId", "blockId", "goalId", "courseId", "candidateId", "duplicateOfId", "revisionOfId", "sourceIds"]);
 const linkNouns: Record<string, string> = { taskId: "任务", goalId: "目标", courseId: "课程", candidateId: "通知", duplicateOfId: "通知", revisionOfId: "通知", sourceIds: "来源" };
 type Lookup = (id: string) => string | undefined;
 function format(value: unknown, name?: Lookup): string {

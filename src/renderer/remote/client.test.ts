@@ -71,6 +71,33 @@ async function fixture(){
 }
 
 describe('durable remote client against a real synthetic authority',()=>{
+  it('withdraws an unsent focus draft and targets its own transaction if replay wins the race', async () => {
+    const f = await fixture(), phone = f.browser(), controller = phone.open(); await f.pair(controller);
+    const draft = () => manualBatch({ type: 'createFocusSession', values: focusValues });
+    phone.setOnline(false); await controller.reconnect();
+    const first = draft(), second = draft();
+    await controller.client.mutate(first); await controller.client.mutate(second);
+    expect(await controller.client.undoQueuedMutation!(first.operationId)).toMatchObject({ ok: true });
+    expect(controller.client.currentSnapshot!()!.focusSessions).toHaveLength(1);
+    phone.setOnline(true); await controller.reconnect();
+    expect(f.service.snapshot().focusSessions).toHaveLength(1);
+    await controller.client.mutate(taskInput('之后创建的独立任务'));
+    expect(await controller.client.undoQueuedMutation!(second.operationId)).toMatchObject({ ok: true });
+    expect(f.service.snapshot().focusSessions).toHaveLength(0);
+    expect(f.service.snapshot().tasks[0]?.title).toBe('之后创建的独立任务');
+  });
+  it('writes focus preferences with the current settings and persists the confirmed result in the phone cache', async () => {
+    const f = await fixture(), phone = f.browser(), controller = phone.open(); await f.pair(controller);
+    const expectedSettings = controller.client.currentSnapshot!()!.settings;
+    const settings = { ...expectedSettings, focusMinutes: 39, focusSoundEnabled: false };
+    expect(await controller.client.saveSettings!({ settings, expectedSettings })).toMatchObject({ ok: true, data: { focusMinutes: 39, focusSoundEnabled: false } });
+    expect(controller.client.currentSnapshot!()!.settings).toEqual(settings);
+    expect(await controller.client.saveSettings!({ settings: { ...settings, focusMinutes: 21 }, expectedSettings })).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    expect(controller.getState().pending).toHaveLength(0);
+    phone.setOnline(false);
+    const reopened = phone.open(); await reopened.initialize();
+    expect(reopened.client.currentSnapshot!()?.settings.focusMinutes).toBe(39);
+  });
   it('exports the requested ledger month from the paired service without queueing a write', async () => {
     const f = await fixture(), phone = f.browser(), controller = phone.open();
     await f.pair(controller);

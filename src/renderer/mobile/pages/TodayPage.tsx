@@ -1,4 +1,5 @@
 import { operationPending } from '../../operation-feedback';
+import { FocusStart, TodayFocus } from '../../focus/TimerViews';
 import { Fragment, useState } from 'react';
 import { ChevronRight, Plus } from 'lucide-react';
 import type { CalendarItem, Snapshot, Task } from '../../../shared/contracts';
@@ -63,6 +64,7 @@ export function TodayPage({ snapshot, ui, now, pendingCount, unscheduledCount, s
           <p>{shortDate(today)} · 周{weekdayName(today)}{week && week <= snapshot.settings.termWeeks ? ` · 第 ${week} 周` : ''}</p>
         </div>
       </header>
+      <TodayFocus snapshot={snapshot} />
 
       {pendingCount > 0 && <button className="m-notice-row" onClick={openInbox}>
         <span><b>{pendingCount}</b> 条通知等你判断</span><ChevronRight aria-hidden="true" />
@@ -132,6 +134,7 @@ function TaskItem({ task, snapshot, ui, now, today, actions, select }: {
         {operationPending(ui, `task:${task.id}`) && <small role="status">正在保存…</small>}
         {meta && <small className={urgent ? 'due' : undefined}>{meta}</small>}
       </button>
+      {task.status !== 'done' && <FocusStart snapshot={snapshot} taskId={task.id} />}
       {task.status !== 'done' && <button className="m-text-btn" disabled={operationPending(ui, `task:${task.id}`) && !!attention} onClick={primary.run}>{primary.label}</button>}
     </article>
   );

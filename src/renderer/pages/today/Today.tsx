@@ -11,6 +11,7 @@ import { dayDistance } from "../../../domain/time";
 import { selectRailTasks } from "../../task-rail";
 import { groupTodayTasks, todayTaskGroupNames as groupNames } from "../../today-tasks";
 import { todayDate } from "../../calendar-layout";
+import { TodayFocus } from '../../focus/TimerViews';
 import { PageToolbar } from "../../components/shell/PageToolbar";
 import { useCurrentTime } from "../../hooks/useCurrentTime";
 import { TaskRow, type TaskActions } from "../../components/tasks/TaskRow";
@@ -102,6 +103,7 @@ export function Today({ snapshot, ui, pendingCount, create, openInbox, openCandi
       </PageToolbar>
       <div className="a2-today-frame">
       <div className="a2-today">
+        <TodayFocus snapshot={snapshot} />
         {pendingCount > 0 && (
           <button className="a2-banner" onClick={openInbox}>
             <b>{pendingCount}</b> 条通知等你判断<span className="go">去看看 <ArrowRight aria-hidden="true" /></span>

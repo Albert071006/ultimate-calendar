@@ -18,7 +18,7 @@ function mutationTargets(mutations: MutationInput[], snapshot: Snapshot | null):
   const targets = new Set<string>();
   for (const mutation of mutations) {
     if (!('id' in mutation)) continue;
-    const kind = 'entity' in mutation ? mutation.entity : /Candidate/.test(mutation.type) ? 'candidate' : /Block|RecurringEvent/.test(mutation.type) ? 'block' : /Task/.test(mutation.type) ? 'task' : undefined;
+    const kind = 'entity' in mutation ? mutation.entity : /FocusSession/.test(mutation.type) ? 'focusSession' : /Candidate/.test(mutation.type) ? 'candidate' : /Block|RecurringEvent/.test(mutation.type) ? 'block' : /Task/.test(mutation.type) ? 'task' : undefined;
     if (kind) targets.add(`${kind}:${mutation.id}`);
     const taskId = kind === 'task' ? mutation.id : kind === 'candidate' ? snapshot?.candidates.find(value => value.id === mutation.id)?.taskId : kind === 'block' ? snapshot?.blocks.find(value => value.id === mutation.id)?.taskId : null;
     if (taskId) {
@@ -55,6 +55,7 @@ export function usePlanner(api: PlannerClient | undefined, host?: HostCapabiliti
     MutationResult,
     { status: "preview" }
   > | null>(null);
+  const [lastWriteId, setLastWriteId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const readSnapshot = useCallback(async (afterOperation = false, forceFull = false) => {
     if (!api) return;
@@ -168,17 +169,24 @@ export function usePlanner(api: PlannerClient | undefined, host?: HostCapabiliti
       }
     }
   }
-  async function mutate(mutations: MutationInput[], onApplied?: (result: AppliedResult) => void) {
+  function receiveWrite(result: PlannerMutationResult, id: string, mutations: MutationInput[], onApplied?: (result: AppliedResult) => void) {
+    if (result.status === 'applied' || result.status === 'queued') setLastWriteId(id);
+    if (result.status === 'queued' && api?.undoQueuedMutation && mutations.some(m => m.type.endsWith('FocusSession'))) {
+      setPreview(null);
+      setNotice(result.message, () => { void run(() => api.undoQueuedMutation!(id), receipt => setNotice(receipt.message), { targets: ['undo'] }); });
+    } else receive(result, onApplied);
+  }
+  async function mutate(mutations: MutationInput[], onApplied?: (result: AppliedResult) => void, requestId: string = operationId()) {
     if (!api) return;
     return run(
       () =>
         api.mutate({
-          operationId: operationId(),
+          operationId: requestId,
           origin: "manual",
           confirmed: false,
           mutations,
         }),
-      result => receive(result, onApplied),
+      result => receiveWrite(result, requestId, mutations, onApplied),
       { targets: mutationTargets(mutations, snapshotRef.current), label: '正在保存' },
     );
   }
@@ -192,7 +200,7 @@ export function usePlanner(api: PlannerClient | undefined, host?: HostCapabiliti
           confirmed: true,
           confirmationToken: preview.confirmationToken,
         }),
-      receive,
+      result => receiveWrite(result, preview.proposedRequest.operationId, preview.proposedRequest.mutations),
       { targets: mutationTargets(preview.proposedRequest.mutations, snapshotRef.current), label: '正在确认' },
     );
   }
@@ -213,6 +221,7 @@ export function usePlanner(api: PlannerClient | undefined, host?: HostCapabiliti
     busy,
     isPending,
     pendingOperations,
+    lastWriteId,
     refresh,
     run,
     mutate,

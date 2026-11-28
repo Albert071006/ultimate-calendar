@@ -538,11 +538,33 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     }
     return locked(() => read('snapshot')) as Promise<ApiResult<Snapshot>>;
   }
+  async function discardPending(item: PendingWrite) {
+    if (!['queued', 'conflict', 'failed', 'review'].includes(item.status) && !(item.status === 'blocked' && item.wireInput === undefined)) throw Error('结果未知或正在执行的操作不能丢弃，先查询原操作结果');
+    if (partition!.queue.some(value => value.dependencies.includes(item.id))) throw Error('后续修改依赖这项操作。请先处理或放弃依赖它的修改');
+    const next = clone(); next.queue = next.queue.filter(value => value.id !== item.id); await persist(next, true);
+  }
   const controller: RemoteController = {
     client: {
       // Read-only projection bypasses the write lock; it never sends or acknowledges a draft.
       snapshot: calendarSnapshot,
       currentSnapshot: cachedSnapshot,
+      undoQueuedMutation: operationId => locked(async () => {
+        const item = partition?.queue.find(pending => pending.method === 'mutate' && inputOperation(pending.input) === operationId);
+        if (item) { await discardPending(item); return { ok: true, data: { message: '已撤回待提交的专注修改' } }; }
+        const transaction = partition?.snapshot?.journal.find(entry => entry.operationId === operationId);
+        if (!transaction || !transaction.undoable || transaction.undoneAt) return failure('这项修改已无法撤销，请刷新核对。', 'CONFLICT');
+        return remoteOutputs.undo.parse(await write('undo', transaction.id));
+      }),
+      saveSettings: input => locked(async () => {
+        if (!partition?.snapshot || state.status !== 'online') return failure('请先连接资料服务再修改专注设置。', 'NETWORK', 'not-sent');
+        const result = remoteOutputs.saveSettings.parse(await rpc('saveSettings', input));
+        if (result.ok) {
+          const next = clone();
+          next.snapshot = { ...partition.snapshot, settings: result.data };
+          await persist(next, true, ['planner']);
+        }
+        return result;
+      }),
       ledgerExportData: input => rpc('ledgerExportData', input),
       ledgerSnapshot: input => locked(() => read('ledgerSnapshot', input)),
       mutate: input => locked(() => write('mutate', input)), undo: id => locked(() => write('undo', id ?? partition?.snapshot?.journal.findLast(entry => entry.undoable && !entry.undoneAt)?.id)),
@@ -568,11 +590,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
     }), reconnect,
     resolve: (id, action) => locked(async () => {
       const item = partition?.queue.find(value => value.id === id); if (!item) return;
-      if (action === 'discard') {
-        if (!['queued', 'conflict', 'failed', 'review'].includes(item.status) && !(item.status === 'blocked' && item.wireInput === undefined)) throw Error('结果未知或正在执行的操作不能丢弃，先查询原操作结果');
-        if (partition!.queue.some(value => value.dependencies.includes(id))) throw Error('后续修改依赖这项操作。请先处理或放弃依赖它的修改');
-        const next = clone(); next.queue = next.queue.filter(value => value.id !== id); await persist(next, true); return;
-      }
+      if (action === 'discard') return discardPending(item);
       if (state.status !== 'online') throw Error('请先重新连接资料服务');
       if (action === 'use-local') {
         if (item.status !== 'conflict') throw Error('只有明确的版本冲突可重新提出本机修改');

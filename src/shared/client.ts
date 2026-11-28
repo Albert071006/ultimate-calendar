@@ -11,6 +11,9 @@ export interface QueuedWrite { status: 'queued'; requestId: string; message: str
 export type PlannerMutationResult = MutationResult | QueuedWrite;
 export type PlannerClient = Omit<Pick<DesktopAPI, typeof PLANNER_CLIENT_METHODS[number]>, 'mutate' | 'ledgerMutate'> & {
   /** Adapters may expose their just-persisted canonical state plus labeled offline drafts after a write. */
+  /** Withdraw a local draft or undo its exact transaction if replay has already committed it. */
+  undoQueuedMutation?(operationId: string): Promise<ApiResult<{ message: string }>>;
+  saveSettings?: DesktopAPI['saveSettings'];
   currentSnapshot?(): Snapshot | null;
   ledgerExportData?(request: { format: 'csv' | 'json'; month?: string }): Promise<ApiResult<{ format: 'csv' | 'json'; content: string }>>;
   mutate(request: MutationRequestInput): Promise<ApiResult<PlannerMutationResult>>;
