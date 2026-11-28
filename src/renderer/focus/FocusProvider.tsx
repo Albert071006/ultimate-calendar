@@ -38,6 +38,7 @@ async function notifyCompletion(message: string, title?: string) {
 }
 function localStore() { try { return window.localStorage; } catch { return null; } }
 export interface FocusControls {
+  readonly scope: string | null;
   getStatus: FocusTimer['getStatus'];
   continueCurrent(): void; startBreak(): void; nextRound(): void;
   activeState: FocusTimer['activeState'];
@@ -112,7 +113,7 @@ export function FocusProvider({ scope, ui, openStats, children }: { scope: strin
       if (result?.status === 'applied' || result?.status === 'queued') timer.saved(s.id);
     } finally { saving.current = false; }
   }
-  const controls: FocusControls = { activeState: state, getStatus: () => timer.getStatus(),
+  const controls: FocusControls = { scope, activeState: state, getStatus: () => timer.getStatus(),
     continueCurrent: () => timer.continueCurrent(), startBreak: () => { unlock(); timer.startBreak(); }, nextRound: () => { unlock(); timer.nextRound(); }, open, show: () => setOpen(true), hide: () => setOpen(false),
     statistics: () => { setOpen(false); openStats(); },
     requestStart(draft) { unlock(); const result = timer.requestStart(draft); setOpen(true); return result; },

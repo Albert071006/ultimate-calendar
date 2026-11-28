@@ -132,7 +132,7 @@ export function MobileApp({ client, connection, settingsPages = [], pendingView,
               settingsPages={settingsPages} select={select} edit={editRecord} openSource={setSourceId} coursePreview={coursePreview} />
           )}
         </main>
-        {snapshot && <PlannerToast ui={ui} />}
+        {snapshot && !assistantOpen && <PlannerToast ui={ui} />}
         {snapshot && <MobileAssistant ui={ui} selected={selected} date={date} domain={page === 'ledger' ? 'ledger' : undefined} connectionStatus={connection.status}
           ledgerView={page === 'ledger' ? ledgerView : undefined} storageKey={conversationKey} open={assistantOpen} setOpen={setAssistantOpen} />}
         <FocusShortcut mobile />

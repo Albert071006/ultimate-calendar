@@ -9,6 +9,7 @@ import { pendingClarificationHistory } from '../shared/command-continuation';
  * whose normal parser, reference validation and durable write path still follow. */
 export function canUseCompactLedgerRoute(request: CommandRequest): boolean {
   const { text } = request;
+  if (/(?:专注|番茄钟|正向计时|时间账单|多少(?:个)?小时|多少分钟)/.test(text) && !/[¥￥]|多少钱|[元块钱]|付款|消费/.test(text)) return false;
   if (!text || request.selected?.length || request.resources?.length) return false;
   if (/提醒|安排|日历|日程|课程|课表|上课|有.{0,3}课|作业|待办|任务|截止|计划|会议|开会|待判断/.test(text)) return false;
   const financialTerms = /记[账帐]|记一笔|账[单目本户]|余额|报销|代垫|待收回|转账|还款|借款|退款|充值|提现|消费|付款|支出|开销|收入|生活费|支付宝|银行卡|饭卡|亲情卡|会员卡/;

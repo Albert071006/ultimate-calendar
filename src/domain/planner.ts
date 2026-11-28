@@ -149,7 +149,8 @@ export function createPlanner(repository: Repository, options: { automaticBackup
           }
           const { deliberate } = expandMutations(state, request.mutations); validateRelationships(state, true, before);
           const details = diffStates(before, state); const conflicts = overlaps(state, details);
-          if (deliberate || conflicts.length) {
+          const reviewsFocusHistory = request.origin === 'ai' && request.mutations.some(m => m.type === 'updateFocusSession' || m.type === 'deleteFocusSession');
+          if (deliberate || conflicts.length || reviewsFocusHistory) {
             const token = randomUUID(); const expires = Date.now() + 10 * 60000;
             previews.set(token, { signature: signature(before), fingerprint: fingerprint(request), expires, details: structuredClone(details) });
             Object.assign(state, before);

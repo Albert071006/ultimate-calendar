@@ -5,6 +5,7 @@ import type { PlannerUI } from '../hooks/usePlanner';
 import type { Selection } from '../components/Calendar';
 import { assistantRetryLabel, canContinueUnsent, canReanalyze, useAssistantConversation, type ConversationEntry, type UnsentClarificationDraft } from '../components/shell/assistant-conversation';
 import { AssistantImageButton, AssistantAttachmentDraft, AssistantMessageAttachments } from '../components/shell/assistant-image-input';
+import { PlannerToast } from '../focus/TimerViews';
 import { AssistantText } from '../components/shell/AssistantText';
 import { AssistantCalendarItems } from '../components/shell/AssistantCalendarItems';
 import { useAssistantScroll } from '../components/shell/assistant-scroll';
@@ -22,7 +23,7 @@ function load(key: string | undefined): { entries: ConversationEntry[]; draft?: 
       ...entry,
       ...(image || images?.length ? { imageUnavailable: true } : {}),
       ...(documents?.length ? { documentsUnavailable: true } : {}),
-      ...(entry.status === 'pending' ? { text: '页面关闭前没有收到结果。请先在日历或账单核对，再决定要不要重发。', status: 'failed' as const, delivery: 'unknown' as const } : {}),
+      ...(entry.status === 'pending' ? { text: '页面关闭前没有收到结果。请先核对计时器或相关记录，再决定要不要重发。', status: 'failed' as const, delivery: 'unknown' as const } : {}),
     }));
     const draft = saved.draft;
     const validDraft = draft && typeof draft.text === 'string' && draft.text.length <= 10_000
@@ -111,6 +112,7 @@ export function MobileAssistant({ ui, selected, date, domain, ledgerView, storag
           </> : <p>云端还没有配置 DeepSeek API Key，助手暂时不能回答。</p>}
         </div>}
       </div>
+      {open && <PlannerToast ui={ui} />}
       {open && ui.error && !errorInConversation && <p className="m-assistant-error" role="alert">{ui.error}</p>}
       {unsentDraft && <p className="m-hint m-assistant-draft-hint" role="status">这条补充尚未发送，可在输入框继续补充后发送。</p>}
       <AssistantAttachmentDraft images={images} documents={documents} reading={imageReading} error={imageError} removeImage={removeImage} removeDocument={removeDocument} cancelRead={cancelRead} disabled={running || ui.busy} tabIndex={open ? 0 : -1} />

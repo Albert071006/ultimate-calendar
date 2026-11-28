@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { FocusSettingsSchema, IdSchema, TitleSchema, type FocusSessionInput, type MutationInput, type Settings, type Snapshot } from '../../shared/contracts';
+import { FocusTimerPhaseSchema, FocusSettingsSchema, IdSchema, TitleSchema, type FocusSessionInput, type MutationInput, type Settings, type Snapshot } from '../../shared/contracts';
 import { instantAt } from '../../domain/time';
 import { operationId } from '../calendar-layout';
 
@@ -9,9 +9,8 @@ const draftSchema = z.object({
 });
 export type FocusDraft = z.infer<typeof draftSchema>;
 const stamp = z.number().int().nonnegative().max(253402214399999);
-const phase = z.enum(['running', 'paused', 'settlement', 'breakGuide', 'breakRunning', 'breakPaused', 'breakEnded']);
 const savedState = z.object({
-  id: IdSchema, phase, draft: draftSchema, start: stamp, since: stamp, elapsed: z.number().nonnegative().max(86400000),
+  id: IdSchema, phase: FocusTimerPhaseSchema, draft: draftSchema, start: stamp, since: stamp, elapsed: z.number().nonnegative().max(86400000),
   end: stamp.nullable(), rounds: z.number().int().nonnegative(), breakMinutes: z.number().int().min(1).max(240),
   longBreak: z.boolean(), next: draftSchema.nullable(),
 }).refine(s => s.draft.mode !== 'pomodoro' || s.draft.plannedMinutes !== undefined)
@@ -56,9 +55,10 @@ export class FocusTimer {
   get activeState() { return this.state; }
   /** Read the current duration without waiting for a React render or an interval. */
   getStatus() {
+    this.reload();
     this.tick();
     const s = this.state;
-    return s ? { phase: s.phase, mode: s.draft.mode, title: s.draft.title, elapsedMs: this.elapsedMilliseconds,
+    return s ? { timerId: s.id, phase: s.phase, mode: s.draft.mode, title: s.draft.title, elapsedMs: this.elapsedMilliseconds,
       plannedMinutes: s.draft.plannedMinutes ?? null, taskId: s.draft.taskId ?? null, blockId: s.draft.blockId ?? null, switching: !!s.next } as const : null;
   }
   get elapsedMilliseconds() { return this.state ? elapsedMs(this.state, this.clock()) : 0; }

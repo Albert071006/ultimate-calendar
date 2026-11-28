@@ -14,7 +14,7 @@ function indexById<T extends { id: string }>(records: readonly T[]) {
   return new Map(records.map(record => [record.id, record]));
 }
 
-function belongingResolver(snapshot: FocusContext) {
+export function createFocusBelongingResolver(snapshot: FocusContext) {
   const courses = indexById(snapshot.courses), goals = indexById(snapshot.goals);
   const tasks = indexById(snapshot.tasks), blocks = indexById(snapshot.blocks);
 
@@ -35,7 +35,7 @@ function belongingResolver(snapshot: FocusContext) {
 
 /** Courses take precedence over goals. Within each kind prefer the session, its task, then its block's task. */
 export function focusSessionBelonging(session: FocusSession, snapshot: FocusContext): FocusBelonging {
-  return belongingResolver(snapshot)(session);
+  return createFocusBelongingResolver(snapshot)(session);
 }
 
 function calendarRange(range: FocusRange): { from: DateOnly; to: DateOnly } {
@@ -72,7 +72,7 @@ export function summarizeFocusSessions(
   sessions: readonly FocusSession[], snapshot: FocusContext, range: FocusRange, detailFilter?: FocusDetailFilter,
 ) {
   const { from, to } = calendarRange(range);
-  const resolve = belongingResolver(snapshot);
+  const resolve = createFocusBelongingResolver(snapshot);
   const dailySeconds = new Map<DateOnly, number>();
   for (let date = from; ; date = addCalendarDays(date, 1)) {
     dailySeconds.set(date, 0);

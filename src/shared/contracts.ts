@@ -321,12 +321,13 @@ const calendarCommandMutationSchema = z.union([
   z.strictObject({ type: z.literal('createRecurringTask'), values: TaskInputSchema, rule: RecurrenceRuleSchema, location: shortText.default(''), reminders: ReminderConfigSchema.optional(), resources: ResourceReferencesSchema.optional() }),
   z.strictObject({ type: z.literal('finishBlock'), id: IdSchema, expectedVersion: version, completed: z.boolean().default(true) }),
 ]);
-export const MutationInputSchema = z.union([
-  ...calendarCommandMutationSchema.options,
+export const FocusMutationSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('createFocusSession'), values: FocusSessionInputSchema }),
   z.strictObject({ type: z.literal('updateFocusSession'), id: IdSchema, expectedVersion: version, values: nonemptyPatch(focusSessionValue) }),
   z.strictObject({ type: z.literal('deleteFocusSession'), id: IdSchema, expectedVersion: version }),
 ]);
+export type FocusMutation = z.infer<typeof FocusMutationSchema>;
+export const MutationInputSchema = z.union([...calendarCommandMutationSchema.options, ...FocusMutationSchema.options]);
 export const MutationSchema = MutationInputSchema;
 export type Mutation = z.infer<typeof MutationSchema>;
 export type MutationInput = z.input<typeof MutationInputSchema>;
@@ -422,7 +423,35 @@ export const AnalyzeSourceRequestSchema = z.strictObject({ operationId: IdSchema
 export type AnalyzeSourceRequest = z.infer<typeof AnalyzeSourceRequestSchema>;
 export const AnalysisResultSchema = z.strictObject({ sourceId: IdSchema, status: z.enum(['needs-review', 'succeeded', 'failed']), candidateIds: z.array(IdSchema), message: shortText });
 export type AnalysisResult = z.infer<typeof AnalysisResultSchema>;
-export const ConversationStateSchema = z.strictObject({ domain: z.enum(['calendar', 'ledger']), phase: z.enum(['clarification', 'saved', 'query', 'preview']), ledgerQueryChoices: LedgerQueryChoicesSchema.optional() });
+export const FocusTimerPhaseSchema = z.enum(['running', 'paused', 'settlement', 'breakGuide', 'breakRunning', 'breakPaused', 'breakEnded']);
+const timerMode = z.enum(['pomodoro', 'stopwatch']);
+export const FocusTimerStatusSchema = z.strictObject({
+  timerId: IdSchema.optional(), phase: FocusTimerPhaseSchema, title: TitleSchema, mode: timerMode,
+  elapsedMs: z.number().nonnegative().max(86400000), plannedMinutes: z.number().int().min(1).max(480).nullable(),
+  taskId: IdSchema.nullish(), blockId: IdSchema.nullish(), switching: z.boolean().optional(),
+});
+export const FocusActionSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('start'), title: TitleSchema, mode: timerMode, plannedMinutes: z.number().int().min(1).max(480).optional(),
+    taskId: IdSchema.optional(), blockId: IdSchema.optional(), courseId: IdSchema.optional(), goalId: IdSchema.optional() }),
+  ...(['pause', 'resume', 'finish'] as const).map(type => z.strictObject({ type: z.literal(type), timerId: IdSchema.optional() })),
+]);
+export type FocusAction = z.infer<typeof FocusActionSchema>;
+
+/** Model supplies words from the request. The application resolves records, dates, durations and versions. */
+const subject = TitleSchema.optional();
+const focusCommand = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('clarification'), question: shortText.min(1) }),
+  z.strictObject({ type: z.literal('query'), period: z.enum(['day','week','month']), date: DateOnlySchema.optional(),
+    view: z.enum(['summary','distribution','records']), subject }),
+  z.strictObject({ type: z.literal('status') }),
+  z.strictObject({ type: z.literal('create'), title: TitleSchema, subject }),
+  z.strictObject({ type: z.literal('update'), match: subject, title: subject, note: shortText.optional(), subject }),
+  z.strictObject({ type: z.literal('delete'), match: subject }),
+  z.strictObject({ type: z.literal('start'), mode: timerMode, title: subject, subject }),
+  ...(['pause','resume','finish'] as const).map(type => z.strictObject({ type: z.literal(type) })),
+]);
+export type FocusCommand = z.infer<typeof focusCommand>;
+export const ConversationStateSchema = z.strictObject({ domain: z.enum(['calendar', 'ledger', 'focus']), phase: z.enum(['clarification', 'saved', 'query', 'preview']), ledgerQueryChoices: LedgerQueryChoicesSchema.optional() });
 export type ConversationState = z.infer<typeof ConversationStateSchema>;
 /** Visible ledger scope helps interpret questions; it never sets a new transaction's date. */
 export const LedgerViewContextSchema = z.strictObject({ month: LedgerMonthSchema, tab: z.enum(['flows', 'accounts']), selectedEntryId: IdSchema.optional() });
@@ -452,6 +481,7 @@ export const CommandRequestSchema = z.strictObject({ operationId: IdSchema, text
   selected: z.array(z.strictObject({ entity: EntityKindSchema, id: IdSchema })).max(100).default([]),
   domain: z.enum(['calendar', 'ledger']).optional(),
   ledgerView: LedgerViewContextSchema.optional(),
+  focusTimer: FocusTimerStatusSchema.nullable().optional(),
   resources: ResourceReferencesSchema.optional(),
   fromDate: DateOnlySchema.optional(), toDate: DateOnlySchema.optional(),
   history: z.array(z.strictObject({ role: z.enum(['user', 'assistant']), text: z.string().max(10_000), outcome: ConversationStateSchema.optional(), ...commandAttachmentFields })
@@ -476,12 +506,13 @@ export const CommandIntentSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('mutate'), reply: text, mutations: z.array(calendarCommandMutationSchema).min(1).max(500) }),
   z.strictObject({ kind: z.literal('undo'), reply: text, transactionId: IdSchema.optional() }),
   z.strictObject({ kind: z.literal('ledger'), reply: text }),
+  z.strictObject({ kind: z.literal('focus'), command: focusCommand }),
   z.strictObject({ kind: z.literal('resource_open'), reply: text, resourceIds: z.array(IdSchema).min(1).max(10) }),
   z.strictObject({ kind: z.literal('resource_attach'), reply: text, target: ResourceOwnerSchema, expectedVersion: version, resourceIds: z.array(IdSchema).min(1).max(50), scope: RecurringEventScopeSchema.optional() }),
   z.strictObject({ kind: z.literal('clarification'), reply: text, questions: z.array(shortText).min(1).max(20) }),
 ]);
 export type CommandIntent = z.infer<typeof CommandIntentSchema>;
-export const CommandResultSchema = z.strictObject({ reply: text, mutationResult: MutationResultSchema.nullable(), items: z.array(CalendarItemSchema).default([]), resourcesToOpen: ResourceReferencesSchema.optional(), conversationState: ConversationStateSchema.optional() });
+export const CommandResultSchema = z.strictObject({ reply: text, focusAction: FocusActionSchema.optional(), mutationResult: MutationResultSchema.nullable(), items: z.array(CalendarItemSchema).default([]), resourcesToOpen: ResourceReferencesSchema.optional(), conversationState: ConversationStateSchema.optional() });
 export type CommandResult = z.infer<typeof CommandResultSchema>;
 /** CSV/XLSX chooser runs in main; no arbitrary renderer filesystem path or read/write primitive. */
 export const CourseImportRequestSchema = z.discriminatedUnion('kind', [
@@ -498,7 +529,7 @@ export type CourseImportResult = z.infer<typeof CourseImportResultSchema>;
 export const WorkflowReceiptSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('source'), sourceId: IdSchema }),
   z.strictObject({ kind: z.literal('analysis'), sourceId: IdSchema, result: AnalysisResultSchema.nullable() }),
-  z.strictObject({ kind: z.literal('command'), intent: CommandIntentSchema.nullable(), result: CommandResultSchema.nullable(), ledgerProposal: LedgerCommandProposalSchema.optional() }),
+  z.strictObject({ kind: z.literal('command'), intent: CommandIntentSchema.nullable(), result: CommandResultSchema.nullable(), focusMutation: FocusMutationSchema.optional(), ledgerProposal: LedgerCommandProposalSchema.optional() }),
   z.strictObject({ kind: z.literal('courses'), sourceId: IdSchema.nullable().default(null), result: CourseImportResultSchema.nullable() }),
 ]);
 export type WorkflowReceipt = z.infer<typeof WorkflowReceiptSchema>;

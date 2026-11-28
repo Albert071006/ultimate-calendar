@@ -13,6 +13,7 @@ import { buildCommandContext, validateCommandReferences } from '../ai/commands';
 import { canUseCompactLedgerRoute, compactLedgerRouteMessages, LedgerRouteSchema } from '../ai/ledger-routing';
 import { groundTimedCommand } from '../ai/timed-commands';
 import { groundResourceCommand, selectedCommandResources } from '../ai/resource-commands';
+import { explicitFocusQuestion, prepareFocusCommand } from './focus-command';
 import { commandMutationReply } from './command-reply';
 import { normalizeCandidate, candidateFingerprint, supplementCandidate } from '../imports/messages';
 import { parseCourseFile, parseCsv, previewCourseRows, type SelectedCourseFile } from '../imports/courses';
@@ -159,7 +160,7 @@ export function createController(options: ControllerOptions) {
         if (prior && prior.kind !== 'command') throw new WorkflowError('CONFLICT', '操作类型不匹配');
         if (prior?.result && prior.result.mutationResult?.status !== 'preview') return prior.result;
         const buildCalendarContext = () => ({ ...buildCommandContext(planner.snapshot(), request, now()), currentUiDomain: request.domain ?? 'calendar',
-          availableServices: { ledger: !!options.ledger }, currentLedgerView: request.domain === 'ledger' ? request.ledgerView : undefined });
+          availableServices: { ledger: !!options.ledger }, ...(request.focusTimer !== undefined && { focusTimer: request.focusTimer }), currentLedgerView: request.domain === 'ledger' ? request.ledgerView : undefined });
         let fullContext: ReturnType<typeof buildCalendarContext> | undefined;
         const calendarContext = () => fullContext ??= buildCalendarContext();
         const selectedQuery = options.ledger ? resolveLedgerQueryChoice(request) : undefined;
@@ -177,9 +178,34 @@ export function createController(options: ControllerOptions) {
         if (attachmentOnly && intent.kind !== 'query' && intent.kind !== 'clarification' && pendingAttachmentAction(request) !== intent.kind) {
           intent = { kind: 'clarification', reply: '已收到附件。', questions: ['希望我解释附件内容、根据附件记账，还是安排日历事项？'] };
         }
+        if (!prior?.intent && !compactIntent && !hasCommandAttachments(request) && intent.kind !== 'clarification') {
+          const question = explicitFocusQuestion(request.text, () => planner.snapshot());
+          if (question === 'status') intent = { kind: 'focus', command: { type: 'status' } };
+          else if (question === 'query' && !(intent.kind === 'focus' && intent.command.type === 'query')) {
+            intent = { kind: 'focus', command: { type: 'query', period: 'day', view: 'summary' } };
+          }
+          if (intent.kind === 'mutate' && /专注记录|那条.{0,12}专注/.test(request.text)) {
+            intent = { kind: 'clarification', reply: '请核对专注记录。', questions: ['要补录、修改还是删除哪条专注记录？'] };
+          }
+        }
         if (!prior?.intent && intent.kind !== 'ledger') {
           const context = calendarContext();
           intent = groundResourceCommand(groundTimedCommand(intent, request, context.now), context, planner.snapshot());
+        }
+        if (intent.kind === 'focus') {
+          const snapshot = planner.snapshot();
+          // Freeze the exact write before touching the journal. Replays retain its original time, target and version.
+          const prepared = prior?.focusMutation ? { mutation: prior.focusMutation } : prepareFocusCommand(intent.command, request, snapshot, calendarContext().now);
+          let result: CommandResult;
+          if ('mutation' in prepared) {
+            const focusMutation = prepared.mutation;
+            repository.transact(state => save(state, id, fingerprint, { kind: 'command', intent, focusMutation, result: null }));
+            const mutationResult = planner.mutate({ operationId: `ai:${hash(input.operationId)}`, origin: 'ai', confirmed: false, mutations: [focusMutation] });
+            result = { reply: commandMutationReply(mutationResult, planner.snapshot()), items: [], mutationResult,
+              conversationState: { domain: request.focusTimer === undefined ? 'calendar' : 'focus', phase: mutationResult.status === 'applied' ? 'saved' : mutationResult.status } };
+          } else result = prepared.result;
+          repository.transact(state => save(state, id, fingerprint, { kind: 'command', intent, result, ...('mutation' in prepared && { focusMutation: prepared.mutation }) }));
+          return result;
         }
         if (intent.kind === 'ledger') {
           const ledger = options.ledger;

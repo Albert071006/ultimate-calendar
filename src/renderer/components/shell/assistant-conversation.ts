@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { commandImages, hasCommandAttachments, type ApiError, type CommandDocument, type CommandRequest, type CommandResult, type SelectedImage } from "../../../shared/contracts";
 import { operationId } from "../../calendar-layout";
 import type { PlannerUI } from "../../hooks/usePlanner";
@@ -6,6 +6,8 @@ import type { Selection } from "../Calendar";
 import type { ResourceReference } from '../../../shared/resources';
 import { needsResourcePreparation, openCommandResources, prepareResourceCommand, redactResourcePaths } from '../../resource-command';
 import { useAssistantImage } from './assistant-image-input';
+import { useFocusTimer } from '../../focus/FocusProvider';
+import { deliverFocusAction } from '../../focus/assistant-action';
 import { assistantRequestHistory } from './assistant-history';
 
 export type ConversationEntry = {
@@ -84,6 +86,9 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
     [running, setRunning] = useState(false),
     [resources, setResources] = useState<ResourceReference[]>([]),
     [editingReplyId, setEditingReplyId] = useState<string | undefined>(initialDraft?.replyId);
+  const focus = useFocusTimer();
+  const liveFocus = useRef(focus);
+  useLayoutEffect(() => { liveFocus.current = focus; return () => { liveFocus.current = null; }; }, [focus]);
   const composer = useRef(text);
   composer.current = text;
   const latestReplyId = useRef(history.at(-1)?.id);
@@ -138,6 +143,10 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
     }
     const mutation = result.mutationResult;
     let reply = result.reply;
+    if (result.focusAction && !mutation) {
+      reply = await deliverFocusAction(prepared, result.focusAction, () =>
+        liveFocus.current?.scope === focus?.scope ? liveFocus.current : null);
+    }
     if (mutation) {
       ui.receive(mutation);
       reply =
@@ -173,6 +182,7 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
       entry.role === 'user' && (hasCommandAttachments(entry) || entry.imageUnavailable || entry.documentsUnavailable))?.id;
     const request: CommandRequest = {
       operationId: id,
+      ...(focus && { focusTimer: focus.getStatus() }),
       text,
       ...attachments,
       ...(resources.length ? { resources } : {}),
@@ -225,7 +235,7 @@ export function useAssistantConversation({ ui, selected, date, domain, ledgerVie
       }
       // Keep the exact original history/attachments. Unknown outcomes still query the same operation;
       // a confirmed AI response failure needs a new ID to avoid replaying its cached failure receipt.
-      const request = canReanalyze(entry) ? { ...entry.request, operationId: operationId() } : entry.request;
+      const request = canReanalyze(entry) ? { ...entry.request, operationId: operationId(), focusTimer: focus?.getStatus() } : entry.request;
       void execute(request, entry.id);
     } };
 }

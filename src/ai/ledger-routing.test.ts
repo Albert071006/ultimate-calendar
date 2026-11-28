@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { CommandRequest } from '../shared/contracts';
-import { compactLedgerRouteMessages } from './ledger-routing';
+import { canUseCompactLedgerRoute, compactLedgerRouteMessages } from './ledger-routing';
 
 describe('compact ledger routing during multi-turn clarification', () => {
+  it('routes focus time away from the ledger while keeping purchases on the financial path', () => {
+    const route = (text: string) => canUseCompactLedgerRoute({ operationId: 'routing', domain: 'ledger', text });
+    expect(route('这个月高数花了多少小时？')).toBe(false);
+    expect(route('记一笔刚才的专注时间')).toBe(false);
+    expect(route('买番茄钟花了39元，支付宝付款')).toBe(true);
+  });
+
   it('keeps purchase, amount and pending account question while excluding a completed old operation', () => {
     const request: CommandRequest = { operationId: 'synthetic-routing', text: '支付宝', history: [
       { role: 'user', text: '撤销合成旧账' }, { role: 'assistant', text: '合成旧撤销已完成', outcome: { domain: 'ledger', phase: 'saved' } },
