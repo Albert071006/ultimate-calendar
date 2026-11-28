@@ -19,9 +19,9 @@ flowchart LR
 
 示例 unit 使用 `/usr/local/bin/node`。先运行 `/usr/local/bin/node --version` 核对；若实际 Node 24 位于其他路径，修改 unit 的 `ExecStart`，并相应替换本文命令。域名 DNS 应指向服务器；云安全组和防火墙只为网站开放所需的 80/443，资料服务的 3210 端口保持仅回环访问。
 
-从[服务器版与手机端 0.10.4 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.10.4) 下载并上传到服务器同一工作目录：
+从[服务器版与手机端 0.10.5 Release](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.10.5) 下载并上传到服务器同一工作目录：
 
-- `UltimateCalendar-Server-Mobile-0.10.4.tar.gz`
+- `UltimateCalendar-Server-Mobile-0.10.5.tar.gz`
 - `SHA256SUMS-server.txt`
 
 部署包包含 `dist-server/cli.mjs`、同次构建的 `dist-server/backup-worker.cjs`、`web/` 手机静态页、`scripts/retain-web-assets.mjs` 升级辅助工具、`deploy/server-mobile/ultimate-calendar.service`、`deploy/nginx.conf.example`、许可及说明。后端通过独立 worker 生成自动安全备份，部署时必须完整保留这两个程序文件，不能只复制主入口。包不包含数据库、API Key、配对凭据、证书或任何人的私人资料。
@@ -35,8 +35,8 @@ set -eu
 sha256sum -c SHA256SUMS-server.txt
 
 stage_dir=$(mktemp -d)
-tar -xzf UltimateCalendar-Server-Mobile-0.10.4.tar.gz -C "$stage_dir"
-bundle_dir="$stage_dir/UltimateCalendar-Server-Mobile-0.10.4"
+tar -xzf UltimateCalendar-Server-Mobile-0.10.5.tar.gz -C "$stage_dir"
+bundle_dir="$stage_dir/UltimateCalendar-Server-Mobile-0.10.5"
 test -f "$bundle_dir/dist-server/cli.mjs"
 test -f "$bundle_dir/dist-server/backup-worker.cjs"
 test -f "$bundle_dir/web/index.html"
@@ -47,11 +47,11 @@ getent passwd ultimate-calendar-server >/dev/null || \
     --shell /usr/sbin/nologin ultimate-calendar-server
 
 sudo install -d -o root -g root -m 0755 /opt/ultimate-calendar-server/releases
-sudo test ! -e /opt/ultimate-calendar-server/releases/0.10.4
-sudo cp -R "$bundle_dir" /opt/ultimate-calendar-server/releases/0.10.4
-sudo chown -R root:root /opt/ultimate-calendar-server/releases/0.10.4
-sudo chmod -R u=rwX,go=rX /opt/ultimate-calendar-server/releases/0.10.4
-sudo ln -s /opt/ultimate-calendar-server/releases/0.10.4 /opt/ultimate-calendar-server/current
+sudo test ! -e /opt/ultimate-calendar-server/releases/0.10.5
+sudo cp -R "$bundle_dir" /opt/ultimate-calendar-server/releases/0.10.5
+sudo chown -R root:root /opt/ultimate-calendar-server/releases/0.10.5
+sudo chmod -R u=rwX,go=rX /opt/ultimate-calendar-server/releases/0.10.5
+sudo ln -s /opt/ultimate-calendar-server/releases/0.10.5 /opt/ultimate-calendar-server/current
 
 sudo install -d -o ultimate-calendar-server -g ultimate-calendar-server -m 0700 \
   /var/lib/ultimate-calendar-server \
@@ -143,15 +143,17 @@ AI 请求从服务器直连 DeepSeek，需服务器出站网络和账户额度�
 
 ## 6. 可选 Windows 客户端与群消息采集
 
-同一服务器 Release 提供 `UltimateCalendar-Setup-0.10.4.exe`，这是支持云连接的 Windows 标准版。独立的 `UltimateCalendar-Local-Setup-0.10.4.exe` 始终使用本机资料，不连接此服务。
+同一服务器 Release 提供 `UltimateCalendar-Setup-0.10.5.exe`，这是支持云连接的 Windows 标准版。独立的 `UltimateCalendar-Local-Setup-0.10.5.exe` 始终使用本机资料，不连接此服务。
 
-Windows 标准版需单独生成配对码，配置自己的 HTTPS 地址、独立云 profile 和受保护的配对码文件。具体字段和启动命令见包内 `docs/windows-cloud-mode.md`，或[在线 Windows 连接说明](https://github.com/Albert071006/ultimate-calendar/blob/server-v0.10.4/docs/windows-cloud-mode.md)。已有本机或云端资料不会因安装而自动迁移。
+Windows 标准版需单独生成配对码，配置自己的 HTTPS 地址、独立云 profile 和受保护的配对码文件。具体字段和启动命令见包内 `docs/windows-cloud-mode.md`，或[在线 Windows 连接说明](https://github.com/Albert071006/ultimate-calendar/blob/server-v0.10.5/docs/windows-cloud-mode.md)。已有本机或云端资料不会因安装而自动迁移。
 
-QQ 自动采集是可选扩展，仍需 Windows 上自己的 QQ 客户端和 OneBot 兼容桥。采集、原文、附件和提炼在电脑处理，可另配摘要桥上传提炼结果；服务器本身不登录 QQ。电脑关机后会暂停新的 QQ 采集，但不影响服务器已有日历和账本。配置方法见[QQ 摘要桥说明](https://github.com/Albert071006/ultimate-calendar/blob/server-v0.10.4/docs/qq-cloud-bridge.md)。
+QQ 自动采集是可选扩展，仍需 Windows 上自己的 QQ 客户端和 OneBot 兼容桥。采集、原文、附件和提炼在电脑处理，可另配摘要桥上传提炼结果；服务器本身不登录 QQ。电脑关机后会暂停新的 QQ 采集，但不影响服务器已有日历和账本。配置方法见[QQ 摘要桥说明](https://github.com/Albert071006/ultimate-calendar/blob/server-v0.10.5/docs/qq-cloud-bridge.md)。
 
-标准版也可在 Windows 上配置微信只读采集，支持选群、已同步的消息及已下载的图片和文件。微信客户端、独立 Python 依赖和可选 FFmpeg 不随安装包提供，按[微信配置指南](https://github.com/Albert071006/ultimate-calendar/blob/server-v0.10.4/docs/wechat-capture.md)完成设置。微信的原文与附件同样留在采集电脑；手机不会直接连接微信，Linux 服务器也不登录微信。电脑关机后暂停新的微信采集。
+标准版也可在 Windows 上配置微信只读采集，支持选群、已同步的消息及已下载的图片和文件。微信客户端、独立 Python 依赖和可选 FFmpeg 不随安装包提供，按[微信配置指南](https://github.com/Albert071006/ultimate-calendar/blob/server-v0.10.5/docs/wechat-capture.md)完成设置。微信的原文与附件同样留在采集电脑；手机不会直接连接微信，Linux 服务器也不登录微信。电脑关机后暂停新的微信采集。
 
 ## 7. 备份、升级与恢复
+
+**升级到 0.10.5** 时，一并更新后端、手机网页和连接此服务的 Windows 标准版。新版服务首次打开旧库时会自动创建专注记录表并补入默认专注设置。缺少专注记录和设置的旧备份仍可恢复，恢复后专注历史从空列表开始。计时在发起设备上继续，保存后的记录才在两端同步。回退前请先核对目标版本能否读取升级后新增的专注记录、设置和操作回执。详见[服务器版与手机端 0.10.5 发布说明](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.10.5)。
 
 **升级到 0.10.4** 时，按本节步骤一并更新后端和手机网页，并将连接此服务的 Windows 标准版更新到 0.10.4。更新后的手机和桌面均可查看账单更正明细、从底部提示撤销操作，并各自保留日历视图偏好。详见[服务器版与手机端 0.10.4 发布说明](https://github.com/Albert071006/ultimate-calendar/releases/tag/server-v0.10.4)。
 
@@ -178,13 +180,13 @@ sudo systemctl start ultimate-calendar-server.service
 
 ```sh
 sudo /usr/local/bin/node \
-  /opt/ultimate-calendar-server/releases/0.10.4/scripts/retain-web-assets.mjs \
-  /opt/ultimate-calendar-server/releases/0.10.4/web \
+  /opt/ultimate-calendar-server/releases/0.10.5/scripts/retain-web-assets.mjs \
+  /opt/ultimate-calendar-server/releases/0.10.5/web \
   /opt/ultimate-calendar-server/current/web
 ```
 
 它只补充指纹资源，不替换新版首页或 worker；同名资源内容不一致时停止，须先核对原因。保留后不要重新生成离线清单。还需复制旧版本作为回退目录，按包内 `docs/backend-operations.md` 的手机静态资源升级规则向该副本补充新版资源。原子切换目录本身不能替代资源保留，也无需清空手机配对或待提交草稿。
 
-保留旧代码目录可供回退；只有存储格式及账目语义兼容时才能单独回退代码。保留静态资源只解决页面加载，不能让旧程序理解新增的思考设置、账本记录、增量回执或采集检查点。写入亲情卡归还借款，保存新版思考设置，或使用之前版本新增的借款、自定义账户后，回退必须先核对账本、历史及待核对操作与目标版本的兼容性，并保护升级后的新增记录。新版采集已保存的检查点或返回的操作回执也须纳入检查；不通过恢复旧数据库代替普通程序回退。需要恢复安全 JSON 时，使用全新或空资料目录，保留原资料供核对，不能直接覆盖运行库；恢复后需重新配对和配置 Key。这是明确的数据恢复流程，不是处理页面更新提示的方法。完整运行、资源预算和恢复契约见[服务运维说明](https://github.com/Albert071006/ultimate-calendar/blob/server-v0.10.4/docs/backend-operations.md)。
+保留旧代码目录可供回退；只有存储格式及账目语义兼容时才能单独回退代码。保留静态资源只解决页面加载，不能让旧程序理解新增的思考设置、账本记录、增量回执或采集检查点。写入亲情卡归还借款，保存新版思考设置，或使用之前版本新增的借款、自定义账户后，回退必须先核对账本、历史及待核对操作与目标版本的兼容性，并保护升级后的新增记录。新版采集已保存的检查点或返回的操作回执也须纳入检查；不通过恢复旧数据库代替普通程序回退。需要恢复安全 JSON 时，使用全新或空资料目录，保留原资料供核对，不能直接覆盖运行库；恢复后需重新配对和配置 Key。这是明确的数据恢复流程，不是处理页面更新提示的方法。完整运行、资源预算和恢复契约见[服务运维说明](https://github.com/Albert071006/ultimate-calendar/blob/server-v0.10.5/docs/backend-operations.md)。
 
 本指南和发布包提供可审阅的配置与操作步骤。构建及隔离测试不代表已在你的 Linux、域名、证书或手机上完成部署验收。
