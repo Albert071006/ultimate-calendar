@@ -5,16 +5,20 @@ import { join, relative, isAbsolute } from 'node:path';
 import { createRemoteService } from '../../server/service';
 import { RemoteFault } from '../../server/state';
 import { RemoteMethodSchema, RemoteRequestSchema } from '../../shared/remote';
-import { BlockInputSchema, MutationRequestSchema, TaskInputSchema } from '../../shared/contracts';
+import { BlockInputSchema, MutationRequestSchema, TaskInputSchema, type MutationRequestInput } from '../../shared/contracts';
 import { LedgerEntryDraftSchema, LedgerMutationRequestSchema } from '../../shared/ledger';
 import { createRemoteClient } from './client';
-import { createMemoryStorage, type OfflineStorage } from './storage';
-import type { RemoteController } from './types';
+import { createMemoryStorage, partitionKey, type OfflineStorage } from './storage';
+import type { OfflinePartition, RemoteController } from './types';
 
 const cleanup:(()=>Promise<void>)[]=[];
 afterEach(async()=>{for(const close of cleanup.splice(0).reverse())await close();});
 const origin='https://synthetic-calendar.example';
 const taskInput=(title:string,operationId=crypto.randomUUID())=>MutationRequestSchema.parse({operationId,origin:'manual',mutations:[{type:'create',entity:'task',values:TaskInputSchema.parse({title})}]});
+const manualBatch = (...mutations: MutationRequestInput['mutations']) =>
+  MutationRequestSchema.parse({ operationId: crypto.randomUUID(), origin: 'manual', mutations });
+const focusValues = { title: '合成专注', mode: 'manual' as const, start: '2030-01-10T15:10:00+08:00',
+  end: '2030-01-10T15:30:00+08:00', durationSeconds: 900 };
 
 async function fixture(){
   const directory=mkdtempSync(join(tmpdir(),'ultimate-calendar-client-'));
@@ -130,6 +134,78 @@ describe('durable remote client against a real synthetic authority',()=>{
     expect(controller.getState().pending).toHaveLength(0);const canonical=f.service.snapshot();expect(canonical.tasks).toHaveLength(1);expect(canonical.blocks).toHaveLength(1);expect(canonical.blocks[0]!.taskId).toBe(canonical.tasks[0]!.id);
     expect(canonical.tasks[0]!.id).not.toMatch(/^local:/);expect(phone.calls.filter(call=>call.path==='/api/v1/rpc/mutate')).toHaveLength(2);
     const other=f.browser(),second=other.open();await f.pair(second,'合成第二设备');const seen=await second.client.snapshot();expect(seen.ok&&seen.data.tasks[0]?.id).toBe(canonical.tasks[0]!.id);expect(seen.ok&&seen.data.blocks[0]?.taskId).toBe(canonical.tasks[0]!.id);
+  });
+
+  it('queues focus edits and deletion from a pre-focus cache and resolves the local ID from a recovered receipt', async () => {
+    const f = await fixture(), phone = f.browser(), first = phone.open(); await f.pair(first);
+    await first.client.mutate(manualBatch({ type: 'createFocusSession', values: { ...focusValues, title: '服务端已有记录' } }));
+    const key = partitionKey(origin, first.getState().session!);
+    const legacy = (await phone.storage.read<OfflinePartition>(key))!;
+    // An older client can already hold the current cursor without having received focus records.
+    expect(legacy.snapshot?.cursor).toEqual(f.service.snapshot().cursor);
+    Reflect.deleteProperty(legacy.snapshot!, 'focusSessions');
+    for (const field of ['focusMinutes', 'shortBreakMinutes', 'longBreakMinutes', 'pomodorosBeforeLongBreak', 'focusSoundEnabled']) {
+      Reflect.deleteProperty(legacy.snapshot!.settings, field);
+    }
+    first.dispose(); await phone.storage.write(key, legacy); phone.setOnline(false);
+    const offline = phone.open(); await offline.initialize();
+    expect(offline.client.currentSnapshot?.()).toMatchObject({ focusSessions: [], settings: { focusMinutes: 25 } });
+    expect(await offline.client.mutate(manualBatch({ type: 'createFocusSession', values: focusValues }))).toMatchObject({ ok: true, data: { status: 'queued' } });
+    const local = offline.client.currentSnapshot?.()?.focusSessions[0];
+    if (!local) throw Error('Expected an offline focus session');
+    expect(local.id).toMatch(/^local:/);
+    expect(await offline.client.mutate(manualBatch({ type: 'updateFocusSession', id: local.id, expectedVersion: 1, values: { note: '离线补充' } }))).toMatchObject({ ok: true, data: { status: 'queued' } });
+    expect(offline.client.currentSnapshot?.()?.focusSessions[0]).toMatchObject({ id: local.id, version: 2, note: '离线补充' });
+    expect(await offline.client.mutate(manualBatch({ type: 'deleteFocusSession', id: local.id, expectedVersion: 2 }))).toMatchObject({ ok: true, data: { status: 'queued' } });
+    expect(offline.client.currentSnapshot?.()?.focusSessions).toEqual([]);
+    const [create, edit, remove] = offline.getState().pending;
+    expect(edit!.dependencies).toContain(create!.id);
+    expect(remove!.dependencies).toEqual(expect.arrayContaining([create!.id, edit!.id]));
+
+    phone.calls.length = 0; phone.setOnline(true); phone.loseNextWriteResponse(); await offline.reconnect();
+    const serverId = f.service.snapshot().focusSessions.find(record => record.title === focusValues.title)!.id;
+    expect(serverId).not.toBe(local.id);
+    expect(offline.getState().pending[0]).toMatchObject({ status: 'uncertain', requestId: create!.requestId });
+    expect(phone.calls.some(call => call.path.endsWith('/snapshot'))).toBe(true);
+    offline.dispose(); phone.setOnline(true);
+    const resumed = phone.open(); await resumed.initialize();
+    expect(resumed.getState().pending).toEqual([]);
+    expect(phone.calls.some(call => call.path === '/api/v1/operations/' + create!.requestId)).toBe(true);
+    const sent = phone.calls.filter(call => call.path.endsWith('/mutate')).map(call =>
+      MutationRequestSchema.parse(RemoteRequestSchema.parse(call.input).input).mutations[0]);
+    expect(sent).toMatchObject([
+      { type: 'createFocusSession' }, { type: 'updateFocusSession', id: serverId, expectedVersion: 1 }, { type: 'deleteFocusSession', id: serverId, expectedVersion: 2 },
+    ]);
+    expect(resumed.client.currentSnapshot?.()?.focusSessions).toEqual(f.service.snapshot().focusSessions);
+    expect(f.service.snapshot().focusSessions.map(record => record.title)).toEqual(['服务端已有记录']);
+  });
+
+  it('replays a mixed offline focus, task and block batch through server preview and one undoable confirmation', async () => {
+    const f = await fixture(), phone = f.browser(), controller = phone.open(); await f.pair(controller);
+    await controller.client.mutate(taskInput('原合成任务'));
+    const task = f.service.snapshot().tasks[0]!;
+    await controller.client.mutate(manualBatch({ type: 'create', entity: 'block', values: { title: '原合成时段', kind: 'work', taskId: task.id, start: focusValues.start, end: focusValues.end } }));
+    const block = f.service.snapshot().blocks[0]!;
+    const batch = manualBatch(
+      { type: 'update', entity: 'task', id: task.id, expectedVersion: task.version, values: { title: '改后合成任务' } },
+      { type: 'createFocusSession', values: { ...focusValues, taskId: task.id, blockId: block.id } },
+      { type: 'update', entity: 'block', id: block.id, expectedVersion: block.version, values: { title: '改后合成时段' } },
+    );
+    phone.setOnline(false); await controller.reconnect();
+    expect(await controller.client.mutate(batch)).toMatchObject({ ok: true, data: { status: 'queued' } });
+    expect(controller.client.currentSnapshot?.()?.focusSessions).toMatchObject([{ taskId: task.id, blockId: block.id }]);
+    phone.setOnline(true); await controller.reconnect();
+    const review = controller.getState().pending[0]!;
+    expect(review).toMatchObject({ status: 'review', preview: { status: 'preview' } });
+    expect(f.service.snapshot()).toMatchObject({ focusSessions: [], tasks: [{ title: task.title }], blocks: [{ title: block.title }] });
+    await controller.resolve(review.id, 'confirm');
+    const saved = f.service.snapshot();
+    expect(controller.getState().pending).toEqual([]);
+    expect(saved).toMatchObject({ tasks: [{ title: '改后合成任务' }], blocks: [{ title: '改后合成时段' }], focusSessions: [{ taskId: task.id, blockId: block.id }] });
+    const journal = saved.journal.filter(entry => entry.operationId === batch.operationId);
+    expect(journal).toHaveLength(1); expect(journal[0]!.changes).toHaveLength(3);
+    expect(await controller.client.undo(journal[0]!.id)).toMatchObject({ ok: true, data: { status: 'applied' } });
+    expect(controller.client.currentSnapshot?.()).toMatchObject({ focusSessions: [], tasks: [{ title: task.title }], blocks: [{ title: block.title }] });
   });
 
   it('recovers a committed write with a lost response after reopening by querying the same request id',async()=>{

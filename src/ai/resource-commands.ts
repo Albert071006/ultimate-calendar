@@ -72,7 +72,7 @@ export function groundResourceCommand(intent: CommandIntent, context: ResourceCo
   }
   if (resources.length === (target.resources ?? []).length) return { kind: 'query', reply: '这些资料已关联，无需重复添加。' };
   const common = { id: target.id, expectedVersion: intent.expectedVersion, values: { resources } };
-  let mutation: Mutation;
+  let mutation: Extract<Mutation, { type: 'update' }>;
   if (intent.target.entity === 'course') mutation = { type: 'update', entity: 'course', ...common, scope: 'all' };
   else mutation = { type: 'update', entity: intent.target.entity, ...common };
   return { kind: 'mutate', reply: intent.reply, mutations: [mutation] };

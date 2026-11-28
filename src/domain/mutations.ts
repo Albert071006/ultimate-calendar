@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { type Mutation, type Conflict, type Course, type Task, type ReminderConfig, type RecurrenceRule, type Block, type Candidate } from '../shared/contracts';
-import { newEntity, updateEntity, findEntity, deleteEntity, records, type StoredState } from '../storage/repository';
+import { newEntity, updateEntity, findEntity, deleteEntity, removeEntity, records, type StoredState } from '../storage/repository';
 import { courseOccurs } from './courses';
 import { dayDistance } from './time';
 import { expandRecurrence } from './recurrence';
@@ -14,12 +14,12 @@ export function conflict(kind: Conflict['kind'], entity: Conflict['entity'], id:
 function removeTask(state: StoredState, taskId: string, includeLinkedBlocks: boolean): boolean {
   const blocks = records(state, 'block').filter(block => block.taskId === taskId);
   for (const block of blocks) {
-    if (includeLinkedBlocks) deleteEntity(state, 'block', block.id);
+    if (includeLinkedBlocks) removeEntity(state, 'block', block.id);
     else updateEntity(state, 'block', block.id, { taskId: null });
   }
   for (const candidate of records(state, 'candidate').filter(candidate => candidate.taskId === taskId)) updateEntity(state, 'candidate', candidate.id, { taskId: null });
-  deleteEntity(state, 'task', taskId);
-  return blocks.length > 0;
+  const unlinkedSessions = removeEntity(state, 'task', taskId);
+  return blocks.length > 0 || unlinkedSessions;
 }
 function scheduleRecurringTask(state: StoredState, task: Task, rule: RecurrenceRule, location: string, reminders: ReminderConfig | undefined, resources?: ResourceReference[]): void {
   if (task.status === 'done') conflict('recurrence', 'task', task.id, '已完成的任务不能新增重复活动，请先恢复任务');
@@ -69,7 +69,8 @@ export function expandMutations(state: StoredState, mutations: Mutation[]): { de
     if (linked.length === 1 && task.status !== (completed ? 'done' : 'open')) updateEntity(state, 'task', task.id, { status: completed ? 'done' : 'open' });
   };
   let deliberate = mutations.length > 1;
-  for (const m of mutations) {
+  for (const mutation of mutations) {
+    const m = entityMutation(mutation);
     if ('entity' in m && m.entity === 'courseException') deliberate = true;
     if (m.type === 'createScheduledTask') {
       const task = newEntity(state, 'task', m.values) as Task;
@@ -147,7 +148,7 @@ export function expandMutations(state: StoredState, mutations: Mutation[]): { de
         if (event?.recurrence) conflict('recurrence', 'candidate', m.id, '原活动属于重复系列，请先明确按“仅本次”或“本次及以后”处理变更');
         const eventValues = { title: candidate.title, start: candidate.eventStart, end: candidate.eventEnd, kind: 'event', taskId: task.id, candidateId: candidate.id, location: candidate.location };
         if (candidate.eventStart) { if (event) updateEntity(state, 'block', event.id, eventValues); else newEntity(state, 'block', eventValues); }
-        else if (event) deleteEntity(state, 'block', event.id);
+        else if (event) removeEntity(state, 'block', event.id);
         updateEntity(state, 'candidate', m.id, { status: 'accepted', taskId: task.id, snoozedUntil: null });
       } else {
         if (candidate.status === 'accepted') conflict('revision', 'candidate', m.id, '已接受事项请先处理关联任务，不能静默忽略');
@@ -168,18 +169,22 @@ export function expandMutations(state: StoredState, mutations: Mutation[]): { de
           if (existing) updateEntity(state, 'courseException', existing.id, values); else newEntity(state, 'courseException', values); continue;
         }
         const cutWeek = Math.floor(dayDistance(course.termStart, date) / 7) + 1;
+        let replacementId: string | null = null;
         if (m.type === 'update') {
           if (m.values.firstWeek !== undefined && m.values.firstWeek !== cutWeek) conflict('recurrence', 'course', m.id, '此后修改从所选教学周开始；请更正首周或选择整个系列');
           const next = newEntity(state, 'course', { ...stripMetadata(course), ...m.values, firstWeek: cutWeek, weeks: m.values.weeks !== undefined ? m.values.weeks : course.weeks?.filter(w => w >= cutWeek) ?? null });
           for (const e of [...records(state, 'courseException')]) if (e.courseId === course.id && e.originalDate >= date) {
             if (courseOccurs(next as Course, e.originalDate)) updateEntity(state, 'courseException', e.id, { courseId: next.id }); else deleteEntity(state, 'courseException', e.id);
           }
-          if (cutWeek <= course.firstWeek) for (const t of [...records(state, 'task')]) if (t.courseId === course.id) updateEntity(state, 'task', t.id, { courseId: next.id });
+          if (cutWeek <= course.firstWeek) {
+            replacementId = next.id;
+            for (const t of records(state, 'task')) if (t.courseId === course.id) updateEntity(state, 'task', t.id, { courseId: next.id });
+          }
         } else for (const e of [...records(state, 'courseException')]) if (e.courseId === course.id && e.originalDate >= date) deleteEntity(state, 'courseException', e.id);
         const remaining = course.weeks?.filter(w => w < cutWeek) ?? null;
         if (cutWeek <= course.firstWeek || remaining?.length === 0) {
           for (const t of [...records(state, 'task')]) if (t.courseId === course.id) updateEntity(state, 'task', t.id, { courseId: null });
-          deleteEntity(state, 'course', course.id);
+          removeEntity(state, 'course', course.id, replacementId);
         }
         else updateEntity(state, 'course', course.id, { lastWeek: cutWeek - 1, weeks: remaining }); continue;
       }
@@ -213,7 +218,7 @@ export function expandMutations(state: StoredState, mutations: Mutation[]): { de
         for (const c of [...records(state, 'candidate')]) if (c.duplicateOfId === m.id || c.revisionOfId === m.id) updateEntity(state, 'candidate', c.id, { duplicateOfId: c.duplicateOfId === m.id ? null : c.duplicateOfId, revisionOfId: c.revisionOfId === m.id ? null : c.revisionOfId });
         for (const f of [...records(state, 'feedback')]) if (f.candidateId === m.id) deleteEntity(state, 'feedback', f.id);
       }
-      deleteEntity(state, m.entity, m.id);
+      if (removeEntity(state, m.entity, m.id)) deliberate = true;
     }
   }
   for (const task of records(state, 'task')) if (taskScheduleLimitExceeded(task, records(state, 'block'), previousTasks.find(value => value.id === task.id), previousBlocks)) {
@@ -230,5 +235,14 @@ export function expandMutations(state: StoredState, mutations: Mutation[]): { de
   const recolor = mutations.every(m => m.type === 'update' && (m.entity === 'course' || m.entity === 'goal')
     && Object.keys(m.values).every(key => key === 'color') && (m.entity !== 'course' || m.scope === 'all'));
   return { deliberate: deliberate && !recolor };
+}
+// Use the same optimistic lock, patch validation and deletion paths as task/block edits.
+function entityMutation(mutation: Mutation) {
+  switch (mutation.type) {
+    case 'createFocusSession': return { ...mutation, type: 'create', entity: 'focusSession' } as const;
+    case 'updateFocusSession': return { ...mutation, type: 'update', entity: 'focusSession' } as const;
+    case 'deleteFocusSession': return { ...mutation, type: 'delete', entity: 'focusSession' } as const;
+    default: return mutation;
+  }
 }
 function stripMetadata(value: Course) { const { id: _id, version: _v, createdAt: _c, updatedAt: _u, ...rest } = value; return rest; }

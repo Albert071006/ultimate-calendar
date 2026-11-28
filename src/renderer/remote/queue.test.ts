@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BlockSchema, MutationRequestSchema, TaskSchema, type Snapshot } from '../../shared/contracts';
+import { BlockSchema, FocusSessionSchema, MutationRequestSchema, TaskSchema, type Snapshot } from '../../shared/contracts';
 import { DEFAULT_LEDGER_RULES, LedgerMutationRequestSchema, LedgerSnapshotSchema } from '../../shared/ledger';
 import { emptyState, stateSnapshot } from '../../storage/repository';
 import { emptyPartition } from './storage';
@@ -91,6 +91,24 @@ describe('offline mutation scope', () => {
 });
 
 describe('optimistic queue projection', () => {
+  it('validates all focus links and active seconds before projecting any part of a mixed offline batch', () => {
+    const value = partition();
+    const session = { title: '合成练习', start: at, end: '2030-01-01T10:30:00+08:00', durationSeconds: 1500,
+      mode: 'pomodoro', plannedMinutes: 25, taskId: 'task', blockId: 'block' };
+    const finish = { type: 'finishBlock', id: 'block', expectedVersion: 1 };
+    const enqueue = (fields = {}) => request([finish, { type: 'createFocusSession', values: { ...session, ...fields } }]);
+    for (const fields of [{ durationSeconds: 59 }, { durationSeconds: 1801 }, { taskId: 'absent' }, { blockId: 'absent' },
+      { courseId: 'absent' }, { goalId: 'absent' }]) {
+      value.queue = [pending(enqueue(fields))];
+      expect(allowsOffline('mutate', value.queue[0]!.input, value.snapshot)).toBe(false);
+      expect(projectSnapshot(value)).toEqual(value.snapshot);
+    }
+    const item = pending(enqueue());
+    value.queue = [item];
+    expect(projectSnapshot(value)).toMatchObject({ blocks: [{ completed: true }],
+      focusSessions: [{ ...session, id: localId(item, 1), version: 1 }] });
+    expect(value.snapshot!.focusSessions).toEqual([]);
+  });
   it('keeps single-slot completion, restoration and linked versions aligned', () => {
     const value = partition(); value.snapshot!.blocks[0]!.taskId = 'task';
     value.queue.push(pending(request([{ type: 'finishBlock', id: 'block', expectedVersion: 1, completed: true },
@@ -173,6 +191,19 @@ describe('optimistic queue projection', () => {
 });
 
 describe('explicit conflict resolution', () => {
+  it('rebases a focus edit and delete against successive focus versions even when a task shares the ID', () => {
+    const value = partition();
+    value.snapshot!.focusSessions = [FocusSessionSchema.parse({ id: 'task', version: 4, title: '示例专注',
+      start: at, end: '2030-01-01T10:05:00+08:00', durationSeconds: 60, mode: 'manual', createdAt: at, updatedAt: at })];
+    const item = pending(request([{ type: 'updateFocusSession', id: 'task', expectedVersion: 1, values: { durationSeconds: 120 } },
+      { type: 'deleteFocusSession', id: 'task', expectedVersion: 2 }]));
+    item.status = 'conflict';
+    const rebased = MutationRequestSchema.parse(rebaseWrite(item, value));
+    expect(rebased.mutations).toMatchObject([{ expectedVersion: 4 }, { expectedVersion: 5 }]);
+    value.queue = [pending(rebased)];
+    expect(projectSnapshot(value)).toMatchObject({ focusSessions: [], tasks: [{ id: 'task', version: 1 }] });
+    expect(value.snapshot!.focusSessions[0]!.version).toBe(4);
+  });
   it('rebases following task edits against the version advanced by completing its single slot', () => {
     const value = partition(); value.snapshot!.blocks[0]!.taskId = 'task'; value.snapshot!.tasks[0]!.version = 7; value.snapshot!.blocks[0]!.version = 4;
     const item = pending(request([{ type: 'finishBlock', id: 'block', expectedVersion: 1, completed: true },

@@ -9,7 +9,8 @@ import { createController, type ControllerOptions } from '../application/control
 import { createModelRequestQueue } from '../ai/request-queue';
 import { createAccountService } from '../ai/account';
 import { safeError, WorkflowError } from '../ai/deepseek';
-import { SettingsSchema, type ApiResult, type ChangedEvent, type Snapshot } from '../shared/contracts';
+import { FOCUS_SETTING_KEYS, SettingsSchema, type ApiResult, type ChangedEvent, type Snapshot } from '../shared/contracts';
+import { omitFocusSettings } from '../shared/planner-sync';
 import { RemoteIdentitySchema, REMOTE_READ_METHODS, type RemoteRequest, type RemoteMethod } from '../shared/remote';
 import { sharedSettings } from '../shared/cloud-management';
 import { CaptureUserProfileSchema } from '../shared/profile-settings';
@@ -154,12 +155,18 @@ export function createRemoteService(options: RemoteServiceOptions) {
     onChanged: () => { backups.markDirty(); emit('mutation', ['ledger']); },
     onError: () => { console.error('Monthly allowance check failed; will retry automatically.'); },
   });
-  async function invoke(method: RemoteMethod, input: unknown, deviceId: string, modernAiSettings: boolean, modernProfileSettings: boolean): Promise<unknown> {
+  async function invoke(method: RemoteMethod, input: unknown, deviceId: string, modernAiSettings: boolean, modernProfileSettings: boolean, modernFocus: boolean): Promise<unknown> {
     switch (method) {
       case 'snapshot': return { ok: true, data: { ...planner.snapshot(), keyStatus: { configured: !!await getApiKey(), sessionOnly: false } } };
       case 'changes': return { ok: true, data: repository.changes(remoteInputs.changes.parse(input).cursor) };
       case 'mutate': { const result = planner.mutate(remoteInputs.mutate.parse(input)); if (result.status === 'applied') emit('mutation'); return { ok: true, data: result }; }
-      case 'undo': { const result = planner.undo(remoteInputs.undo.parse(input)); if (result.status === 'applied') emit('undo'); return { ok: true, data: result }; }
+      case 'undo': {
+        const id = remoteInputs.undo.parse(input);
+        if (!modernFocus && repository.read().journal.find(entry => entry.id === id)?.changes.some(change => change.entity === 'focusSession')) {
+          throw new WorkflowError('VALIDATION', '此操作涉及专注记录，请更新客户端后核对并撤销。');
+        }
+        const result = planner.undo(id); if (result.status === 'applied') emit('undo'); return { ok: true, data: result };
+      }
       case 'importSource': { const result = await controller.importSource(remoteInputs.importSource.parse(input)); if (result.ok) emit('import'); return result; }
       case 'analyzeSource': {
         const request = remoteInputs.analyzeSource.parse(input), source = planner.snapshot().sources.find(item => item.id === request.sourceId);
@@ -175,11 +182,14 @@ export function createRemoteService(options: RemoteServiceOptions) {
           // Preserve it on legacy saves instead of silently resetting a newer choice.
           const preserveEffort = (settings: typeof current) => settings.reasoningEffort === undefined && current.reasoningEffort !== undefined
             ? { ...settings, reasoningEffort: current.reasoningEffort } : settings;
-          const preserveProfile = (settings: typeof current) => modernProfileSettings ? settings : { ...settings, personalContext: current.personalContext };
+          const keepCurrentFields = (settings: typeof current) => ({
+            ...settings, ...(!modernProfileSettings && { personalContext: current.personalContext }),
+            ...(!modernFocus && Object.fromEntries(FOCUS_SETTING_KEYS.map(key => [key, current[key]]))),
+          });
           const comparable = (settings: typeof current) => sharedSettings(SettingsSchema.parse({ ...settings, reasoningEffort: settings.reasoningEffort ?? 'none' }));
-          const expected = preserveProfile(modernAiSettings ? request.expectedSettings : preserveEffort(request.expectedSettings));
+          const expected = keepCurrentFields(modernAiSettings ? request.expectedSettings : preserveEffort(request.expectedSettings));
           if (JSON.stringify(comparable(current)) !== JSON.stringify(comparable(expected))) throw new WorkflowError('CONFLICT', '共享设置已被其他设备修改，请刷新后重新核对');
-          const result = await controller.saveSettings({ settings: { ...preserveProfile(preserveEffort(request.settings)), closeToTray: current.closeToTray, autoLaunch: current.autoLaunch } });
+          const result = await controller.saveSettings({ settings: { ...keepCurrentFields(preserveEffort(request.settings)), closeToTray: current.closeToTray, autoLaunch: current.autoLaunch } });
           if (result.ok) emit('settings'); return result;
         });
         settingsWrites = pending.catch(() => {}); return pending;
@@ -283,7 +293,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
       const result = importDistilled(repository, request); emit('import'); backups.markDirty(); return result;
     },
     subscribe(listener: (event: ChangedEvent) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-    async rpc(method: RemoteMethod, request: RemoteRequest, deviceId: string, modernAiSettings = false, modernProfileSettings = true): Promise<unknown> {
+    async rpc(method: RemoteMethod, request: RemoteRequest, deviceId: string, modernAiSettings = false, modernProfileSettings = true, modernFocus = true): Promise<unknown> {
       if (lifecycle !== 'running') throw new RemoteFault(503, '服务正在退出，请稍后重试原请求');
       if (restoring && (!(REMOTE_READ_METHODS as readonly RemoteMethod[]).includes(method) || method === 'restorePreview' ||
         method === 'backupExportStart' || method === 'backupExportChunk' || method === 'backupExportData')) throw new RemoteFault(409, '云端正在恢复资料，请完成后重新连接');
@@ -296,13 +306,18 @@ export function createRemoteService(options: RemoteServiceOptions) {
       })();
       // A queued old form may be retried by an upgraded client with a new header.
       const canEditProfile = modernProfileSettings && profileFields;
+      const focusFields = method !== 'saveSettings' || (() => {
+        const raw = request.input as { settings: object; expectedSettings: object };
+        return FOCUS_SETTING_KEYS.some(key => Object.hasOwn(raw.settings, key) || Object.hasOwn(raw.expectedSettings, key));
+      })();
+      const canEditFocus = modernFocus && focusFields;
       // Refreshes must not turn the receipt database into an unbounded archive
       // of complete personal snapshots. Only writes need durable transport receipts.
       // Restore confirmation fences generations itself and cannot enter replayable
       // receipts (nor may it store an uploaded backup in a request journal).
       if ((REMOTE_READ_METHODS as readonly RemoteMethod[]).includes(method) || method === 'restoreConfirm') {
         let result: unknown;
-        try { result = await invoke(method, input, deviceId, modernAiSettings, canEditProfile); } catch (error) { result = { ok: false, error: safeError(error) }; }
+        try { result = await invoke(method, input, deviceId, modernAiSettings, canEditProfile, canEditFocus); } catch (error) { result = { ok: false, error: safeError(error) }; }
         if (method !== 'restoreConfirm') {
           if (lifecycle !== 'running') throw new RemoteFault(503, '服务正在退出，请重新读取资料');
           if (JSON.stringify(identity) !== JSON.stringify(state.identity())) throw new RemoteFault(409, '读取期间资料代际已改变，旧结果已丢弃，请重新连接核对');
@@ -312,9 +327,13 @@ export function createRemoteService(options: RemoteServiceOptions) {
       // requestId is the durable transport retry boundary. Domain operationId remains
       // unchanged across preview and confirmation, whose transport IDs must differ.
       // A schema default must not change the retry identity of a pre-upgrade save.
-      const fingerprintInput = method === 'saveSettings' && !profileFields ? (() => {
+      const fingerprintInput = method === 'saveSettings' && (!profileFields || !focusFields) ? (() => {
         const settings = remoteInputs.saveSettings.parse(input);
-        const omit = ({ personalContext: _context, ...rest }: typeof settings.settings) => rest;
+        const omit = (value: typeof settings.settings) => {
+          const fields: Partial<typeof value> = focusFields ? { ...value } : omitFocusSettings(value);
+          if (!profileFields) delete fields.personalContext;
+          return fields;
+        };
         return { settings: omit(settings.settings), expectedSettings: omit(settings.expectedSettings) };
       })() : input;
       const fingerprint = createHash('sha256').update(JSON.stringify({ method, identity, input: fingerprintInput })).digest('hex');
@@ -331,7 +350,7 @@ export function createRemoteService(options: RemoteServiceOptions) {
         try {
           const beforeCursor = repository.cursor();
           let raw: unknown;
-          try { raw = await invoke(method, input, deviceId, modernAiSettings, canEditProfile); } catch (error) { raw = { ok: false, error: safeError(error) } satisfies ApiResult<never>; }
+          try { raw = await invoke(method, input, deviceId, modernAiSettings, canEditProfile, canEditFocus); } catch (error) { raw = { ok: false, error: safeError(error) } satisfies ApiResult<never>; }
           const parsed = remoteOutputs[method].parse(redactEvidence(raw));
           const changes = repository.changes(beforeCursor);
           const result = parsed.ok && changes.status === 'patch' ? { ...parsed, sync: changes.patch } : parsed;

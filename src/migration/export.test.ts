@@ -14,7 +14,7 @@ import { runMigrationCommand } from './command';
 const roots:string[]=[];
 afterEach(()=>{for(const root of roots.splice(0)){const part=relative(tmpdir(),root);if(!part||part.startsWith('..')||isAbsolute(part))throw Error('Test cleanup escaped synthetic temporary directory');rmSync(root,{recursive:true,force:true});}});
 const digest=(path:string)=>createHash('sha256').update(readFileSync(path)).digest('hex');
-function fixture(){
+function fixture(withFocus = false){
   const root=mkdtempSync(join(tmpdir(),'calendar-migration-test-'));roots.push(root);
   const source=join(root,'stopped-copy');mkdirSync(source);const database=join(source,'planner.sqlite');
   const repository=createRepository(database,{automaticBackup:()=>{}}),ledger=createLedgerService(database,{now:()=>new Date('2020-01-03T12:00:00Z')});
@@ -24,7 +24,12 @@ function fixture(){
     const goal=newEntity(state,'goal',{title:'合成目标'});
     const course=newEntity(state,'course',{title:'合成课程',weekday:1,startTime:'10:00',endTime:'11:00',firstWeek:1,lastWeek:16,termStart:'2020-01-06'});
     const task=newEntity(state,'task',{title:'合成正式任务',candidateId:candidate.id,goalId:goal.id,courseId:course.id});
-    newEntity(state,'block',{title:'合成执行时段',kind:'work',taskId:task.id,start:'2020-01-07T10:10:00+08:00',end:'2020-01-07T10:55:00+08:00'});
+    const block=newEntity(state,'block',{title:'合成执行时段',kind:'work',taskId:task.id,start:'2020-01-07T10:10:00+08:00',end:'2020-01-07T10:55:00+08:00'});
+    if (withFocus) {
+      newEntity(state, 'focusSession', { title: '合成复习', mode: 'manual', start: '2020-01-07T10:10:00+08:00',
+        end: '2020-01-07T10:30:00+08:00', durationSeconds: 900, taskId: task.id, blockId: block.id, courseId: course.id, goalId: goal.id });
+      state.settings.focusMinutes = 35;
+    }
   });
   const expense=LedgerEntryDraftSchema.parse({id:'synthetic-expense',kind:'expense',date:'2020-01-02',month:'2020-01',title:'合成代垫午餐',category:'餐饮',amountCents:1000,personalCents:500,cashflows:[{accountId:'alipay',deltaCents:-1000}],originalText:'SYNTHETIC-LEDGER-RAW-DO-NOT-EXPORT'});
   ledger.mutate({operationId:'synthetic-expense-write',expectedRevision:0,changes:[{type:'putEntry',expectedVersion:null,entry:expense,confirmDuplicate:false,note:''}]});
@@ -38,19 +43,21 @@ function fixture(){
 
 describe('explicit stopped Windows-copy migration preparation',()=>{
   it('exports a source-preserving safe bundle, validates counts, and restores complete formal relationships to a fresh authority',()=>{
-    const f=fixture(),before=digest(f.database),output=join(f.root,'cloud-bundle');
+    const f=fixture(true),before=digest(f.database),output=join(f.root,'cloud-bundle');
     const result=exportStoppedWindowsCopy({sourceDatabase:f.database,outputDirectory:output,stoppedCopy:true,now:new Date('2026-10-25T01:00:00Z')});
     expect(digest(f.database)).toBe(before);expect(readdirSync(f.source).sort()).toEqual(['credentials.dpapi','planner.sqlite','qq-raw.sqlite']);
     expect(readdirSync(output).sort()).toEqual(['manifest.json','safe-backup.json']);
     const serialized=readFileSync(result.backupFile,'utf8');for(const raw of ['SYNTHETIC-QQ-RAW','SYNTHETIC-LEDGER-RAW','SYNTHETIC-QQ-ACCOUNT','SYNTHETIC-QQ-GROUP','SyntheticComputer','SYNTHETIC-API-KEY','SYNTHETIC-QQ-DATABASE'])expect(serialized).not.toContain(raw);
     expect(serialized).toContain('合成提炼事项');expect(serialized).toContain('采集电脑提炼');
     expect(result.manifest.before).toEqual(result.manifest.after);expect(result.manifest.destination).toMatchObject({mode:'new-service-instance',generateNewIdentity:true,reuseWindowsCredentials:false});
+    expect(result.manifest.after.planner.focusSession).toBe(1);
     expect(verifyMigrationBundle(output)).toMatchObject({taskCount:1,ledgerEntryCount:2});
     const restored=restoreSafeBackup({backupFile:result.backupFile,dataDirectory:join(f.root,'new-cloud-instance')});expect(restored.identity.generation).toBe(1);
     let repository:Repository|undefined,ledger:LedgerService|undefined,state:RemoteState|undefined;
     try{
       repository=createRepository(join(restored.dataDirectory,'planner.sqlite'),{automaticBackup:()=>{}});ledger=createLedgerService(repository.path);state=new RemoteState(join(restored.dataDirectory,'remote-state.sqlite'));
       const after=repository.snapshot();expect(after.tasks).toEqual(f.planner.entities.task);expect(after.blocks).toEqual(f.planner.entities.block);expect(after.courses).toEqual(f.planner.entities.course);expect(after.goals).toEqual(f.planner.entities.goal);
+      expect(after.focusSessions).toEqual(f.planner.entities.focusSession);expect(after.settings.focusMinutes).toBe(35);
       expect(after.tasks[0]!.candidateId).toBe(after.candidates[0]!.id);expect(after.tasks[0]!.courseId).toBe(after.courses[0]!.id);expect(after.blocks[0]!.taskId).toBe(after.tasks[0]!.id);expect(after.candidates[0]!.sourceIds).toEqual([after.sources[0]!.id]);
       const money=ledger.exportJson();expect(money.entries.map(entry=>entry.id)).toEqual(f.ledgerBefore.entries.map(entry=>entry.id));expect(money.entries.find(entry=>entry.id==='synthetic-return')!.relatedEntryIds).toEqual(['synthetic-expense']);expect(money.balanceSnapshots[0]!.coveredEntryIds).toEqual(['synthetic-expense','synthetic-return']);expect(money.balanceSnapshots[0]!.balanceCents).toBe(9500);expect(money.entries.every(entry=>entry.originalText==='')).toBe(true);expect(state.devices()).toEqual([]);
     }finally{state?.close();ledger?.close();repository?.close();}
@@ -72,21 +79,44 @@ describe('explicit stopped Windows-copy migration preparation',()=>{
     const unclean=JSON.parse(original.toString('utf8'));unclean.ledger.entries[0].originalText='SYNTHETIC-RAW-REINTRODUCED';const bytes=Buffer.from(JSON.stringify(unclean));writeFileSync(result.backupFile,bytes);
     const matchingManifest=structuredClone(result.manifest);matchingManifest.backup.bytes=bytes.length;matchingManifest.backup.sha256=digest(result.backupFile);writeFileSync(result.manifestFile,JSON.stringify(matchingManifest));expect(()=>verifyMigrationBundle(output)).toThrow(/未清理/);
   });
-  it('verifies old event-receipt bundles and still rejects raw quotes hidden in a legacy baseline', () => {
+  it('covers all four focus links in the relationship digest even when altered links would be valid', () => {
+    const f = fixture(true), output = join(f.root, 'focus-links');
+    const result = exportStoppedWindowsCopy({ sourceDatabase: f.database, outputDirectory: output, stoppedCopy: true });
+    const original = readFileSync(result.backupFile, 'utf8');
+    for (const field of ['taskId', 'blockId', 'courseId', 'goalId']) {
+      const raw = JSON.parse(original);
+      raw.planner.entities.focusSession[0][field] = null;
+      const bytes = Buffer.from(JSON.stringify(raw));
+      writeFileSync(result.backupFile, bytes);
+      writeFileSync(result.manifestFile, JSON.stringify({ ...result.manifest,
+        backup: { ...result.manifest.backup, bytes: bytes.length, sha256: digest(result.backupFile) } }));
+      expect(() => verifyMigrationBundle(output)).toThrow(/关联摘要/);
+    }
+  });
+  it('verifies pre-focus manifests and settings without accepting raw quotes or missing pre-existing fields', () => {
     const f = fixture(), output = join(f.root, 'legacy-bundle');
     const result = exportStoppedWindowsCopy({ sourceDatabase: f.database, outputDirectory: output, stoppedCopy: true });
     const raw = JSON.parse(readFileSync(result.backupFile, 'utf8')), candidate = structuredClone(raw.planner.entities.candidate[0]);
+    const manifest = JSON.parse(readFileSync(result.manifestFile, 'utf8'));
+    delete manifest.before.planner.focusSession;
+    delete manifest.after.planner.focusSession;
+    delete raw.planner.entities.focusSession;
+    for (const key of ['focusMinutes', 'shortBreakMinutes', 'longBreakMinutes', 'pomodorosBeforeLongBreak', 'focusSoundEnabled']) delete raw.planner.settings[key];
     raw.planner.operations.push({ id: 'distilled-event:' + 'a'.repeat(64),
       fingerprint: 'event-head-v1:1:2:' + 'b'.repeat(64), result: { entities: [candidate] } });
     function save() {
       const bytes = Buffer.from(JSON.stringify(raw));
       writeFileSync(result.backupFile, bytes);
-      writeFileSync(result.manifestFile, JSON.stringify({ ...result.manifest,
-        backup: { ...result.manifest.backup, bytes: bytes.length, sha256: digest(result.backupFile) } }));
+      writeFileSync(result.manifestFile, JSON.stringify({ ...manifest,
+        backup: { ...manifest.backup, bytes: bytes.length, sha256: digest(result.backupFile) } }));
     }
-    save(); expect(verifyMigrationBundle(output).taskCount).toBe(1);
+    save(); expect(verifyMigrationBundle(output)).toMatchObject({taskCount: 1, manifest: { after: { planner: { focusSession: 0 } } }});
     candidate.sourceQuote = 'SYNTHETIC-QUOTE-IN-OLD-BASELINE'; save();
     expect(() => verifyMigrationBundle(output)).toThrow(/未清理/);
+    candidate.sourceQuote = ''; delete raw.planner.settings.campus; save();
+    expect(() => verifyMigrationBundle(output)).toThrow(/未清理/);
+    delete manifest.before.planner.block; save();
+    expect(() => verifyMigrationBundle(output)).toThrow(/block/);
   });
   it('does not initialize a missing or unsupported source as an empty calendar',()=>{
     const root=mkdtempSync(join(tmpdir(),'calendar-migration-missing-'));roots.push(root);const source=join(root,'source');mkdirSync(source);const path=join(source,'missing.sqlite');

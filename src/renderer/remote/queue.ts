@@ -1,4 +1,4 @@
-import { BlockSchema, InstantSchema, MutationRequestSchema, TaskSchema, type MutationRequestInput, type Snapshot, type Task } from '../../shared/contracts';
+import { BlockSchema, FocusSessionSchema, InstantSchema, MutationRequestSchema, TaskSchema, type FocusSession, type Mutation, type MutationRequestInput, type Snapshot, type Task } from '../../shared/contracts';
 import { LedgerMutationRequestSchema, type LedgerMutationRequest } from '../../shared/ledger';
 import type { RemoteMethod } from '../../shared/remote';
 import type { OfflinePartition, PendingWrite } from './types';
@@ -6,6 +6,7 @@ import { taskScheduleLimitExceeded, taskScheduleMode } from '../../domain/task-s
 
 export const localId = (item: Pick<PendingWrite, 'id'>, index: number) => 'local:' + item.id + ':' + index;
 export const instant = (at = Date.now()) => new Date(at + 8 * 3600000).toISOString().replace('Z', '+08:00');
+export const createdEntity = (change: Mutation) => change.type === 'create' ? change.entity : change.type === 'createFocusSession' ? 'focusSession' : null;
 export const ledgerMutationMonth = (request: LedgerMutationRequest) =>
   request.month ?? request.changes.find(change => change.type === 'putEntry')?.entry.month;
 
@@ -17,13 +18,34 @@ const plainTask = (task: Task) => task.candidateId === null && task.goalId === n
 const sameAssociation = (values: object, record: object, keys: string[]) => keys.every(key =>
   !Object.hasOwn(values, key) || Reflect.get(values, key) === Reflect.get(record, key));
 
+function hasFocusReferences(session: FocusSession, snapshot: Snapshot) {
+  return (!session.taskId || snapshot.tasks.some(task => task.id === session.taskId))
+    && (!session.blockId || snapshot.blocks.some(block => block.id === session.blockId))
+    && (!session.courseId || snapshot.courses.some(course => course.id === session.courseId))
+    && (!session.goalId || snapshot.goals.some(goal => goal.id === session.goalId));
+}
+
 /** Evaluate the whole batch before using any projection. A stale or unsupported member rejects the batch. */
 function applyOfflineMutations(input: unknown, baseline: Snapshot, idFor: (index: number) => string, at: string): Snapshot | null {
   const parsed = MutationRequestSchema.safeParse(input);
   if (!parsed.success || parsed.data.confirmed || parsed.data.confirmationToken !== undefined || parsed.data.origin !== 'manual' || !InstantSchema.safeParse(at).success) return null;
   const snapshot = structuredClone(baseline);
   for (const [index, change] of parsed.data.mutations.entries()) {
-    if (change.type === 'create' && change.entity === 'task') {
+    if (change.type === 'createFocusSession') {
+      const session = FocusSessionSchema.safeParse({ ...change.values, id: idFor(index), version: 1, createdAt: at, updatedAt: at });
+      if (!session.success || !hasFocusReferences(session.data, snapshot) || snapshot.focusSessions.some(value => value.id === session.data.id)) return null;
+      snapshot.focusSessions.push(session.data);
+    } else if (change.type === 'updateFocusSession' || change.type === 'deleteFocusSession') {
+      const position = snapshot.focusSessions.findIndex(value => value.id === change.id);
+      const old = snapshot.focusSessions[position];
+      if (!old || old.version !== change.expectedVersion) return null;
+      if (change.type === 'deleteFocusSession') snapshot.focusSessions.splice(position, 1);
+      else {
+        const session = FocusSessionSchema.safeParse({ ...old, ...change.values, version: old.version + 1, updatedAt: at });
+        if (!session.success || !hasFocusReferences(session.data, snapshot)) return null;
+        snapshot.focusSessions[position] = session.data;
+      }
+    } else if (change.type === 'create' && change.entity === 'task') {
       if (change.values.candidateId || change.values.goalId || change.values.courseId) return null;
       const task = TaskSchema.safeParse({ ...change.values, id: idFor(index), version: 1, createdAt: at, updatedAt: at });
       if (!task.success || snapshot.tasks.some(value => value.id === task.data.id)) return null;
@@ -106,6 +128,8 @@ export function writeLabel(method: RemoteMethod, input: unknown): string {
   if (method === 'mutate') {
     const parsed = MutationRequestSchema.safeParse(input);
     if (parsed.success) return parsed.data.mutations.map(change => {
+      if (change.type === 'deleteFocusSession') return '删除专注记录';
+      if (change.type === 'createFocusSession' || change.type === 'updateFocusSession') return (change.type === 'createFocusSession' ? '新增专注记录' : '修改专注记录') + (change.values.title ? ' · ' + change.values.title : '');
       const title = 'values' in change && 'title' in change.values ? change.values.title : '';
       return (change.type === 'create' ? '新增' : change.type === 'finishTask' || change.type === 'finishBlock' ? '更改完成状态' : '修改') + (title ? ' · ' + title : '安排');
     }).join('、');
@@ -146,7 +170,7 @@ export function captureBase(method: RemoteMethod, input: unknown, partition: Off
   // Completion and slot limits depend on associated records as well as the explicitly named target.
   for (const block of snapshot.blocks) if (ids.has(block.id) && block.taskId) ids.add(block.taskId);
   for (const block of snapshot.blocks) if (block.taskId && ids.has(block.taskId)) ids.add(block.id);
-  return [...snapshot.tasks, ...snapshot.blocks].filter(item => ids.has(item.id));
+  return [...snapshot.tasks, ...snapshot.blocks, ...snapshot.focusSessions, ...snapshot.courses, ...snapshot.goals].filter(item => ids.has(item.id));
 }
 
 /** Called only after the user chooses their version in the conflict panel. */
@@ -162,8 +186,11 @@ export function rebaseWrite(item: PendingWrite, partition: OfflinePartition): un
       mutations: request.mutations.map((change, index) => {
         let next = change;
         if ('expectedVersion' in change && 'id' in change) {
-          const kind = change.type === 'finishTask' || ('entity' in change && change.entity === 'task') ? 'task' : change.type === 'finishBlock' || ('entity' in change && change.entity === 'block') ? 'block' : null;
-          const record = (kind === 'task' ? projected.tasks : kind === 'block' ? projected.blocks : []).find(value => value.id === change.id);
+          let records: ReadonlyArray<{ id: string; version: number }> = [];
+          if (change.type === 'finishTask' || ('entity' in change && change.entity === 'task')) records = projected.tasks;
+          if (change.type === 'finishBlock' || ('entity' in change && change.entity === 'block')) records = projected.blocks;
+          if (change.type === 'updateFocusSession' || change.type === 'deleteFocusSession') records = projected.focusSessions;
+          const record = records.find(value => value.id === change.id);
           if (!record) throw Error('该事项已在服务端移除，请重新新建或放弃本机修改');
           next = { ...change, expectedVersion: record.version };
         }

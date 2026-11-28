@@ -10,8 +10,9 @@ const session: PairedSession = {
   paired: true, identity: { protocolVersion: 1, dataInstanceId: '11111111-1111-4111-8111-111111111111', generation: 1 },
   device: { id: '22222222-2222-4222-8222-222222222222', name: 'Synthetic phone' }, csrfToken: 'synthetic-csrf', aiConfigured: false,
 };
-const snapshot = SnapshotSchema.parse({ schemaVersion: 1, sources: [], candidates: [], tasks: [], blocks: [], goals: [], courses: [],
-  courseExceptions: [], preferences: [], feedback: [], settings: {}, journal: [], tokenUsage: [], keyStatus: { configured: false, sessionOnly: false } });
+const legacySnapshot = { schemaVersion: 1, sources: [], candidates: [], tasks: [], blocks: [], goals: [], courses: [],
+  courseExceptions: [], preferences: [], feedback: [], settings: {}, journal: [], tokenUsage: [], keyStatus: { configured: false, sessionOnly: false } };
+const snapshot = SnapshotSchema.parse(legacySnapshot);
 const close: Array<() => void> = [];
 afterEach(() => { for (const dispose of close.splice(0).reverse()) dispose(); vi.useRealTimers(); });
 
@@ -22,7 +23,7 @@ function fixture(storage = createMemoryStorage(), events?: (url: string) => Even
     calls.push(url.pathname); await waiting.get(url.pathname);
     const json = (data: unknown) => new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
     if (url.pathname === '/api/v1/session' || url.pathname === '/api/v1/session/renew') return json(session);
-    if (url.pathname === '/api/v1/rpc/snapshot') return json({ ok: true, data: snapshot });
+    if (url.pathname === '/api/v1/rpc/snapshot') return json({ ok: true, data: legacySnapshot });
     if (url.pathname === '/api/v1/rpc/ledgerSnapshot') {
       const month = JSON.parse(String(init?.body)).input.month;
       return json({ ok: true, data: ledger(month) });
@@ -40,7 +41,7 @@ function ledger(month: string) {
 }
 
 describe('calendar startup does not wait for background maintenance', () => {
-  it('delivers the first calendar while session renewal is still pending', async () => {
+  it('delivers an older server snapshot with focus defaults while session renewal is still pending', async () => {
     const f = fixture(), release = f.hold('/api/v1/session/renew');
     const startup = f.controller.initialize();
     await vi.waitFor(() => expect(f.calls).toContain('/api/v1/session/renew'));

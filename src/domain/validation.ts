@@ -6,6 +6,9 @@ export function validateRelationships(state: StoredState, strictSources: boolean
   const has = (kind: Parameters<typeof findEntity>[1], id: string | null) => !id || !!findEntity(state, kind, id);
   for (const t of records(state, 'task')) if (!has('goal', t.goalId) || !has('candidate', t.candidateId) || !has('course', t.courseId)) throw Error('任务关联的目标、课程或候选已不存在');
   for (const b of records(state, 'block')) if (!has('task', b.taskId) || !has('candidate', b.candidateId)) throw Error('执行时段关联任务或候选已不存在；请先解除关联');
+  for (const session of records(state, 'focusSession')) {
+    if (!has('task', session.taskId) || !has('block', session.blockId) || !has('course', session.courseId) || !has('goal', session.goalId)) throw Error('专注记录关联的任务、执行时段、课程或目标已不存在');
+  }
   const occurrenceKeys = new Set<string>();
   for (const b of records(state, 'block')) if (b.recurrence) {
     const key = `${b.recurrence.seriesId}:${Date.parse(b.recurrence.occurrenceStart)}`;

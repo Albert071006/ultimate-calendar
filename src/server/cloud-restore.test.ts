@@ -9,6 +9,9 @@ import { createSafeBackup } from './backup';
 import { RemoteState } from './state';
 import { createCloudRestore } from './cloud-restore';
 import { createRemoteService } from './service';
+import { createPlanner } from '../domain/planner';
+import { createBackupWorker } from '../storage/backup-worker-client';
+import { backupExportData } from './cloud-export';
 
 const cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -31,6 +34,50 @@ function setup() {
 }
 
 describe('controlled cloud restore', () => {
+  it('restores settled focus time and its undo history from a downloadable worker backup', async () => {
+    const f = setup(), planner = createPlanner(f.repository, { automaticBackup() {} });
+    const taskId = planner.snapshot().tasks[0]!.id;
+    const saved = planner.mutate({ operationId: 'focus-backup', origin: 'manual', mutations: [{
+      type: 'createFocusSession', values: { mode: 'pomodoro', title: '合成练习', taskId,
+        start: '2026-10-24T10:00:00+08:00', end: '2026-10-24T10:35:00+08:00',
+        durationSeconds: 1500, plannedMinutes: 25, note: '合成学习备注' },
+    }] });
+    expect(saved.status).toBe('applied');
+    if (saved.status !== 'applied') throw Error(saved.message);
+    const session = planner.snapshot().focusSessions[0]!;
+    f.repository.saveSettings({ ...planner.snapshot().settings, focusMinutes: 40, focusSoundEnabled: false });
+
+    const worker = createBackupWorker();
+    cleanup.push(() => worker.close());
+    const file = await worker.run({ kind: 'safe', databasePath: f.repository.path, directory: join(f.root, 'exports') }, new AbortController().signal);
+    const download = backupExportData(file);
+    expect(JSON.parse(download.content).planner.entities.focusSession).toEqual([session]);
+    expect(download.content).not.toContain('SYNTHETIC-RAW-INPUT');
+    expect(planner.undo(saved.transactionId).status).toBe('applied');
+    f.repository.saveSettings({ ...planner.snapshot().settings, focusMinutes: 10, focusSoundEnabled: true });
+
+    const { token, digest } = f.restore.preview(download, 'device');
+    await f.restore.confirm({ token, digest }, 'device');
+    expect(planner.snapshot()).toMatchObject({ focusSessions: [session], settings: { focusMinutes: 40, focusSoundEnabled: false } });
+    expect(planner.undo(saved.transactionId).status).toBe('applied');
+    expect(planner.snapshot().focusSessions).toEqual([]);
+  });
+
+  it('restores a pre-focus JSON over newer data with an empty history of focus sessions and default timer settings', async () => {
+    const f = setup(), legacy = JSON.parse(f.content);
+    delete legacy.planner.entities.focusSession;
+    for (const field of ['focusMinutes', 'shortBreakMinutes', 'longBreakMinutes', 'pomodorosBeforeLongBreak', 'focusSoundEnabled']) {
+      delete legacy.planner.settings[field];
+    }
+    f.repository.transact(state => newEntity(state, 'focusSession', { mode: 'manual', title: '合成新记录',
+      start: '2026-10-25T10:00:00+08:00', end: '2026-10-25T10:15:00+08:00', durationSeconds: 900 }));
+    f.repository.saveSettings({ ...f.repository.snapshot().settings, focusMinutes: 50 });
+    const { token, digest } = f.restore.preview({ content: JSON.stringify(legacy) }, 'device');
+    await f.restore.confirm({ token, digest }, 'device');
+    expect(f.repository.snapshot()).toMatchObject({ tasks: [{ title: '虚构备份任务' }], focusSessions: [],
+      settings: { focusMinutes: 25, shortBreakMinutes: 5, longBreakMinutes: 15, pomodorosBeforeLongBreak: 4, focusSoundEnabled: true } });
+  });
+
   it('previews without writing and requires the same device, digest and unexpired token', async () => {
     const f = setup(), before = f.repository.read(), identity = f.state.identity();
     const preview = f.restore.preview({ content: f.content }, 'device-a');

@@ -152,6 +152,37 @@ export const BlockSchema = blockValue.extend({ ...metadata, recurrence: EventRec
   .refine(blockInterval, '时段无效').refine(value => (!value.recurrence && !value.cancelled) || value.kind === 'event', '重复与取消标记仅适用于固定活动');
 export type Block = z.infer<typeof BlockSchema>;
 export type BlockInput = z.input<typeof BlockInputSchema>;
+
+const focusSessionValue = z.strictObject({
+  title: TitleSchema, mode: z.enum(['pomodoro', 'stopwatch', 'manual']),
+  start: InstantSchema, end: InstantSchema, durationSeconds: z.number().int().min(60).max(86400),
+  plannedMinutes: z.number().int().min(1).max(480).nullable().default(null),
+  completedTarget: z.boolean().default(true),
+  taskId: IdSchema.nullable().default(null), blockId: IdSchema.nullable().default(null),
+  courseId: IdSchema.nullable().default(null), goalId: IdSchema.nullable().default(null),
+  note: shortText.default(''),
+});
+function validateFocusSession(value: z.infer<typeof focusSessionValue>, ctx: z.RefinementCtx): void {
+  const elapsed = Date.parse(value.end) - Date.parse(value.start);
+  if (elapsed <= 0) ctx.addIssue({ code: 'custom', path: ['end'], message: '专注结束必须晚于开始' });
+  if (value.durationSeconds > Math.ceil(elapsed / 1000)) {
+    ctx.addIssue({ code: 'custom', path: ['durationSeconds'], message: '有效专注时长不能超过实际经过的时间' });
+  }
+  if (value.mode === 'pomodoro') {
+    if (value.plannedMinutes === null) ctx.addIssue({ code: 'custom', path: ['plannedMinutes'], message: '番茄计时需要目标分钟数' });
+    else if (value.completedTarget && value.durationSeconds < value.plannedMinutes * 60) {
+      ctx.addIssue({ code: 'custom', path: ['completedTarget'], message: '有效专注时长未达到番茄目标' });
+    }
+  } else {
+    if (value.plannedMinutes !== null) ctx.addIssue({ code: 'custom', path: ['plannedMinutes'], message: '仅番茄计时有目标分钟数' });
+    if (!value.completedTarget) ctx.addIssue({ code: 'custom', path: ['completedTarget'], message: '仅番茄计时可提前中断结算' });
+  }
+}
+export const FocusSessionInputSchema = focusSessionValue.superRefine(validateFocusSession);
+export const FocusSessionSchema = focusSessionValue.extend(metadata).superRefine(validateFocusSession);
+export type FocusSessionInput = z.input<typeof FocusSessionInputSchema>;
+export type FocusSession = z.infer<typeof FocusSessionSchema>;
+
 /** Belonging color for courses and goals; empty values are filled from the shared palette. */
 export const ColorSchema = z.enum(PALETTE_COLORS);
 const goalValue = z.strictObject({ title: TitleSchema, description: text.default(''), priority: z.enum(['low', 'medium', 'high']).default('medium'),
@@ -194,6 +225,14 @@ export type FeedbackInput = z.input<typeof FeedbackInputSchema>;
 
 export const PeriodSchema = z.strictObject({ period: z.number().int().min(1).max(30), startTime: TimeSchema, endTime: TimeSchema })
   .refine(value => value.startTime < value.endTime, '节次结束必须晚于开始');
+export const FocusSettingsSchema = z.strictObject({
+  focusMinutes: z.number().int().min(1).max(480).default(25),
+  shortBreakMinutes: z.number().int().min(1).max(120).default(5),
+  longBreakMinutes: z.number().int().min(1).max(240).default(15),
+  pomodorosBeforeLongBreak: z.number().int().min(1).max(24).default(4),
+  focusSoundEnabled: z.boolean().default(true),
+});
+export const FOCUS_SETTING_KEYS = FocusSettingsSchema.keyof().options;
 export const SettingsSchema = z.strictObject({
   campus: z.string().trim().max(200).default(''), locationContext: z.string().trim().max(2000).default(''),
   personalContext: z.string().trim().max(2000).default(''),
@@ -201,6 +240,7 @@ export const SettingsSchema = z.strictObject({
   reasoningEffort: z.enum(['none', 'low', 'high', 'max']).optional(),
   showPending: z.boolean().default(true), weekStartsOn: z.literal(1).default(1), closeToTray: z.boolean().default(true),
   autoLaunch: z.boolean().default(false), remindersEnabled: z.boolean().default(true), courseReminders: z.boolean().default(false),
+  ...FocusSettingsSchema.shape,
   taskLeadMinutes: z.array(z.number().int().min(0).max(525_600)).max(20).default([1440, 120]),
   blockLeadMinutes: z.array(z.number().int().min(0).max(525_600)).max(20).default([15]),
   courseLeadMinutes: z.array(z.number().int().min(0).max(525_600)).max(20).default([15]), dateOnlyReminderTime: TimeSchema.default('09:00'),
@@ -220,13 +260,13 @@ export const KeyStatusSchema = z.strictObject({
   cloudConfiguration: AiConfigurationStatusSchema.optional(),
 });
 export type KeyStatus = z.infer<typeof KeyStatusSchema>;
-export const EntityKindSchema = z.enum(['source', 'candidate', 'task', 'block', 'goal', 'course', 'courseException', 'preference', 'feedback']);
+export const EntityKindSchema = z.enum(['source', 'candidate', 'task', 'block', 'goal', 'course', 'courseException', 'preference', 'feedback', 'focusSession']);
 export type EntityKind = z.infer<typeof EntityKindSchema>;
 export const EntitySchemas = { source: SourceSchema, candidate: CandidateSchema, task: TaskSchema, block: BlockSchema, goal: GoalSchema,
-  course: CourseSchema, courseException: CourseExceptionSchema, preference: PreferenceSchema, feedback: FeedbackSchema } as const;
+  course: CourseSchema, courseException: CourseExceptionSchema, preference: PreferenceSchema, feedback: FeedbackSchema, focusSession: FocusSessionSchema } as const;
 export type EntityMap = { [K in keyof typeof EntitySchemas]: z.infer<(typeof EntitySchemas)[K]> };
 export type Entity = EntityMap[EntityKind];
-export const EntitySchema = z.union([SourceSchema, CandidateSchema, TaskSchema, BlockSchema, GoalSchema, CourseSchema, CourseExceptionSchema, PreferenceSchema, FeedbackSchema]);
+export const EntitySchema = z.union([SourceSchema, CandidateSchema, TaskSchema, BlockSchema, GoalSchema, CourseSchema, CourseExceptionSchema, PreferenceSchema, FeedbackSchema, FocusSessionSchema]);
 
 // An update validates provided properties here; service must merge with saved record and reparse the full entity before writing.
 type PatchShape<T extends z.ZodRawShape> = {
@@ -253,7 +293,7 @@ function entityMutations<K extends EntityKind, S extends z.ZodType, P extends z.
 const candidateDecision = { id: IdSchema, expectedVersion: version, reason: shortText.optional() };
 const candidateEditable = candidateValue.omit({ status: true, taskId: true, sourceIds: true, duplicateOfId: true, revisionOfId: true, snoozedUntil: true, sourceQuote: true, temporalEvidence: true });
 const recurringEventEditable = blockEditable.pick({ title: true, start: true, end: true, location: true, reminders: true, resources: true });
-export const MutationSchema = z.union([
+const calendarCommandMutationSchema = z.union([
   z.strictObject({ type: z.literal('updateRecurringEvent'), id: IdSchema, expectedVersion: version, scope: RecurringEventScopeSchema, values: nonemptyPatch(recurringEventEditable), resourceMode: z.literal('append').optional() }),
   z.strictObject({ type: z.literal('cancelRecurringEvent'), id: IdSchema, expectedVersion: version, scope: RecurringEventScopeSchema }),
   z.strictObject({ type: z.literal('delete'), entity: z.literal('source'), id: IdSchema, expectedVersion: version, acknowledgeProvenanceLoss: z.literal(true) }),
@@ -281,10 +321,17 @@ export const MutationSchema = z.union([
   z.strictObject({ type: z.literal('createRecurringTask'), values: TaskInputSchema, rule: RecurrenceRuleSchema, location: shortText.default(''), reminders: ReminderConfigSchema.optional(), resources: ResourceReferencesSchema.optional() }),
   z.strictObject({ type: z.literal('finishBlock'), id: IdSchema, expectedVersion: version, completed: z.boolean().default(true) }),
 ]);
+export const MutationInputSchema = z.union([
+  ...calendarCommandMutationSchema.options,
+  z.strictObject({ type: z.literal('createFocusSession'), values: FocusSessionInputSchema }),
+  z.strictObject({ type: z.literal('updateFocusSession'), id: IdSchema, expectedVersion: version, values: nonemptyPatch(focusSessionValue) }),
+  z.strictObject({ type: z.literal('deleteFocusSession'), id: IdSchema, expectedVersion: version }),
+]);
+export const MutationSchema = MutationInputSchema;
 export type Mutation = z.infer<typeof MutationSchema>;
-export type MutationInput = z.input<typeof MutationSchema>;
+export type MutationInput = z.input<typeof MutationInputSchema>;
 export const MutationRequestSchema = z.strictObject({ operationId: IdSchema, origin: z.enum(['manual', 'ai']),
-  mutations: z.array(MutationSchema).min(1).max(500), confirmed: z.boolean().default(false), confirmationToken: IdSchema.optional(),
+  mutations: z.array(MutationInputSchema).min(1).max(500), confirmed: z.boolean().default(false), confirmationToken: IdSchema.optional(),
 }).superRefine((value, ctx) => {
   if (value.origin === 'ai' && (value.confirmed || value.confirmationToken)) ctx.addIssue({ code: 'custom', message: 'AI 不能自行确认操作', path: ['confirmed'] });
   if (value.confirmed && !value.confirmationToken) ctx.addIssue({ code: 'custom', message: '确认必须携带精确预览凭据', path: ['confirmationToken'] });
@@ -323,6 +370,7 @@ export type PlannerCursor = z.infer<typeof PlannerCursorSchema>;
 export const SnapshotSchema = z.strictObject({ schemaVersion: z.literal(SCHEMA_VERSION), cursor: PlannerCursorSchema.optional(),
   sources: z.array(SourceSchema), candidates: z.array(CandidateSchema), tasks: z.array(TaskSchema), blocks: z.array(BlockSchema), goals: z.array(GoalSchema),
   courses: z.array(CourseSchema), courseExceptions: z.array(CourseExceptionSchema), preferences: z.array(PreferenceSchema), feedback: z.array(FeedbackSchema),
+  focusSessions: z.array(FocusSessionSchema).default([]),
   settings: SettingsSchema, journal: z.array(JournalSummarySchema), tokenUsage: z.array(TokenUsageSchema), keyStatus: KeyStatusSchema,
 });
 export type Snapshot = z.infer<typeof SnapshotSchema>;
@@ -353,7 +401,7 @@ export type BuildCalendar = (snapshot: Snapshot, fromDate: DateOnly, toDate: Dat
 export type CollectReminders = (snapshot: Snapshot, previousCheck: Instant, now: Instant) => Reminder[];
 export interface PlannerService {
   snapshot(): Snapshot;
-  mutate(request: MutationRequest): MutationResult;
+  mutate(request: MutationRequestInput): MutationResult;
   undo(transactionId?: string): MutationResult;
 }
 
@@ -425,7 +473,7 @@ export type CommandRequest = z.input<typeof CommandRequestSchema>;
 /** Model output is a proposal, never authorization. The AI adapter executes only through PlannerService. */
 export const CommandIntentSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('query'), reply: text, fromDate: DateOnlySchema.optional(), toDate: DateOnlySchema.optional() }),
-  z.strictObject({ kind: z.literal('mutate'), reply: text, mutations: z.array(MutationSchema).min(1).max(500) }),
+  z.strictObject({ kind: z.literal('mutate'), reply: text, mutations: z.array(calendarCommandMutationSchema).min(1).max(500) }),
   z.strictObject({ kind: z.literal('undo'), reply: text, transactionId: IdSchema.optional() }),
   z.strictObject({ kind: z.literal('ledger'), reply: text }),
   z.strictObject({ kind: z.literal('resource_open'), reply: text, resourceIds: z.array(IdSchema).min(1).max(10) }),

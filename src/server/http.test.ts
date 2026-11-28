@@ -15,8 +15,8 @@ import { LEDGER_API_HEADER, LEDGER_API_VERSION } from '../shared/ledger-compatib
 import { AI_SETTINGS_HEADER, AI_SETTINGS_VERSION } from '../shared/ai-reasoning';
 import { PROFILE_SETTINGS_HEADER, PROFILE_SETTINGS_VERSION } from '../shared/profile-settings';
 import { LEDGER_QUERY_HEADER, LEDGER_QUERY_VERSION } from '../shared/ledger-query-compatibility';
-import { CommandRequestSchema, CommandResultSchema, ConversationStateSchema, SettingsSchema } from '../shared/contracts';
-import { PLANNER_SYNC_HEADER, PLANNER_SYNC_VERSION } from '../shared/planner-sync';
+import { CommandRequestSchema, CommandResultSchema, ConversationStateSchema, SettingsSchema, SnapshotSchema } from '../shared/contracts';
+import { applyPlannerPatch, PLANNER_SYNC_HEADER, PLANNER_SYNC_VERSION } from '../shared/planner-sync';
 import { openDatabase } from '../storage/database';
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -52,6 +52,61 @@ async function setup(directory?: string) {
 const goalInput = (title = '虚构目标') => ({ operationId: 'goal-business-1', origin: 'manual', mutations: [{ type: 'create', entity: 'goal', values: { title } }] });
 
 describe('remote HTTP boundary', () => {
+  it('syncs focus creation and undo across two clients and projects safe responses to pre-focus clients', async () => {
+    const f = await setup(), desktop = await f.pair(), phone = await f.pair();
+    const rpc = async (device: typeof phone, method: string, input?: unknown, sync = PLANNER_SYNC_VERSION) => {
+      const response = await f.call('/api/v1/rpc/' + method, { method: 'POST', headers: { ...device.headers, [PLANNER_SYNC_HEADER]: sync },
+        body: JSON.stringify({ identity: device.session.identity, requestId: crypto.randomUUID(), input }) });
+      expect(response.status).toBe(200);
+      return response.json();
+    };
+    const before = SnapshotSchema.parse((await rpc(phone, 'snapshot')).data);
+    const saved = await rpc(desktop, 'mutate', { operationId: 'focus-http', origin: 'manual', mutations: [{ type: 'createFocusSession',
+      values: { title: '合成专注', mode: 'manual', start: '2030-01-02T10:00:00+08:00', end: '2030-01-02T10:02:00+08:00', durationSeconds: 90 } }] });
+    expect(saved.data.status).toBe('applied');
+    const after = SnapshotSchema.parse((await rpc(phone, 'snapshot')).data);
+    expect(after.focusSessions).toHaveLength(1);
+    expect(applyPlannerPatch(before, saved.sync)).toEqual(after);
+    const changes = (await rpc(phone, 'changes', { cursor: before.cursor })).data.patch;
+    expect(applyPlannerPatch(before, changes)).toEqual(after);
+
+    const oldSnapshot = (await rpc(phone, 'snapshot', undefined, '1')).data;
+    expect(oldSnapshot).not.toHaveProperty('focusSessions');
+    expect(oldSnapshot.settings).not.toHaveProperty('focusMinutes');
+    expect(oldSnapshot.cursor).toEqual(after.cursor);
+    expect(oldSnapshot.journal).toHaveLength(0);
+    expect((await rpc(phone, 'changes', { cursor: before.cursor }, '1')).data.patch).toMatchObject({ to: after.cursor, entities: [], journal: [] });
+    expect(await rpc(phone, 'undo', saved.data.transactionId, '1')).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
+    const undone = await rpc(phone, 'undo', saved.data.transactionId);
+    expect(undone.data.status).toBe('applied');
+    expect(undone.sync.entities).toContainEqual({ entity: 'focusSession', id: after.focusSessions[0]!.id, value: null });
+    expect(applyPlannerPatch(after, undone.sync)).toEqual(SnapshotSchema.parse((await rpc(desktop, 'snapshot')).data));
+  });
+
+  it('preserves focus settings on an old form save and replays pre-focus settings fingerprints after upgrade', async () => {
+    const f = await setup(), device = await f.pair();
+    const rpc = async (method: string, requestId: string, input?: unknown, version = PLANNER_SYNC_VERSION) => {
+      const response = await f.call('/api/v1/rpc/' + method, { method: 'POST', headers: { ...device.headers,
+        [PLANNER_SYNC_HEADER]: version, [PROFILE_SETTINGS_HEADER]: PROFILE_SETTINGS_VERSION, [AI_SETTINGS_HEADER]: AI_SETTINGS_VERSION },
+        body: JSON.stringify({ identity: device.session.identity, requestId, input }) });
+      expect(response.status).toBe(200);
+      return response.json();
+    };
+    const initial = (await rpc('snapshot', 'initial')).data.settings;
+    const oldForm = (await rpc('snapshot', 'old-initial', undefined, '1')).data.settings;
+    const oldSave = { settings: { ...oldForm, campus: '虚构校区' }, expectedSettings: oldForm };
+    const id = 'pre-focus-save';
+    const fingerprint = createHash('sha256').update(JSON.stringify({ method: 'saveSettings', identity: device.session.identity, input: oldSave })).digest('hex');
+    f.service.state.begin(id, device.session.device.id, 'saveSettings', fingerprint);
+    f.service.state.complete(id, { ok: true, data: oldSave.settings });
+    expect(await rpc('saveSettings', 'custom-timer', { settings: { ...initial, focusMinutes: 41, focusSoundEnabled: false }, expectedSettings: initial }))
+      .toMatchObject({ ok: true, data: { focusMinutes: 41, focusSoundEnabled: false } });
+    expect(await rpc('saveSettings', id, oldSave)).toMatchObject({ ok: true, data: { campus: '虚构校区' } });
+    expect(f.service.snapshot().settings.campus).toBe(initial.campus);
+    expect(await rpc('saveSettings', 'unsubmitted-old-form', oldSave, '1')).toMatchObject({ ok: true, data: { campus: '虚构校区' } });
+    expect(f.service.snapshot().settings).toMatchObject({ campus: '虚构校区', focusMinutes: 41, focusSoundEnabled: false });
+    expect((await rpc('saveSettings', 'unsubmitted-old-form', oldSave)).data.focusMinutes).toBe(41);
+  });
   it('keeps ledger receipts compact and replays the exact original month, revision and acknowledgement across restart', async () => {
     let f = await setup();
     const device = await f.pair(), other = await f.pair();

@@ -21,7 +21,12 @@ const CancellationUndoBaselineSchema = z.array(z.strictObject({
 }));
 const JournalSchema = JournalSummarySchema.extend({ details: z.array(PreviewDetailSchema), undoExpected: z.array(PreviewDetailSchema).optional(), cancellationUndoBaseline: CancellationUndoBaselineSchema.optional() });
 const OperationResultSchema = z.union([MutationResultSchema, z.strictObject({ entities: z.array(EntitySchema) }), WorkflowReceiptSchema]);
-const StateSchema = z.strictObject({ schemaVersion: z.literal(1), entities: z.record(EntityKindSchema, z.array(EntitySchema)), settings: SettingsSchema,
+// Safe JSON backups predating focus sessions omit only this collection. Keep
+// requiring all other kinds and validate malformed collections as before.
+const StoredEntitiesSchema = z.preprocess(value =>
+  value && typeof value === 'object' && !Array.isArray(value) && !('focusSession' in value)
+    ? { ...value, focusSession: [] } : value, z.record(EntityKindSchema, z.array(EntitySchema)));
+const StateSchema = z.strictObject({ schemaVersion: z.literal(1), entities: StoredEntitiesSchema, settings: SettingsSchema,
   journal: z.array(JournalSchema), operations: z.array(z.strictObject({ id: IdSchema, fingerprint: z.string(), result: OperationResultSchema })),
   usage: z.array(TokenUsageSchema), receipts: z.array(z.string()), lastBackupAt: InstantSchema.nullable(),
   distilled: z.array(DistilledBindingSchema).optional() });
@@ -47,6 +52,20 @@ export function records<K extends EntityKind>(state: StoredState, kind: K): Enti
 export function findEntity<K extends EntityKind>(state: StoredState, kind: K, id: string): EntityMap[K] | undefined { return records(state, kind).find(e => e.id === id); }
 export function putEntity(state: StoredState, kind: EntityKind, record: Entity) { const list = state.entities[kind]; const i = list.findIndex(e => e.id === record.id); if (i < 0) list.push(record); else list[i] = record; }
 export function deleteEntity(state: StoredState, kind: EntityKind, id: string) { state.entities[kind] = state.entities[kind].filter(e => e.id !== id); }
+/** A forward deletion journals dependent changes. Preview replay and undo apply
+ * their exact recorded images with deleteEntity, leaving later edits protected. */
+export function removeEntity(state: StoredState, kind: EntityKind, id: string, replacementId: string | null = null): boolean {
+  let changedSessions = false;
+  if (kind === 'task' || kind === 'block' || kind === 'course' || kind === 'goal') {
+    const field = `${kind}Id` as const;
+    for (const session of records(state, 'focusSession')) if (session[field] === id) {
+      updateEntity(state, 'focusSession', session.id, { [field]: replacementId });
+      changedSessions = true;
+    }
+  }
+  deleteEntity(state, kind, id);
+  return changedSessions;
+}
 export function newEntity(state: StoredState, kind: EntityKind, values: unknown): Entity {
   const at = nowInstant(); const record = EntitySchemas[kind].parse({ ...(values as object), id: randomUUID(), version: 1, createdAt: at, updatedAt: at }); putEntity(state, kind, record); return record;
 }
@@ -58,7 +77,7 @@ function journalSnapshot(state: StoredState) {
   return state.journal.slice().reverse().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).slice(0, 100).map(({ details, undoExpected: _expected, cancellationUndoBaseline: _cancelBaseline, ...summary }) => ({ ...summary, ...describeJournal({ ...summary, details }) }));
 }
 export function stateSnapshot(state: StoredState): Snapshot {
-  return SnapshotSchema.parse({ schemaVersion: 1, sources: state.entities.source, candidates: state.entities.candidate, tasks: state.entities.task, blocks: state.entities.block, goals: state.entities.goal, courses: state.entities.course, courseExceptions: state.entities.courseException, preferences: state.entities.preference, feedback: state.entities.feedback, settings: state.settings, journal: state.journal.slice().reverse().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).slice(0, 100).map(({ details, undoExpected: _expected, cancellationUndoBaseline: _cancelBaseline, ...summary }) => ({ ...summary, ...describeJournal({ ...summary, details }) })), tokenUsage: state.usage, keyStatus: { configured: false, sessionOnly: false } });
+  return SnapshotSchema.parse({ schemaVersion: 1, sources: state.entities.source, candidates: state.entities.candidate, tasks: state.entities.task, blocks: state.entities.block, focusSessions: state.entities.focusSession, goals: state.entities.goal, courses: state.entities.course, courseExceptions: state.entities.courseException, preferences: state.entities.preference, feedback: state.entities.feedback, settings: state.settings, journal: journalSnapshot(state), tokenUsage: state.usage, keyStatus: { configured: false, sessionOnly: false } });
 }
 export function diffStates(before: StoredState, after: StoredState): PreviewDetail[] {
   return kinds.flatMap(entity => {
@@ -86,9 +105,23 @@ function tableEntries(state: StoredState, table: typeof tables[number]): [string
 }
 export function readDatabaseState(db: DatabaseSync, migrateDistilled = true): StoredState {
   const state = emptyState();
-  for (const row of db.prepare('SELECT kind,id,payload FROM records ORDER BY rowid').all()) { const kind = EntityKindSchema.parse(row['kind']); const record = EntitySchemas[kind].parse(JSON.parse(row['payload'] as string)); if (record.id !== row['id']) throw Error('存储记录 ID 不匹配'); state.entities[kind].push(record); }
-  const hasDistilledTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='distilled_state'").get();
-  const data = Object.fromEntries(tables.map(table => [table, table === 'distilled_state' && !hasDistilledTable ? [] : db.prepare(`SELECT id,payload FROM ${table} ORDER BY rowid`).all().map(row => [row['id'] as string, JSON.parse(row['payload'] as string)] as [string, unknown])])) as Record<typeof tables[number], [string, unknown][]>;
+  for (const row of db.prepare('SELECT kind,id,payload FROM records ORDER BY rowid').all()) {
+    const kind = EntityKindSchema.parse(row.kind);
+    if (kind === 'focusSession') throw Error('专注记录必须存储在 focus_sessions 表');
+    const record = EntitySchemas[kind].parse(JSON.parse(row.payload as string));
+    if (record.id !== row.id) throw Error('存储记录 ID 不匹配');
+    state.entities[kind].push(record);
+  }
+  const optionalTables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('distilled_state','focus_sessions')").all().map(row => row.name));
+  // Old SQLite backups are opened read-only; inspecting one must not require migration.
+  if (optionalTables.has('focus_sessions')) {
+    for (const row of db.prepare('SELECT id,payload FROM focus_sessions ORDER BY rowid').all()) {
+      const session = EntitySchemas.focusSession.parse(JSON.parse(row.payload as string));
+      if (session.id !== row.id) throw Error('存储记录 ID 不匹配');
+      state.entities.focusSession.push(session);
+    }
+  }
+  const data = Object.fromEntries(tables.map(table => [table, table === 'distilled_state' && !optionalTables.has(table) ? [] : db.prepare(`SELECT id,payload FROM ${table} ORDER BY rowid`).all().map(row => [row['id'] as string, JSON.parse(row['payload'] as string)] as [string, unknown])])) as Record<typeof tables[number], [string, unknown][]>;
   if (data.settings.length !== 1 || data.settings[0]![0] !== 'settings' || data.metadata.length !== 2 || data.metadata.some(([id]) => !['schemaVersion', 'lastBackupAt'].includes(id))) throw Error('存储配置或元数据无效');
   for (const table of ['journal', 'operations', 'usage', 'distilled_state'] as const) for (const [id, value] of data[table]) if (!value || typeof value !== 'object' || !('id' in value) || value.id !== id) throw Error('内部记录 ID 不匹配');
   if (data.receipts.some(([, value]) => value !== true)) throw Error('提醒记录无效');
@@ -101,7 +134,10 @@ export function readDatabaseState(db: DatabaseSync, migrateDistilled = true): St
 }
 function persistDiff(db: DatabaseSync, before: StoredState, after: StoredState, details: PreviewDetail[]) {
   for (const d of details) {
-    if (d.after) db.prepare('INSERT INTO records(kind,id,payload) VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload').run(d.entity, d.id, JSON.stringify(d.after));
+    if (d.entity === 'focusSession') {
+      if (d.after) db.prepare('INSERT INTO focus_sessions(id,payload) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(d.id, JSON.stringify(d.after));
+      else db.prepare('DELETE FROM focus_sessions WHERE id=?').run(d.id);
+    } else if (d.after) db.prepare('INSERT INTO records(kind,id,payload) VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload').run(d.entity, d.id, JSON.stringify(d.after));
     else db.prepare('DELETE FROM records WHERE kind=? AND id=?').run(d.entity, d.id);
   }
   for (const table of tables) {
@@ -174,7 +210,7 @@ export function createRepository(path: string, options: { automaticBackup?(repos
         const before = structuredClone(state); const entities: Entity[] = [];
         for (const change of request.changes) {
           if (change.id) { const old = findEntity(state, change.entity, change.id); if (!old || old.version !== change.expectedVersion) throw Error('记录不存在或版本已改变');
-            if (change.delete) deleteEntity(state, change.entity, change.id); else entities.push(updateEntity(state, change.entity, change.id, change.values));
+            if (change.delete) removeEntity(state, change.entity, change.id); else entities.push(updateEntity(state, change.entity, change.id, change.values));
           } else entities.push(newEntity(state, change.entity, change.values));
         }
         validateRelationships(state, true, before);
@@ -203,10 +239,16 @@ export function createRepository(path: string, options: { automaticBackup?(repos
 
 /** Recover old interrupted bootstrap only when no user/history data or custom settings exist. */
 function initializeDefaults(db: DatabaseSync): void {
-  try { readDatabaseState(db); return; } catch (originalError) {
-    const plannerTables = ['records', ...tables];
+  try {
+    // Materialize schema defaults once so later VACUUM INTO backups include
+    // newly introduced settings even before the user opens the settings editor.
+    const payload = JSON.stringify(readDatabaseState(db).settings);
+    db.prepare("UPDATE settings SET payload=? WHERE id='settings' AND payload<>?").run(payload, payload);
+    return;
+  } catch (originalError) {
+    const plannerTables = ['records', 'focus_sessions', ...tables];
     const unknownTables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().some(row => !plannerTables.includes(row['name'] as typeof plannerTables[number]));
-    if (unknownTables || ['records', 'journal', 'operations', 'usage', 'receipts', 'distilled_state'].some(table => db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get())) throw originalError;
+    if (unknownTables || ['records', 'focus_sessions', 'journal', 'operations', 'usage', 'receipts', 'distilled_state'].some(table => db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get())) throw originalError;
     const defaults = emptyState();
     const savedSettings = db.prepare('SELECT id,payload FROM settings').all();
     if (savedSettings.length > 1 || savedSettings.some(row => row['id'] !== 'settings' || JSON.stringify(SettingsSchema.parse(JSON.parse(row['payload'] as string))) !== JSON.stringify(defaults.settings))) throw originalError;

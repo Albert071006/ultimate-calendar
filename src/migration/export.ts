@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto';
 import { closeSync, copyFileSync, existsSync, lstatSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
+import { FOCUS_SETTING_KEYS } from '../shared/contracts';
 import { openDatabase } from '../storage/database';
-import { kinds, parseState, readDatabaseState, type StoredState } from '../storage/repository';
+import { kinds, parseState, readDatabaseState, records, type StoredState } from '../storage/repository';
 import { readLedgerDatabase, validateLedgerData } from '../ledger/service';
 import { LedgerImportPayloadSchema, type LedgerData } from '../shared/ledger';
 import { redactEvidence, validateSafeBackup } from '../server/backup';
@@ -12,7 +13,11 @@ import { migrateLegacyDistilledState } from '../storage/distilled-state';
 const sha256=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex');
 function fileDigest(path:string){const hash=createHash('sha256'),fd=openSync(path,'r'),chunk=Buffer.allocUnsafe(1024*1024);try{let length:number;while((length=readSync(fd,chunk,0,chunk.length,null))>0)hash.update(chunk.subarray(0,length));return hash.digest('hex');}finally{closeSync(fd);}}
 const Digest=z.string().regex(/^[a-f0-9]{64}$/);
-const Counts=z.strictObject({ planner:z.record(z.enum(kinds as [typeof kinds[number],...typeof kinds[number][]]),z.number().int().nonnegative()), ledger:z.strictObject({entries:z.number().int().nonnegative(),balanceSnapshots:z.number().int().nonnegative(),audit:z.number().int().nonnegative(),sources:z.number().int().nonnegative()}) });
+const PlannerCounts = z.preprocess(value =>
+  value && typeof value === 'object' && !Array.isArray(value) && !Object.hasOwn(value, 'focusSession')
+    ? { ...value, focusSession: 0 } : value,
+  z.record(z.enum(kinds as [typeof kinds[number], ...typeof kinds[number][]]), z.number().int().nonnegative()));
+const Counts=z.strictObject({ planner:PlannerCounts, ledger:z.strictObject({entries:z.number().int().nonnegative(),balanceSnapshots:z.number().int().nonnegative(),audit:z.number().int().nonnegative(),sources:z.number().int().nonnegative()}) });
 export const MigrationManifestSchema=z.strictObject({
   format:z.literal('ultimate-calendar-offline-migration'),formatVersion:z.literal(1),createdAt:z.string().datetime(),
   destination:z.strictObject({mode:z.literal('new-service-instance'),requireEmptyDirectory:z.literal(true),generateNewIdentity:z.literal(true),reuseWindowsCredentials:z.literal(false),replayTransportReceipts:z.literal(false)}),
@@ -32,6 +37,7 @@ function relationships(planner:StoredState,ledger:LedgerData){
   for(const block of planner.entities.block)result.push(['block',block.id,Reflect.get(block,'taskId'),Reflect.get(block,'recurrence')]);
   for(const candidate of planner.entities.candidate)result.push(['candidate',candidate.id,Reflect.get(candidate,'sourceIds'),Reflect.get(candidate,'revisionOfId'),Reflect.get(candidate,'duplicateOfId')]);
   for(const exception of planner.entities.courseException)result.push(['courseException',exception.id,Reflect.get(exception,'courseId')]);
+  for (const session of records(planner, 'focusSession')) result.push(['focusSession', session.id, session.taskId, session.blockId, session.courseId, session.goalId]);
   for(const entry of ledger.entries)result.push(['entry',entry.id,entry.sourceId,entry.relatedEntryIds,entry.adjustments,entry.cashflows,entry.snapshotPositions]);
   for(const snapshot of ledger.balanceSnapshots)result.push(['balanceSnapshot',snapshot.id,snapshot.sourceId,snapshot.coveredEntryIds]);
   for(const audit of ledger.audit)result.push(['audit',audit.id,audit.entryIds,audit.beforeEntries.map(entry=>entry.id)]);
@@ -116,13 +122,20 @@ export function verifyMigrationBundle(directory:string){
   plainFile(manifestFile);plainFile(backupFile);
   const manifest=MigrationManifestSchema.parse(JSON.parse(readFileSync(manifestFile,'utf8'))),bytes=readFileSync(backupFile);
   if(manifest.backup.bytes!==bytes.length||manifest.backup.sha256!==sha256(bytes))throw Error('备份文件大小或 SHA256 与 manifest 不一致');
-  const raw=JSON.parse(bytes.toString('utf8')) as {planner:unknown;ledger:unknown};
+  const raw=JSON.parse(bytes.toString('utf8')) as {planner:{ entities:Record<string,unknown>; settings:Record<string,unknown> };ledger:unknown};
   const payload=validateSafeBackup(raw),actual=counts(payload.planner,payload.ledger);
   const {revision:_revision,...ledger}=payload.ledger;
   // Check the exact bytes' original planner shape before projecting old event receipts.
   // Otherwise a quote hidden in a discarded legacy candidate could pass verification.
   const originalPlanner = parseState(redactEvidence(raw.planner), false);
-  const cleanOriginal = JSON.stringify(originalPlanner) === JSON.stringify(raw.planner);
+  // Compare using the source format. Omit only focus fields absent from an older
+  // bundle; discarded receipt images and all existing settings still participate.
+  const entities = { ...originalPlanner.entities }, settings = { ...originalPlanner.settings };
+  if (!Object.hasOwn(raw.planner.entities, 'focusSession')) Reflect.deleteProperty(entities, 'focusSession');
+  for (const key of FOCUS_SETTING_KEYS) {
+    if (!Object.hasOwn(raw.planner.settings, key)) Reflect.deleteProperty(settings, key);
+  }
+  const cleanOriginal = JSON.stringify({ ...originalPlanner, entities, settings }) === JSON.stringify(raw.planner);
   migrateLegacyDistilledState(originalPlanner);
   if(!cleanOriginal||JSON.stringify(originalPlanner)!==JSON.stringify(payload.planner)||JSON.stringify(raw.ledger)!==JSON.stringify({format:'ultimate-calendar-ledger',formatVersion:1,...ledger})||JSON.stringify(removeMigrationEvidence(raw))!==JSON.stringify(raw))throw Error('迁移包含未清理的来源、图片或原始记账文本，不能当作已脱敏导出');
   if(JSON.stringify(manifest.before)!==JSON.stringify(manifest.after)||JSON.stringify(actual)!==JSON.stringify(manifest.after)||relationships(payload.planner,payload.ledger)!==manifest.relationshipsSha256)throw Error('manifest 记录数量或正式关联摘要核对失败');

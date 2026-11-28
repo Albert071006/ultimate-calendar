@@ -138,8 +138,9 @@ export function createRemoteHttpServer(options: RemoteHttpOptions) {
       const method = request.method ?? 'GET', url = new URL(request.url ?? '/', incomingOrigin);
       const modernAiSettings = request.headers[AI_SETTINGS_HEADER.toLowerCase()] === AI_SETTINGS_VERSION;
       const modernProfileSettings = request.headers[PROFILE_SETTINGS_HEADER.toLowerCase()] === PROFILE_SETTINGS_VERSION;
+      const syncVersion = request.headers[PLANNER_SYNC_HEADER.toLowerCase()];
       const settingsResult = (method: string, result: unknown) => {
-        const synced = request.headers[PLANNER_SYNC_HEADER.toLowerCase()] === PLANNER_SYNC_VERSION ? result : legacyPlannerSyncResult(method, result);
+        const synced = syncVersion === PLANNER_SYNC_VERSION ? result : legacyPlannerSyncResult(method, result, syncVersion === '1');
         const compatible = modernAiSettings ? synced : legacyAiSettingsResult(method, synced);
         const profiled = modernProfileSettings ? compatible : legacyProfileSettingsResult(method, compatible);
         return request.headers[LEDGER_QUERY_HEADER.toLowerCase()] === LEDGER_QUERY_VERSION ? profiled : legacyLedgerQueryResult(method, profiled);
@@ -245,7 +246,7 @@ export function createRemoteHttpServer(options: RemoteHttpOptions) {
             sendJson(response, 200, { ok: false, error: { code: 'VALIDATION', retryable: false,
               message: '账本账户功能已升级，请更新电脑端或关闭并重新打开手机日历，再查看或修改账本。原资料和配对均保留。' } }); return;
           }
-          const result = await options.service.rpc(rpcMethod, input, session.device.id, modernAiSettings, modernProfileSettings);
+          const result = await options.service.rpc(rpcMethod, input, session.device.id, modernAiSettings, modernProfileSettings, syncVersion === PLANNER_SYNC_VERSION);
           if (download && !options.service.state.session(token)) throw new RemoteFault(401, '下载期间设备授权已失效，请重新配对');
           sendJson(response, 200, settingsResult(rpcMethod, result)); return;
         }

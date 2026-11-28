@@ -6,7 +6,7 @@ import { isAbsolute, join, relative } from 'node:path';
 import { createRepository, type Repository } from './repository';
 import { createPlanner } from '../domain/planner';
 import { applyPlannerPatch, legacyPlannerSyncResult } from '../shared/planner-sync';
-import type { PlannerCursor, Snapshot } from '../shared/contracts';
+import { MutationRequestSchema, type MutationInput, type PlannerCursor, type Snapshot } from '../shared/contracts';
 
 const roots: string[] = [], repositories: Repository[] = [];
 afterEach(() => {
@@ -102,6 +102,44 @@ describe('durable planner incremental state', () => {
     const saved = f.repository.snapshot(); f.repository.close();
     const reopened = f.open(); expect(reopened.cursor()).toEqual(saved.cursor);
     expect(applyPlannerPatch(initial, patch(reopened, initial.cursor!))).toEqual(saved);
+  });
+
+  it('reconstructs focus create, edit, detach, undo and deletion from committed SQLite changes', () => {
+    const { repository, planner, open } = fixture();
+    // A separate connection reads committed revisions, including journal and settings.
+    const reader = open();
+    let mirror = reader.snapshot(), sequence = 0;
+    const sync = () => {
+      const delta = patch(reader, mirror.cursor!);
+      mirror = applyPlannerPatch(mirror, delta)!;
+      expect(mirror).toEqual(reader.snapshot());
+      return delta;
+    };
+    const mutate = (mutation: MutationInput) => {
+      const result = planner.mutate(MutationRequestSchema.parse({ operationId: `focus-sync-${++sequence}`, origin: 'manual', mutations: [mutation] }));
+      const applied = result.status === 'preview'
+        ? planner.mutate({ ...result.proposedRequest, confirmed: true, confirmationToken: result.confirmationToken }) : result;
+      expect(applied.status).toBe('applied');
+    };
+    const goal = repository.writeInternal({ operationId: 'sync-goal', changes: [{ entity: 'goal', values: { title: '练习音阶' } }] }).entities[0]!;
+    repository.saveSettings({ ...mirror.settings, shortBreakMinutes: 8 });
+    mutate({ type: 'createFocusSession', values: { title: '音阶练习', mode: 'stopwatch', goalId: goal.id,
+      start: '2030-01-03T10:00:00+08:00', end: '2030-01-03T10:05:00+08:00', durationSeconds: 270 } });
+    expect(sync().settings?.shortBreakMinutes).toBe(8);
+    const session = mirror.focusSessions[0]!;
+    mutate({ type: 'updateFocusSession', id: session.id, expectedVersion: session.version, values: { durationSeconds: 240 } });
+    expect(sync().entities).toMatchObject([{ entity: 'focusSession', id: session.id, value: { version: 2, durationSeconds: 240 } }]);
+    mutate({ type: 'delete', entity: 'goal', id: goal.id, expectedVersion: goal.version });
+    expect(sync().entities).toEqual(expect.arrayContaining([
+      { entity: 'goal', id: goal.id, value: null },
+      expect.objectContaining({ entity: 'focusSession', value: expect.objectContaining({ id: session.id, goalId: null }) }),
+    ]));
+    expect(planner.undo().status).toBe('applied');
+    sync();
+    const restored = mirror.focusSessions[0]!;
+    expect(restored.goalId).toBe(goal.id);
+    mutate({ type: 'deleteFocusSession', id: restored.id, expectedVersion: restored.version });
+    expect(sync().entities).toEqual([{ entity: 'focusSession', id: session.id, value: null }]);
   });
 
   it('rejects missing history and old restored streams instead of silently skipping revisions', () => {

@@ -51,7 +51,7 @@ export function normalizeLegacyRecurringSeries(state: StoredState): void {
     });
   }
   const normalize = (record: Entity | null): void => {
-    if (!record || !('start' in record)) return;
+    if (!record || !('recurrence' in record)) return;
     const member = membership.get(record.id);
     if (!member || record.kind !== 'event' || record.taskId !== member.taskId || record.recurrence || record.version < member.firstVersion) return;
     record.recurrence = { ...member.recurrence };

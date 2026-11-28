@@ -1,9 +1,11 @@
 import type { Entity, EntityKind, Snapshot } from "../../../shared/contracts";
+import { plannerCollectionFields } from "../../../shared/planner-sync";
 import type { Selection } from "../Calendar";
 
 export const entityNames: Record<EntityKind, string> = {
   task: "任务",
   block: "时段",
+  focusSession: "专注记录",
   goal: "目标",
   candidate: "候选事项",
   course: "课程",
@@ -16,18 +18,7 @@ export function findRecord(
   snapshot: Snapshot,
   selection: Selection,
 ): Entity | undefined {
-  const keys = {
-    task: "tasks",
-    block: "blocks",
-    goal: "goals",
-    candidate: "candidates",
-    course: "courses",
-    courseException: "courseExceptions",
-    source: "sources",
-    preference: "preferences",
-    feedback: "feedback",
-  } as const;
-  return snapshot[keys[selection.entity]].find(
+  return snapshot[plannerCollectionFields[selection.entity]].find(
     (value) => value.id === selection.id,
   );
 }

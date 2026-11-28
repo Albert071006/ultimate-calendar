@@ -1,6 +1,6 @@
 import type { Entity, JournalSummary, PreviewDetail } from '../shared/contracts';
 
-const labels: Record<string, string> = { task: '任务', block: '活动', course: '课程', courseException: '课程调整', candidate: '候选', source: '消息来源', goal: '目标', preference: '偏好', feedback: '反馈' };
+const labels: Record<string, string> = { task: '任务', block: '活动', focusSession: '专注记录', course: '课程', courseException: '课程调整', candidate: '候选', source: '消息来源', goal: '目标', preference: '偏好', feedback: '反馈' };
 const fields: Record<string, string> = { resources: '关联资料', title: '标题', start: '开始', end: '结束', deadline: '截止', location: '地点', completed: '完成状态', cancelled: '取消状态', status: '状态', reminders: '提醒', timeEstimateMinutes: '预计时长', description: '说明', text: '内容', enabled: '启用状态', firstWeek: '起始周', lastWeek: '结束周', startTime: '开始时间', endTime: '结束时间', weekdays: '星期', weekday: '星期', weeks: '教学周', termStart: '学期开始', recurrence: '重复安排' };
 const valueText = (value: unknown): string => {
   if (value == null || value === '') return '未设置';
@@ -41,8 +41,9 @@ export function describeJournal(journal: Pick<JournalSummary, 'operationId' | 'm
       return `${prefix}${record && 'start' in record ? ` · ${valueText(record.start)}${'end' in record && record.end ? ` → ${valueText(record.end)}` : ''}` : ''}`;
     }
     const before = d.before as unknown as Record<string, unknown>, after = d.after as unknown as Record<string, unknown>;
-    const changes = Object.keys(fields).filter(key => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
-    return `${prefix}${changes.length ? `：${changes.slice(0,4).map(key => `${fields[key]} ${valueText(before[key])} → ${valueText(after[key])}`).join('；')}${changes.length > 4 ? '；另有变更' : ''}` : ''}`;
+    const fieldNames: Record<string, string> = d.entity === 'focusSession' ? { ...fields, mode: '计时方式', durationSeconds: '专注秒数', plannedMinutes: '目标分钟数', completedTarget: '完成目标', taskId: '关联任务', blockId: '关联时段', courseId: '关联课程', goalId: '关联目标', note: '备注' } : fields;
+    const changes = Object.keys(fieldNames).filter(key => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
+    return `${prefix}${changes.length ? `：${changes.slice(0,4).map(key => `${fieldNames[key]} ${valueText(before[key])} → ${valueText(after[key])}`).join('；')}${changes.length > 4 ? '；另有变更' : ''}` : ''}`;
   });
   if (relevant.length > 20) lines.push(`另有 ${relevant.length - 20} 条记录随此操作一起变更`);
   const first = relevant[0];

@@ -8,7 +8,7 @@ import { LEDGER_QUERY_HEADER, LEDGER_QUERY_VERSION } from '../../shared/ledger-q
 import { applyPlannerPatch, PLANNER_SYNC_HEADER, PLANNER_SYNC_VERSION } from '../../shared/planner-sync';
 import { RemoteOperationSchema, RemoteSessionSchema, SESSION_RENEW_INTERVAL_MS, SESSION_RENEW_RETRY_MS, type RemoteMethod } from '../../shared/remote';
 import { remoteInputs, remoteOutputs } from '../../server/protocol';
-import { allowsOffline, captureBase, instant, ledgerMutationMonth, localId, projectSnapshot, rebaseWrite, references, resolveAliases, unverifiedLedgerConflict, writeLabel } from './queue';
+import { allowsOffline, captureBase, createdEntity, instant, ledgerMutationMonth, localId, projectSnapshot, rebaseWrite, references, resolveAliases, unverifiedLedgerConflict, writeLabel } from './queue';
 import { createOfflineStorage, emptyPartition, partitionKey, type OfflineStorage } from './storage';
 import type { DeviceSummary, OfflinePartition, PairedSession, PendingWrite, RecoveryArchive, RemoteClientState, RemoteController } from './types';
 
@@ -34,6 +34,12 @@ function draftEntryId(input: unknown) {
   return change?.type === 'putEntry' && change.expectedVersion === null ? change.entry.id : undefined;
 }
 function restoreQueueStatuses(saved: OfflinePartition) {
+  // A pre-focus cache can be used offline. Fetch a full modern snapshot next time
+  // we connect since the old cursor may already have passed unseen focus records.
+  if (saved.snapshot && !Object.hasOwn(saved.snapshot, 'focusSessions')) {
+    const parsed = SnapshotSchema.safeParse(saved.snapshot);
+    if (parsed.success) { saved.snapshot = parsed.data; delete saved.snapshot.cursor; }
+  }
   // Older clients classified a bare transport 409 as a business rejection.
   for (const item of saved.queue) if (unverifiedLedgerConflict(item)) {
     item.status = 'uncertain'; item.message = '尚未取得明确的账本回执，请查询原操作结果。';
@@ -333,8 +339,9 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
       const creates = data.changes.filter((change: Record<string, unknown>) => change.action === 'create');
       const used = new Set<string>();
       input.mutations.forEach((change, index) => {
-        if (change.type !== 'create') return;
-        const match = creates.find((created: Record<string, unknown>) => created.entity === change.entity && !used.has(String(created.id)));
+        const entity = createdEntity(change);
+        if (!entity) return;
+        const match = creates.find((created: Record<string, unknown>) => created.entity === entity && !used.has(String(created.id)));
         if (match) { used.add(String(match.id)); complete.aliases[localId(item, index)] = String(match.id); }
       });
     }
@@ -423,7 +430,7 @@ export function createRemoteClient(options: ClientOptions = {}): RemoteControlle
         const predecessor = next.queue.findLast(pending => pending.method === 'ledgerMutate' || pending.method === 'ledgerUndo');
         if (predecessor && !item.dependencies.includes(predecessor.id)) item.dependencies.push(predecessor.id);
       }
-      if (method === 'mutate') remoteInputs.mutate.parse(input).mutations.forEach((change, index) => { if (change.type === 'create') item!.targets.push(localId(item!, index)); });
+      if (method === 'mutate') remoteInputs.mutate.parse(input).mutations.forEach((change, index) => { if (createdEntity(change)) item!.targets.push(localId(item!, index)); });
       next.queue = previous ? next.queue.map(pending => pending.id === previous.id ? item! : pending) : [...next.queue, item];
       try { await persist(next, true); } catch { return failure('手机储存失败，未发送这项修改', 'STORAGE', 'not-sent'); }
     }
